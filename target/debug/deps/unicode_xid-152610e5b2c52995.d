@@ -1,0 +1,8 @@
+/root/RCLI/sc_slicer_standalone/target/debug/deps/unicode_xid-152610e5b2c52995.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-xid-0.2.6/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-xid-0.2.6/src/tables.rs
+
+/root/RCLI/sc_slicer_standalone/target/debug/deps/libunicode_xid-152610e5b2c52995.rlib: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-xid-0.2.6/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-xid-0.2.6/src/tables.rs
+
+/root/RCLI/sc_slicer_standalone/target/debug/deps/libunicode_xid-152610e5b2c52995.rmeta: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-xid-0.2.6/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-xid-0.2.6/src/tables.rs
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-xid-0.2.6/src/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-xid-0.2.6/src/tables.rs:
