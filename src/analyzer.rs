@@ -1469,7 +1469,7 @@ fn extract_variables_rec(expr: &Expr, vars: &mut Vec<String>) {
 }
 
 // 源码级别切片接口 - 返回行级别切片
-pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _contract: &str, function: &str, variable: &str) -> Vec<String> {
+pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _contract: &str, function: &str, variable: &str, exclude_libs: bool, include_types: bool) -> Vec<String> {
     // 查找指定合约中所有对变量的引用和修改，收集所有相关节点
     let mut candidate_nodes = Vec::new();
     for (&node_id, node) in &analysis.program_dependency_graph.nodes {
@@ -1550,14 +1550,6 @@ pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _cont
     // 使用 HashSet 来去重行
     let mut unique_lines = std::collections::HashSet::new();
 
-    // 首先查找所有相关的函数签名
-    for (line_num, line) in lines.iter().enumerate() {
-        let line_str = line.trim();
-        if line_str.contains("function") && (line_str.contains("deposit") || line_str.contains("withdrawAll") || line_str.contains(function)) {
-            unique_lines.insert(line_str.to_string());
-        }
-    }
-
     for &slice_node_id in &all_slice_nodes {
         if let Some(slice_node) = analysis.program_dependency_graph.nodes.get(&slice_node_id) {
             let byte_pos = slice_node.span.lo().0 as usize;
@@ -1601,7 +1593,7 @@ pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _cont
 }
 
 // 切片查询接口 - 返回函数级切片
-pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract: &str, function: &str, variable: &str) -> Vec<String> {
+pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract: &str, function: &str, variable: &str, exclude_libs: bool, include_types: bool) -> Vec<String> {
     // 查找指定合约中所有对变量的引用和修改，收集所有相关节点
     let mut candidate_nodes = Vec::new();
     for (&node_id, node) in &analysis.program_dependency_graph.nodes {
@@ -1609,12 +1601,24 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
         let function_match = if function.is_empty() {
             true
         } else {
-            node.function_context.as_ref().map(|f| f == function).unwrap_or(false)
+            // 如果指定了函数，不仅查找该函数，还查找所有函数（因为其他函数可能调用目标函数）
+            true  // 暂时改为true，稍后会过滤
         };
 
         if function_match && node.label.contains(variable) {
             candidate_nodes.push(node_id);
         }
+    }
+
+    // 如果指定了函数，过滤只保留指定函数中的节点
+    if !function.is_empty() {
+        candidate_nodes.retain(|&node_id| {
+            if let Some(node) = analysis.program_dependency_graph.nodes.get(&node_id) {
+                node.function_context.as_ref().map(|f| f == function).unwrap_or(false)
+            } else {
+                false
+            }
+        });
     }
 
     if candidate_nodes.is_empty() {
@@ -1684,29 +1688,56 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
         }
     }
 
-    // 第二步：从所有节点中找到调用这些函数的地方，并包含被调用的函数
+    // 第二步：递归地收集所有被调用的函数，包括库函数
     let mut called_functions = std::collections::HashSet::new();
-    for node in analysis.program_dependency_graph.nodes.values() {
-        // 如果这个节点属于相关的函数上下文
-        if let Some(func_ctx) = &node.function_context {
-            if relevant_functions.contains(func_ctx) {
-                // 检查ExternalCall节点
-                if matches!(node.kind, NodeKind::ExternalCall) {
-                    if let Some(called_func) = extract_called_function_name(&node.label) {
-                        called_functions.insert(called_func);
+    let mut to_process = relevant_functions.clone();
+    let mut processed = std::collections::HashSet::new();
+
+    while !to_process.is_empty() {
+        let mut new_calls = std::collections::HashSet::new();
+        for func_name in &to_process {
+            if processed.contains(func_name) {
+                continue;
+            }
+            processed.insert(func_name.clone());
+
+            // 找到调用这个函数的所有节点
+            for node in analysis.program_dependency_graph.nodes.values() {
+                // 如果这个节点属于相关的函数上下文，或者是全局调用
+                let in_context = node.function_context.as_ref().map(|f| relevant_functions.contains(f) || called_functions.contains(f)).unwrap_or(true);
+                if in_context {
+                    // 检查ExternalCall节点
+                    if matches!(node.kind, NodeKind::ExternalCall) {
+                        if let Some(called_func) = extract_called_function_name(&node.label) {
+                            if !processed.contains(&called_func) {
+                                new_calls.insert(called_func);
+                            }
+                        }
                     }
                 }
             }
         }
+        called_functions.extend(new_calls.clone());
+        to_process = new_calls;
     }
 
     // 将被调用的函数也添加到相关函数集合中
-    for func_name in called_functions {
-        relevant_functions.insert(func_name);
+    for func_name in &called_functions {
+        relevant_functions.insert(func_name.clone());
+    }
+
+    // 收集相关的合约/库（定义了相关函数的）
+    let mut relevant_contracts = std::collections::HashSet::new();
+    for (contract_name, functions) in &analysis.contract_registry.function_map {
+        for func_name in functions.keys() {
+            if relevant_functions.contains(func_name) || called_functions.contains(func_name) {
+                relevant_contracts.insert(contract_name.clone());
+            }
+        }
     }
 
     // 提取函数级别的代码
-    let mut function_slices = Vec::new();
+    let mut function_slices: Vec<String> = Vec::new();
     let mut type_definitions = Vec::new();
     
     // 首先收集所有相关的类型定义
@@ -1715,7 +1746,35 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
         let line = lines[i].trim();
         
         // 检查是否是类型定义的开始
-        if line.starts_with("type ") || line.starts_with("struct ") || line.starts_with("enum ") || line.starts_with("interface ") || line.starts_with("library ") || line.starts_with("contract ") {
+        if line.starts_with("type ") || line.starts_with("struct ") || line.starts_with("enum ") || line.starts_with("interface ") || 
+           (line.starts_with("library ") && (!exclude_libs || is_contract_relevant(&line, &relevant_contracts))) || 
+           (line.starts_with("contract ") && (!exclude_libs || is_contract_relevant(&line, &relevant_contracts))) {
+            
+            // 如果不包含类型定义，跳过
+            if !include_types && (line.starts_with("type ") || line.starts_with("struct ") || line.starts_with("enum ")) {
+                // 跳过类型定义
+                let mut brace_count: i32 = 0;
+                let mut j = i;
+                while j < lines.len() {
+                    let current_line = lines[j];
+                    brace_count += current_line.chars().filter(|&c| c == '{').count() as i32;
+                    let close_count = current_line.chars().filter(|&c| c == '}').count() as i32;
+                    if brace_count >= close_count {
+                        brace_count -= close_count;
+                    } else {
+                        brace_count = 0;
+                    }
+                    
+                    if brace_count == 0 && current_line.contains('}') {
+                        i = j;
+                        break;
+                    }
+                    j += 1;
+                }
+                i += 1;
+                continue;
+            }
+            
             let type_code = extract_entire_type(&lines, i);
             type_definitions.push(type_code);
             
@@ -1741,6 +1800,10 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
         }
         i += 1;
     }
+    
+    // 提取函数级别的代码
+    let mut function_slices = Vec::new();
+    let mut i = 0;  // 重置索引，从文件开头开始处理函数
     while i < lines.len() {
         let line = lines[i].trim();
 
@@ -1915,7 +1978,7 @@ fn extract_entire_function(lines: &[&str], start_line: usize) -> String {
 }
 
 // 跨合约分析和切片的主函数
-pub fn analyze_contracts_and_get_slice(file_paths: &[String], contract_name: &str, function_name: &str, variable_name: &str) -> Result<Vec<String>, String> {
+pub fn analyze_contracts_and_get_slice(file_paths: &[String], contract_name: &str, function_name: &str, variable_name: &str, exclude_libs: bool, include_types: bool) -> Result<Vec<String>, String> {
     use std::fs;
     
     // 读取所有源代码
@@ -1943,7 +2006,7 @@ pub fn analyze_contracts_and_get_slice(file_paths: &[String], contract_name: &st
     match result {
         Ok(analysis) => {
             // 获取源码级切片
-            let slice = get_source_slice(&analysis, &source_codes.join("\n"), contract_name, function_name, variable_name);
+            let slice = get_source_slice(&analysis, &source_codes.join("\n"), contract_name, function_name, variable_name, exclude_libs, include_types);
             Ok(slice)
         }
         Err(_) => Err("Failed to parse or analyze the contracts".to_string()),
@@ -1951,7 +2014,7 @@ pub fn analyze_contracts_and_get_slice(file_paths: &[String], contract_name: &st
 }
 
 // 跨合约分析和源码级别切片的主函数
-pub fn analyze_contracts_and_get_line_slice(file_paths: &[String], contract_name: &str, function_name: &str, variable_name: &str) -> Result<Vec<String>, String> {
+pub fn analyze_contracts_and_get_line_slice(file_paths: &[String], contract_name: &str, function_name: &str, variable_name: &str, exclude_libs: bool, include_types: bool) -> Result<Vec<String>, String> {
     use std::fs;
 
     // 读取所有源代码
@@ -1979,7 +2042,7 @@ pub fn analyze_contracts_and_get_line_slice(file_paths: &[String], contract_name
     match result {
         Ok(analysis) => {
             // 获取源码级别切片
-            let slice = get_source_line_slice(&analysis, &source_codes.join("\n"), contract_name, function_name, variable_name);
+            let slice = get_source_line_slice(&analysis, &source_codes.join("\n"), contract_name, function_name, variable_name, exclude_libs, include_types);
             Ok(slice)
         }
         Err(_) => Err("Failed to parse or analyze the contracts".to_string()),
@@ -2036,6 +2099,31 @@ fn is_utility_function(func_name: &str) -> bool {
 
     // 可以在这里添加其他工具类函数的过滤规则
 
+    false
+}
+
+// 检查合约/库是否相关（定义了相关函数）
+fn is_contract_relevant(line: &str, relevant_contracts: &std::collections::HashSet<String>) -> bool {
+    // 从 "library PanopticMath {" 或 "contract PanopticPool {" 中提取名字
+    if let Some(lib_pos) = line.find("library ") {
+        let after_lib = &line[lib_pos + 8..];
+        if let Some(space_pos) = after_lib.find(' ') {
+            let contract_name = &after_lib[..space_pos];
+            return relevant_contracts.contains(contract_name.trim());
+        } else if let Some(brace_pos) = after_lib.find('{') {
+            let contract_name = &after_lib[..brace_pos];
+            return relevant_contracts.contains(contract_name.trim());
+        }
+    } else if let Some(contract_pos) = line.find("contract ") {
+        let after_contract = &line[contract_pos + 9..];
+        if let Some(space_pos) = after_contract.find(' ') {
+            let contract_name = &after_contract[..space_pos];
+            return relevant_contracts.contains(contract_name.trim());
+        } else if let Some(brace_pos) = after_contract.find('{') {
+            let contract_name = &after_contract[..brace_pos];
+            return relevant_contracts.contains(contract_name.trim());
+        }
+    }
     false
 }
 

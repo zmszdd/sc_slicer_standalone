@@ -48,6 +48,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .short('o')
                 .value_name("FILE"),
         )
+        .arg(
+            Arg::new("exclude_libs")
+                .help("Exclude library functions and contracts from output")
+                .long("exclude-libs")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("include_types")
+                .help("Include type definitions and structs in output")
+                .long("include-types")
+                .action(clap::ArgAction::SetTrue)
+                .default_value("true"),
+        )
         .get_matches();
 
     let input_path = matches.get_one::<String>("input").unwrap();
@@ -57,6 +70,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let function_name = function_name_str.map(|s| s.as_str()).unwrap_or("");
     let slice_level = matches.get_one::<String>("slice_level").unwrap();
     let output_file = matches.get_one::<String>("output");
+    let exclude_libs = matches.get_flag("exclude_libs");
+    let include_types = matches.get_flag("include_types");
 
     // Collect all .sol files
     let file_paths = collect_sol_files(input_path)?;
@@ -68,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let slice = match slice_level.as_str() {
         "line" => {
-            match analyzer::analyze_contracts_and_get_line_slice(&file_paths, contract_name, function_name, variable_name) {
+            match analyzer::analyze_contracts_and_get_line_slice(&file_paths, contract_name, function_name, variable_name, exclude_libs, include_types) {
                 Ok(slice) => slice,
                 Err(e) => {
                     eprintln!("❌ Error: {}", e);
@@ -77,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         "function" | _ => {
-            match analyzer::analyze_contracts_and_get_slice(&file_paths, contract_name, function_name, variable_name) {
+            match analyzer::analyze_contracts_and_get_slice(&file_paths, contract_name, function_name, variable_name, exclude_libs, include_types) {
                 Ok(slice) => slice,
                 Err(e) => {
                     eprintln!("❌ Error: {}", e);
