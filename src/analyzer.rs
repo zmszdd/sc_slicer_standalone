@@ -1707,7 +1707,40 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
 
     // 提取函数级别的代码
     let mut function_slices = Vec::new();
+    let mut type_definitions = Vec::new();
+    
+    // 首先收集所有相关的类型定义
     let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        
+        // 检查是否是类型定义的开始
+        if line.starts_with("type ") || line.starts_with("struct ") || line.starts_with("enum ") || line.starts_with("interface ") || line.starts_with("library ") || line.starts_with("contract ") {
+            let type_code = extract_entire_type(&lines, i);
+            type_definitions.push(type_code);
+            
+            // 跳过类型定义
+            let mut brace_count: i32 = 0;
+            let mut j = i;
+            while j < lines.len() {
+                let current_line = lines[j];
+                brace_count += current_line.chars().filter(|&c| c == '{').count() as i32;
+                let close_count = current_line.chars().filter(|&c| c == '}').count() as i32;
+                if brace_count >= close_count {
+                    brace_count -= close_count;
+                } else {
+                    brace_count = 0;
+                }
+                
+                if brace_count == 0 && current_line.contains('}') {
+                    i = j;
+                    break;
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
     while i < lines.len() {
         let line = lines[i].trim();
 
@@ -1745,7 +1778,12 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
         i += 1;
     }
 
-    function_slices
+    // 合并类型定义和函数切片
+    let mut result = Vec::new();
+    result.extend(type_definitions);
+    result.extend(function_slices);
+    
+    result
 }
 
 // 提取函数名的辅助函数
@@ -1758,6 +1796,64 @@ fn extract_function_name(function_line: &str) -> String {
         }
     }
     String::new()
+}
+
+// 提取整个类型的代码
+fn extract_entire_type(lines: &[&str], start_line: usize) -> String {
+    let mut type_lines = Vec::new();
+    let mut brace_count: i32 = 0;
+    let mut i = start_line;
+
+    // 首先收集完整的类型签名
+    let mut signature_lines = Vec::new();
+    let mut signature_complete = false;
+
+    while i < lines.len() && !signature_complete {
+        let line = lines[i];
+        signature_lines.push(line.to_string());
+
+        // 检查是否是类型签名的结束（有左大括号或分号）
+        if line.contains('{') || line.trim().ends_with(';') {
+            signature_complete = true;
+        }
+
+        brace_count += line.chars().filter(|&c| c == '{').count() as i32;
+        let close_count = line.chars().filter(|&c| c == '}').count() as i32;
+        if brace_count >= close_count {
+            brace_count -= close_count;
+        } else {
+            brace_count = 0;
+        }
+
+        i += 1;
+    }
+
+    // 合并签名行
+    let signature = signature_lines.join("\n");
+    type_lines.push(signature.clone());
+
+    // 如果类型签名以分号结束，这是类型声明
+    if signature.trim().ends_with(';') {
+        return signature;
+    }
+
+    // 添加类型体，直到找到匹配的结束大括号
+    while i < lines.len() && brace_count > 0 {
+        let line = lines[i];
+        type_lines.push(line.to_string());
+
+        brace_count += line.chars().filter(|&c| c == '{').count() as i32;
+        let close_count = line.chars().filter(|&c| c == '}').count() as i32;
+        if brace_count >= close_count {
+            brace_count -= close_count;
+        } else {
+            brace_count = 0;
+        }
+
+        i += 1;
+    }
+
+    type_lines.join("\n")
 }
 
 // 提取整个函数的代码
@@ -1819,58 +1915,74 @@ fn extract_entire_function(lines: &[&str], start_line: usize) -> String {
 }
 
 // 跨合约分析和切片的主函数
-pub fn analyze_contract_and_get_slice(file_path: &str, contract_name: &str, function_name: &str, variable_name: &str) -> Result<Vec<String>, String> {
+pub fn analyze_contracts_and_get_slice(file_paths: &[String], contract_name: &str, function_name: &str, variable_name: &str) -> Result<Vec<String>, String> {
     use std::fs;
     
-    // 读取源代码
-    let source_code = fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read file {}: {}", file_path, e))?;
+    // 读取所有源代码
+    let mut source_codes = Vec::new();
+    for file_path in file_paths {
+        let source_code = fs::read_to_string(file_path)
+            .map_err(|e| format!("Failed to read file {}: {}", file_path, e))?;
+        source_codes.push(source_code);
+    }
     
     // 解析AST
     let sess = Session::builder().with_buffer_emitter(solar_interface::ColorChoice::Auto).build();
     
     let result = sess.enter(|| -> solar_interface::Result<AnalysisResult> {
         let arena = ast::Arena::new();
-        let mut parser = Parser::from_file(&sess, &arena, Path::new(file_path))?;
-        let ast = parser.parse_file().map_err(|e| e.emit())?;
-        Ok(analyze_asts(&[ast], &source_code))
+        let mut all_asts = Vec::new();
+        for file_path in file_paths {
+            let mut parser = Parser::from_file(&sess, &arena, Path::new(file_path))?;
+            let ast = parser.parse_file().map_err(|e| e.emit())?;
+            all_asts.push(ast);
+        }
+        Ok(analyze_asts(&all_asts, &source_codes.join("\n")))
     });
     
     match result {
         Ok(analysis) => {
             // 获取源码级切片
-            let slice = get_source_slice(&analysis, &source_code, contract_name, function_name, variable_name);
+            let slice = get_source_slice(&analysis, &source_codes.join("\n"), contract_name, function_name, variable_name);
             Ok(slice)
         }
-        Err(_) => Err("Failed to parse or analyze the contract".to_string()),
+        Err(_) => Err("Failed to parse or analyze the contracts".to_string()),
     }
 }
 
 // 跨合约分析和源码级别切片的主函数
-pub fn analyze_contract_and_get_line_slice(file_path: &str, contract_name: &str, function_name: &str, variable_name: &str) -> Result<Vec<String>, String> {
+pub fn analyze_contracts_and_get_line_slice(file_paths: &[String], contract_name: &str, function_name: &str, variable_name: &str) -> Result<Vec<String>, String> {
     use std::fs;
 
-    // 读取源代码
-    let source_code = fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read file {}: {}", file_path, e))?;
+    // 读取所有源代码
+    let mut source_codes = Vec::new();
+    for file_path in file_paths {
+        let source_code = fs::read_to_string(file_path)
+            .map_err(|e| format!("Failed to read file {}: {}", file_path, e))?;
+        source_codes.push(source_code);
+    }
 
     // 解析AST
     let sess = Session::builder().with_buffer_emitter(solar_interface::ColorChoice::Auto).build();
 
     let result = sess.enter(|| -> solar_interface::Result<AnalysisResult> {
         let arena = ast::Arena::new();
-        let mut parser = Parser::from_file(&sess, &arena, Path::new(file_path))?;
-        let ast = parser.parse_file().map_err(|e| e.emit())?;
-        Ok(analyze_asts(&[ast], &source_code))
+        let mut all_asts = Vec::new();
+        for file_path in file_paths {
+            let mut parser = Parser::from_file(&sess, &arena, Path::new(file_path))?;
+            let ast = parser.parse_file().map_err(|e| e.emit())?;
+            all_asts.push(ast);
+        }
+        Ok(analyze_asts(&all_asts, &source_codes.join("\n")))
     });
 
     match result {
         Ok(analysis) => {
             // 获取源码级别切片
-            let slice = get_source_line_slice(&analysis, &source_code, contract_name, function_name, variable_name);
+            let slice = get_source_line_slice(&analysis, &source_codes.join("\n"), contract_name, function_name, variable_name);
             Ok(slice)
         }
-        Err(_) => Err("Failed to parse or analyze the contract".to_string()),
+        Err(_) => Err("Failed to parse or analyze the contracts".to_string()),
     }
 }
 

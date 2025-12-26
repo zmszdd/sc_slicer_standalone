@@ -20,7 +20,7 @@ SC_Slicer 是一个独立的 Solidity 智能合约代码切片分析工具，基
 
 ### 构建项目
 ```bash
-git clone <repository-url>
+git clone https://gitee.com/w1060/sc_slicer_standalone.git
 cd sc_slicer_standalone
 cargo build --release
 ```
