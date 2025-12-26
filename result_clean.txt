@@ -1,0 +1,406 @@
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+    function computeNAV(
+        address vault,
+        address underlyingToken,
+        bytes memory managerInput
+    ) external view returns (uint256);
+    function setNumberOfLegs(address vault, uint256 legs) external {
+        numberOfLegsMapping[vault] = legs;
+    }
+    function setMockPremiums(
+        LeftRightUnsigned _shortPremium,
+        LeftRightUnsigned _longPremium
+    ) external {
+        mockShortPremium = _shortPremium;
+        mockLongPremium = _longPremium;
+    }
+    function setMockPositionBalanceArray(uint256[2][] memory _array) external {
+        delete mockPositionBalanceArray;
+        for (uint i = 0; i < _array.length; i++) {
+            mockPositionBalanceArray.push(_array[i]);
+        }
+    }
+    function computeNAV(
+        address vault,
+        address,
+        bytes memory managerInput
+    ) external view returns (uint256) {
+        require(vault == expectedVault, "Invalid vault");
+        if (managerInput.length > 0) {
+            require(
+                keccak256(managerInput) == keccak256(expectedManagerInput),
+                "Invalid manager input"
+            );
+        }
+        return nav;
+    }
+    function mint(address to, uint256 amount) external {
+        balances[to] += amount;
+        _totalSupply += amount;
+    }
+    function setTickCumulatives(int56[] memory _tickCumulatives) external {
+        delete tickCumulatives;
+        for (uint i = 0; i < _tickCumulatives.length; i++) {
+            tickCumulatives.push(_tickCumulatives[i]);
+        }
+    }
+    function mint(uint256 shares, address receiver) external payable returns (uint256 assets) {
+        assets = previewMint(shares);
+
+        if (assets > type(uint104).max) revert Errors.DepositTooLarge();
+
+        _mint(receiver, shares);
+
+        // update tracked asset balance
+        s_poolAssets += uint128(assets);
+
+        // transfer assets from the user/the LP to the PanopticPool
+        // in return for the shares to be minted
+        _settleCurrencyDelta(msg.sender, int256(assets));
+
+        emit Deposit(msg.sender, receiver, assets, shares);
+    }
+    function computeNAV(
+        address vault,
+        address underlyingToken,
+        bytes calldata managerInput
+    ) external view returns (uint256 nav) {
+        (
+            ManagerPrices[] memory managerPrices,
+            PoolInfo[] memory pools,
+            TokenId[][] memory tokenIds
+        ) = abi.decode(managerInput, (ManagerPrices[], PoolInfo[], TokenId[][]));
+
+        if (keccak256(abi.encode(pools)) != vaultPools[vault]) revert InvalidPools();
+
+        address[] memory underlyingTokens = new address[](pools.length * 2);
+
+        // resolves stack too deep error
+        address _vault = vault;
+
+        for (uint256 i = 0; i < pools.length; i++) {
+            if (
+                Math_2.abs(
+                    managerPrices[i].poolPrice -
+                        PanopticMath.twapFilter(pools[i].poolOracle, pools[i].twapWindow)
+                ) > pools[i].maxPriceDeviation
+            ) revert StaleOraclePrice();
+
+            uint256[2][] memory positionBalanceArray;
+            int256 poolExposure0;
+            int256 poolExposure1;
+            {
+                LeftRightUnsigned shortPremium;
+                LeftRightUnsigned longPremium;
+
+                (shortPremium, longPremium, positionBalanceArray) = pools[i]
+                    .pool
+                    .getAccumulatedFeesAndPositionsData(_vault, true, tokenIds[i]);
+
+                poolExposure0 =
+                    int256(uint256(shortPremium.rightSlot())) -
+                    int256(uint256(longPremium.rightSlot()));
+                poolExposure1 =
+                    int256(uint256(longPremium.leftSlot())) -
+                    int256(uint256(shortPremium.leftSlot()));
+            }
+
+            uint256 numLegs;
+            for (uint256 j = 0; j < tokenIds[i].length; j++) {
+                if (positionBalanceArray[j][1] == 0) revert IncorrectPositionList();
+                uint256 positionLegs = tokenIds[i][j].countLegs();
+                for (uint256 k = 0; k < positionLegs; k++) {
+                    (uint256 amount0, uint256 amount1) = Math_2.getAmountsForLiquidity(
+                        managerPrices[i].poolPrice,
+                        PanopticMath.getLiquidityChunk(
+                            tokenIds[i][j],
+                            k,
+                            uint128(positionBalanceArray[j][1])
+                        )
+                    );
+
+                    if (tokenIds[i][j].isLong(k) == 0) {
+                        unchecked {
+                            poolExposure0 += int256(amount0);
+                            poolExposure1 += int256(amount1);
+                        }
+                    } else {
+                        unchecked {
+                            poolExposure0 -= int256(amount0);
+                            poolExposure1 -= int256(amount1);
+                        }
+                    }
+                }
+
+                (LeftRightSigned longAmounts, LeftRightSigned shortAmounts) = PanopticMath
+                    .computeExercisedAmounts(tokenIds[i][j], uint128(positionBalanceArray[j][1]));
+
+                poolExposure0 += int256(longAmounts.rightSlot()) - int256(shortAmounts.rightSlot());
+                poolExposure1 += int256(longAmounts.leftSlot()) - int256(shortAmounts.leftSlot());
+
+                numLegs += positionLegs;
+            }
+
+            if (numLegs != pools[i].pool.numberOfLegs(_vault)) revert IncorrectPositionList();
+
+            if (address(pools[i].token0) == address(0))
+                pools[i].token0 = IERC20Partial(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE);
+
+            bool skipToken0 = false;
+            bool skipToken1 = false;
+
+            // optimized for small number of pools
+            for (uint256 j = 0; j < underlyingTokens.length; j++) {
+                if (underlyingTokens[j] == address(pools[i].token0)) skipToken0 = true;
+                if (underlyingTokens[j] == address(pools[i].token1)) skipToken1 = true;
+
+                if (underlyingTokens[j] == address(0)) {
+                    if (!skipToken0) underlyingTokens[j] = address(pools[i].token0);
+                    // ensure a gap is not created in the underlyingTokens array
+                    if (!skipToken1)
+                        underlyingTokens[j + (skipToken0 ? 0 : 1)] = address(pools[i].token1);
+                    break;
+                }
+            }
+
+            if (!skipToken0)
+                poolExposure0 += address(pools[i].token0) ==
+                    address(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE)
+                    ? int256(address(_vault).balance)
+                    : int256(pools[i].token0.balanceOf(_vault));
+            if (!skipToken1) poolExposure1 += int256(pools[i].token1.balanceOf(_vault));
+
+            uint256 collateralBalance = pools[i].pool.collateralToken0().balanceOf(_vault);
+            poolExposure0 += int256(
+                pools[i].pool.collateralToken0().previewRedeem(collateralBalance)
+            );
+
+            collateralBalance = pools[i].pool.collateralToken1().balanceOf(_vault);
+            poolExposure1 += int256(
+                pools[i].pool.collateralToken1().previewRedeem(collateralBalance)
+            );
+
+            // convert position values to underlying
+            if (address(pools[i].token0) != underlyingToken) {
+                int24 conversionTick = PanopticMath.twapFilter(
+                    pools[i].oracle0,
+                    pools[i].twapWindow
+                );
+                if (
+                    Math_2.abs(conversionTick - managerPrices[i].token0Price) >
+                    pools[i].maxPriceDeviation
+                ) revert StaleOraclePrice();
+
+                uint160 conversionPrice = Math_2.getSqrtRatioAtTick(
+                    pools[i].isUnderlyingToken0InOracle0 ? -conversionTick : conversionTick
+                );
+
+                poolExposure0 = PanopticMath.convert0to1(poolExposure0, conversionPrice);
+            }
+
+            if (address(pools[i].token1) != underlyingToken) {
+                int24 conversionTick = PanopticMath.twapFilter(
+                    pools[i].oracle1,
+                    pools[i].twapWindow
+                );
+                if (
+                    Math_2.abs(conversionTick - managerPrices[i].token1Price) >
+                    pools[i].maxPriceDeviation
+                ) revert StaleOraclePrice();
+
+                uint160 conversionPrice = Math_2.getSqrtRatioAtTick(
+                    pools[i].isUnderlyingToken0InOracle1 ? conversionTick : -conversionTick
+                );
+
+                poolExposure1 = PanopticMath.convert1to0(poolExposure1, conversionPrice);
+            }
+
+            // debt in pools with negative exposure does not need to be paid back
+            nav += uint256(Math_2.max(poolExposure0 + poolExposure1, 0));
+        }
+
+        // underlying cannot be native (0x000/0xeee)
+        bool skipUnderlying = false;
+        for (uint256 i = 0; i < underlyingTokens.length; i++) {
+            if (underlyingTokens[i] == underlyingToken) skipUnderlying = true;
+        }
+        if (!skipUnderlying) nav += IERC20Partial(underlyingToken).balanceOf(_vault);
+    }
+    function _setupDefaultOracles() internal {
+        // Setup consistent tick cumulatives for TWAP calculation
+        // The TWAP filter computes (tickCumulative[i] - tickCumulative[i+1]) / (twapWindow / 20)
+        // So for a constant tick of 100, we need cumulative differences of 100 * (twapWindow / 20)
+        int56[] memory defaultTicks = new int56[](20);
+        uint32 intervalDuration = TWAP_WINDOW / 20; // 30 seconds
+
+        // Create tick cumulatives that will result in TWAP_TICK when filtered
+        for (uint i = 0; i < 20; i++) {
+            defaultTicks[i] = int56(
+                int256(TWAP_TICK) * int256(uint256(intervalDuration)) * int256(20 - i)
+            );
+        }
+        poolOracle.setTickCumulatives(defaultTicks);
+        oracle0.setTickCumulatives(defaultTicks);
+        oracle1.setTickCumulatives(defaultTicks);
+    }
+    function test_submissionValidity() external {
+        // Proof of Concept code demonstrating the vulnerability where available assets
+        // do not properly account for long positions
+
+        // Create interfaces to properly cast types
+        PanopticPool mockPoolInterface = PanopticPool(address(mockPool));
+
+        // Setup the accountant and mock pool
+        PanopticVaultAccountant.PoolInfo[] memory pools = new PanopticVaultAccountant.PoolInfo[](1);
+        pools[0] = PanopticVaultAccountant.PoolInfo({
+            pool: mockPoolInterface,
+            token0: token0,
+            token1: token1,
+            poolOracle: poolOracle,
+            oracle0: oracle0,
+            isUnderlyingToken0InOracle0: true,
+            oracle1: oracle1,
+            isUnderlyingToken0InOracle1: false,
+            maxPriceDeviation: MAX_PRICE_DEVIATION,
+            twapWindow: TWAP_WINDOW
+        });
+
+        // Setup the vault
+        accountant.updatePoolsHash(address(vault), keccak256(abi.encode(pools)));
+
+        // Setup initial token balances
+        uint256 initialAmount = 1000 ether;
+        token0.mint(address(vault), initialAmount);
+
+        // First, let's compute the baseline NAV without any positions
+        PanopticVaultAccountant.ManagerPrices[]
+            memory baseManagerPrices = new PanopticVaultAccountant.ManagerPrices[](1);
+        baseManagerPrices[0] = PanopticVaultAccountant.ManagerPrices({
+            poolPrice: TWAP_TICK,
+            token0Price: TWAP_TICK,
+            token1Price: TWAP_TICK
+        });
+
+        // Empty position array for baseline
+        TokenId[][] memory emptyTokenIds = new TokenId[][](1);
+        emptyTokenIds[0] = new TokenId[](0);
+
+        bytes memory baseManagerInput = abi.encode(baseManagerPrices, pools, emptyTokenIds);
+
+        // Calculate baseline NAV with no positions
+        uint256 baselineNAV = accountant.computeNAV(
+            address(vault),
+            address(token0),
+            baseManagerInput
+        );
+        console.log("Baseline NAV (no positions): ", baselineNAV);
+
+        // Simulate a short position: reduce available assets due to collateral locked in AMM pool
+        uint256 shortPositionAmount = 500 ether;
+        token0.mint(address(mockPool), shortPositionAmount); // Tokens moved to AMM pool for short position
+
+        // Setup mock position for the accountant
+        uint256[2][] memory shortPositions = new uint256[2][](1);
+        shortPositions[0] = [uint256(1), uint256(shortPositionAmount)]; // Position ID and amount
+        mockPool.setMockPositionBalanceArray(shortPositions);
+        mockPool.setNumberOfLegs(address(vault), 0);
+
+        // For short position premium
+        mockPool.setMockPremiums(
+            LeftRightUnsigned.wrap(0),
+            LeftRightUnsigned.wrap(uint256(shortPositionAmount))
+        );
+
+        // Create manager input for NAV calculation
+        PanopticVaultAccountant.ManagerPrices[]
+            memory managerPrices = new PanopticVaultAccountant.ManagerPrices[](1);
+        managerPrices[0] = PanopticVaultAccountant.ManagerPrices({
+            poolPrice: TWAP_TICK,
+            token0Price: TWAP_TICK,
+            token1Price: TWAP_TICK
+        });
+
+        bytes memory managerInput = abi.encode(managerPrices, pools, emptyTokenIds);
+
+        // Calculate NAV with short position (should be reduced due to locked collateral)
+        uint256 navWithShort = accountant.computeNAV(address(vault), address(token0), managerInput);
+
+        console.log("NAV with short position (expected reduced): ", navWithShort);
+        console.log("Reduction due to short position: ", baselineNAV - navWithShort);
+
+        // Verify short position correctly reduces available assets
+        assertLt(navWithShort, baselineNAV, "Short position should reduce NAV");
+        assertEq(
+            baselineNAV - navWithShort,
+            shortPositionAmount,
+            "NAV should be reduced by short position amount"
+        );
+
+        // Now simulate a long position: tokens move from AMM pool back to Panoptic Pool
+        uint256 longPositionAmount = 400 ether;
+        token0.mint(address(vault), longPositionAmount); // Tokens moved back to Panoptic Pool
+
+        // Update mocks to reflect both positions
+        uint256[2][] memory bothPositions = new uint256[2][](2);
+        bothPositions[0] = [uint256(1), uint256(shortPositionAmount)]; // Short position
+        bothPositions[1] = [uint256(2), uint256(longPositionAmount)]; // Long position
+        mockPool.setMockPositionBalanceArray(bothPositions);
+
+        // Update premiums to include both positions - long premium in leftSlot, short in rightSlot
+        mockPool.setMockPremiums(
+            LeftRightUnsigned.wrap(uint256(longPositionAmount)),
+            LeftRightUnsigned.wrap(uint256(shortPositionAmount))
+        );
+
+        // The vulnerability: calculate NAV again but with long position
+        uint256 navWithBoth = accountant.computeNAV(address(vault), address(token0), managerInput);
+
+        console.log("NAV with both positions: ", navWithBoth);
+        console.log("Increase from short-only to both positions: ", navWithBoth - navWithShort);
+
+        // This demonstrates the vulnerability: NAV increases due to tokens returned to vault,
+        // but these tokens are needed to back the long positions
+        assertGt(navWithBoth, navWithShort, "NAV improperly increases with long position");
+
+        // Calculate the vulnerable assets available for withdrawal
+        uint256 availableForWithdrawal = navWithBoth - (baselineNAV - navWithShort);
+        console.log("Vulnerable assets available for withdrawal: ", availableForWithdrawal);
+
+        // Demonstrate the issue: The LP should not be able to withdraw these assets
+        // as they are needed to back the long positions
+        assertGt(
+            availableForWithdrawal,
+            0,
+            "Vulnerability exists: assets needed for long positions can be withdrawn"
+        );
+
+        // Vulnerability impact: The vulnerability is WORSE than expected!
+        // The available withdrawal amount is 2x the long position amount
+        console.log(
+            "Vulnerability ratio: available withdrawal / long position = ",
+            (availableForWithdrawal * 100) / longPositionAmount,
+            "%"
+        );
+
+        // Demonstrate that the vulnerability is WORSE than expected - available withdrawal is 2x the long position amount
+        assertEq(
+            availableForWithdrawal,
+            2 * longPositionAmount,
+            "CRITICAL VULNERABILITY: Available withdrawal is exactly 2x the long position amount"
+        );
+
+        // EXPLANATION OF DOUBLE-COUNTING VULNERABILITY:
+        // 1. The vault's token balance increased by longPositionAmount (400 ether)
+        // 2. The NAV also incorrectly adds the long position value (400 ether) as a positive contribution
+        //    instead of treating it as a liability
+        // 3. This results in double-counting: once for the actual tokens and once for the position value
+        // 4. Therefore, LPs can withdraw 2x the amount needed to back long positions
+
+        console.log("EXPLANATION OF DOUBLE-COUNTING:");
+        console.log("1. Actual tokens returned to vault: ", longPositionAmount);
+        console.log("2. Long position incorrectly counted as positive value: ", longPositionAmount);
+        console.log("3. Total double-counted assets: ", 2 * longPositionAmount);
+        
+    }

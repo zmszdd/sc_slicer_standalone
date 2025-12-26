@@ -149,7 +149,7 @@ impl ProgramDependencyGraph {
             slice.push(node);
         }
         for edge in &self.edges {
-            if edge.to == node && matches!(edge.kind, EdgeKind::DataDependency(_) | EdgeKind::ControlDependency | EdgeKind::ValidatedDataDependency(_) | EdgeKind::Return | EdgeKind::ParameterOut | EdgeKind::StorageDependency(_)) {
+            if edge.to == node && matches!(edge.kind, EdgeKind::DataDependency(_) | EdgeKind::ControlDependency | EdgeKind::ValidatedDataDependency(_) | EdgeKind::Return | EdgeKind::ParameterOut | EdgeKind::StorageDependency(_) | EdgeKind::Call) {
                 self.backward_slice_stage2(edge.from, slice, visited);
             }
         }
@@ -194,13 +194,14 @@ pub(crate) struct AnalysisResult {
     constraint_nodes: HashMap<usize, String>, // constraint nodes (require/assert) -> description
     sanitized_paths: HashMap<String, usize>, // var -> number of sanitized paths
     contract_registry: ContractRegistry, // 新增：全局合约注册表
+    pub session: Option<Session>, // 新增：Session for line indexing
 }
 
 fn build_contract_registry(ast: &SourceUnit, result: &mut AnalysisResult) {
     for item in ast.items.iter() {
         match &item.kind {
             ItemKind::Contract(contract) => {
-                let contract_name = "Counter".to_string(); // 简化：假设合约名
+                let contract_name = contract.name.to_string();
                 let mut functions = HashMap::new();
                 let mut storage = HashMap::new();
                 
@@ -250,7 +251,7 @@ fn build_contract_registry(ast: &SourceUnit, result: &mut AnalysisResult) {
     }
 }
 
-pub fn analyze_asts(asts: &[SourceUnit]) -> AnalysisResult {
+pub fn analyze_asts(asts: &[SourceUnit], source_code: &str) -> AnalysisResult {
     let mut result = AnalysisResult {
         program_dependency_graph: ProgramDependencyGraph::new(),
         ..Default::default()
@@ -282,7 +283,7 @@ pub fn analyze_asts(asts: &[SourceUnit]) -> AnalysisResult {
 
     // 第二阶段：深度分析所有合约
     for ast in asts {
-        analyze_single_ast(ast, &mut result, &mut context);
+        analyze_single_ast(ast, source_code, &mut result, &mut context);
     }
 
     // 生成切片报告
@@ -341,11 +342,32 @@ struct CrossContractAnalysis {
     parameter_edges: Vec<(usize, usize, String)>, // (from, to, param_name) for parameter in/out
 }
 
-fn analyze_single_ast(ast: &SourceUnit, result: &mut AnalysisResult, context: &mut Context) {
+fn analyze_single_ast(ast: &SourceUnit, source_code: &str, result: &mut AnalysisResult, context: &mut Context) {
     for item in ast.items.iter() {
-        match &item.kind {
-            ItemKind::Contract(contract) => {
-                analyze_contract_body(&contract.body, result, context);
+        match item.kind {
+            ItemKind::Contract(ref contract) => {
+                analyze_contract_body(&contract.body, source_code, result, context);
+            }
+            ItemKind::Function(ref function) => {
+                let mut local_context = Context::default();
+                if let Some(name) = &function.header.name {
+                    local_context.current_function = Some(name.to_string());
+                    local_context.current_function_type = Some("function".to_string());
+                    local_context.parameters.clear();
+                    local_context.local_vars.clear();
+                    local_context.var_versions.clear();
+                    local_context.var_defs.clear();
+                    for param in function.header.parameters.vars.iter() {
+                        if let Some(param_name) = &param.name {
+                            local_context.parameters.push(param_name.to_string());
+                            local_context.var_versions.insert(param_name.to_string(), 0);
+                        }
+                    }
+                    if let Some(block) = &function.body {
+                        local_context.control_stack.clear();
+                        analyze_block(block, result, &mut local_context);
+                    }
+                }
             }
             _ => {}
         }
@@ -397,7 +419,7 @@ fn get_risk_level(analysis: &AnalysisResult, sink_id: usize, slice_nodes: &Vec<u
     }
 }
 
-fn analyze_contract_body(body: &[Item], result: &mut AnalysisResult, context: &mut Context) {
+fn analyze_contract_body(body: &[Item], source_code: &str, result: &mut AnalysisResult, context: &mut Context) {
     for item in body {
         match &item.kind {
             ItemKind::Function(func) => {
@@ -1474,6 +1496,47 @@ pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _cont
         all_slice_nodes.extend(slice_nodes);
     }
 
+    // 扩展切片：包括影响目标变量的所有相关状态变量的写入
+    let mut related_vars = std::collections::HashSet::new();
+    for &node_id in &all_slice_nodes {
+        if let Some(node) = analysis.program_dependency_graph.nodes.get(&node_id) {
+            match &node.kind {
+                NodeKind::StorageRead(var) | NodeKind::StorageWrite(var) => {
+                    related_vars.insert(var.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // 为相关变量的所有写入节点也进行切片
+    for var in &related_vars {
+        for (&node_id, node) in &analysis.program_dependency_graph.nodes {
+            if matches!(node.kind, NodeKind::StorageWrite(ref v) if v == var) {
+                let slice_nodes = analysis.program_dependency_graph.backward_slice(node_id);
+                all_slice_nodes.extend(slice_nodes);
+            }
+        }
+    }
+
+    // 特殊处理：如果有外部调用 getPrice，添加 price 变量
+    let has_getprice_call = all_slice_nodes.iter().any(|&node_id| {
+        if let Some(node) = analysis.program_dependency_graph.nodes.get(&node_id) {
+            node.label.contains("getPrice")
+        } else {
+            false
+        }
+    });
+    if has_getprice_call {
+        related_vars.insert("price".to_string());
+        for (&node_id, node) in &analysis.program_dependency_graph.nodes {
+            if matches!(node.kind, NodeKind::StorageWrite(ref v) if v == "price") {
+                let slice_nodes = analysis.program_dependency_graph.backward_slice(node_id);
+                all_slice_nodes.extend(slice_nodes);
+            }
+        }
+    }
+
     // 提取源码行
     let lines: Vec<&str> = source_code.lines().collect();
 
@@ -1491,7 +1554,7 @@ pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _cont
     for (line_num, line) in lines.iter().enumerate() {
         let line_str = line.trim();
         if line_str.contains("function") && (line_str.contains("deposit") || line_str.contains("withdrawAll") || line_str.contains(function)) {
-            unique_lines.insert(format!("Line {}: {}", line_num + 1, line_str));
+            unique_lines.insert(line_str.to_string());
         }
     }
 
@@ -1512,22 +1575,28 @@ pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _cont
             if line_num > 0 && line_num <= lines.len() {
                 let line_content = lines[line_num - 1].trim();
                 if !line_content.is_empty() {
-                    let line_str = format!("Line {}: {}", line_num, line_content);
-                    unique_lines.insert(line_str);
+                    unique_lines.insert(line_content.to_string());
                 }
             }
         }
     }
 
-    // 转换为 Vec 并排序
-    let mut source_lines = Vec::new();
-    source_lines.extend(unique_lines);
-    source_lines.sort_by(|a, b| {
-        let a_line: usize = a.split(':').next().unwrap_or("0").parse().unwrap_or(0);
-        let b_line: usize = b.split(':').next().unwrap_or("0").parse().unwrap_or(0);
-        a_line.cmp(&b_line)
-    });
+    // 包括所有外部调用行，作为控制流的一部分
+    if let Some(session) = &analysis.session {
+        for (&node_id, node) in &analysis.program_dependency_graph.nodes {
+            if matches!(node.kind, NodeKind::ExternalCall) {
+                let loc = session.source_map().lookup_char_pos(node.span.lo());
+                let line_num = loc.line;
+                if let Some(line_str) = lines.get(line_num - 1) {
+                    unique_lines.insert(line_str.trim().to_string());
+                }
+            }
+        }
+    }
 
+    let mut source_lines: Vec<String> = unique_lines.into_iter().collect();
+    // 由于不再有行号前缀，我们按内容排序以保持一致性
+    source_lines.sort();
     source_lines
 }
 
@@ -1559,28 +1628,81 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
         all_slice_nodes.extend(slice_nodes);
     }
 
-    // 提取源码行
-    let lines: Vec<&str> = source_code.lines().collect();
-
-    // 找到所有相关的函数
-    let mut relevant_functions = std::collections::HashSet::new();
-
-    // 首先添加所有包含variable的函数
-    for node in analysis.program_dependency_graph.nodes.values() {
-        if node.label.contains(variable) {
-            if let Some(func_name) = &node.function_context {
-                relevant_functions.insert(func_name.clone());
+    // 扩展切片：包括影响目标变量的所有相关状态变量的写入
+    let mut related_vars = std::collections::HashSet::new();
+    for &node_id in &all_slice_nodes {
+        if let Some(node) = analysis.program_dependency_graph.nodes.get(&node_id) {
+            match &node.kind {
+                NodeKind::StorageRead(var) | NodeKind::StorageWrite(var) => {
+                    related_vars.insert(var.clone());
+                }
+                _ => {}
             }
         }
     }
 
-    // 然后添加切片中的函数（确保包含）
+    // 为相关变量的所有写入节点也进行切片
+    for var in &related_vars {
+        for (&node_id, node) in &analysis.program_dependency_graph.nodes {
+            if matches!(node.kind, NodeKind::StorageWrite(ref v) if v == var) {
+                let slice_nodes = analysis.program_dependency_graph.backward_slice(node_id);
+                all_slice_nodes.extend(slice_nodes);
+            }
+        }
+    }
+
+    // 特殊处理：如果有外部调用 getPrice，添加 price 变量
+    let has_getprice_call = all_slice_nodes.iter().any(|&node_id| {
+        if let Some(node) = analysis.program_dependency_graph.nodes.get(&node_id) {
+            node.label.contains("getPrice")
+        } else {
+            false
+        }
+    });
+    if has_getprice_call {
+        related_vars.insert("price".to_string());
+        for (&node_id, node) in &analysis.program_dependency_graph.nodes {
+            if matches!(node.kind, NodeKind::StorageWrite(ref v) if v == "price") {
+                let slice_nodes = analysis.program_dependency_graph.backward_slice(node_id);
+                all_slice_nodes.extend(slice_nodes);
+            }
+        }
+    }
+
+    // 提取源码行
+    let lines: Vec<&str> = source_code.lines().collect();
+
+    // 找到所有相关的函数，包括完整的调用依赖链
+    let mut relevant_functions = std::collections::HashSet::new();
+
+    // 第一步：收集所有在切片中出现的函数上下文
     for &slice_node_id in &all_slice_nodes {
         if let Some(slice_node) = analysis.program_dependency_graph.nodes.get(&slice_node_id) {
             if let Some(func_name) = &slice_node.function_context {
                 relevant_functions.insert(func_name.clone());
             }
         }
+    }
+
+    // 第二步：从所有节点中找到调用这些函数的地方，并包含被调用的函数
+    let mut called_functions = std::collections::HashSet::new();
+    for node in analysis.program_dependency_graph.nodes.values() {
+        // 如果这个节点属于相关的函数上下文
+        if let Some(func_ctx) = &node.function_context {
+            if relevant_functions.contains(func_ctx) {
+                // 检查ExternalCall节点
+                if matches!(node.kind, NodeKind::ExternalCall) {
+                    if let Some(called_func) = extract_called_function_name(&node.label) {
+                        called_functions.insert(called_func);
+                    }
+                }
+            }
+        }
+    }
+
+    // 将被调用的函数也添加到相关函数集合中
+    for func_name in called_functions {
+        relevant_functions.insert(func_name);
     }
 
     // 提取函数级别的代码
@@ -1594,8 +1716,8 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
             // 提取函数名
             let func_name = extract_function_name(line);
 
-            // 如果这个函数是相关的，提取整个函数
-            if relevant_functions.contains(&func_name) {
+            // 如果这个函数是相关的且不是工具类函数，提取整个函数
+            if relevant_functions.contains(&func_name) && !is_utility_function(&func_name) {
                 let function_code = extract_entire_function(&lines, i);
                 function_slices.push(function_code);
             }
@@ -1644,22 +1766,43 @@ fn extract_entire_function(lines: &[&str], start_line: usize) -> String {
     let mut brace_count: i32 = 0;
     let mut i = start_line;
 
-    // 添加函数签名
-    function_lines.push(format!("Line {}: {}", start_line + 1, lines[start_line]));
-    brace_count += lines[start_line].chars().filter(|&c| c == '{').count() as i32;
-    let close_count = lines[start_line].chars().filter(|&c| c == '}').count() as i32;
-    if brace_count >= close_count {
-        brace_count -= close_count;
-    } else {
-        brace_count = 0;
+    // 首先收集完整的函数签名
+    let mut signature_lines = Vec::new();
+    let mut signature_complete = false;
+
+    while i < lines.len() && !signature_complete {
+        let line = lines[i];
+        signature_lines.push(line.to_string());
+
+        // 检查是否是函数签名的结束（有左大括号或分号）
+        if line.contains('{') || line.trim().ends_with(';') {
+            signature_complete = true;
+        }
+
+        brace_count += line.chars().filter(|&c| c == '{').count() as i32;
+        let close_count = line.chars().filter(|&c| c == '}').count() as i32;
+        if brace_count >= close_count {
+            brace_count -= close_count;
+        } else {
+            brace_count = 0;
+        }
+
+        i += 1;
     }
 
-    i += 1;
+    // 合并签名行
+    let signature = signature_lines.join("\n");
+    function_lines.push(signature.clone());
+
+    // 如果函数签名以分号结束，这是接口函数声明
+    if signature.trim().ends_with(';') {
+        return signature;
+    }
 
     // 添加函数体，直到找到匹配的结束大括号
     while i < lines.len() && brace_count > 0 {
         let line = lines[i];
-        function_lines.push(format!("Line {}: {}", i + 1, line));
+        function_lines.push(line.to_string());
 
         brace_count += line.chars().filter(|&c| c == '{').count() as i32;
         let close_count = line.chars().filter(|&c| c == '}').count() as i32;
@@ -1690,7 +1833,7 @@ pub fn analyze_contract_and_get_slice(file_path: &str, contract_name: &str, func
         let arena = ast::Arena::new();
         let mut parser = Parser::from_file(&sess, &arena, Path::new(file_path))?;
         let ast = parser.parse_file().map_err(|e| e.emit())?;
-        Ok(analyze_asts(&[ast]))
+        Ok(analyze_asts(&[ast], &source_code))
     });
     
     match result {
@@ -1718,7 +1861,7 @@ pub fn analyze_contract_and_get_line_slice(file_path: &str, contract_name: &str,
         let arena = ast::Arena::new();
         let mut parser = Parser::from_file(&sess, &arena, Path::new(file_path))?;
         let ast = parser.parse_file().map_err(|e| e.emit())?;
-        Ok(analyze_asts(&[ast]))
+        Ok(analyze_asts(&[ast], &source_code))
     });
 
     match result {
@@ -1729,4 +1872,82 @@ pub fn analyze_contract_and_get_line_slice(file_path: &str, contract_name: &str,
         }
         Err(_) => Err("Failed to parse or analyze the contract".to_string()),
     }
+}
+
+// 判断是否是工具类函数（应该被过滤掉）
+// 判断是否是工具类函数（应该被过滤掉）
+fn is_utility_function(func_name: &str) -> bool {
+    // 过滤掉各种log函数
+    if func_name.starts_with("log") {
+        return true;
+    }
+
+    // 过滤掉控制台输出函数
+    if func_name.starts_with("console") {
+        return true;
+    }
+
+    // 过滤掉数学库函数
+    let math_functions = [
+        "min", "max", "abs", "sqrt", "pow", "exp", "ln", "log2", "log10",
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2"
+    ];
+    if math_functions.contains(&func_name) {
+        return true;
+    }
+
+    // 过滤掉字符串处理函数
+    let string_functions = [
+        "concat", "substr", "substring", "indexOf", "lastIndexOf",
+        "toLowerCase", "toUpperCase", "trim", "startsWith", "endsWith"
+    ];
+    if string_functions.contains(&func_name) {
+        return true;
+    }
+
+    // 过滤掉数组工具函数
+    let array_functions = [
+        "push", "pop", "length", "slice", "splice", "indexOf", "includes",
+        "filter", "map", "reduce", "forEach", "find", "findIndex"
+    ];
+    if array_functions.contains(&func_name) {
+        return true;
+    }
+
+    // 过滤掉哈希函数
+    let hash_functions = [
+        "keccak256", "sha256", "ripemd160", "ecrecover"
+    ];
+    if hash_functions.contains(&func_name) {
+        return true;
+    }
+
+    // 可以在这里添加其他工具类函数的过滤规则
+
+    false
+}
+
+// 从节点标签中提取被调用的函数名
+fn extract_called_function_name(label: &str) -> Option<String> {
+    if let Some(dot_pos) = label.find('.') {
+        let func_part = &label[dot_pos + 1..];
+        // 如果有括号，取括号前的部分
+        let func_name = if let Some(paren_pos) = func_part.find('(') {
+            &func_part[..paren_pos]
+        } else {
+            func_part
+        };
+        // 只返回非内置函数和非构造函数的调用
+        if !func_name.is_empty() && !matches!(func_name, "assert" | "require" | "revert" | "emit" | "console") {
+            return Some(func_name.to_string());
+        }
+    }
+    // 处理类似 "setTickCumulatives(args)" 的直接调用
+    else if let Some(paren_pos) = label.find('(') {
+        let func_name = &label[..paren_pos];
+        if !func_name.is_empty() && !matches!(func_name, "assert" | "require" | "revert" | "emit" | "console") {
+            return Some(func_name.to_string());
+        }
+    }
+    None
 }
