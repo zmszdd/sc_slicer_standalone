@@ -1,5 +1,12 @@
+//!
+//! Solidity 代码分析器
+//!
+//! 本模块负责分析 Solidity 源代码，构建程序依赖图 (PDG)，
+//! 用于代码切片、安全漏洞检测和依赖关系分析。
+//!
+
 use solar_ast::{self as ast, Expr, ExprKind, Item, ItemKind, SourceUnit, Span, Stmt, StmtKind};
-use solar_interface::{Session, BytePos, diagnostics::EmittedDiagnostics};
+use solar_interface::{Session, BytePos};
 use solar_parse::Parser;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -185,7 +192,7 @@ pub(crate) struct AnalysisResult {
     data_dependencies: DataDependencies,
     control_flow_dependencies: ControlFlowDependencies,
     cross_contract_analysis: CrossContractAnalysis,
-    program_dependency_graph: ProgramDependencyGraph,
+    pub program_dependency_graph: ProgramDependencyGraph,
     taint_sources: HashMap<usize, String>, // node_id -> description
     taint_sinks: HashMap<usize, String>,   // node_id -> description
     slices: HashMap<usize, Vec<usize>>,    // sink_node_id -> slice_node_ids
@@ -1801,50 +1808,9 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
         i += 1;
     }
     
-    // 提取函数级别的代码
-    let mut function_slices = Vec::new();
-    let mut i = 0;  // 重置索引，从文件开头开始处理函数
-    while i < lines.len() {
-        let line = lines[i].trim();
-
-        // 检查是否是函数定义的开始
-        if line.contains("function") {
-            // 提取函数名
-            let func_name = extract_function_name(line);
-
-            // 如果这个函数是相关的且不是工具类函数，提取整个函数
-            if relevant_functions.contains(&func_name) && !is_utility_function(&func_name) {
-                let function_code = extract_entire_function(&lines, i);
-                function_slices.push(function_code);
-            }
-
-            // 跳过函数体，找到结束大括号
-            let mut brace_count: i32 = 0;
-            let mut j = i;
-            while j < lines.len() {
-                let current_line = lines[j];
-                brace_count += current_line.chars().filter(|&c| c == '{').count() as i32;
-                let close_count = current_line.chars().filter(|&c| c == '}').count() as i32;
-                if brace_count >= close_count {
-                    brace_count -= close_count;
-                } else {
-                    brace_count = 0;
-                }
-
-                if brace_count == 0 && current_line.contains('}') {
-                    i = j;
-                    break;
-                }
-                j += 1;
-            }
-        }
-        i += 1;
-    }
-
     // 合并类型定义和函数切片
     let mut result = Vec::new();
     result.extend(type_definitions);
-    result.extend(function_slices);
     
     result
 }

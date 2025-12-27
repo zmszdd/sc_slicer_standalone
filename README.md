@@ -142,3 +142,5 @@ SC_Slicer 通过以下步骤进行代码分析：
 ## 贡献
 
 欢迎提交 Issue 和 Pull Request 来改进这个工具。
+
+cd /root/RCLI/sc_slicer_standalone && rm -f analysis.log && cargo run -- /root/RCLI/sc_slicer_standalone/examples/src/poc_final.t.sol PoC availableForWithdrawal --semantic
