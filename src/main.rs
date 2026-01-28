@@ -649,9 +649,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = if !api_key_from_arg.is_empty() {
         api_key_from_arg.to_string()
     } else {
-        std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| "sk-lgcydjmhewpvudviarsxkpqutqwpkjapplajkmazbrkurjyw".to_string())
+        std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| String::new())
     };
-    let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.siliconflow.cn/v1".to_string());
+    let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".to_string());
     let model_name = matches.get_one::<String>("model").unwrap().to_string();
 
     // Collect all .sol files
