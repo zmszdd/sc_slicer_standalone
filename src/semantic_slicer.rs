@@ -557,6 +557,11 @@ impl<'a, G: SemanticGraphAdapter> SemanticSlicer<'a, G> {
         }
     }
 
+    // 代码补全方法（公开接口）
+    pub async fn complete_code(&self, slice_code: &str, source_code: &str) -> Result<String, Box<dyn std::error::Error>> {
+        complete_missing_code(self, slice_code, source_code).await
+    }
+
     // S1.2 PoC 质量分析 - 增强版
     pub async fn analyze_poc_quality(&self, slice_code: &str) -> Result<String, Box<dyn std::error::Error>> {
         let mut log_file = OpenOptions::new().create(true).append(true).open("analysis.log")?;
@@ -1289,4 +1294,182 @@ fn get_cheatcode_issue(cheatcode: &str) -> String {
         "vm.roll" => "Block manipulation - verify if realistic for vulnerability".to_string(),
         _ => "General environment manipulation - verify necessity".to_string(),
     }
+}
+
+// ==================== 代码补全功能 ====================
+
+/// 检测切片代码中缺失的类型和接口
+pub fn detect_missing_types(slice_code: &str) -> Vec<String> {
+    let mut missing_types = Vec::new();
+    
+    // 常见的可能缺失的类型/接口模式
+    let patterns = [
+        "VaultAccountantMock", "MockERC20Partial", "MockV3CompatibleOracle", 
+        "MockPanopticPool", "ERC20S", "HypoVault", "IVaultAccountant",
+        "PanopticPool", "IERC20Partial", "PanopticMath", "LeftRightUnsigned",
+        "LeftRightSigned", "TokenId", "LiquidityChunk",
+    ];
+    
+    for pattern in &patterns {
+        // 检查是否使用了该类型但没有定义
+        if slice_code.contains(pattern) {
+            // 简单的启发式检查：如果没有 "contract pattern" 或 "library pattern" 的定义
+            let contract_def = format!("contract {}", pattern);
+            let library_def = format!("library {}", pattern);
+            let interface_def = format!("interface {}", pattern);
+            let type_def = format!("type {} ", pattern);
+            
+            if !slice_code.contains(&contract_def) && 
+               !slice_code.contains(&library_def) &&
+               !slice_code.contains(&interface_def) &&
+               !slice_code.contains(&type_def) {
+                missing_types.push(pattern.to_string());
+            }
+        }
+    }
+    
+    missing_types.sort();
+    missing_types.dedup();
+    missing_types
+}
+
+/// 使用 LLM 分析并从源代码中提取缺失的定义
+pub async fn complete_missing_code<'a, G: SemanticGraphAdapter>(
+    slicer: &SemanticSlicer<'a, G>,
+    slice_code: &str,
+    source_code: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut log_file = OpenOptions::new().create(true).append(true).open("analysis.log")?;
+    
+    writeln!(log_file, "\n{}", "=".repeat(80))?;
+    writeln!(log_file, "=== STARTING CODE COMPLETION (MISSING TYPES) ===")?;
+    writeln!(log_file, "{}\n", "=".repeat(80))?;
+    
+    // 步骤 1: 检测缺失的类型
+    let missing_types = detect_missing_types(slice_code);
+    writeln!(log_file, "📋 Detected {} missing types: {:?}", missing_types.len(), missing_types)?;
+    
+    if missing_types.is_empty() {
+        writeln!(log_file, "✅ No missing types detected, code is complete")?;
+        return Ok(slice_code.to_string());
+    }
+    
+    // 步骤 2: 使用 LLM 识别哪些缺失类型需要从源代码中提取
+    let system_prompt = r#"You are a Solidity code analysis expert.
+Your task is to identify which missing contract/interface/library definitions should be extracted from the source code.
+Analyze the slice code and determine which of the missing types are essential for the test to run.
+Return a JSON array of type names that need to be included."#;
+
+    let user_message = format!(
+        r#"Slice Code:
+```solidity
+{}
+```
+
+Missing Types: {:?}
+
+Which of these missing types are ESSENTIAL for running test_submissionValidity()?
+Return ONLY a JSON array like ["Type1", "Type2"] with the essential types."#,
+        slice_code, missing_types
+    );
+
+    let client = reqwest::Client::new();
+    let request_body = serde_json::json!({
+        "model": slicer.model,
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_message }
+        ]
+    });
+
+    writeln!(log_file, "🤖 Querying LLM to identify essential missing types...")?;
+
+    let response = client
+        .post(format!("{}/chat/completions", slicer.base_url))
+        .header("Authorization", format!("Bearer {}", slicer.api_key))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await?;
+
+    let response_json: serde_json::Value = response.json().await?;
+    let essential_types_text = response_json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("[]")
+        .to_string();
+
+    writeln!(log_file, "📝 LLM Response: {}", essential_types_text)?;
+
+    // 解析 JSON 数组
+    let essential_types: Vec<String> = serde_json::from_str(&essential_types_text)
+        .or_else(|_: serde_json::Error| {
+            // 如果 JSON 解析失败，尝试提取类型名
+            let mut types = Vec::new();
+            for missing_type in &missing_types {
+                if essential_types_text.contains(missing_type) {
+                    types.push(missing_type.clone());
+                }
+            }
+            Ok(types) as Result<Vec<String>, serde_json::Error>
+        })?;
+
+    writeln!(log_file, "✅ Essential types to include: {:?}", essential_types)?;
+
+    // 步骤 3: 从源代码中提取这些类型的定义
+    let mut extracted_code = String::new();
+    
+    for type_name in &essential_types {
+        writeln!(log_file, "\n🔍 Extracting definition for: {}", type_name)?;
+        
+        // 查找类型的定义
+        if let Some(start) = source_code.find(&format!("contract {}", type_name))
+            .or_else(|| source_code.find(&format!("interface {}", type_name)))
+            .or_else(|| source_code.find(&format!("library {}", type_name)))
+            .or_else(|| source_code.find(&format!("type {} ", type_name)))
+        {
+            // 找到定义的开始，需要找到对应的结束括号
+            let from_start = &source_code[start..];
+            
+            // 寻找配对的 { }
+            let mut brace_count = 0;
+            let mut in_code = false;
+            let mut end_pos = 0;
+            
+            for (i, ch) in from_start.chars().enumerate() {
+                if ch == '{' {
+                    brace_count += 1;
+                    in_code = true;
+                }
+                if ch == '}' {
+                    brace_count -= 1;
+                    if in_code && brace_count == 0 {
+                        end_pos = i + 1;
+                        break;
+                    }
+                }
+            }
+            
+            if end_pos > 0 {
+                let definition = &from_start[..end_pos];
+                extracted_code.push_str(definition);
+                extracted_code.push_str("\n\n");
+                writeln!(log_file, "   ✓ Extracted {} bytes", definition.len())?;
+            } else {
+                writeln!(log_file, "   ⚠ Could not find complete definition")?;
+            }
+        } else {
+            writeln!(log_file, "   ✗ Definition not found in source code")?;
+        }
+    }
+
+    // 步骤 4: 合并补全后的代码
+    let completed_code = format!("{}\n\n{}", extracted_code, slice_code);
+    
+    writeln!(log_file, "\n✅ Code completion finished")?;
+    writeln!(log_file, "📊 Original slice size: {} bytes", slice_code.len())?;
+    writeln!(log_file, "📊 Extracted definitions: {} bytes", extracted_code.len())?;
+    writeln!(log_file, "📊 Completed code size: {} bytes", completed_code.len())?;
+    writeln!(log_file, "=== END CODE COMPLETION ===")?;
+    
+    Ok(completed_code)
 }

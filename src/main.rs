@@ -43,10 +43,13 @@ use std::path::Path;
 mod analyzer;
 pub mod semantic_slicer;
 pub mod noise_reduction;
+pub mod llm_completion;
+// pub mod sol_resurrect; // TODO: 需要适配solar AST的具体结构
 
 use crate::analyzer::AnalysisResult;
 use crate::noise_reduction::NoiseReductionPipeline;
 use crate::semantic_slicer::SemanticGraphAdapter;
+use crate::llm_completion::LLMCompletionPipeline;
 use petgraph::Direction;
 
 struct PdgAdapter<'a> {
@@ -615,6 +618,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .long("aggressive-cleanup")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("llm_completion")
+                .help("Enable LLM three-stage completion pipeline (analyze->complete->fix). Universal: works for any contract/variable by analyzing slice target context.")
+                .long("llm-completion")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("resurrect")
+                .help("Enable AST-based code resurrection to reconstruct fragmented slices into compilable code")
+                .long("resurrect")
+                .action(clap::ArgAction::SetTrue),
+        )
         .get_matches();
 
     let input_path = matches.get_one::<String>("input").unwrap();
@@ -631,6 +646,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let use_parallel = matches.get_flag("parallel");
     let use_prefilter = matches.get_flag("prefilter");
     let aggressive_cleanup = matches.get_flag("aggressive_noise_reduction");
+    let use_llm_completion = matches.get_flag("llm_completion");
     let max_level: usize = matches.get_one::<String>("max_level")
         .and_then(|s| s.parse().ok())
         .unwrap_or(3)
@@ -681,7 +697,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ast = parser.parse_file().map_err(|e| e.emit())?;
             all_asts.push(ast);
         }
-        Ok(analyzer::analyze_asts(&all_asts, &combined_source))
+        // 使用目标导向的分析
+        Ok(analyzer::analyze_asts_targeted(&all_asts, &combined_source, contract_name, function_name, variable_name))
     });
 
     let analysis = match result {
@@ -802,13 +819,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut log_file = OpenOptions::new().create(true).append(true).open("analysis.log")?;
 
-    // S1.2: 如果启用了语义分析，执行 PoC 质量分析
+    // ⏭️ 跳过 S1.2 PoC 质量分析，直接输出切片结果
+    // 如需启用质量分析，取消下面的注释
+    /*
     if use_semantic {
         println!("🤖 Performing S1.2 PoC Quality Analysis...");
         let slice_code = slice.join("\n");
         
-        // 重新创建 slicer 实例用于分析（或者重构代码以复用）
-        // 这里为了简单，我们临时创建一个 slicer 实例来调用 analyze_poc_quality
         let adapter = PdgAdapter { analysis: &analysis, source_code: &combined_source };
         let model = model_name.clone();
         let slicer = crate::semantic_slicer::SemanticSlicer::new_with_options(
@@ -839,9 +856,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    */
+
+    // 🔧 新增功能：代码补全（在输出前检查是否需要补全缺失的类型）
+    let slice_code = slice.join("\n");
+    let final_output = if use_semantic {
+        println!("🔧 Checking for missing type definitions...");
+        let adapter = PdgAdapter { analysis: &analysis, source_code: &combined_source };
+        let model = model_name.clone();
+        let slicer = crate::semantic_slicer::SemanticSlicer::new_with_options(
+            &adapter, 
+            api_key.to_string(), 
+            base_url.to_string(), 
+            model, 
+            llm_threshold,
+            use_parallel,
+            max_concurrent,
+            None
+        );
+        
+        match slicer.complete_code(&slice_code, &combined_source).await {
+            Ok(completed_code) => {
+                println!("✅ Code completion finished");
+                completed_code
+            },
+            Err(e) => {
+                eprintln!("⚠️  Code completion failed: {}, using original slice", e);
+                slice_code
+            }
+        }
+    } else {
+        slice_code
+    };
+
+    // LLM三阶段补全（如果启用）
+    let final_output = if use_llm_completion {
+        match LLMCompletionPipeline::new() {
+            Ok(pipeline) => {
+                // 传递源文件路径（使用第一个.sol文件作为源码）
+                let pipeline_with_source = if !file_paths.is_empty() {
+                    pipeline.with_source_file(file_paths[0].clone())
+                } else {
+                    pipeline
+                };
+                
+                match pipeline_with_source.run_completion_pipeline(&final_output) {
+                    Ok(completed_code) => {
+                        writeln!(log_file, "✅ LLM补全成功")?;
+                        completed_code
+                    },
+                    Err(e) => {
+                        writeln!(log_file, "⚠️  LLM补全失败: {}, 使用原始代码", e)?;
+                        final_output
+                    }
+                }
+            },
+            Err(e) => {
+                writeln!(log_file, "⚠️  LLM初始化失败: {}, 跳过补全", e)?;
+                final_output
+            }
+        }
+    } else {
+        final_output
+    };
+
+    // AST-based Code Resurrection（功能开发中）
+    let use_resurrect = matches.get_flag("resurrect");
+    let final_output = if use_resurrect {
+        eprintln!("⚠️  Code resurrection feature is under development");
+        eprintln!("   Current status: AST pattern matching needs adjustment for solar crate");
+        eprintln!("   See RESURRECTION_README.md for details");
+        writeln!(log_file, "⚠️  Resurrection feature not yet available")?;
+        final_output
+    } else {
+        final_output
+    };
 
     if let Some(output_file) = output_file {
-        fs::write(output_file, slice.join("\n")).expect("Failed to write to file");
+        fs::write(output_file, final_output.clone()).expect("Failed to write to file");
         writeln!(log_file, "✅ Results written to {}", output_file)?;
     } else {
         writeln!(log_file, "🔍 Source Code Slice Analysis")?;
@@ -850,10 +942,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         writeln!(log_file, "⚡ Function: {}", if function_name.is_empty() { "All functions" } else { function_name })?;
         writeln!(log_file, "📊 Variable: {}", variable_name)?;
         writeln!(log_file, "🎯 Slice Level: {}", slice_level)?;
-        writeln!(log_file, "📋 Slice Results ({} lines):", slice.len())?;
+        writeln!(log_file, "📋 Slice Results ({} lines):", final_output.lines().count())?;
         writeln!(log_file, "{}", "=".repeat(60))?;
 
-        for line in slice {
+        for line in final_output.lines() {
             writeln!(log_file, "{}", line)?;
         }
 
