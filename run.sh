@@ -19,6 +19,10 @@ while [[ $# -gt 0 ]]; do
             MODE_ARG="full"
             shift
             ;;
+        --level|-l)
+            MAX_LEVEL="$2"
+            shift 2
+            ;;
         --help|-h)
             cat << EOF
 用法: $0 [选项]
@@ -28,10 +32,14 @@ while [[ $# -gt 0 ]]; do
   --quick, -q    快速模式（仅切片，不使用 LLM）
   --full, -f     完整模式（显式指定）
 
+选项:
+  --level, -l    分析层级 (0: 仅限目标函数/合约, 1: 包含一级调用, 2: 包含二级调用)
+                 默认值: 0 (为了保持结果精简)
+
 示例:
-  $0              # 默认完整模式
-  $0 --quick      # 快速模式
-  $0 -q           # 快速模式（简写）
+  $0              # 默认完整模式 (Level 0)
+  $0 -q -l 1      # 快速模式，包含一级调用
+  $0 -l 2         # 完整模式，包含二级调用（结果可能很大）
 
 环境变量配置:
   INPUT_FILE      输入文件路径
@@ -53,19 +61,27 @@ done
 
 # ═════════════════════ 配置区域 ═════════════════════
 
+# 禁用代理，防止本地代理导致网络请求失败
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
+
 # LLM 配置
-export MODEL_NAME="${MODEL_NAME:-deepseek-chat}"
-export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://api.deepseek.com}"
-export OPENAI_API_KEY="${OPENAI_API_KEY:-sk-4d65d403d3a14e10b027c1cd65f3da77}"
+export MODEL_NAME="${MODEL_NAME:-DeepSeek-V4-Flash}"
+export LLM_MODEL="$MODEL_NAME"
+export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://www.dreamfield.top/v1}"
+export OPENAI_API_KEY="${OPENAI_API_KEY:-sk-cDDsIBEx9ym4SCM8moTqISMRVoQWtCVXlfS9yrQPUqchshyq}"
 
 # 默认参数
 INPUT_FILE="${INPUT_FILE:-./examples/src/poc_final.t.sol}"
 CONTRACT_NAME="${CONTRACT_NAME:-PoC}"
-FUNCTION_NAME="${FUNCTION_NAME:-}"  # 可选
+FUNCTION_NAME="${FUNCTION_NAME:-testExploit}"  # 可选
 VARIABLE_NAME="${VARIABLE_NAME:-availableForWithdrawal}"
-OUTPUT_FILE="${OUTPUT_FILE:-./result_clean.txt}"
+MAX_LEVEL="${MAX_LEVEL:-0}"
 
-# 运行模式: 命令行参数 > 环境变量 > 默认值(full)
+# 自动生成带时间戳的结果文件和日志文件
+mkdir -p logs results
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+OUTPUT_FILE="${OUTPUT_FILE:-./results/slice_${CONTRACT_NAME}_${TIMESTAMP}.sol}"
+LOG_FILE="./logs/run_${CONTRACT_NAME}_${TIMESTAMP}.log"
 RUN_MODE="${MODE_ARG:-${RUN_MODE:-full}}"
 
 # ═══════════════════════════════════════════════════
@@ -98,6 +114,7 @@ echo "  📊 目标变量:   $VARIABLE_NAME"
 echo "  📝 输出文件:   $OUTPUT_FILE"
 echo "  🤖 LLM 模型:   $MODEL_NAME"
 echo "  🔗 API 地址:   $OPENAI_BASE_URL"
+echo "  ⚙️  分析层级:   $MAX_LEVEL"
 echo "  ⚙️  运行模式:   $RUN_MODE"
 echo ""
 
@@ -112,16 +129,12 @@ if [ -z "$OPENAI_API_KEY" ] || [ "$OPENAI_API_KEY" = "your-api-key-here" ]; then
 fi
 
 # 构建命令
-CMD="cargo run --release -- '$INPUT_FILE' '$CONTRACT_NAME'"
+CMD="cargo run --release -- '$INPUT_FILE' '$CONTRACT_NAME' '$VARIABLE_NAME'"
 
 # 添加可选函数名
 if [ -n "$FUNCTION_NAME" ]; then
     CMD="$CMD '$FUNCTION_NAME'"
-else
-    CMD="$CMD ''"
 fi
-
-CMD="$CMD '$VARIABLE_NAME'"
 
 # 根据模式添加参数
 case $RUN_MODE in
@@ -129,13 +142,13 @@ case $RUN_MODE in
         echo -e "${CYAN}⚡ 快速模式: 仅切片（不使用 LLM）${NC}"
         echo -e "${CYAN}💡 提示: 直接运行 ./run_slicer_v2.sh 使用完整模式${NC}"
         echo ""
-        CMD="$CMD -o '$OUTPUT_FILE'"
+        CMD="$CMD --max-level $MAX_LEVEL -o '$OUTPUT_FILE'"
         ;;
     full)
         echo -e "${GREEN}🌟 完整模式: 目标导向切片 + 语义分析 + LLM 补全${NC}"
         echo -e "${GREEN}📌 特性: 智能过滤 + 自动补全 + 可编译输出${NC}"
         echo ""
-        CMD="$CMD --semantic --two-phase --aggressive-cleanup --llm-completion --max-level 2 --parallel -o '$OUTPUT_FILE' --api-key '$OPENAI_API_KEY' --model '$MODEL_NAME'"
+        CMD="$CMD --semantic --two-phase --aggressive-cleanup --llm-completion --max-level $MAX_LEVEL --parallel -o '$OUTPUT_FILE' --api-key '$OPENAI_API_KEY' --model '$MODEL_NAME'"
         ;;
     *)
         echo "未知模式: $RUN_MODE"
@@ -153,10 +166,10 @@ echo "  ✅ 结果更精准"
 echo ""
 
 # 执行
-echo -e "${GREEN}🚀 开始分析...${NC}"
+echo -e "${GREEN}🚀 开始分析... (过程日志将保存至 $LOG_FILE)${NC}"
 echo ""
 
-if eval "$CMD"; then
+if eval "$CMD" 2>&1 | tee "$LOG_FILE"; then
     echo ""
     echo -e "${GREEN}✅ 分析完成!${NC}"
     echo "📄 结果文件: $OUTPUT_FILE"

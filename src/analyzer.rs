@@ -714,7 +714,7 @@ fn get_risk_level(analysis: &AnalysisResult, sink_id: usize, slice_nodes: &Vec<u
     }
 }
 
-fn analyze_contract_body(body: &[Item], contract_name: &str, source_code: &str, result: &mut AnalysisResult, context: &mut Context) {
+fn analyze_contract_body(body: &[Item], contract_name: &str, _source_code: &str, result: &mut AnalysisResult, context: &mut Context) {
     context.current_contract = Some(contract_name.to_string());
     for item in body {
         match &item.kind {
@@ -1880,7 +1880,7 @@ fn extract_variables_rec(expr: &Expr, vars: &mut Vec<String>) {
 }
 
 // 源码级别切片接口 - 返回行级别切片
-pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _contract: &str, function: &str, variable: &str, exclude_libs: bool, include_types: bool) -> Vec<String> {
+pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _contract: &str, function: &str, variable: &str, _exclude_libs: bool, _include_types: bool) -> Vec<String> {
     // 查找指定合约中所有对变量的引用和修改，收集所有相关节点
     let mut candidate_nodes = Vec::new();
     for (&node_id, node) in &analysis.program_dependency_graph.nodes {
@@ -1987,7 +1987,7 @@ pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _cont
 
     // 包括所有外部调用行，作为控制流的一部分
     if let Some(session) = &analysis.session {
-        for (&node_id, node) in &analysis.program_dependency_graph.nodes {
+        for (&_node_id, node) in &analysis.program_dependency_graph.nodes {
             if matches!(node.kind, NodeKind::ExternalCall) {
                 let loc = session.source_map().lookup_char_pos(node.span.lo());
                 let line_num = loc.line;
@@ -2153,7 +2153,7 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
     }
 
     // 提取函数级别的代码
-    let mut function_slices: Vec<String> = Vec::new();
+    let _function_slices: Vec<String> = Vec::new();
     let mut type_definitions = Vec::new();
     
     // 首先收集所有相关的类型定义

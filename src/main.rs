@@ -127,7 +127,7 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
                 context_parts.push(lines[i].to_string());
             } else if line.starts_with("contract ") {
                 // 提取合约声明和状态变量
-                let contract_name = line.split_whitespace().nth(1).unwrap_or("").split('{').next().unwrap_or("");
+                let _contract_name = line.split_whitespace().nth(1).unwrap_or("").split('{').next().unwrap_or("");
                 context_parts.push(lines[i].to_string());
 
                 let mut brace_count = 0;
@@ -985,7 +985,7 @@ fn find_sink_nodes(analysis: &AnalysisResult, variable_name: &str) -> Vec<usize>
     sinks
 }
 
-async fn get_source_from_nodes<'a>(slicer: &mut crate::semantic_slicer::SemanticSlicer<'a, PdgAdapter<'a>>, analysis: &AnalysisResult, source_code: &str, slice_nodes: &std::collections::HashSet<usize>, contract: &str, function: &str, variable: &str, exclude_libs: bool, include_types: bool, max_level: usize, aggressive_cleanup: bool) -> Vec<String> {
+async fn get_source_from_nodes<'a>(_slicer: &mut crate::semantic_slicer::SemanticSlicer<'a, PdgAdapter<'a>>, analysis: &AnalysisResult, source_code: &str, slice_nodes: &std::collections::HashSet<usize>, contract: &str, _function: &str, _variable: &str, _exclude_libs: bool, include_types: bool, max_level: usize, aggressive_cleanup: bool) -> Vec<String> {
     // 🔥 使用AST分析结果，而非字符串解析
     // 从slice_nodes中提取相关的合约和函数（基于PDG分析）
     let mut relevant_contracts = std::collections::HashSet::new();
@@ -1103,7 +1103,7 @@ async fn get_source_from_nodes<'a>(slicer: &mut crate::semantic_slicer::Semantic
     
     // 🔥 改进3：构建函数级层级系统（以函数为最小粒度）
     // 从relevant_functions（PDG切片的核心函数）开始，向外扩展调用层级
-    let (mut function_levels, contract_levels) = build_function_level_hierarchy(analysis, &relevant_functions);
+    let (function_levels, contract_levels) = build_function_level_hierarchy(analysis, &relevant_functions);
     
     // 🔥 扩展：将层级系统内的所有函数加入relevant_functions（基于max_level过滤）
     for (func_name, &level) in &function_levels {
@@ -1313,7 +1313,7 @@ async fn get_source_from_nodes<'a>(slicer: &mut crate::semantic_slicer::Semantic
     let mut cleaned_result = Vec::new();
     let mut total_comment_lines_removed = 0;
     
-    for (idx, item) in filtered_result.iter().enumerate() {
+    for (_idx, item) in filtered_result.iter().enumerate() {
         let lines_in_item: Vec<&str> = item.lines().collect();
         let mut cleaned_lines = Vec::new();
         

@@ -1,4 +1,4 @@
-#![feature(let_chains)]
+
 #![doc = include_str!("../README.md")]
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/paradigmxyz/solar/main/assets/logo.png",

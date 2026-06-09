@@ -266,7 +266,7 @@ impl<'a, G: SemanticGraphAdapter> SemanticSlicer<'a, G> {
             result_slice.insert(item.node_id);
             writeln!(log_file, "✅ Added node {} to slice (total: {})", item.node_id, result_slice.len()).unwrap();
 
-            let current_code = self.graph.get_node_source(item.node_id);
+            let _current_code = self.graph.get_node_source(item.node_id);
             let preds = self.graph.get_predecessors(item.node_id);
             
             writeln!(log_file, "🔍 Analyzing predecessors of node {}: {:?}", item.node_id, preds).unwrap();
@@ -806,7 +806,7 @@ Return a relevance score from 0-100, where:
     }
 
     // 使用 LLM 判断代码是否与目标变量相关，提供完整上下文和相关函数集合
-    async fn call_llm_with_context_and_related(&self, code: &str, target_variable: &str, full_context: &str, related_functions: &[String]) -> Result<String, Box<dyn std::error::Error>> {
+    async fn call_llm_with_context_and_related(&self, code: &str, target_variable: &str, _full_context: &str, related_functions: &[String]) -> Result<String, Box<dyn std::error::Error>> {
         let mut log_file = OpenOptions::new().create(true).append(true).open("analysis.log")?;
         
         writeln!(log_file, "=== STARTING LLM ANALYSIS ===")?;

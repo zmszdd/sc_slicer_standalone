@@ -8,7 +8,6 @@
 use serde::{Deserialize, Serialize};
 use solar_ast::ItemKind;
 use solar_interface::Session;
-use solar_parse::Parser;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LLMRequest {
@@ -185,53 +184,49 @@ impl LLMCompletionPipeline {
             .map(|f| format!("- {}.{}()", f.contract, f.name))
             .collect();
 
-        let prompt = format!(r#"你是Solidity代码专家。为以下函数提供**简化的功能实现**：
+        let prompt = format!(r#"你是Solidity代码专家。为以下函数或其所在的合约/依赖项提供**简化的功能实现**：
 
 {}
 
 **实现策略**：
-- 核心函数（priority=1）：提供基本逻辑框架，返回合理默认值
+- 核心函数（priority=1）：提供基本逻辑框架
 - 次要函数（priority=2-3）：简单stub实现即可
+- 如果缺失的是整个合约依赖（如 ERC20Minimal），请提供该合约的简化版本
 
 **重要**：
-1. 保留原有所有代码不变
-2. 只添加缺失的函数实现
-3. 确保语法正确，可以编译
+1. **只返回新增的代码部分**（函数定义、库或合约桩）。
+2. **绝对不要**包含原始代码，也不要返回完整的修复代码。
+3. 请将所有新增代码放在一个 ```solidity 代码块中。
 
-直接返回完整的修复后代码，用```solidity包裹。
-
-原始代码：
+原始代码片段（仅供上下文参考）：
 ```solidity
 {}
-```"#, func_list.join("\n"), code);
+```"#, func_list.join("\n"), if code.len() > 2000 { &code[..2000] } else { code });
 
-        let response = self.call_llm(&prompt, 8192)?;
+        let response = self.call_llm(&prompt, 4096)?;
         
-        // 日志：LLM原始响应
-        println!("\n   [DEBUG] LLM阶段2原始响应:");
-        println!("   {}", "─".repeat(50));
-        for line in response.lines().take(30) {
-            println!("   {}", line);
-        }
-        if response.lines().count() > 30 {
-            println!("   ... (共 {} 行)", response.lines().count());
-        }
-        println!("   {}", "─".repeat(50));
+        let new_code = self.extract_code_block(&response)?;
         
-        let completed_code = self.extract_code_block(&response)?;
+        println!("\n   [合并] 将生成的代码合并到原始代码中...");
         
-        // 验证函数是否被补充
+        // 合并策略：将新生成的桩代码置于文件顶部，以确保依赖关系正确
+        let mut final_code = String::new();
+        final_code.push_str("// --- LLM Generated Stubs ---\n");
+        final_code.push_str(&new_code);
+        final_code.push_str("\n\n// --- Original Sliced Code ---\n");
+        final_code.push_str(code);
+        
+        // 验证函数是否被补充（简单检查）
         println!("\n   [检查] 验证函数补充情况:");
         for func in missing_funcs {
-            let func_pattern = format!("function {}(", func.name);
-            if completed_code.contains(&func_pattern) {
-                println!("   ✓ {}.{} 已补充", func.contract, func.name);
+            if final_code.contains(&func.name) {
+                println!("   ✓ {} 已在生成的补丁中找到", func.name);
             } else {
-                println!("   ✗ {}.{} 未找到 (优先级: {})", func.contract, func.name, func.priority);
+                println!("   ✗ {} 未找到", func.name);
             }
         }
         
-        Ok(completed_code)
+        Ok(final_code)
     }
 
     /// 阶段3: LLM最终修复使代码可编译 (已禁用)
@@ -428,7 +423,7 @@ impl LLMCompletionPipeline {
         let mut inserted = false;
         let mut contract_brace_count = 0;
         
-        for (i, line) in lines.iter().enumerate() {
+        for (_i, line) in lines.iter().enumerate() {
             result.push(line.to_string());
             
             // 检测合约开始
