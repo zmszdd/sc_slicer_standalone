@@ -1,33 +1,33 @@
 //! 噪音削减模块 (Noise Reduction)
-//! 
+//!
 //! 这个模块实现了一系列"外科手术级"的代码净化策略，
 //! 旨在将切片结果中的无效噪音从 ~60% 降低到接近 0%。
-//! 
+//!
 //! ## 核心优化策略
-//! 
+//!
 //! 1. **标准库截肢** (Stdlib Stubbing)
 //!    - 检测 OpenZeppelin、Solady、Forge-std 等标准库
 //!    - 将完整实现替换为 `{ /* stdlib: collapsed */ }`
-//! 
+//!
 //! 2. **ASCII 艺术清洗** (Visual Noise Cleanup)  
 //!    - 删除连续 3+ 行的注释块
 //!    - 移除包含 ASCII 绘图字符的注释
-//! 
+//!
 //! 3. **类型摇树优化** (Type Tree-Shaking)
 //!    - 扫描保留函数中的类型引用
 //!    - 删除未被引用的 struct/enum 定义
 //!    - 强制删除 Foundry 内部类型
-//! 
+//!
 //! 4. **依赖库去重** (Lib Deduplication)
 //!    - 检测 `Math_0`, `Math_1`, `Math_2` 等同名异构库
 //!    - 保留被调用的版本,删除未引用的版本
-//! 
+//!
 //! 5. **调用链聚焦** (Call Chain Focus)
 //!    - 严格的调用链分析
 //!    - 只保留 PoC 路径触达的函数
 
-use std::collections::{HashMap, HashSet};
 use regex::Regex;
+use std::collections::{HashMap, HashSet};
 
 /// 标准库模式配置
 pub struct StdlibConfig {
@@ -89,9 +89,15 @@ impl StdlibConfig {
     /// 检查合约名是否是标准库
     pub fn is_stdlib(&self, contract_name: &str) -> bool {
         // 精确匹配
-        if self.openzeppelin_patterns.iter().any(|&pat| contract_name == pat)
+        if self
+            .openzeppelin_patterns
+            .iter()
+            .any(|&pat| contract_name == pat)
             || self.solady_patterns.iter().any(|&pat| contract_name == pat)
-            || self.forge_std_patterns.iter().any(|&pat| contract_name == pat)
+            || self
+                .forge_std_patterns
+                .iter()
+                .any(|&pat| contract_name == pat)
             || self.common_patterns.iter().any(|&pat| contract_name == pat)
         {
             return true;
@@ -107,25 +113,47 @@ impl StdlibConfig {
 
     /// 生成存根代码
     pub fn generate_stub(&self, contract_type: &str, contract_name: &str) -> String {
-        format!("{} {} {{ /* stdlib: collapsed */ }}", contract_type, contract_name)
+        format!(
+            "{} {} {{ /* stdlib: collapsed */ }}",
+            contract_type, contract_name
+        )
     }
 }
 
 /// Foundry 内部类型黑名单
 pub const FOUNDRY_BLACKLIST: &[&str] = &[
     // Forge-std 内部类型
-    "RawTx1559", "TxLegacy", "TxEIP2930", "TxEIP4844",
-    "Receipt", "Log", "Chain", "Wallet",
-    "FuzzSelector", "FuzzInterface", "FuzzInterfaceFunction",
-    "ScriptArtifact", "Broadcast", "BroadcastTxSummary",
-    "AccountAccess", "StorageAccess", "GasMetering",
-    "Rpc", "RpcUrls", "FsMetadata",
+    "RawTx1559",
+    "TxLegacy",
+    "TxEIP2930",
+    "TxEIP4844",
+    "Receipt",
+    "Log",
+    "Chain",
+    "Wallet",
+    "FuzzSelector",
+    "FuzzInterface",
+    "FuzzInterfaceFunction",
+    "ScriptArtifact",
+    "Broadcast",
+    "BroadcastTxSummary",
+    "AccountAccess",
+    "StorageAccess",
+    "GasMetering",
+    "Rpc",
+    "RpcUrls",
+    "FsMetadata",
     // Hardhat Console 内部类型
-    "ConsoleLog", "HardhatConsole",
+    "ConsoleLog",
+    "HardhatConsole",
     // Foundry 测试框架类型
-    "StdInvariant", "InvariantTest", "FuzzTest",
+    "StdInvariant",
+    "InvariantTest",
+    "FuzzTest",
     // Cheatcodes 相关
-    "VmSafe", "Vm_", "StdStorage",
+    "VmSafe",
+    "Vm_",
+    "StdStorage",
 ];
 
 /// ASCII 艺术字符集
@@ -221,7 +249,9 @@ impl CommentCleaner {
             "// 步骤",
             "// 检查",
         ];
-        useful_patterns.iter().any(|&pat| line.to_lowercase().contains(&pat.to_lowercase()))
+        useful_patterns
+            .iter()
+            .any(|&pat| line.to_lowercase().contains(&pat.to_lowercase()))
     }
 
     /// 批量清洗代码块
@@ -232,7 +262,7 @@ impl CommentCleaner {
 
         for line in lines {
             let trimmed = line.trim();
-            
+
             // 更新上下文（追踪是否在函数体内）
             let mut updated_context = context.clone();
             updated_context.update_with_line(trimmed);
@@ -379,7 +409,7 @@ impl TypeTreeShaker {
         if token.is_empty() {
             return false;
         }
-        
+
         // 类型名通常首字母大写
         token.chars().next().unwrap().is_uppercase()
     }
@@ -402,13 +432,13 @@ impl TypeTreeShaker {
 
         for block in blocks {
             let first_line = block.lines().next().unwrap_or("").trim();
-            
-            if first_line.starts_with("struct ") 
-                || first_line.starts_with("enum ") 
-                || first_line.starts_with("type ") 
+
+            if first_line.starts_with("struct ")
+                || first_line.starts_with("enum ")
+                || first_line.starts_with("type ")
             {
                 let type_name = self.extract_type_name(first_line);
-                
+
                 if self.should_keep_type(&type_name) {
                     kept.push(block);
                 } else {
@@ -461,7 +491,7 @@ impl LibraryDeduplicator {
                 if let Some(caps) = version_pattern.captures(first_line) {
                     let base_name = caps.get(1).unwrap().as_str().to_string();
                     let full_name = format!("{}_{}", base_name, caps.get(2).unwrap().as_str());
-                    
+
                     self.library_versions
                         .entry(base_name)
                         .or_insert_with(Vec::new)
@@ -476,7 +506,7 @@ impl LibraryDeduplicator {
         for block in code_blocks {
             // 查找库调用模式：LibraryName.method(...)
             let call_pattern = Regex::new(r"\b(\w+_\d+)\.").unwrap();
-            
+
             for caps in call_pattern.captures_iter(block) {
                 let lib_name = caps.get(1).unwrap().as_str();
                 self.called_versions.insert(lib_name.to_string());
@@ -491,7 +521,7 @@ impl LibraryDeduplicator {
 
         for block in blocks {
             let first_line = block.lines().next().unwrap_or("").trim();
-            
+
             if first_line.starts_with("library ") {
                 let lib_name = first_line
                     .split_whitespace()
@@ -499,7 +529,7 @@ impl LibraryDeduplicator {
                     .unwrap_or("")
                     .trim_end_matches('{')
                     .trim();
-                
+
                 // 检查是否是版本化的库
                 if lib_name.contains('_') && lib_name.chars().last().unwrap().is_numeric() {
                     // 是版本化库：检查是否被调用
@@ -584,16 +614,20 @@ impl NoiseReductionPipeline {
 
         for block in blocks {
             let first_line = block.lines().next().unwrap_or("").trim();
-            
+
             if first_line.starts_with("library ") || first_line.starts_with("contract ") {
-                let contract_type = if first_line.starts_with("library ") { "library" } else { "contract" };
+                let contract_type = if first_line.starts_with("library ") {
+                    "library"
+                } else {
+                    "contract"
+                };
                 let name = first_line
                     .split_whitespace()
                     .nth(1)
                     .unwrap_or("")
                     .trim_end_matches('{')
                     .trim();
-                
+
                 if self.stdlib_config.is_stdlib(name) {
                     result.push(self.stdlib_config.generate_stub(contract_type, name));
                     stub_count += 1;
@@ -617,22 +651,22 @@ impl NoiseReductionPipeline {
         for block in blocks {
             let lines: Vec<&str> = block.lines().collect();
             let original_count = lines.len();
-            
+
             // 判断是否是库文件
             let first_line = lines.first().map(|l| l.trim()).unwrap_or("");
             let is_library = first_line.starts_with("library ");
-            
+
             let context = CleanContext {
                 is_file_header: false, // 在代码块级别，已经不是文件头了
                 is_in_library: is_library,
                 in_function_body: false,
                 brace_depth: 0,
             };
-            
+
             let cleaned_lines = self.comment_cleaner.clean_block(&lines, &context);
             let removed = original_count - cleaned_lines.len();
             total_removed += removed;
-            
+
             if !cleaned_lines.is_empty() {
                 result.push(cleaned_lines.join("\n"));
             }
@@ -645,14 +679,14 @@ impl NoiseReductionPipeline {
     fn shake_types(&mut self, blocks: Vec<String>) -> (Vec<String>, Vec<String>) {
         // 先提取所有使用的类型
         self.type_shaker.extract_used_types(&blocks);
-        
+
         // 过滤类型定义
         let (kept, removed) = self.type_shaker.filter_type_definitions(blocks);
-        
+
         for type_name in &removed {
             println!("  🌳 Removed type: {}", type_name);
         }
-        
+
         (kept, removed)
     }
 
@@ -660,17 +694,17 @@ impl NoiseReductionPipeline {
     fn deduplicate_libraries(&mut self, blocks: Vec<String>) -> (Vec<String>, Vec<String>) {
         // 检测版本化库
         self.lib_deduplicator.detect_versioned_libraries(&blocks);
-        
+
         // 扫描调用
         self.lib_deduplicator.scan_library_calls(&blocks);
-        
+
         // 过滤未使用的版本
         let (kept, removed) = self.lib_deduplicator.filter_unused_versions(blocks);
-        
+
         for lib_name in &removed {
             println!("  🔄 Removed duplicate: {}", lib_name);
         }
-        
+
         (kept, removed)
     }
 
@@ -723,20 +757,42 @@ impl NoiseReductionStats {
         println!("\n╔═══════════════════════════════════════════════╗");
         println!("║  Noise Reduction Summary                     ║");
         println!("╠═══════════════════════════════════════════════╣");
-        println!("║  Original code blocks:      {:>6}           ║", self.original_blocks);
-        println!("║  Standard libs stubbed:     {:>6}           ║", self.stdlib_stubbed);
-        println!("║  Comment lines removed:     {:>6}           ║", self.comment_lines_removed);
-        println!("║  Types removed:             {:>6}           ║", self.types_removed);
-        println!("║  Libraries deduped:         {:>6}           ║", self.libs_deduped);
-        println!("║  Final code blocks:         {:>6}           ║", self.final_blocks);
+        println!(
+            "║  Original code blocks:      {:>6}           ║",
+            self.original_blocks
+        );
+        println!(
+            "║  Standard libs stubbed:     {:>6}           ║",
+            self.stdlib_stubbed
+        );
+        println!(
+            "║  Comment lines removed:     {:>6}           ║",
+            self.comment_lines_removed
+        );
+        println!(
+            "║  Types removed:             {:>6}           ║",
+            self.types_removed
+        );
+        println!(
+            "║  Libraries deduped:         {:>6}           ║",
+            self.libs_deduped
+        );
+        println!(
+            "║  Final code blocks:         {:>6}           ║",
+            self.final_blocks
+        );
         println!("╠═══════════════════════════════════════════════╣");
-        
+
         if self.original_blocks > 0 {
-            let reduction_rate = ((self.original_blocks - self.final_blocks) as f64 
-                / self.original_blocks as f64) * 100.0;
-            println!("║  Noise reduction rate:      {:>5.1}%          ║", reduction_rate);
+            let reduction_rate = ((self.original_blocks - self.final_blocks) as f64
+                / self.original_blocks as f64)
+                * 100.0;
+            println!(
+                "║  Noise reduction rate:      {:>5.1}%          ║",
+                reduction_rate
+            );
         }
-        
+
         println!("╚═══════════════════════════════════════════════╝\n");
     }
 }

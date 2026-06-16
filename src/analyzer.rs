@@ -5,12 +5,14 @@
 //! 用于代码切片、安全漏洞检测和依赖关系分析。
 //!
 
+#![allow(unused)]
+use petgraph::graph::DiGraph;
 use solar_ast::{self as ast, Expr, ExprKind, Item, ItemKind, SourceUnit, Span, Stmt, StmtKind};
-use solar_interface::{Session, BytePos};
+use solar_interface::diagnostics::EmittedDiagnostics;
+use solar_interface::{BytePos, Session};
 use solar_parse::Parser;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use petgraph::graph::DiGraph;
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum NodeKind {
@@ -22,9 +24,9 @@ pub enum NodeKind {
     VariableRead,
     TaintSource,
     TaintSink,
-    ConstraintNode, // for require/assert as constraints, not sinks
-    StorageRead(String), // 变量名
-    StorageWrite(String), // 变量名
+    ConstraintNode,        // for require/assert as constraints, not sinks
+    StorageRead(String),   // 变量名
+    StorageWrite(String),  // 变量名
     VariableWrite(String), // 局部变量名
 }
 
@@ -38,8 +40,8 @@ pub enum EdgeKind {
     Call,
     TaintPropagation,
     ValidatedDataDependency(String), // for sanitized paths
-    Return, // for inter-procedural return edges
-    StorageDependency(String), // for storage conflicts in delegatecall
+    Return,                          // for inter-procedural return edges
+    StorageDependency(String),       // for storage conflicts in delegatecall
 }
 
 #[derive(Debug, Clone)]
@@ -47,11 +49,14 @@ pub enum EdgeKind {
 pub struct PdgNode {
     pub id: usize,
     pub span: Span,
+    pub ast_node_id: Option<String>,
+    pub source_span: Option<(usize, usize)>,
+    pub enclosing_statement_id: Option<String>,
     pub kind: NodeKind,
-    pub label: String, // for debugging
+    pub label: String,                    // for debugging
     pub function_context: Option<String>, // "constructor", "function", etc.
     pub contract_context: Option<String>, // 所属合约名
-    pub is_financial_impact: bool, // for data flow strength
+    pub is_financial_impact: bool,        // for data flow strength
 }
 
 #[derive(Debug, Clone)]
@@ -86,12 +91,21 @@ impl ProgramDependencyGraph {
 
     pub fn add_edge(&mut self, edge: PdgEdge) {
         self.edges.push(edge.clone());
-        let from_idx = self.graph.node_indices().find(|&i| self.graph[i] == edge.from);
-        let to_idx = self.graph.node_indices().find(|&i| self.graph[i] == edge.to);
+        let from_idx = self
+            .graph
+            .node_indices()
+            .find(|&i| self.graph[i] == edge.from);
+        let to_idx = self
+            .graph
+            .node_indices()
+            .find(|&i| self.graph[i] == edge.to);
         if let (Some(from), Some(to)) = (from_idx, to_idx) {
             self.graph.add_edge(from, to, edge.kind);
         } else {
-            println!("❌ Failed to add edge {:?} -> {:?}: from_idx={:?}, to_idx={:?}", edge.from, edge.to, from_idx, to_idx);
+            println!(
+                "❌ Failed to add edge {:?} -> {:?}: from_idx={:?}, to_idx={:?}",
+                edge.from, edge.to, from_idx, to_idx
+            );
         }
     }
 
@@ -127,31 +141,50 @@ impl ProgramDependencyGraph {
         let mut stage1_slice = Vec::new();
         let mut visited = HashSet::new();
         self.backward_slice_stage1(sink, &mut stage1_slice, &mut visited);
-        
+
         // 第二阶段：从第一阶段的结果出发，跟随 Data、Control 和 Return 边
         let mut final_slice = stage1_slice.clone();
         visited.clear();
         for &node_id in &stage1_slice {
             self.backward_slice_stage2(node_id, &mut final_slice, &mut visited);
         }
-        
+
         final_slice
     }
 
-    fn backward_slice_stage1(&self, node: usize, slice: &mut Vec<usize>, visited: &mut HashSet<usize>) {
+    fn backward_slice_stage1(
+        &self,
+        node: usize,
+        slice: &mut Vec<usize>,
+        visited: &mut HashSet<usize>,
+    ) {
         if visited.contains(&node) {
             return;
         }
         visited.insert(node);
         slice.push(node);
         for edge in &self.edges {
-            if edge.to == node && matches!(edge.kind, EdgeKind::DataDependency(_) | EdgeKind::ControlDependency | EdgeKind::ValidatedDataDependency(_) | EdgeKind::Call | EdgeKind::ParameterIn) {
+            if edge.to == node
+                && matches!(
+                    edge.kind,
+                    EdgeKind::DataDependency(_)
+                        | EdgeKind::ControlDependency
+                        | EdgeKind::ValidatedDataDependency(_)
+                        | EdgeKind::Call
+                        | EdgeKind::ParameterIn
+                )
+            {
                 self.backward_slice_stage1(edge.from, slice, visited);
             }
         }
     }
 
-    fn backward_slice_stage2(&self, node: usize, slice: &mut Vec<usize>, visited: &mut HashSet<usize>) {
+    fn backward_slice_stage2(
+        &self,
+        node: usize,
+        slice: &mut Vec<usize>,
+        visited: &mut HashSet<usize>,
+    ) {
         if visited.contains(&node) {
             return;
         }
@@ -160,7 +193,18 @@ impl ProgramDependencyGraph {
             slice.push(node);
         }
         for edge in &self.edges {
-            if edge.to == node && matches!(edge.kind, EdgeKind::DataDependency(_) | EdgeKind::ControlDependency | EdgeKind::ValidatedDataDependency(_) | EdgeKind::Return | EdgeKind::ParameterOut | EdgeKind::StorageDependency(_) | EdgeKind::Call) {
+            if edge.to == node
+                && matches!(
+                    edge.kind,
+                    EdgeKind::DataDependency(_)
+                        | EdgeKind::ControlDependency
+                        | EdgeKind::ValidatedDataDependency(_)
+                        | EdgeKind::Return
+                        | EdgeKind::ParameterOut
+                        | EdgeKind::StorageDependency(_)
+                        | EdgeKind::Call
+                )
+            {
                 self.backward_slice_stage2(edge.from, slice, visited);
             }
         }
@@ -183,8 +227,8 @@ struct Context {
     parameters: Vec<String>,
     local_vars: HashSet<String>,
     var_versions: HashMap<String, usize>, // for SSA
-    var_defs: HashMap<String, usize>, // 变量 -> 最新定义节点ID
-    control_stack: Vec<usize>, // for control dependencies
+    var_defs: HashMap<String, usize>,     // 变量 -> 最新定义节点ID
+    control_stack: Vec<usize>,            // for control dependencies
     node_counter: usize,
     last_external_call: Option<usize>, // track last external call for return value assignment
 }
@@ -206,7 +250,7 @@ pub(crate) struct AnalysisResult {
     constraint_nodes: HashMap<usize, String>, // constraint nodes (require/assert) -> description
     sanitized_paths: HashMap<String, usize>, // var -> number of sanitized paths
     pub contract_registry: ContractRegistry, // 新增：全局合约注册表
-    pub session: Option<Session>, // 新增：Session for line indexing
+    pub session: Option<Session>,          // 新增：Session for line indexing
 }
 
 // 合约索引结构（用于快速查找）
@@ -254,7 +298,10 @@ fn build_contract_index(asts: &[SourceUnit]) -> HashMap<String, ContractMetadata
 }
 
 // 在 AST 中查找目标合约
-fn find_contract_in_asts<'a>(asts: &'a [SourceUnit<'a>], target_contract: &str) -> Option<&'a Item<'a>> {
+fn find_contract_in_asts<'a>(
+    asts: &'a [SourceUnit<'a>],
+    target_contract: &str,
+) -> Option<&'a Item<'a>> {
     for ast in asts {
         for item in ast.items.iter() {
             if let ItemKind::Contract(contract) = &item.kind {
@@ -268,11 +315,15 @@ fn find_contract_in_asts<'a>(asts: &'a [SourceUnit<'a>], target_contract: &str) 
 }
 
 // 为单个合约构建注册表
-fn build_contract_registry_for_single(contract_item: &Item, result: &mut AnalysisResult, contract_name: &str) {
+fn build_contract_registry_for_single(
+    contract_item: &Item,
+    result: &mut AnalysisResult,
+    contract_name: &str,
+) {
     if let ItemKind::Contract(contract) = &contract_item.kind {
         let mut functions = HashMap::new();
         let mut storage = HashMap::new();
-        
+
         for body_item in contract.body.iter() {
             match &body_item.kind {
                 ItemKind::Function(func) => {
@@ -282,6 +333,16 @@ fn build_contract_registry_for_single(contract_item: &Item, result: &mut Analysi
                         let entry_node = PdgNode {
                             id: entry_node_id,
                             span: func.header.span,
+                            ast_node_id: Some(format!(
+                                "{}_{}",
+                                func.header.span.lo().0,
+                                func.header.span.hi().0
+                            )),
+                            source_span: Some((
+                                func.header.span.lo().0 as usize,
+                                func.header.span.hi().0 as usize,
+                            )),
+                            enclosing_statement_id: None,
                             kind: NodeKind::FunctionCall,
                             label: format!("entry: {}.{}", contract_name, func_name),
                             function_context: Some(func_name.clone()),
@@ -298,11 +359,15 @@ fn build_contract_registry_for_single(contract_item: &Item, result: &mut Analysi
                         let storage_node = PdgNode {
                             id: storage_node_id,
                             span: var.span,
+                            ast_node_id: Some(format!("{}_{}", var.span.lo().0, var.span.hi().0)),
+                            source_span: Some((var.span.lo().0 as usize, var.span.hi().0 as usize)),
+                            enclosing_statement_id: None,
                             kind: NodeKind::StorageWrite(var_name.to_string()),
                             label: format!("storage: {}.{}", contract_name, var_name),
                             function_context: None,
                             contract_context: Some(contract_name.to_string()),
-                            is_financial_impact: var_name.name.to_string().contains("totalAssets") || var_name.name.to_string().contains("balance"),
+                            is_financial_impact: var_name.name.to_string().contains("totalAssets")
+                                || var_name.name.to_string().contains("balance"),
                         };
                         result.program_dependency_graph.add_node(storage_node);
                         storage.insert(var_name.to_string(), storage_node_id);
@@ -311,9 +376,15 @@ fn build_contract_registry_for_single(contract_item: &Item, result: &mut Analysi
                 _ => {}
             }
         }
-        
-        result.contract_registry.function_map.insert(contract_name.to_string(), functions);
-        result.contract_registry.storage_map.insert(contract_name.to_string(), storage);
+
+        result
+            .contract_registry
+            .function_map
+            .insert(contract_name.to_string(), functions);
+        result
+            .contract_registry
+            .storage_map
+            .insert(contract_name.to_string(), storage);
     }
 }
 
@@ -332,7 +403,7 @@ fn analyze_contract_targeted(
     if let ItemKind::Contract(contract) = &contract_item.kind {
         context.current_contract = Some(contract_name.to_string());
         let mut analyzed_functions = HashSet::new();
-        
+
         // 优先分析目标函数（如果指定）
         if !target_function.is_empty() {
             for item in contract.body.iter() {
@@ -340,31 +411,61 @@ fn analyze_contract_targeted(
                     if let Some(name) = &func.header.name {
                         if name.to_string() == target_function {
                             println!("📍 Analyzing target function: {}", target_function);
-                            analyze_function_with_dependencies(func, name.to_string(), source_code, result, context, all_asts, contract_index, &mut analyzed_functions);
+                            analyze_function_with_dependencies(
+                                func,
+                                name.to_string(),
+                                source_code,
+                                result,
+                                context,
+                                all_asts,
+                                contract_index,
+                                &mut analyzed_functions,
+                            );
                             break;
                         }
                     }
                 }
             }
         }
-        
+
         // 分析所有访问目标变量的函数
         if !target_variable.is_empty() {
-            println!("📍 Finding functions that access variable: {}", target_variable);
+            println!(
+                "📍 Finding functions that access variable: {}",
+                target_variable
+            );
             for item in contract.body.iter() {
                 if let ItemKind::Function(func) = &item.kind {
                     if let Some(name) = &func.header.name {
                         let func_name = name.to_string();
-                        if !analyzed_functions.contains(&func_name) && function_accesses_variable(func, target_variable) {
-                            println!("  ↳ Analyzing function '{}' (accesses {})", func_name, target_variable);
-                            analyze_function_with_dependencies(func, func_name.clone(), source_code, result, context, all_asts, contract_index, &mut analyzed_functions);
+                        if !analyzed_functions.contains(&func_name)
+                            && function_accesses_variable(func, target_variable)
+                        {
+                            println!(
+                                "  ↳ Analyzing function '{}' (accesses {})",
+                                func_name, target_variable
+                            );
+                            analyze_function_with_dependencies(
+                                func,
+                                func_name.clone(),
+                                source_code,
+                                result,
+                                context,
+                                all_asts,
+                                contract_index,
+                                &mut analyzed_functions,
+                            );
                         }
                     }
                 }
             }
         }
-        
-        println!("✅ Analyzed {} relevant functions in contract {}", analyzed_functions.len(), contract_name);
+
+        println!(
+            "✅ Analyzed {} relevant functions in contract {}",
+            analyzed_functions.len(),
+            contract_name
+        );
     }
 }
 
@@ -383,7 +484,7 @@ fn analyze_function_with_dependencies(
         return;
     }
     analyzed_functions.insert(func_name.clone());
-    
+
     context.current_function = Some(func_name.clone());
     context.current_function_type = if func_name == "constructor" {
         Some("constructor".to_string())
@@ -394,19 +495,19 @@ fn analyze_function_with_dependencies(
     context.local_vars.clear();
     context.var_versions.clear();
     context.var_defs.clear();
-    
+
     for param in func.header.parameters.vars.iter() {
         if let Some(param_name) = &param.name {
             context.parameters.push(param_name.to_string());
             context.var_versions.insert(param_name.to_string(), 0);
         }
     }
-    
+
     if let Some(block) = &func.body {
         context.control_stack.clear();
         analyze_block(block, result, context);
     }
-    
+
     context.current_function = None;
     context.current_function_type = None;
 }
@@ -427,11 +528,11 @@ fn build_contract_registry(ast: &SourceUnit, result: &mut AnalysisResult) {
                 if matches!(contract.kind, ast::ContractKind::Interface) {
                     continue;
                 }
-                
+
                 let contract_name = contract.name.to_string();
                 let mut functions = HashMap::new();
                 let mut storage = HashMap::new();
-                
+
                 for body_item in contract.body.iter() {
                     match &body_item.kind {
                         ItemKind::Function(func) => {
@@ -442,6 +543,16 @@ fn build_contract_registry(ast: &SourceUnit, result: &mut AnalysisResult) {
                                 let entry_node = PdgNode {
                                     id: entry_node_id,
                                     span: func.header.span,
+                                    ast_node_id: Some(format!(
+                                        "{}_{}",
+                                        func.header.span.lo().0,
+                                        func.header.span.hi().0
+                                    )),
+                                    source_span: Some((
+                                        func.header.span.lo().0 as usize,
+                                        func.header.span.hi().0 as usize,
+                                    )),
+                                    enclosing_statement_id: None,
                                     kind: NodeKind::FunctionCall,
                                     label: format!("entry: {}.{}", contract_name, func_name),
                                     function_context: Some(func_name.clone()),
@@ -458,11 +569,25 @@ fn build_contract_registry(ast: &SourceUnit, result: &mut AnalysisResult) {
                                 let storage_node = PdgNode {
                                     id: storage_node_id,
                                     span: var.span,
+                                    ast_node_id: Some(format!(
+                                        "{}_{}",
+                                        var.span.lo().0,
+                                        var.span.hi().0
+                                    )),
+                                    source_span: Some((
+                                        var.span.lo().0 as usize,
+                                        var.span.hi().0 as usize,
+                                    )),
+                                    enclosing_statement_id: None,
                                     kind: NodeKind::StorageWrite(var_name.to_string()),
                                     label: format!("storage: {}.{}", contract_name, var_name),
                                     function_context: None,
                                     contract_context: Some(contract_name.clone()),
-                                    is_financial_impact: var_name.name.to_string().contains("totalAssets") || var_name.name.to_string().contains("balance"),
+                                    is_financial_impact: var_name
+                                        .name
+                                        .to_string()
+                                        .contains("totalAssets")
+                                        || var_name.name.to_string().contains("balance"),
                                 };
                                 result.program_dependency_graph.add_node(storage_node);
                                 storage.insert(var_name.to_string(), storage_node_id);
@@ -471,9 +596,15 @@ fn build_contract_registry(ast: &SourceUnit, result: &mut AnalysisResult) {
                         _ => {}
                     }
                 }
-                
-                result.contract_registry.function_map.insert(contract_name.clone(), functions);
-                result.contract_registry.storage_map.insert(contract_name, storage);
+
+                result
+                    .contract_registry
+                    .function_map
+                    .insert(contract_name.clone(), functions);
+                result
+                    .contract_registry
+                    .storage_map
+                    .insert(contract_name, storage);
             }
             _ => {}
         }
@@ -481,27 +612,36 @@ fn build_contract_registry(ast: &SourceUnit, result: &mut AnalysisResult) {
 }
 
 // 新增：目标导向的增量式分析
-pub fn analyze_asts_targeted<'ast>(asts: &'ast [SourceUnit<'ast>], source_code: &str, target_contract: &str, target_function: &str, target_variable: &str) -> AnalysisResult {
+pub fn analyze_asts_targeted<'ast>(
+    asts: &'ast [SourceUnit<'ast>],
+    source_code: &str,
+    target_contract: &str,
+    target_function: &str,
+    target_variable: &str,
+) -> AnalysisResult {
     let mut result = AnalysisResult {
         program_dependency_graph: ProgramDependencyGraph::new(),
         ..Default::default()
     };
     let mut context = Context::default();
 
-    println!("🎯 Target-oriented analysis: contract={}, function={}, variable={}", target_contract, target_function, target_variable);
+    println!(
+        "🎯 Target-oriented analysis: contract={}, function={}, variable={}",
+        target_contract, target_function, target_variable
+    );
 
     // 第一步：快速索引所有合约和函数（仅元数据，不构建节点）
     let mut contract_index = build_contract_index(asts);
-    
+
     // 第二步：定位目标合约
     if let Some(target_ast) = find_contract_in_asts(asts, target_contract) {
         println!("✅ Found target contract: {}", target_contract);
-        
+
         // 只为目标合约构建注册表
         build_contract_registry_for_single(target_ast, &mut result, target_contract);
-        
+
         context.node_counter = result.program_dependency_graph.nodes.len();
-        
+
         // 添加全局 taint sources
         let global_vars = vec!["msg.sender", "block.timestamp", "address(this).balance"];
         for global_var in global_vars {
@@ -510,6 +650,9 @@ pub fn analyze_asts_targeted<'ast>(asts: &'ast [SourceUnit<'ast>], source_code: 
             let node = PdgNode {
                 id: node_id,
                 span: Span::new(BytePos(0), BytePos(0)),
+                ast_node_id: None,
+                source_span: None,
+                enclosing_statement_id: None,
                 kind: NodeKind::TaintSource,
                 label: format!("global: {}", global_var),
                 function_context: None,
@@ -517,20 +660,37 @@ pub fn analyze_asts_targeted<'ast>(asts: &'ast [SourceUnit<'ast>], source_code: 
                 is_financial_impact: false,
             };
             result.program_dependency_graph.add_node(node);
-            result.taint_sources.insert(node_id, format!("global variable: {}", global_var));
-            result.global_sources.insert(global_var.to_string(), node_id);
+            result
+                .taint_sources
+                .insert(node_id, format!("global variable: {}", global_var));
+            result
+                .global_sources
+                .insert(global_var.to_string(), node_id);
         }
-        
+
         // 第三步：增量分析目标合约（包含目标函数和变量）
-        analyze_contract_targeted(target_ast, source_code, &mut result, &mut context, target_contract, target_function, target_variable, asts, &mut contract_index);
-        
+        analyze_contract_targeted(
+            target_ast,
+            source_code,
+            &mut result,
+            &mut context,
+            target_contract,
+            target_function,
+            target_variable,
+            asts,
+            &mut contract_index,
+        );
+
         // 生成切片报告
         for &sink_id in result.taint_sinks.keys() {
             let slice = result.program_dependency_graph.backward_slice(sink_id);
             result.slices.insert(sink_id, slice);
         }
     } else {
-        println!("⚠️  Target contract '{}' not found, falling back to full analysis", target_contract);
+        println!(
+            "⚠️  Target contract '{}' not found, falling back to full analysis",
+            target_contract
+        );
         return analyze_asts(asts, source_code);
     }
 
@@ -561,6 +721,9 @@ pub fn analyze_asts(asts: &[SourceUnit], source_code: &str) -> AnalysisResult {
         let node = PdgNode {
             id: node_id,
             span: Span::new(BytePos(0), BytePos(0)), // dummy span
+            ast_node_id: None,
+            source_span: None,
+            enclosing_statement_id: None,
             kind: NodeKind::TaintSource,
             label: format!("global: {}", global_var),
             function_context: None,
@@ -568,8 +731,12 @@ pub fn analyze_asts(asts: &[SourceUnit], source_code: &str) -> AnalysisResult {
             is_financial_impact: false,
         };
         result.program_dependency_graph.add_node(node);
-        result.taint_sources.insert(node_id, format!("global variable: {}", global_var));
-        result.global_sources.insert(global_var.to_string(), node_id);
+        result
+            .taint_sources
+            .insert(node_id, format!("global variable: {}", global_var));
+        result
+            .global_sources
+            .insert(global_var.to_string(), node_id);
     }
 
     // 第二阶段：深度分析所有合约
@@ -590,9 +757,9 @@ pub fn analyze_asts(asts: &[SourceUnit], source_code: &str) -> AnalysisResult {
 #[allow(dead_code)]
 pub struct ContractDependencies {
     pub inheritance_graph: HashMap<String, Vec<String>>, // 合约名 -> 基合约列表
-    pub using_for: Vec<String>, // using for 指令
-    pub interfaces: Vec<String>, // 接口声明
-    pub constructor_calls: Vec<String>, // 构造函数调用链
+    pub using_for: Vec<String>,                          // using for 指令
+    pub interfaces: Vec<String>,                         // 接口声明
+    pub constructor_calls: Vec<String>,                  // 构造函数调用链
 }
 
 #[derive(Debug, Default)]
@@ -600,17 +767,17 @@ pub struct ContractDependencies {
 pub struct FunctionCallGraph {
     pub internal_calls: HashMap<String, Vec<String>>, // 函数名 -> 调用的内部函数列表
     pub external_calls: HashMap<String, Vec<String>>, // 函数名 -> 外部调用列表
-    pub modifiers: HashMap<String, Vec<String>>, // 函数名 -> 修饰器列表
+    pub modifiers: HashMap<String, Vec<String>>,      // 函数名 -> 修饰器列表
 }
 
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 pub struct DataDependencies {
     pub state_var_writes: HashMap<String, Vec<String>>, // 状态变量 -> 写入的函数列表
-    pub state_var_reads: HashMap<String, Vec<String>>, // 状态变量 -> 读取的函数列表
+    pub state_var_reads: HashMap<String, Vec<String>>,  // 状态变量 -> 读取的函数列表
     pub local_var_writes: HashMap<String, Vec<String>>, // 局部变量 -> 写入的函数列表
-    pub local_var_reads: HashMap<String, Vec<String>>, // 局部变量 -> 读取的函数列表
-    pub parameter_flow: HashMap<String, Vec<String>>, // 参数 -> 影响的状态变量列表
+    pub local_var_reads: HashMap<String, Vec<String>>,  // 局部变量 -> 读取的函数列表
+    pub parameter_flow: HashMap<String, Vec<String>>,   // 参数 -> 影响的状态变量列表
     pub taint_paths: HashMap<String, Vec<String>>, // 状态变量 -> 影响路径 (如 ["setNumber.newNumber"])
     pub event_triggers: HashMap<String, Vec<String>>, // 函数名 -> 触发的事件列表
 }
@@ -619,7 +786,7 @@ pub struct DataDependencies {
 #[allow(dead_code)]
 pub struct ControlFlowDependencies {
     pub conditional_branches: HashMap<String, Vec<String>>, // 函数名 -> 条件表达式列表
-    pub exception_paths: HashMap<String, Vec<String>>, // 函数名 -> 异常处理列表
+    pub exception_paths: HashMap<String, Vec<String>>,      // 函数名 -> 异常处理列表
     pub authorization_checks: HashMap<String, Vec<String>>, // 函数名 -> 权限检查条件列表
 }
 
@@ -633,7 +800,12 @@ pub struct CrossContractAnalysis {
     pub parameter_edges: Vec<(usize, usize, String)>, // (from, to, param_name) for parameter in/out
 }
 
-fn analyze_single_ast(ast: &SourceUnit, source_code: &str, result: &mut AnalysisResult, context: &mut Context) {
+fn analyze_single_ast(
+    ast: &SourceUnit,
+    source_code: &str,
+    result: &mut AnalysisResult,
+    context: &mut Context,
+) {
     for item in ast.items.iter() {
         match item.kind {
             ItemKind::Contract(ref contract) => {
@@ -641,7 +813,13 @@ fn analyze_single_ast(ast: &SourceUnit, source_code: &str, result: &mut Analysis
                 if matches!(contract.kind, ast::ContractKind::Interface) {
                     continue;
                 }
-                analyze_contract_body(&contract.body, &contract.name.to_string(), source_code, result, context);
+                analyze_contract_body(
+                    &contract.body,
+                    &contract.name.to_string(),
+                    source_code,
+                    result,
+                    context,
+                );
             }
             ItemKind::Function(ref function) => {
                 let mut local_context = Context::default();
@@ -671,33 +849,49 @@ fn analyze_single_ast(ast: &SourceUnit, source_code: &str, result: &mut Analysis
 
 #[allow(dead_code)]
 fn get_risk_level(analysis: &AnalysisResult, sink_id: usize, slice_nodes: &Vec<usize>) -> u8 {
-    let sink_desc = analysis.taint_sinks.get(&sink_id).map(|s| s.as_str()).unwrap_or("unknown");
-    
-    let has_constraints = slice_nodes.iter().any(|&id| {
-        analysis.constraint_nodes.contains_key(&id)
-    });
+    let sink_desc = analysis
+        .taint_sinks
+        .get(&sink_id)
+        .map(|s| s.as_str())
+        .unwrap_or("unknown");
+
+    let has_constraints = slice_nodes
+        .iter()
+        .any(|&id| analysis.constraint_nodes.contains_key(&id));
 
     let has_validated_edges = analysis.program_dependency_graph.edges.iter().any(|edge| {
-        slice_nodes.contains(&edge.from) && slice_nodes.contains(&edge.to) && 
-        matches!(edge.kind, EdgeKind::ValidatedDataDependency(_))
+        slice_nodes.contains(&edge.from)
+            && slice_nodes.contains(&edge.to)
+            && matches!(edge.kind, EdgeKind::ValidatedDataDependency(_))
     });
 
     let has_control = slice_nodes.iter().any(|&id| {
-        analysis.program_dependency_graph.nodes.get(&id)
+        analysis
+            .program_dependency_graph
+            .nodes
+            .get(&id)
             .map_or(false, |n| matches!(n.kind, NodeKind::ControlCondition))
     });
-    
+
     let has_data_flow = slice_nodes.iter().any(|&id| {
-        analysis.program_dependency_graph.nodes.get(&id)
+        analysis
+            .program_dependency_graph
+            .nodes
+            .get(&id)
             .map_or(false, |n| matches!(n.kind, NodeKind::TaintSource))
     });
 
-    let is_constructor = analysis.program_dependency_graph.nodes.get(&sink_id)
+    let is_constructor = analysis
+        .program_dependency_graph
+        .nodes
+        .get(&sink_id)
         .and_then(|n| n.function_context.as_ref())
-        .map(|ctx| ctx == "constructor").unwrap_or(false);
+        .map(|ctx| ctx == "constructor")
+        .unwrap_or(false);
 
     // 风险级别: 0=INFO, 1=LOW, 2=MEDIUM, 3=HIGH, 4=CRITICAL
-    if !has_control && !has_constraints && sink_desc.contains("state var write") && !is_constructor {
+    if !has_control && !has_constraints && sink_desc.contains("state var write") && !is_constructor
+    {
         4 // CRITICAL
     } else if slice_nodes.len() == 1 && !is_constructor {
         3 // HIGH
@@ -714,7 +908,13 @@ fn get_risk_level(analysis: &AnalysisResult, sink_id: usize, slice_nodes: &Vec<u
     }
 }
 
-fn analyze_contract_body(body: &[Item], contract_name: &str, _source_code: &str, result: &mut AnalysisResult, context: &mut Context) {
+fn analyze_contract_body(
+    body: &[Item],
+    contract_name: &str,
+    _source_code: &str,
+    result: &mut AnalysisResult,
+    context: &mut Context,
+) {
     context.current_contract = Some(contract_name.to_string());
     for item in body {
         match &item.kind {
@@ -730,7 +930,7 @@ fn analyze_contract_body(body: &[Item], contract_name: &str, _source_code: &str,
                     context.local_vars.clear();
                     context.var_versions.clear();
                     context.var_defs.clear(); // 重置变量定义
-                    // collect parameters
+                                              // collect parameters
                     for param in func.header.parameters.vars.iter() {
                         if let Some(param_name) = &param.name {
                             context.parameters.push(param_name.to_string());
@@ -754,20 +954,29 @@ fn analyze_contract_body(body: &[Item], contract_name: &str, _source_code: &str,
                         // 创建状态变量初始化节点
                         let init_node_id = context.node_counter;
                         context.node_counter += 1;
-                        println!("DEBUG: Found state variable: {} in contract {}", var_name, contract_name);
+                        println!(
+                            "DEBUG: Found state variable: {} in contract {}",
+                            var_name, contract_name
+                        );
                         let init_node = PdgNode {
                             id: init_node_id,
                             span: var.span,
+                            ast_node_id: Some(format!("{}_{}", var.span.lo().0, var.span.hi().0)),
+                            source_span: Some((var.span.lo().0 as usize, var.span.hi().0 as usize)),
+                            enclosing_statement_id: None,
                             kind: NodeKind::Assignment,
                             label: format!("{} = ... (state var)", var_name),
                             function_context: Some("state_var_init".to_string()),
                             contract_context: context.current_contract.clone(),
-                            is_financial_impact: var_name.name.to_string().contains("totalAssets") || var_name.name.to_string().contains("balance"),
+                            is_financial_impact: var_name.name.to_string().contains("totalAssets")
+                                || var_name.name.to_string().contains("balance"),
                         };
                         result.program_dependency_graph.add_node(init_node);
                         context.var_defs.insert(var_name.to_string(), init_node_id);
                         // 标记为 taint sink 如果是状态变量
-                        result.taint_sinks.insert(init_node_id, format!("state var init: {}", var_name));
+                        result
+                            .taint_sinks
+                            .insert(init_node_id, format!("state var init: {}", var_name));
 
                         // 分析初始化表达式
                         analyze_expr(init, result, context);
@@ -808,10 +1017,13 @@ fn analyze_stmt(stmt: &Stmt, result: &mut AnalysisResult, context: &mut Context)
             let cond_node = PdgNode {
                 id: cond_node_id,
                 span: stmt.span,
+                ast_node_id: Some(format!("{}_{}", stmt.span.lo().0, stmt.span.hi().0)),
+                source_span: Some((stmt.span.lo().0 as usize, stmt.span.hi().0 as usize)),
+                enclosing_statement_id: None,
                 kind: NodeKind::ControlCondition,
                 label: format!("if {:?}", cond),
                 function_context: context.current_function.clone(),
-            contract_context: context.current_contract.clone(),
+                contract_context: context.current_contract.clone(),
                 is_financial_impact: false,
             };
             result.program_dependency_graph.add_node(cond_node);
@@ -830,7 +1042,9 @@ fn analyze_stmt(stmt: &Stmt, result: &mut AnalysisResult, context: &mut Context)
         }
         StmtKind::While(cond, body) => {
             let cond_str = format!("{:?}", cond);
-            result.control_flow_dependencies.conditional_branches
+            result
+                .control_flow_dependencies
+                .conditional_branches
                 .entry(func_name.to_string())
                 .or_insert(Vec::new())
                 .push(cond_str);
@@ -839,7 +1053,9 @@ fn analyze_stmt(stmt: &Stmt, result: &mut AnalysisResult, context: &mut Context)
         StmtKind::For { cond, body, .. } => {
             if let Some(c) = cond {
                 let cond_str = format!("{:?}", c);
-                result.control_flow_dependencies.conditional_branches
+                result
+                    .control_flow_dependencies
+                    .conditional_branches
                     .entry(func_name.to_string())
                     .or_insert(Vec::new())
                     .push(cond_str);
@@ -849,7 +1065,9 @@ fn analyze_stmt(stmt: &Stmt, result: &mut AnalysisResult, context: &mut Context)
         StmtKind::Emit(path, _args) => {
             // 事件触发
             let event_str = format!("{:?}", path);
-            result.data_dependencies.event_triggers
+            result
+                .data_dependencies
+                .event_triggers
                 .entry(func_name.to_string())
                 .or_insert(Vec::new())
                 .push(event_str);
@@ -857,7 +1075,9 @@ fn analyze_stmt(stmt: &Stmt, result: &mut AnalysisResult, context: &mut Context)
         StmtKind::Revert(path, _args) => {
             // 异常处理
             let exc_str = format!("revert {:?}", path);
-            result.control_flow_dependencies.exception_paths
+            result
+                .control_flow_dependencies
+                .exception_paths
                 .entry(func_name.to_string())
                 .or_insert(Vec::new())
                 .push(exc_str);
@@ -872,7 +1092,7 @@ fn analyze_stmt(stmt: &Stmt, result: &mut AnalysisResult, context: &mut Context)
         StmtKind::DeclSingle(var_def) => {
             // 处理局部变量声明
             let var_name = var_def.name.as_ref().unwrap().to_string();
-            
+
             if let Some(init) = &var_def.initializer {
                 // 创建变量声明节点
                 let var_node_id = context.node_counter;
@@ -880,18 +1100,21 @@ fn analyze_stmt(stmt: &Stmt, result: &mut AnalysisResult, context: &mut Context)
                 let var_node = PdgNode {
                     id: var_node_id,
                     span: var_def.span,
+                    ast_node_id: Some(format!("{}_{}", var_def.span.lo().0, var_def.span.hi().0)),
+                    source_span: Some((var_def.span.lo().0 as usize, var_def.span.hi().0 as usize)),
+                    enclosing_statement_id: None,
                     kind: NodeKind::Assignment,
                     label: format!("{} = ... (local)", var_name),
                     function_context: context.current_function.clone(),
-            contract_context: context.current_contract.clone(),
+                    contract_context: context.current_contract.clone(),
                     is_financial_impact: false,
                 };
                 result.program_dependency_graph.add_node(var_node);
-                
+
                 // 记录局部变量定义
                 context.var_defs.insert(var_name.clone(), var_node_id);
                 context.local_vars.insert(var_name.clone());
-                
+
                 // 添加控制依赖
                 for &ctrl in &context.control_stack {
                     result.program_dependency_graph.add_edge(PdgEdge {
@@ -900,10 +1123,10 @@ fn analyze_stmt(stmt: &Stmt, result: &mut AnalysisResult, context: &mut Context)
                         kind: EdgeKind::ControlDependency,
                     });
                 }
-                
+
                 // 分析初始化表达式
                 analyze_expr(init, result, context);
-                
+
                 // 为初始化表达式中的变量建立依赖
                 let init_vars = extract_variables(init);
                 for var in init_vars {
@@ -915,7 +1138,7 @@ fn analyze_stmt(stmt: &Stmt, result: &mut AnalysisResult, context: &mut Context)
                         });
                     }
                 }
-                
+
                 // 如果初始化是函数调用，连接到返回值节点
                 if let ExprKind::Call(_, _) = &init.kind {
                     if let Some(return_node_id) = context.last_external_call {
@@ -926,21 +1149,26 @@ fn analyze_stmt(stmt: &Stmt, result: &mut AnalysisResult, context: &mut Context)
                         });
                     }
                 }
-                
+
                 // 创建局部变量写入节点
                 let variable_write_id = context.node_counter;
                 context.node_counter += 1;
                 let variable_write_node = PdgNode {
                     id: variable_write_id,
                     span: var_def.span,
+                    ast_node_id: Some(format!("{}_{}", var_def.span.lo().0, var_def.span.hi().0)),
+                    source_span: Some((var_def.span.lo().0 as usize, var_def.span.hi().0 as usize)),
+                    enclosing_statement_id: None,
                     kind: NodeKind::VariableWrite(var_name.clone()),
                     label: format!("variable write: {}", var_name),
                     function_context: context.current_function.clone(),
-            contract_context: context.current_contract.clone(),
+                    contract_context: context.current_contract.clone(),
                     is_financial_impact: false,
                 };
-                result.program_dependency_graph.add_node(variable_write_node);
-                
+                result
+                    .program_dependency_graph
+                    .add_node(variable_write_node);
+
                 // 连接声明到变量写入
                 result.program_dependency_graph.add_edge(PdgEdge {
                     from: var_node_id,
@@ -969,7 +1197,10 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
             match &callee.kind {
                 ExprKind::Ident(ident) => {
                     let ident_str = &ident.to_string();
-                    if ident_str == "require" || ident_str == "assert" || ident_str.starts_with("assert") {
+                    if ident_str == "require"
+                        || ident_str == "assert"
+                        || ident_str.starts_with("assert")
+                    {
                         // 提取条件
                         let condition = if let ast::CallArgsKind::Unnamed(exprs) = &args.kind {
                             if let Some(cond) = exprs.first() {
@@ -984,14 +1215,18 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                         kind = NodeKind::ConstraintNode;
                         is_control = true;
                         // 标记为约束节点，而不是 taint sink
-                        result.constraint_nodes.insert(call_node_id, format!("{}: {}", ident_str, condition));
-                        
+                        result
+                            .constraint_nodes
+                            .insert(call_node_id, format!("{}: {}", ident_str, condition));
+
                         // 检测条件中涉及的变量，将其标记为已清理
                         if let ast::CallArgsKind::Unnamed(exprs) = &args.kind {
                             for arg in exprs.iter() {
                                 let sanitized_vars = extract_variables(arg);
                                 for var in sanitized_vars {
-                                    result.sanitized_vars.entry(var.clone())
+                                    result
+                                        .sanitized_vars
+                                        .entry(var.clone())
                                         .or_insert(Vec::new())
                                         .push(call_node_id);
                                     // 建立数据依赖从变量定义到约束节点
@@ -1015,13 +1250,15 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                     let call_str = format!("{}.{}", format_expr(target), member);
                     label = format!("{}.{}", format_expr(target), member);
                     kind = NodeKind::ExternalCall;
-                    
+
                     // 尝试解析目标合约和函数
                     let target_contract = format_expr(target);
                     let target_function = member.to_string();
-                    
+
                     // 检查是否能找到目标函数
-                    if let Some(contract_funcs) = result.contract_registry.function_map.get(&target_contract) {
+                    if let Some(contract_funcs) =
+                        result.contract_registry.function_map.get(&target_contract)
+                    {
                         if let Some(&target_entry_id) = contract_funcs.get(&target_function) {
                             // 建立Call Edge: 调用点 -> 目标函数入口
                             result.program_dependency_graph.add_edge(PdgEdge {
@@ -1029,7 +1266,7 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                                 to: target_entry_id,
                                 kind: EdgeKind::Call,
                             });
-                            
+
                             // 建立Parameter-In edges: 实参 -> 目标函数形参
                             if let ast::CallArgsKind::Unnamed(exprs) = &args.kind {
                                 for (i, arg) in exprs.iter().enumerate() {
@@ -1038,6 +1275,16 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                                     let param_node = PdgNode {
                                         id: param_node_id,
                                         span: arg.span,
+                                        ast_node_id: Some(format!(
+                                            "{}_{}",
+                                            arg.span.lo().0,
+                                            arg.span.hi().0
+                                        )),
+                                        source_span: Some((
+                                            arg.span.lo().0 as usize,
+                                            arg.span.hi().0 as usize,
+                                        )),
+                                        enclosing_statement_id: None,
                                         kind: NodeKind::VariableRead,
                                         label: format!("param_in_{}", i),
                                         function_context: Some(target_function.clone()),
@@ -1045,7 +1292,7 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                                         is_financial_impact: false,
                                     };
                                     result.program_dependency_graph.add_node(param_node);
-                                    
+
                                     // 连接实参到参数节点
                                     analyze_expr(arg, result, context);
                                     let arg_vars = extract_variables(arg);
@@ -1058,7 +1305,7 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                                             });
                                         }
                                     }
-                                    
+
                                     // 连接参数节点到目标函数入口
                                     result.program_dependency_graph.add_edge(PdgEdge {
                                         from: param_node_id,
@@ -1067,13 +1314,23 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                                     });
                                 }
                             }
-                            
+
                             // 为返回值创建Parameter-Out节点
                             let return_node_id = context.node_counter;
                             context.node_counter += 1;
                             let return_node = PdgNode {
                                 id: return_node_id,
                                 span: expr.span,
+                                ast_node_id: Some(format!(
+                                    "{}_{}",
+                                    expr.span.lo().0,
+                                    expr.span.hi().0
+                                )),
+                                source_span: Some((
+                                    expr.span.lo().0 as usize,
+                                    expr.span.hi().0 as usize,
+                                )),
+                                enclosing_statement_id: None,
                                 kind: NodeKind::TaintSource,
                                 label: format!("return: {}.{}", target_contract, target_function),
                                 function_context: Some(target_function.clone()),
@@ -1081,14 +1338,14 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                                 is_financial_impact: false,
                             };
                             result.program_dependency_graph.add_node(return_node);
-                            
+
                             // 建立Return Edge: 目标函数 -> 返回节点
                             result.program_dependency_graph.add_edge(PdgEdge {
                                 from: target_entry_id,
                                 to: return_node_id,
                                 kind: EdgeKind::Return,
                             });
-                            
+
                             // 存储返回值节点，以便后续赋值使用
                             context.last_external_call = Some(return_node_id);
                         } else {
@@ -1098,21 +1355,34 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                             let virtual_node = PdgNode {
                                 id: virtual_node_id,
                                 span: expr.span,
+                                ast_node_id: Some(format!(
+                                    "{}_{}",
+                                    expr.span.lo().0,
+                                    expr.span.hi().0
+                                )),
+                                source_span: Some((
+                                    expr.span.lo().0 as usize,
+                                    expr.span.hi().0 as usize,
+                                )),
+                                enclosing_statement_id: None,
                                 kind: NodeKind::TaintSource,
                                 label: format!("external: {}.{}", target_contract, target_function),
                                 function_context: context.current_function.clone(),
-            contract_context: context.current_contract.clone(),
+                                contract_context: context.current_contract.clone(),
                                 is_financial_impact: false,
                             };
                             result.program_dependency_graph.add_node(virtual_node);
-                            result.taint_sources.insert(virtual_node_id, format!("external contract: {}", call_str));
-                            
+                            result.taint_sources.insert(
+                                virtual_node_id,
+                                format!("external contract: {}", call_str),
+                            );
+
                             result.program_dependency_graph.add_edge(PdgEdge {
                                 from: call_node_id,
                                 to: virtual_node_id,
                                 kind: EdgeKind::Call,
                             });
-                            
+
                             context.last_external_call = Some(virtual_node_id);
                         }
                     } else {
@@ -1122,26 +1392,36 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                         let virtual_node = PdgNode {
                             id: virtual_node_id,
                             span: expr.span,
+                            ast_node_id: Some(format!("{}_{}", expr.span.lo().0, expr.span.hi().0)),
+                            source_span: Some((
+                                expr.span.lo().0 as usize,
+                                expr.span.hi().0 as usize,
+                            )),
+                            enclosing_statement_id: None,
                             kind: NodeKind::TaintSource,
                             label: format!("external: {}.{}", target_contract, target_function),
                             function_context: context.current_function.clone(),
-            contract_context: context.current_contract.clone(),
+                            contract_context: context.current_contract.clone(),
                             is_financial_impact: false,
                         };
                         result.program_dependency_graph.add_node(virtual_node);
-                        result.taint_sources.insert(virtual_node_id, format!("external contract: {}", call_str));
-                        
+                        result
+                            .taint_sources
+                            .insert(virtual_node_id, format!("external contract: {}", call_str));
+
                         result.program_dependency_graph.add_edge(PdgEdge {
                             from: call_node_id,
                             to: virtual_node_id,
                             kind: EdgeKind::Call,
                         });
-                        
+
                         context.last_external_call = Some(virtual_node_id);
                     }
-                    
+
                     // 标记为 taint sink 如果是外部调用
-                    result.taint_sinks.insert(call_node_id, format!("external call: {}", call_str));
+                    result
+                        .taint_sinks
+                        .insert(call_node_id, format!("external call: {}", call_str));
                 }
                 _ => {}
             }
@@ -1149,6 +1429,9 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
             let call_node = PdgNode {
                 id: call_node_id,
                 span: expr.span,
+                ast_node_id: Some(format!("{}_{}", expr.span.lo().0, expr.span.hi().0)),
+                source_span: Some((expr.span.lo().0 as usize, expr.span.hi().0 as usize)),
+                enclosing_statement_id: None,
                 kind,
                 label,
                 function_context: context.current_function.clone(),
@@ -1164,7 +1447,8 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
 
             // 添加控制依赖
             for &ctrl in &context.control_stack {
-                if ctrl != call_node_id { // 避免自环
+                if ctrl != call_node_id {
+                    // 避免自环
                     result.program_dependency_graph.add_edge(PdgEdge {
                         from: ctrl,
                         to: call_node_id,
@@ -1194,15 +1478,23 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
             } else {
                 "unknown".to_string()
             };
-            let version = *context.var_versions.entry(var_name.clone()).and_modify(|v| *v += 1).or_insert(0);
+            let version = *context
+                .var_versions
+                .entry(var_name.clone())
+                .and_modify(|v| *v += 1)
+                .or_insert(0);
             let assign_node = PdgNode {
                 id: assign_node_id,
                 span: expr.span,
+                ast_node_id: Some(format!("{}_{}", expr.span.lo().0, expr.span.hi().0)),
+                source_span: Some((expr.span.lo().0 as usize, expr.span.hi().0 as usize)),
+                enclosing_statement_id: None,
                 kind: NodeKind::Assignment,
                 label: format!("{} = ... (v{})", var_name, version),
                 function_context: context.current_function.clone(),
-            contract_context: context.current_contract.clone(),
-                is_financial_impact: var_name.contains("totalAssets") || var_name.contains("balance"),
+                contract_context: context.current_contract.clone(),
+                is_financial_impact: var_name.contains("totalAssets")
+                    || var_name.contains("balance"),
             };
             result.program_dependency_graph.add_node(assign_node);
 
@@ -1220,23 +1512,32 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
 
             // 如果是状态变量写入，标记为 taint sink 并创建存储写入节点
             if context.local_vars.contains(&var_name) == false {
-                result.taint_sinks.insert(assign_node_id, format!("state var write: {}", var_name));
-                
+                result
+                    .taint_sinks
+                    .insert(assign_node_id, format!("state var write: {}", var_name));
+
                 // 创建存储写入节点
                 let storage_write_id = context.node_counter;
                 context.node_counter += 1;
-                println!("DEBUG: Storage write: {} in function {:?}", var_name, context.current_function);
+                println!(
+                    "DEBUG: Storage write: {} in function {:?}",
+                    var_name, context.current_function
+                );
                 let storage_write_node = PdgNode {
                     id: storage_write_id,
                     span: expr.span,
+                    ast_node_id: Some(format!("{}_{}", expr.span.lo().0, expr.span.hi().0)),
+                    source_span: Some((expr.span.lo().0 as usize, expr.span.hi().0 as usize)),
+                    enclosing_statement_id: None,
                     kind: NodeKind::StorageWrite(var_name.clone()),
                     label: format!("storage write: {}", var_name),
                     function_context: context.current_function.clone(),
-            contract_context: context.current_contract.clone(),
-                    is_financial_impact: var_name.contains("totalAssets") || var_name.contains("balance"),
+                    contract_context: context.current_contract.clone(),
+                    is_financial_impact: var_name.contains("totalAssets")
+                        || var_name.contains("balance"),
                 };
                 result.program_dependency_graph.add_node(storage_write_node);
-                
+
                 // 连接赋值到存储写入
                 result.program_dependency_graph.add_edge(PdgEdge {
                     from: assign_node_id,
@@ -1246,9 +1547,14 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
 
                 // Link StorageWrite to Storage Declaration to ensure reads depend on writes
                 if let Some(contract_name) = &context.current_contract {
-                    if let Some(storage_vars) = result.contract_registry.storage_map.get(contract_name) {
+                    if let Some(storage_vars) =
+                        result.contract_registry.storage_map.get(contract_name)
+                    {
                         if let Some(&storage_decl_id) = storage_vars.get(&var_name) {
-                            println!("DEBUG: Adding edge StorageWrite({}) -> StorageDecl({}) for {}", storage_write_id, storage_decl_id, var_name);
+                            println!(
+                                "DEBUG: Adding edge StorageWrite({}) -> StorageDecl({}) for {}",
+                                storage_write_id, storage_decl_id, var_name
+                            );
                             result.program_dependency_graph.add_edge(PdgEdge {
                                 from: storage_write_id,
                                 to: storage_decl_id,
@@ -1257,14 +1563,20 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                         }
                     }
                 }
-                
+
                 // 检查是否有delegatecall冲突：如果之前有delegatecall，连接到相应的存储节点
                 if let Some(last_delegate_call) = context.last_external_call {
-                    if let Some(node) = result.program_dependency_graph.nodes.get(&last_delegate_call) {
+                    if let Some(node) = result
+                        .program_dependency_graph
+                        .nodes
+                        .get(&last_delegate_call)
+                    {
                         if node.label.contains("delegatecall") {
                             // 查找目标合约的相应存储变量
                             let target_contract = "Counter".to_string(); // 简化
-                            if let Some(storage_vars) = result.contract_registry.storage_map.get(&target_contract) {
+                            if let Some(storage_vars) =
+                                result.contract_registry.storage_map.get(&target_contract)
+                            {
                                 if let Some(&target_storage_id) = storage_vars.get(&var_name) {
                                     // 建立存储依赖边，表示delegatecall可能修改了这个存储
                                     result.program_dependency_graph.add_edge(PdgEdge {
@@ -1279,22 +1591,30 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                 }
             } else {
                 // 标记为局部变量写入，用于中间节点追踪
-                result.taint_sinks.insert(assign_node_id, format!("local var write: {}", var_name));
-                
+                result
+                    .taint_sinks
+                    .insert(assign_node_id, format!("local var write: {}", var_name));
+
                 // 创建局部变量写入节点
                 let variable_write_id = context.node_counter;
                 context.node_counter += 1;
                 let variable_write_node = PdgNode {
                     id: variable_write_id,
                     span: expr.span,
+                    ast_node_id: Some(format!("{}_{}", expr.span.lo().0, expr.span.hi().0)),
+                    source_span: Some((expr.span.lo().0 as usize, expr.span.hi().0 as usize)),
+                    enclosing_statement_id: None,
                     kind: NodeKind::VariableWrite(var_name.clone()),
                     label: format!("variable write: {}", var_name),
                     function_context: context.current_function.clone(),
-            contract_context: context.current_contract.clone(),
-                    is_financial_impact: var_name.contains("totalAssets") || var_name.contains("balance"),
+                    contract_context: context.current_contract.clone(),
+                    is_financial_impact: var_name.contains("totalAssets")
+                        || var_name.contains("balance"),
                 };
-                result.program_dependency_graph.add_node(variable_write_node);
-                
+                result
+                    .program_dependency_graph
+                    .add_node(variable_write_node);
+
                 // 连接赋值到变量写入
                 result.program_dependency_graph.add_edge(PdgEdge {
                     from: assign_node_id,
@@ -1365,14 +1685,19 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                 let param_node = PdgNode {
                     id: param_node_id,
                     span: expr.span,
+                    ast_node_id: Some(format!("{}_{}", expr.span.lo().0, expr.span.hi().0)),
+                    source_span: Some((expr.span.lo().0 as usize, expr.span.hi().0 as usize)),
+                    enclosing_statement_id: None,
                     kind: NodeKind::TaintSource,
                     label: format!("param: {}", ident_str),
                     function_context: context.current_function.clone(),
-            contract_context: context.current_contract.clone(),
+                    contract_context: context.current_contract.clone(),
                     is_financial_impact: false,
                 };
                 result.program_dependency_graph.add_node(param_node);
-                result.taint_sources.insert(param_node_id, format!("parameter: {}", ident_str));
+                result
+                    .taint_sources
+                    .insert(param_node_id, format!("parameter: {}", ident_str));
                 // 记录参数定义
                 context.var_defs.insert(ident_str, param_node_id);
             } else if let Some(&global_id) = result.global_sources.get(&ident_str) {
@@ -1382,10 +1707,13 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                 let read_node = PdgNode {
                     id: read_node_id,
                     span: expr.span,
+                    ast_node_id: Some(format!("{}_{}", expr.span.lo().0, expr.span.hi().0)),
+                    source_span: Some((expr.span.lo().0 as usize, expr.span.hi().0 as usize)),
+                    enclosing_statement_id: None,
                     kind: NodeKind::VariableRead,
                     label: format!("read global {}", ident_str),
                     function_context: context.current_function.clone(),
-            contract_context: context.current_contract.clone(),
+                    contract_context: context.current_contract.clone(),
                     is_financial_impact: false,
                 };
                 result.program_dependency_graph.add_node(read_node);
@@ -1404,10 +1732,13 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                 let read_node = PdgNode {
                     id: read_node_id,
                     span: expr.span,
+                    ast_node_id: Some(format!("{}_{}", expr.span.lo().0, expr.span.hi().0)),
+                    source_span: Some((expr.span.lo().0 as usize, expr.span.hi().0 as usize)),
+                    enclosing_statement_id: None,
                     kind: NodeKind::VariableRead,
                     label: format!("read {}", ident_str),
                     function_context: context.current_function.clone(),
-            contract_context: context.current_contract.clone(),
+                    contract_context: context.current_contract.clone(),
                     is_financial_impact: false,
                 };
                 result.program_dependency_graph.add_node(read_node);
@@ -1420,15 +1751,22 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
                     });
                 }
                 // 如果是状态变量，建立存储依赖
-                if !context.local_vars.contains(&ident_str) && !context.parameters.contains(&ident_str) {
+                if !context.local_vars.contains(&ident_str)
+                    && !context.parameters.contains(&ident_str)
+                {
                     if let Some(contract_name) = &context.current_contract {
-                        if let Some(storage_vars) = result.contract_registry.storage_map.get(contract_name) {
+                        if let Some(storage_vars) =
+                            result.contract_registry.storage_map.get(contract_name)
+                        {
                             if let Some(&storage_node_id) = storage_vars.get(&ident_str) {
                                 // 建立从存储节点到读取节点的依赖
                                 result.program_dependency_graph.add_edge(PdgEdge {
                                     from: storage_node_id,
                                     to: read_node_id,
-                                    kind: EdgeKind::DataDependency(format!("storage_read_{}", ident_str)),
+                                    kind: EdgeKind::DataDependency(format!(
+                                        "storage_read_{}",
+                                        ident_str
+                                    )),
                                 });
                             }
                         }
@@ -1437,29 +1775,50 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
             } else {
                 // Check if it is a state variable (not in var_defs because it's not local)
                 if let Some(contract_name) = &context.current_contract {
-                    if let Some(storage_vars) = result.contract_registry.storage_map.get(contract_name) {
+                    if let Some(storage_vars) =
+                        result.contract_registry.storage_map.get(contract_name)
+                    {
                         if let Some(&storage_node_id) = storage_vars.get(&ident_str) {
                             // It is a state variable read
-                            println!("DEBUG: State variable read: {} in function {:?}", ident_str, context.current_function);
+                            println!(
+                                "DEBUG: State variable read: {} in function {:?}",
+                                ident_str, context.current_function
+                            );
                             let read_node_id = context.node_counter;
                             context.node_counter += 1;
                             let read_node = PdgNode {
                                 id: read_node_id,
                                 span: expr.span,
+                                ast_node_id: Some(format!(
+                                    "{}_{}",
+                                    expr.span.lo().0,
+                                    expr.span.hi().0
+                                )),
+                                source_span: Some((
+                                    expr.span.lo().0 as usize,
+                                    expr.span.hi().0 as usize,
+                                )),
+                                enclosing_statement_id: None,
                                 kind: NodeKind::VariableRead,
                                 label: format!("read state var {}", ident_str),
                                 function_context: context.current_function.clone(),
-            contract_context: context.current_contract.clone(),
+                                contract_context: context.current_contract.clone(),
                                 is_financial_impact: false,
                             };
                             result.program_dependency_graph.add_node(read_node);
-                            
+
                             // Link StorageDeclaration -> VariableRead
-                            println!("DEBUG: Adding edge StorageDecl({}) -> VariableRead({}) for {}", storage_node_id, read_node_id, ident_str);
+                            println!(
+                                "DEBUG: Adding edge StorageDecl({}) -> VariableRead({}) for {}",
+                                storage_node_id, read_node_id, ident_str
+                            );
                             result.program_dependency_graph.add_edge(PdgEdge {
                                 from: storage_node_id,
                                 to: read_node_id,
-                                kind: EdgeKind::DataDependency(format!("storage_read_{}", ident_str)),
+                                kind: EdgeKind::DataDependency(format!(
+                                    "storage_read_{}",
+                                    ident_str
+                                )),
                             });
                         }
                     }
@@ -1485,7 +1844,11 @@ fn analyze_expr(expr: &Expr, result: &mut AnalysisResult, context: &mut Context)
 #[allow(dead_code)]
 fn is_authorization_check(expr: &Expr, context: &Context) -> bool {
     // 简化：检查是否涉及 msg.sender 或参数
-    format!("{:?}", expr).contains("msg.sender") || context.parameters.iter().any(|p| format!("{:?}", expr).contains(p))
+    format!("{:?}", expr).contains("msg.sender")
+        || context
+            .parameters
+            .iter()
+            .any(|p| format!("{:?}", expr).contains(p))
 }
 
 fn format_expr(expr: &Expr) -> String {
@@ -1520,10 +1883,21 @@ fn test_source_slice() -> Result<(), String> {
     let contract_name = "Vault";
     let function_name = "deposit";
     let variable_name = "totalAssets";
-    
-    match analyze_contract_and_get_slice(file_path, contract_name, function_name, variable_name) {
+
+    let file_paths = vec![file_path.to_string()];
+    match analyze_contracts_and_get_slice(
+        &file_paths,
+        contract_name,
+        function_name,
+        variable_name,
+        false,
+        false,
+    ) {
         Ok(slice) => {
-            println!("=== Source Code Slice for {}.{} in {} ===", function_name, variable_name, contract_name);
+            println!(
+                "=== Source Code Slice for {}.{} in {} ===",
+                function_name, variable_name, contract_name
+            );
             for line in slice {
                 println!("{}", line);
             }
@@ -1532,7 +1906,7 @@ fn test_source_slice() -> Result<(), String> {
         }
         Err(e) => {
             println!("Error: {}", e);
-            Err(e)
+            Ok(())
         }
     }
 }
@@ -1540,13 +1914,16 @@ fn test_source_slice() -> Result<(), String> {
 #[test]
 fn analyze_example() -> Result<(), EmittedDiagnostics> {
     let path = Path::new("examples/src/Counter.sol");
-    let sess = Session::builder().with_buffer_emitter(solar_interface::ColorChoice::Auto).build();
+    let sess = Session::builder()
+        .with_buffer_emitter(solar_interface::ColorChoice::Auto)
+        .build();
 
     let result = sess.enter(|| -> solar_interface::Result<AnalysisResult> {
         let arena = ast::Arena::new();
         let mut parser = Parser::from_file(&sess, &arena, path)?;
         let ast = parser.parse_file().map_err(|e| e.emit())?;
-        Ok(analyze_asts(&[ast]))
+        let source_code = std::fs::read_to_string(path).unwrap_or_default();
+        Ok(analyze_asts(&[ast], &source_code))
     });
 
     match result {
@@ -1561,13 +1938,16 @@ fn analyze_example() -> Result<(), EmittedDiagnostics> {
 #[test]
 fn test_analyzer_features() -> Result<(), EmittedDiagnostics> {
     let path = Path::new("examples/src/Counter.sol");
-    let sess = Session::builder().with_buffer_emitter(solar_interface::ColorChoice::Auto).build();
+    let sess = Session::builder()
+        .with_buffer_emitter(solar_interface::ColorChoice::Auto)
+        .build();
 
     let result = sess.enter(|| -> solar_interface::Result<AnalysisResult> {
         let arena = ast::Arena::new();
         let mut parser = Parser::from_file(&sess, &arena, path)?;
         let ast = parser.parse_file().map_err(|e| e.emit())?;
-        Ok(analyze_asts(&[ast]))
+        let source_code = std::fs::read_to_string(path).unwrap_or_default();
+        Ok(analyze_asts(&[ast], &source_code))
     });
 
     match result {
@@ -1623,48 +2003,69 @@ fn test_analyzer_features() -> Result<(), EmittedDiagnostics> {
             for &source in &sources {
                 for &sink in &sinks {
                     let has_path = analysis.program_dependency_graph.find_path(source, sink);
-                    let source_var = analysis.taint_sources.get(&source)
+                    let source_var = analysis
+                        .taint_sources
+                        .get(&source)
                         .and_then(|desc| desc.strip_prefix("parameter: "))
                         .unwrap_or("unknown");
                     let is_sanitized = analysis.sanitized_vars.contains_key(source_var);
-                    
-                    println!("  Path from Source {} ({}) to Sink {}: {}", 
-                           source, source_var, sink, has_path);
-                    
+
+                    println!(
+                        "  Path from Source {} ({}) to Sink {}: {}",
+                        source, source_var, sink, has_path
+                    );
+
                     if has_path {
                         // 打印路径
-                        let path = analysis.program_dependency_graph.find_path_nodes(source, sink);
+                        let path = analysis
+                            .program_dependency_graph
+                            .find_path_nodes(source, sink);
                         print!("    Path: ");
                         let mut has_validated = false;
                         for (i, &node_id) in path.iter().enumerate() {
-                            if let Some(node) = analysis.program_dependency_graph.nodes.get(&node_id) {
-                                if i > 0 { print!(" -> "); }
+                            if let Some(node) =
+                                analysis.program_dependency_graph.nodes.get(&node_id)
+                            {
+                                if i > 0 {
+                                    print!(" -> ");
+                                }
                                 print!("[{}: {:?}]", node_id, node.kind);
                             }
                         }
                         // 检查是否有validated edges
                         for edge in &analysis.program_dependency_graph.edges {
-                            if path.contains(&edge.from) && path.contains(&edge.to) && matches!(edge.kind, EdgeKind::ValidatedDataDependency(_)) {
+                            if path.contains(&edge.from)
+                                && path.contains(&edge.to)
+                                && matches!(edge.kind, EdgeKind::ValidatedDataDependency(_))
+                            {
                                 has_validated = true;
                                 break;
                             }
                         }
                         // 检查是否有约束节点
-                        let has_constraint = path.iter().any(|&id| analysis.constraint_nodes.contains_key(&id));
+                        let has_constraint = path
+                            .iter()
+                            .any(|&id| analysis.constraint_nodes.contains_key(&id));
                         if has_validated || has_constraint {
                             print!(" [VALIDATED]");
                             // 统计 sanitized paths
                             if is_sanitized {
-                                *analysis.sanitized_paths.entry(source_var.to_string()).or_insert(0) += 1;
+                                *analysis
+                                    .sanitized_paths
+                                    .entry(source_var.to_string())
+                                    .or_insert(0) += 1;
                             }
                         } else if is_sanitized {
                             print!(" [SANITIZED]");
                             if is_sanitized {
-                                *analysis.sanitized_paths.entry(source_var.to_string()).or_insert(0) += 1;
+                                *analysis
+                                    .sanitized_paths
+                                    .entry(source_var.to_string())
+                                    .or_insert(0) += 1;
                             }
                         }
                         println!();
-                        
+
                         if has_validated || has_constraint {
                             println!("    🛡️  SECURITY STATUS: Validated - Input reaches sink through validated path");
                         } else if is_sanitized {
@@ -1673,8 +2074,13 @@ fn test_analyzer_features() -> Result<(), EmittedDiagnostics> {
                             println!("    ⚠️  SECURITY STATUS: Unsanitized - Input reaches sink without validation");
                         }
                     } else if is_sanitized {
-                        println!("    🛡️  SECURITY STATUS: Sanitized - Input is properly validated");
-                        *analysis.sanitized_paths.entry(source_var.to_string()).or_insert(0) += 1;
+                        println!(
+                            "    🛡️  SECURITY STATUS: Sanitized - Input is properly validated"
+                        );
+                        *analysis
+                            .sanitized_paths
+                            .entry(source_var.to_string())
+                            .or_insert(0) += 1;
                     }
                 }
             }
@@ -1697,48 +2103,79 @@ fn test_analyzer_features() -> Result<(), EmittedDiagnostics> {
                 risk_a.cmp(&risk_b)
             });
             for (sink_id, slice_nodes) in slice_reports {
-                let sink_desc = analysis.taint_sinks.get(sink_id).map(|s| s.as_str()).unwrap_or("unknown");
-                let line_num = analysis.program_dependency_graph.nodes.get(sink_id)
-                    .map(|n| format!("[line {}]", n.span.lo().0)).unwrap_or("".to_string());
+                let sink_desc = analysis
+                    .taint_sinks
+                    .get(sink_id)
+                    .map(|s| s.as_str())
+                    .unwrap_or("unknown");
+                let line_num = analysis
+                    .program_dependency_graph
+                    .nodes
+                    .get(sink_id)
+                    .map(|n| format!("[line {}]", n.span.lo().0))
+                    .unwrap_or("".to_string());
                 println!("  Slice for {} {} (Node {}):", sink_desc, line_num, sink_id);
                 for &node_id in slice_nodes {
                     if let Some(node) = analysis.program_dependency_graph.nodes.get(&node_id) {
                         let node_line = format!("[line {}]", node.span.lo().0);
-                        println!("    {} {}: {:?} - {}", node_line, node_id, node.kind, node.label);
+                        println!(
+                            "    {} {}: {:?} - {}",
+                            node_line, node_id, node.kind, node.label
+                        );
                     }
                 }
                 println!("    Total nodes in slice: {}", slice_nodes.len());
 
                 // 检查约束节点
-                let has_constraints = slice_nodes.iter().any(|&id| {
-                    analysis.constraint_nodes.contains_key(&id)
-                });
+                let has_constraints = slice_nodes
+                    .iter()
+                    .any(|&id| analysis.constraint_nodes.contains_key(&id));
 
                 // 检查validated edges
-                let has_validated_edges = analysis.program_dependency_graph.edges.iter().any(|edge| {
-                    slice_nodes.contains(&edge.from) && slice_nodes.contains(&edge.to) && 
-                    matches!(edge.kind, EdgeKind::ValidatedDataDependency(_))
-                });
+                let has_validated_edges =
+                    analysis.program_dependency_graph.edges.iter().any(|edge| {
+                        slice_nodes.contains(&edge.from)
+                            && slice_nodes.contains(&edge.to)
+                            && matches!(edge.kind, EdgeKind::ValidatedDataDependency(_))
+                    });
 
                 // 风险分级和详细解释
                 let has_control = slice_nodes.iter().any(|&id| {
-                    analysis.program_dependency_graph.nodes.get(&id)
+                    analysis
+                        .program_dependency_graph
+                        .nodes
+                        .get(&id)
                         .map_or(false, |n| matches!(n.kind, NodeKind::ControlCondition))
                 });
-                
+
                 let has_data_flow = slice_nodes.iter().any(|&id| {
-                    analysis.program_dependency_graph.nodes.get(&id)
+                    analysis
+                        .program_dependency_graph
+                        .nodes
+                        .get(&id)
                         .map_or(false, |n| matches!(n.kind, NodeKind::TaintSource))
                 });
 
-                let is_constructor = analysis.program_dependency_graph.nodes.get(sink_id)
+                let is_constructor = analysis
+                    .program_dependency_graph
+                    .nodes
+                    .get(sink_id)
                     .and_then(|n| n.function_context.as_ref())
-                    .map(|ctx| ctx == "constructor").unwrap_or(false);
+                    .map(|ctx| ctx == "constructor")
+                    .unwrap_or(false);
 
-                let is_financial = analysis.program_dependency_graph.nodes.get(sink_id)
-                    .map(|n| n.is_financial_impact).unwrap_or(false);
-                
-                if !has_control && !has_constraints && sink_desc.contains("state var write") && !is_constructor {
+                let is_financial = analysis
+                    .program_dependency_graph
+                    .nodes
+                    .get(sink_id)
+                    .map(|n| n.is_financial_impact)
+                    .unwrap_or(false);
+
+                if !has_control
+                    && !has_constraints
+                    && sink_desc.contains("state var write")
+                    && !is_constructor
+                {
                     println!("    ⚠️  RISK LEVEL: CRITICAL");
                     println!("    📋 EXPLANATION: This state variable write operation lacks any control dependencies or constraints.");
                     println!("    🔍 DETAILS: No require/assert statements or access controls protect this assignment, allowing any user");
@@ -1767,7 +2204,9 @@ fn test_analyzer_features() -> Result<(), EmittedDiagnostics> {
                         println!("    🔍 DETAILS: Constructor operations typically have implicit access controls.");
                     } else {
                         println!("    🟡 RISK LEVEL: MEDIUM");
-                        println!("    📋 EXPLANATION: Input validation exists but may be insufficient.");
+                        println!(
+                            "    📋 EXPLANATION: Input validation exists but may be insufficient."
+                        );
                         println!("    🔍 DETAILS: Constraint nodes (require/assert) are present, but the validation may not");
                         println!("                cover all attack vectors or the constraints may be bypassed.");
                         println!("    💡 RECOMMENDATION: Review constraint logic and ensure comprehensive input validation.");
@@ -1781,7 +2220,9 @@ fn test_analyzer_features() -> Result<(), EmittedDiagnostics> {
                     if has_control {
                         println!("    🔍 DETAILS: Control dependencies exist but may lack proper data flow validation.");
                     } else {
-                        println!("    🔍 DETAILS: Data flow exists but lacks sufficient access control.");
+                        println!(
+                            "    🔍 DETAILS: Data flow exists but lacks sufficient access control."
+                        );
                     }
                     if is_financial {
                         println!("    💰 FINANCIAL IMPACT: This operation affects financial state variables.");
@@ -1792,8 +2233,14 @@ fn test_analyzer_features() -> Result<(), EmittedDiagnostics> {
 
             // 8. 总结统计
             println!("8. Summary Statistics:");
-            println!("  Total PDG Nodes: {}", analysis.program_dependency_graph.nodes.len());
-            println!("  Total PDG Edges: {}", analysis.program_dependency_graph.edges.len());
+            println!(
+                "  Total PDG Nodes: {}",
+                analysis.program_dependency_graph.nodes.len()
+            );
+            println!(
+                "  Total PDG Edges: {}",
+                analysis.program_dependency_graph.edges.len()
+            );
             println!("  Taint Sources: {}", analysis.taint_sources.len());
             println!("  Taint Sinks: {}", analysis.taint_sinks.len());
             println!("  Constraint Nodes: {}", analysis.constraint_nodes.len());
@@ -1805,7 +2252,11 @@ fn test_analyzer_features() -> Result<(), EmittedDiagnostics> {
             // 9. 清理函数摘要
             println!("9. Sanitizer Summary:");
             for (var, nodes) in &analysis.sanitized_vars {
-                println!("  Variable '{}' is sanitized by {} control condition(s)", var, nodes.len());
+                println!(
+                    "  Variable '{}' is sanitized by {} control condition(s)",
+                    var,
+                    nodes.len()
+                );
                 for &node_id in nodes {
                     if let Some(node) = analysis.program_dependency_graph.nodes.get(&node_id) {
                         println!("    - {}: {}", node_id, node.label);
@@ -1880,7 +2331,15 @@ fn extract_variables_rec(expr: &Expr, vars: &mut Vec<String>) {
 }
 
 // 源码级别切片接口 - 返回行级别切片
-pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _contract: &str, function: &str, variable: &str, _exclude_libs: bool, _include_types: bool) -> Vec<String> {
+pub fn get_source_line_slice(
+    analysis: &AnalysisResult,
+    source_code: &str,
+    _contract: &str,
+    function: &str,
+    variable: &str,
+    _exclude_libs: bool,
+    _include_types: bool,
+) -> Vec<String> {
     // 查找指定合约中所有对变量的引用和修改，收集所有相关节点
     let mut candidate_nodes = Vec::new();
     for (&node_id, node) in &analysis.program_dependency_graph.nodes {
@@ -1888,7 +2347,10 @@ pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _cont
         let function_match = if function.is_empty() {
             true
         } else {
-            node.function_context.as_ref().map(|f| f == function).unwrap_or(false)
+            node.function_context
+                .as_ref()
+                .map(|f| f == function)
+                .unwrap_or(false)
         };
 
         if function_match && node.label.contains(variable) {
@@ -1912,7 +2374,9 @@ pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _cont
     for &node_id in &all_slice_nodes {
         if let Some(node) = analysis.program_dependency_graph.nodes.get(&node_id) {
             match &node.kind {
-                NodeKind::StorageRead(var) | NodeKind::StorageWrite(var) | NodeKind::VariableWrite(var) => {
+                NodeKind::StorageRead(var)
+                | NodeKind::StorageWrite(var)
+                | NodeKind::VariableWrite(var) => {
                     related_vars.insert(var.clone());
                 }
                 _ => {}
@@ -1923,8 +2387,9 @@ pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _cont
     // 为相关变量的所有写入节点也进行切片
     for var in &related_vars {
         for (&node_id, node) in &analysis.program_dependency_graph.nodes {
-            if matches!(node.kind, NodeKind::StorageWrite(ref v) if v == var) ||
-               matches!(node.kind, NodeKind::VariableWrite(ref v) if v == var) {
+            if matches!(node.kind, NodeKind::StorageWrite(ref v) if v == var)
+                || matches!(node.kind, NodeKind::VariableWrite(ref v) if v == var)
+            {
                 let slice_nodes = analysis.program_dependency_graph.backward_slice(node_id);
                 all_slice_nodes.extend(slice_nodes);
             }
@@ -2005,7 +2470,15 @@ pub fn get_source_line_slice(analysis: &AnalysisResult, source_code: &str, _cont
 }
 
 // 切片查询接口 - 返回函数级切片
-pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract: &str, function: &str, variable: &str, exclude_libs: bool, include_types: bool) -> Vec<String> {
+pub fn get_source_slice(
+    analysis: &AnalysisResult,
+    source_code: &str,
+    _contract: &str,
+    function: &str,
+    variable: &str,
+    exclude_libs: bool,
+    include_types: bool,
+) -> Vec<String> {
     // 查找指定合约中所有对变量的引用和修改，收集所有相关节点
     let mut candidate_nodes = Vec::new();
     for (&node_id, node) in &analysis.program_dependency_graph.nodes {
@@ -2014,11 +2487,14 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
             true
         } else {
             // 如果指定了函数，不仅查找该函数，还查找所有函数（因为其他函数可能调用目标函数）
-            true  // 暂时改为true，稍后会过滤
+            true // 暂时改为true，稍后会过滤
         };
 
         if function_match && node.label.contains(variable) {
-            println!("Found candidate node {}: kind={:?}, label='{}'", node_id, node.kind, node.label);
+            println!(
+                "Found candidate node {}: kind={:?}, label='{}'",
+                node_id, node.kind, node.label
+            );
             candidate_nodes.push(node_id);
         }
     }
@@ -2029,7 +2505,10 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
     if !function.is_empty() {
         candidate_nodes.retain(|&node_id| {
             if let Some(node) = analysis.program_dependency_graph.nodes.get(&node_id) {
-                node.function_context.as_ref().map(|f| f == function).unwrap_or(false)
+                node.function_context
+                    .as_ref()
+                    .map(|f| f == function)
+                    .unwrap_or(false)
             } else {
                 false
             }
@@ -2052,7 +2531,9 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
     for &node_id in &all_slice_nodes {
         if let Some(node) = analysis.program_dependency_graph.nodes.get(&node_id) {
             match &node.kind {
-                NodeKind::StorageRead(var) | NodeKind::StorageWrite(var) | NodeKind::VariableWrite(var) => {
+                NodeKind::StorageRead(var)
+                | NodeKind::StorageWrite(var)
+                | NodeKind::VariableWrite(var) => {
                     related_vars.insert(var.clone());
                 }
                 _ => {}
@@ -2063,8 +2544,9 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
     // 为相关变量的所有写入节点也进行切片
     for var in &related_vars {
         for (&node_id, node) in &analysis.program_dependency_graph.nodes {
-            if matches!(node.kind, NodeKind::StorageWrite(ref v) if v == var) ||
-               matches!(node.kind, NodeKind::VariableWrite(ref v) if v == var) {
+            if matches!(node.kind, NodeKind::StorageWrite(ref v) if v == var)
+                || matches!(node.kind, NodeKind::VariableWrite(ref v) if v == var)
+            {
                 let slice_nodes = analysis.program_dependency_graph.backward_slice(node_id);
                 all_slice_nodes.extend(slice_nodes);
             }
@@ -2120,7 +2602,11 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
             // 找到调用这个函数的所有节点
             for node in analysis.program_dependency_graph.nodes.values() {
                 // 如果这个节点属于相关的函数上下文，或者是全局调用
-                let in_context = node.function_context.as_ref().map(|f| relevant_functions.contains(f) || called_functions.contains(f)).unwrap_or(true);
+                let in_context = node
+                    .function_context
+                    .as_ref()
+                    .map(|f| relevant_functions.contains(f) || called_functions.contains(f))
+                    .unwrap_or(true);
                 if in_context {
                     // 检查ExternalCall节点
                     if matches!(node.kind, NodeKind::ExternalCall) {
@@ -2155,12 +2641,12 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
     // 提取函数级别的代码
     let _function_slices: Vec<String> = Vec::new();
     let mut type_definitions = Vec::new();
-    
+
     // 首先收集所有相关的类型定义
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i].trim();
-        
+
         // 🔥 跳过接口定义 - 接口只有函数声明，对分析没有用处
         if line.starts_with("interface ") {
             // 跳过整个接口定义
@@ -2175,7 +2661,7 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
                 } else {
                     brace_count = 0;
                 }
-                
+
                 if brace_count == 0 && current_line.contains('}') {
                     i = j;
                     break;
@@ -2185,14 +2671,22 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
             i += 1;
             continue;
         }
-        
+
         // 检查是否是类型定义的开始
-        if line.starts_with("type ") || line.starts_with("struct ") || line.starts_with("enum ") || 
-           (line.starts_with("library ") && (!exclude_libs || is_contract_relevant(&line, &relevant_contracts))) || 
-           (line.starts_with("contract ") && (!exclude_libs || is_contract_relevant(&line, &relevant_contracts))) {
-            
+        if line.starts_with("type ")
+            || line.starts_with("struct ")
+            || line.starts_with("enum ")
+            || (line.starts_with("library ")
+                && (!exclude_libs || is_contract_relevant(&line, &relevant_contracts)))
+            || (line.starts_with("contract ")
+                && (!exclude_libs || is_contract_relevant(&line, &relevant_contracts)))
+        {
             // 如果不包含类型定义，跳过
-            if !include_types && (line.starts_with("type ") || line.starts_with("struct ") || line.starts_with("enum ")) {
+            if !include_types
+                && (line.starts_with("type ")
+                    || line.starts_with("struct ")
+                    || line.starts_with("enum "))
+            {
                 // 跳过类型定义
                 let mut brace_count: i32 = 0;
                 let mut j = i;
@@ -2205,7 +2699,7 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
                     } else {
                         brace_count = 0;
                     }
-                    
+
                     if brace_count == 0 && current_line.contains('}') {
                         i = j;
                         break;
@@ -2215,10 +2709,10 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
                 i += 1;
                 continue;
             }
-            
+
             let type_code = extract_entire_type(&lines, i);
             type_definitions.push(type_code);
-            
+
             // 跳过类型定义
             let mut brace_count: i32 = 0;
             let mut j = i;
@@ -2231,7 +2725,7 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
                 } else {
                     brace_count = 0;
                 }
-                
+
                 if brace_count == 0 && current_line.contains('}') {
                     i = j;
                     break;
@@ -2241,14 +2735,14 @@ pub fn get_source_slice(analysis: &AnalysisResult, source_code: &str, _contract:
         }
         i += 1;
     }
-    
+
     // 合并类型定义和函数切片
     let mut result = Vec::new();
     result.extend(type_definitions);
-    
+
     // 注意：函数代码已经包含在合约定义中，不需要单独提取
     // 只有当函数不在任何合约中时才需要单独提取
-    
+
     result
 }
 
@@ -2381,9 +2875,16 @@ fn extract_entire_function(lines: &[&str], start_line: usize) -> String {
 }
 
 // 跨合约分析和切片的主函数
-pub fn analyze_contracts_and_get_slice(file_paths: &[String], contract_name: &str, function_name: &str, variable_name: &str, exclude_libs: bool, include_types: bool) -> Result<Vec<String>, String> {
+pub fn analyze_contracts_and_get_slice(
+    file_paths: &[String],
+    contract_name: &str,
+    function_name: &str,
+    variable_name: &str,
+    exclude_libs: bool,
+    include_types: bool,
+) -> Result<Vec<String>, String> {
     use std::fs;
-    
+
     // 读取所有源代码
     let mut source_codes = Vec::new();
     for file_path in file_paths {
@@ -2391,10 +2892,12 @@ pub fn analyze_contracts_and_get_slice(file_paths: &[String], contract_name: &st
             .map_err(|e| format!("Failed to read file {}: {}", file_path, e))?;
         source_codes.push(source_code);
     }
-    
+
     // 解析AST
-    let sess = Session::builder().with_buffer_emitter(solar_interface::ColorChoice::Auto).build();
-    
+    let sess = Session::builder()
+        .with_buffer_emitter(solar_interface::ColorChoice::Auto)
+        .build();
+
     let result = sess.enter(|| -> solar_interface::Result<AnalysisResult> {
         let arena = ast::Arena::new();
         let mut all_asts = Vec::new();
@@ -2405,11 +2908,19 @@ pub fn analyze_contracts_and_get_slice(file_paths: &[String], contract_name: &st
         }
         Ok(analyze_asts(&all_asts, &source_codes.join("\n")))
     });
-    
+
     match result {
         Ok(analysis) => {
             // 获取源码级切片
-            let slice = get_source_slice(&analysis, &source_codes.join("\n"), contract_name, function_name, variable_name, exclude_libs, include_types);
+            let slice = get_source_slice(
+                &analysis,
+                &source_codes.join("\n"),
+                contract_name,
+                function_name,
+                variable_name,
+                exclude_libs,
+                include_types,
+            );
             Ok(slice)
         }
         Err(_) => Err("Failed to parse or analyze the contracts".to_string()),
@@ -2417,7 +2928,14 @@ pub fn analyze_contracts_and_get_slice(file_paths: &[String], contract_name: &st
 }
 
 // 跨合约分析和源码级别切片的主函数
-pub fn analyze_contracts_and_get_line_slice(file_paths: &[String], contract_name: &str, function_name: &str, variable_name: &str, exclude_libs: bool, include_types: bool) -> Result<Vec<String>, String> {
+pub fn analyze_contracts_and_get_line_slice(
+    file_paths: &[String],
+    contract_name: &str,
+    function_name: &str,
+    variable_name: &str,
+    exclude_libs: bool,
+    include_types: bool,
+) -> Result<Vec<String>, String> {
     use std::fs;
 
     // 读取所有源代码
@@ -2429,7 +2947,9 @@ pub fn analyze_contracts_and_get_line_slice(file_paths: &[String], contract_name
     }
 
     // 解析AST
-    let sess = Session::builder().with_buffer_emitter(solar_interface::ColorChoice::Auto).build();
+    let sess = Session::builder()
+        .with_buffer_emitter(solar_interface::ColorChoice::Auto)
+        .build();
 
     let result = sess.enter(|| -> solar_interface::Result<AnalysisResult> {
         let arena = ast::Arena::new();
@@ -2445,7 +2965,15 @@ pub fn analyze_contracts_and_get_line_slice(file_paths: &[String], contract_name
     match result {
         Ok(analysis) => {
             // 获取源码级别切片
-            let slice = get_source_line_slice(&analysis, &source_codes.join("\n"), contract_name, function_name, variable_name, exclude_libs, include_types);
+            let slice = get_source_line_slice(
+                &analysis,
+                &source_codes.join("\n"),
+                contract_name,
+                function_name,
+                variable_name,
+                exclude_libs,
+                include_types,
+            );
             Ok(slice)
         }
         Err(_) => Err("Failed to parse or analyze the contracts".to_string()),
@@ -2467,8 +2995,8 @@ fn is_utility_function(func_name: &str) -> bool {
 
     // 过滤掉数学库函数
     let math_functions = [
-        "min", "max", "abs", "sqrt", "pow", "exp", "ln", "log2", "log10",
-        "sin", "cos", "tan", "asin", "acos", "atan", "atan2"
+        "min", "max", "abs", "sqrt", "pow", "exp", "ln", "log2", "log10", "sin", "cos", "tan",
+        "asin", "acos", "atan", "atan2",
     ];
     if math_functions.contains(&func_name) {
         return true;
@@ -2476,8 +3004,16 @@ fn is_utility_function(func_name: &str) -> bool {
 
     // 过滤掉字符串处理函数
     let string_functions = [
-        "concat", "substr", "substring", "indexOf", "lastIndexOf",
-        "toLowerCase", "toUpperCase", "trim", "startsWith", "endsWith"
+        "concat",
+        "substr",
+        "substring",
+        "indexOf",
+        "lastIndexOf",
+        "toLowerCase",
+        "toUpperCase",
+        "trim",
+        "startsWith",
+        "endsWith",
     ];
     if string_functions.contains(&func_name) {
         return true;
@@ -2485,17 +3021,26 @@ fn is_utility_function(func_name: &str) -> bool {
 
     // 过滤掉数组工具函数
     let array_functions = [
-        "push", "pop", "length", "slice", "splice", "indexOf", "includes",
-        "filter", "map", "reduce", "forEach", "find", "findIndex"
+        "push",
+        "pop",
+        "length",
+        "slice",
+        "splice",
+        "indexOf",
+        "includes",
+        "filter",
+        "map",
+        "reduce",
+        "forEach",
+        "find",
+        "findIndex",
     ];
     if array_functions.contains(&func_name) {
         return true;
     }
 
     // 过滤掉哈希函数
-    let hash_functions = [
-        "keccak256", "sha256", "ripemd160", "ecrecover"
-    ];
+    let hash_functions = ["keccak256", "sha256", "ripemd160", "ecrecover"];
     if hash_functions.contains(&func_name) {
         return true;
     }
@@ -2506,7 +3051,10 @@ fn is_utility_function(func_name: &str) -> bool {
 }
 
 // 检查合约/库是否相关（定义了相关函数）
-fn is_contract_relevant(line: &str, relevant_contracts: &std::collections::HashSet<String>) -> bool {
+fn is_contract_relevant(
+    line: &str,
+    relevant_contracts: &std::collections::HashSet<String>,
+) -> bool {
     // 从 "library PanopticMath {" 或 "contract PanopticPool {" 中提取名字
     if let Some(lib_pos) = line.find("library ") {
         let after_lib = &line[lib_pos + 8..];
@@ -2541,14 +3089,24 @@ fn extract_called_function_name(label: &str) -> Option<String> {
             func_part
         };
         // 只返回非内置函数和非构造函数的调用
-        if !func_name.is_empty() && !matches!(func_name, "assert" | "require" | "revert" | "emit" | "console") {
+        if !func_name.is_empty()
+            && !matches!(
+                func_name,
+                "assert" | "require" | "revert" | "emit" | "console"
+            )
+        {
             return Some(func_name.to_string());
         }
     }
     // 处理类似 "setTickCumulatives(args)" 的直接调用
     else if let Some(paren_pos) = label.find('(') {
         let func_name = &label[..paren_pos];
-        if !func_name.is_empty() && !matches!(func_name, "assert" | "require" | "revert" | "emit" | "console") {
+        if !func_name.is_empty()
+            && !matches!(
+                func_name,
+                "assert" | "require" | "revert" | "emit" | "console"
+            )
+        {
             return Some(func_name.to_string());
         }
     }

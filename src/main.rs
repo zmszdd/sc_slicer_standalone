@@ -1,3 +1,4 @@
+#![allow(unused)]
 //!
 //! SC Slicer - Solidity 代码切片工具
 //!
@@ -5,17 +6,17 @@
 //! 和语义切片器，对 Solidity 智能合约进行安全分析
 //! 和代码切片。
 //!
-//! ## 架构设计：AST分析 vs 文本处理
+//! ## 架构设计：AST 分析 + Span 精确提取
 //!
 //! ### 核心原则：
 //! - **决策层（AST）**：使用AST/PDG分析结果来判断语义相关性
-//! - **表示层（文本）**：保留原始代码格式（缩进、注释、空行）
+//! - **提取层（AST Span）**：使用 solar-parser 的 byte span 提取完整 AST 节点
 //!
-//! ### 为什么需要文本处理？
-//! AST虽然提供准确的语法结构，但重建代码会丢失：
-//! - 原始缩进和格式
-//! - 注释位置和内容
-//! - 空行和代码组织
+//! ### 为什么使用 Span 提取？
+//! AST 节点提供准确的语法边界，Span 又能保留原始格式：
+//! - 不需要正则识别函数或变量
+//! - 不需要手写大括号计数
+//! - 不会被字符串、注释或单行类型定义中的符号干扰
 //!
 //! ### 分层架构：
 //! 1. **AST分析层**：
@@ -23,48 +24,92 @@
 //!    - `PDG`: 数据流和控制流分析（来自AST）
 //!    - `relevant_functions`: 通过PDG切片得到（基于AST）
 //!
-//! 2. **文本重建层**：
-//!    - `extract_contract_name()`: 从文本提取名称（用于格式保留）
-//!    - `is_function_start()`: 文本模式匹配（辅助定位）
-//!    - 最终验证：通过`relevant_functions.contains()`检查（回到AST）
-//!
-//! ### 改进历史：
-//! - v1: 纯文本匹配（is_interface_only_function使用正则）❌
-//! - v2: AST决策 + 文本表示（当前版本）✅
+//! 2. **AST Span 提取层**：
+//!    - `AstSliceIndex`: 在 Arena 生命周期内记录合约、函数、变量和类型节点
+//!    - `AstSliceIndex::render()`: 只输出相关 AST 节点的原始源码片段
 //!
 
 use clap::{Arg, Command};
+use std::ffi::OsStr;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 mod analyzer;
-pub mod semantic_slicer;
+mod execution_log;
 pub mod noise_reduction;
-pub mod llm_completion;
-// pub mod sol_resurrect; // TODO: 需要适配solar AST的具体结构
+pub mod semantic_slicer;
+pub mod sol_resurrect_pipeline;
+pub mod sol_resurrect_v2;
 
 use crate::analyzer::AnalysisResult;
 use crate::noise_reduction::NoiseReductionPipeline;
 use crate::semantic_slicer::SemanticGraphAdapter;
-use crate::llm_completion::LLMCompletionPipeline;
 use petgraph::Direction;
+use solar_ast::{self as ast, FunctionKind, ItemKind, SourceUnit};
+use solar_interface::{SourceMap, Span};
+use std::collections::{HashMap, HashSet};
 
 struct PdgAdapter<'a> {
     analysis: &'a AnalysisResult,
     source_code: &'a str,
 }
 
+#[derive(Debug, Clone)]
+struct TargetSpec {
+    contract: String,
+    entry_function: String,
+    focus_symbol: String,
+}
+
+#[derive(Debug, Clone)]
+struct HarnessPolicy {
+    include_setup: bool,
+    include_same_contract_helpers: bool,
+    include_inherited_helpers: bool,
+    allow_text_dependency_expansion: bool,
+    max_harness_functions: usize,
+}
+
+impl Default for HarnessPolicy {
+    fn default() -> Self {
+        Self {
+            include_setup: true,
+            include_same_contract_helpers: true,
+            include_inherited_helpers: true,
+            allow_text_dependency_expansion: false,
+            max_harness_functions: 96,
+        }
+    }
+}
+
 impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
     fn get_predecessors(&self, node_id: usize) -> Vec<usize> {
-        self.analysis.program_dependency_graph.graph.neighbors_directed(petgraph::graph::NodeIndex::new(node_id), Direction::Incoming).map(|n| n.index()).collect()
+        self.analysis
+            .program_dependency_graph
+            .graph
+            .neighbors_directed(
+                petgraph::graph::NodeIndex::new(node_id),
+                Direction::Incoming,
+            )
+            .map(|n| n.index())
+            .collect()
     }
 
     fn get_node_source(&self, node_id: usize) -> String {
-        if let Some(&stored_node_id) = self.analysis.program_dependency_graph.graph.node_weight(petgraph::graph::NodeIndex::new(node_id)) {
-            if let Some(node) = self.analysis.program_dependency_graph.nodes.get(&stored_node_id) {
+        if let Some(&stored_node_id) = self
+            .analysis
+            .program_dependency_graph
+            .graph
+            .node_weight(petgraph::graph::NodeIndex::new(node_id))
+        {
+            if let Some(node) = self
+                .analysis
+                .program_dependency_graph
+                .nodes
+                .get(&stored_node_id)
+            {
                 let start = node.span.lo().to_usize();
                 let end = node.span.hi().to_usize();
                 self.source_code[start..end].to_string()
@@ -77,8 +122,18 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
     }
 
     fn is_control_node(&self, node_id: usize) -> bool {
-        if let Some(&stored_node_id) = self.analysis.program_dependency_graph.graph.node_weight(petgraph::graph::NodeIndex::new(node_id)) {
-            if let Some(node) = self.analysis.program_dependency_graph.nodes.get(&stored_node_id) {
+        if let Some(&stored_node_id) = self
+            .analysis
+            .program_dependency_graph
+            .graph
+            .node_weight(petgraph::graph::NodeIndex::new(node_id))
+        {
+            if let Some(node) = self
+                .analysis
+                .program_dependency_graph
+                .nodes
+                .get(&stored_node_id)
+            {
                 matches!(node.kind, crate::analyzer::NodeKind::ControlCondition)
             } else {
                 false
@@ -89,8 +144,16 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
     }
 
     fn get_node_info(&self, node_id: usize) -> Option<&analyzer::PdgNode> {
-        if let Some(&stored_node_id) = self.analysis.program_dependency_graph.graph.node_weight(petgraph::graph::NodeIndex::new(node_id)) {
-            self.analysis.program_dependency_graph.nodes.get(&stored_node_id)
+        if let Some(&stored_node_id) = self
+            .analysis
+            .program_dependency_graph
+            .graph
+            .node_weight(petgraph::graph::NodeIndex::new(node_id))
+        {
+            self.analysis
+                .program_dependency_graph
+                .nodes
+                .get(&stored_node_id)
         } else {
             None
         }
@@ -98,7 +161,41 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
 
     fn is_keyword(&self, token: &str) -> bool {
         // Solidity 关键字列表
-        matches!(token, "function" | "if" | "else" | "for" | "while" | "return" | "uint256" | "address" | "bool" | "string" | "bytes" | "require" | "emit" | "event" | "contract" | "pragma" | "import" | "public" | "private" | "internal" | "external" | "view" | "pure" | "payable" | "constructor" | "modifier" | "struct" | "enum" | "mapping" | "memory" | "storage" | "calldata")
+        matches!(
+            token,
+            "function"
+                | "if"
+                | "else"
+                | "for"
+                | "while"
+                | "return"
+                | "uint256"
+                | "address"
+                | "bool"
+                | "string"
+                | "bytes"
+                | "require"
+                | "emit"
+                | "event"
+                | "contract"
+                | "pragma"
+                | "import"
+                | "public"
+                | "private"
+                | "internal"
+                | "external"
+                | "view"
+                | "pure"
+                | "payable"
+                | "constructor"
+                | "modifier"
+                | "struct"
+                | "enum"
+                | "mapping"
+                | "memory"
+                | "storage"
+                | "calldata"
+        )
     }
 
     fn extract_identifiers(&self, node_id: usize) -> Vec<String> {
@@ -106,7 +203,10 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
         let code = self.get_node_source(node_id);
         let mut ids = Vec::new();
         for word in code.split(|c: char| !c.is_alphanumeric() && c != '_') {
-            if !word.is_empty() && word.chars().next().unwrap().is_alphabetic() && !self.is_keyword(word) {
+            if !word.is_empty()
+                && word.chars().next().unwrap().is_alphabetic()
+                && !self.is_keyword(word)
+            {
                 ids.push(word.to_string());
             }
         }
@@ -114,114 +214,62 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
     }
 
     fn get_contract_context_summary(&self) -> String {
-        // 提取状态变量和事件定义，但不包括函数体
         let mut context_parts = Vec::new();
 
-        // 解析源代码，提取合约结构
-        let lines: Vec<&str> = self.source_code.lines().collect();
-        let mut i = 0;
-        while i < lines.len() {
-            let line = lines[i].trim();
-            if line.starts_with("pragma ") || line.starts_with("import ") {
-                // 保留pragma和import
-                context_parts.push(lines[i].to_string());
-            } else if line.starts_with("contract ") {
-                // 提取合约声明和状态变量
-                let _contract_name = line.split_whitespace().nth(1).unwrap_or("").split('{').next().unwrap_or("");
-                context_parts.push(lines[i].to_string());
-
-                let mut brace_count = 0;
-                i += 1;
-                while i < lines.len() {
-                    let current_line = lines[i];
-                    let trimmed = current_line.trim();
-
-                    if trimmed.starts_with("function ") || trimmed.starts_with("constructor") || trimmed.starts_with("modifier ") {
-                        // 跳过函数定义，只保留签名
-                        let mut func_brace = 0;
-                        let mut j = i;
-                        while j < lines.len() {
-                            let f_line = lines[j];
-                            func_brace += f_line.chars().filter(|&c| c == '{').count() as i32;
-                            func_brace -= f_line.chars().filter(|&c| c == '}').count() as i32;
-                            if func_brace == 0 && f_line.contains('}') {
-                                break;
-                            }
-                            j += 1;
-                        }
-                        // 只保留函数签名，不包括函数体
-                        if let Some(func_line) = lines[i].strip_suffix('{') {
-                            context_parts.push(format!("{} {{ /* function body omitted */ }}", func_line.trim()));
-                        } else {
-                            context_parts.push(format!("{} /* function body omitted */", lines[i].trim()));
-                        }
-                        i = j;
-                    } else if trimmed.starts_with("event ") || trimmed.starts_with("error ") || trimmed.starts_with("struct ") || trimmed.starts_with("enum ") {
-                        // 保留事件、错误、结构体、枚举定义
-                        context_parts.push(current_line.to_string());
-                        brace_count += current_line.chars().filter(|&c| c == '{').count() as i32;
-                        brace_count -= current_line.chars().filter(|&c| c == '}').count() as i32;
-                        if brace_count == 0 && current_line.contains('}') {
-                            break;
-                        }
-                    } else if !trimmed.is_empty() && !trimmed.starts_with("//") && !trimmed.starts_with("/*") {
-                        // 保留状态变量声明等
-                        context_parts.push(current_line.to_string());
-                    }
-
-                    brace_count += current_line.chars().filter(|&c| c == '{').count() as i32;
-                    brace_count -= current_line.chars().filter(|&c| c == '}').count() as i32;
-                    if brace_count == 0 && current_line.contains('}') {
-                        break;
-                    }
-                    i += 1;
-                }
+        for line in self.source_code.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("pragma ")
+                || trimmed.starts_with("import ")
+                || trimmed.starts_with("contract ")
+                || trimmed.starts_with("library ")
+                || trimmed.starts_with("interface ")
+            {
+                context_parts.push(line.to_string());
             }
-            i += 1;
         }
 
         context_parts.join("\n")
     }
-    
+
     // Function-Level CHSS 扩展方法
-    
+
     fn get_all_call_edges(&self) -> Vec<semantic_slicer::CallEdge> {
         use crate::analyzer::NodeKind;
-        
+
         let mut edges = Vec::new();
         let mut edge_id = 0;
-        
+
         // 遍历所有节点，找出函数调用
         for (&node_id, node) in &self.analysis.program_dependency_graph.nodes {
             // 识别函数调用节点
-            let is_function_call = matches!(
-                node.kind, 
-                NodeKind::FunctionCall | NodeKind::ExternalCall
-            );
-            
+            let is_function_call =
+                matches!(node.kind, NodeKind::FunctionCall | NodeKind::ExternalCall);
+
             if !is_function_call {
                 continue;
             }
-            
+
             // 提取调用方函数名
-            let caller = node.function_context.clone().unwrap_or_else(|| "global".to_string());
-            
+            let caller = node
+                .function_context
+                .clone()
+                .unwrap_or_else(|| "global".to_string());
+
             // 从label中提取被调用方函数名
             let callee = self.extract_callee_name(&node.label);
-            
+
             // 获取调用处源代码
             let code_line = self.get_node_source(node_id);
-            
+
             // 检测返回值是否被使用（简化：检查是否有赋值符号）
-            let return_var_used = code_line.contains('=') && 
-                                   !code_line.trim().starts_with("//");
-            
+            let return_var_used = code_line.contains('=') && !code_line.trim().starts_with("//");
+
             // 检测是否在require/if中（简化：检查控制依赖边）
             let is_in_require = self.is_in_control_context(node_id);
-            
+
             // 查找被调用函数的节点ID
             let callee_id = self.find_function_entry_node(&callee);
-            
+
             edges.push(semantic_slicer::CallEdge {
                 id: edge_id,
                 caller: caller.clone(),
@@ -234,26 +282,17 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
                 static_score: 0,
                 decision: semantic_slicer::EdgeDecision::AskLLM,
             });
-            
+
             edge_id += 1;
         }
-        
+
         edges
     }
-    
+
     fn get_function_code(&self, func_id: usize) -> String {
-        // 尝试获取完整函数定义
-        if let Some(node) = self.get_node_info(func_id) {
-            if let Some(ref func_name) = node.function_context {
-                // 在源代码中查找这个函数的完整定义
-                return self.extract_full_function_by_name(func_name);
-            }
-        }
-        
-        // 降级：返回节点源码
         self.get_node_source(func_id)
     }
-    
+
     fn get_function_name(&self, node_id: usize) -> Option<String> {
         // 从节点信息中提取函数名
         if let Some(node) = self.get_node_info(node_id) {
@@ -262,7 +301,7 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
             None
         }
     }
-    
+
     fn get_contract_for_function(&self, func_id: usize) -> Option<String> {
         // 方案2: 使用AST信息 - 直接从PDG节点的contract_context字段获取
         if let Some(node) = self.get_node_info(func_id) {
@@ -270,7 +309,7 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
                 return Some(contract.clone());
             }
         }
-        
+
         // 降级方案: 如果节点没有contract_context，从label中提取（兼容旧数据）
         if let Some(node) = self.get_node_info(func_id) {
             // label格式: "entry: ContractName.FunctionName" 或 "storage: ContractName.VarName"
@@ -282,28 +321,28 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
                 }
             }
         }
-        
+
         None
     }
-    
+
     // ===== AST-Level Coverage & Taint Tracking Extensions =====
-    
+
     fn get_function_calls_in_code(&self, code: &str) -> Vec<semantic_slicer::FunctionCallInfo> {
         use regex::Regex;
         let mut calls = Vec::new();
-        
+
         // 正则模式：匹配函数调用
         // 1. 外部调用: obj.func(...)
         // 2. 内部调用: func(...)
         let external_pattern = Regex::new(r"(\w+)\.(\w+)\s*\(").unwrap();
         let internal_pattern = Regex::new(r"\b(\w+)\s*\(").unwrap();
-        
+
         // 提取外部调用
         for cap in external_pattern.captures_iter(code) {
             let receiver = cap.get(1).unwrap().as_str().to_string();
             let callee = cap.get(2).unwrap().as_str().to_string();
             let full_match = cap.get(0).unwrap().as_str().to_string();
-            
+
             // 过滤掉Solidity关键字
             if !self.is_keyword(&callee) {
                 calls.push(semantic_slicer::FunctionCallInfo {
@@ -314,21 +353,22 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
                 });
             }
         }
-        
+
         // 提取内部调用（过滤掉已经识别的外部调用）
-        let external_set: std::collections::HashSet<String> = calls
-            .iter()
-            .map(|c| c.code_snippet.clone())
-            .collect();
-        
+        let external_set: std::collections::HashSet<String> =
+            calls.iter().map(|c| c.code_snippet.clone()).collect();
+
         for cap in internal_pattern.captures_iter(code) {
             let callee = cap.get(1).unwrap().as_str().to_string();
             let full_match = cap.get(0).unwrap().as_str().to_string();
-            
+
             // 过滤：关键字、已识别的外部调用、类型转换
-            if !self.is_keyword(&callee) 
+            if !self.is_keyword(&callee)
                 && !external_set.contains(&full_match)
-                && !matches!(callee.as_str(), "uint256" | "address" | "bytes32" | "uint" | "int")
+                && !matches!(
+                    callee.as_str(),
+                    "uint256" | "address" | "bytes32" | "uint" | "int"
+                )
             {
                 calls.push(semantic_slicer::FunctionCallInfo {
                     callee: callee.clone(),
@@ -338,26 +378,25 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
                 });
             }
         }
-        
+
         calls
     }
-    
+
     fn get_vm_store_accesses(&self, code: &str) -> Vec<semantic_slicer::VmStoreInfo> {
         use regex::Regex;
         let mut accesses = Vec::new();
-        
+
         // 正则模式：vm.store(address, slot, value)
         // 支持多行和空格变化
-        let pattern = Regex::new(
-            r"vm\.store\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)"
-        ).unwrap();
-        
+        let pattern =
+            Regex::new(r"vm\.store\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)").unwrap();
+
         for cap in pattern.captures_iter(code) {
             let addr_expr = cap.get(1).unwrap().as_str().trim().to_string();
             let slot_expr = cap.get(2).unwrap().as_str().trim().to_string();
             let value_expr = cap.get(3).unwrap().as_str().trim().to_string();
             let full_match = cap.get(0).unwrap().as_str().to_string();
-            
+
             accesses.push(semantic_slicer::VmStoreInfo {
                 target_address: addr_expr,
                 slot_expr: slot_expr.clone(),
@@ -366,32 +405,32 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
                 code_snippet: full_match,
             });
         }
-        
+
         accesses
     }
-    
+
     fn infer_variable_from_slot(&self, slot_expr: &str) -> Option<String> {
         use regex::Regex;
-        
+
         // 策略1: keccak256("varName") -> varName
         if let Ok(re) = Regex::new(r#"keccak256\s*\(\s*["']([^"']+)["']\s*\)"#) {
             if let Some(cap) = re.captures(slot_expr) {
                 return Some(cap.get(1)?.as_str().to_string());
             }
         }
-        
+
         // 策略2: slot_XXX -> XXX (常见命名惯例)
         if let Some(stripped) = slot_expr.strip_prefix("slot_") {
             return Some(stripped.to_string());
         }
-        
+
         // 策略3: 常量槽位映射（Solidity存储布局）
         // 第一个状态变量在槽位0，第二个在槽位1，etc.
         // 这需要合约上下文，暂时简化处理
         if slot_expr == "0" || slot_expr == "0x0" {
             return Some("first_state_var".to_string());
         }
-        
+
         // 策略4: keccak256(abi.encodePacked(...)) mapping推断
         if slot_expr.contains("encodePacked") {
             // 尝试提取mapping名称（通常是最后一个参数）
@@ -402,7 +441,7 @@ impl<'a> SemanticGraphAdapter for PdgAdapter<'a> {
                 }
             }
         }
-        
+
         None
     }
 }
@@ -421,18 +460,21 @@ impl<'a> PdgAdapter<'a> {
             label.to_string()
         }
     }
-    
+
     // 检查节点是否在控制上下文中
     fn is_in_control_context(&self, node_id: usize) -> bool {
         use crate::analyzer::EdgeKind;
-        
+
         for edge in &self.analysis.program_dependency_graph.edges {
             if edge.to == node_id && matches!(edge.kind, EdgeKind::ControlDependency) {
-                if let Some(control_node) = self.analysis.program_dependency_graph.nodes.get(&edge.from) {
+                if let Some(control_node) =
+                    self.analysis.program_dependency_graph.nodes.get(&edge.from)
+                {
                     let label_lower = control_node.label.to_lowercase();
-                    if label_lower.contains("require") || 
-                       label_lower.contains("assert") || 
-                       label_lower.contains("if") {
+                    if label_lower.contains("require")
+                        || label_lower.contains("assert")
+                        || label_lower.contains("if")
+                    {
                         return true;
                     }
                 }
@@ -440,7 +482,7 @@ impl<'a> PdgAdapter<'a> {
         }
         false
     }
-    
+
     // 查找函数入口节点
     fn find_function_entry_node(&self, func_name: &str) -> Option<usize> {
         for (&node_id, node) in &self.analysis.program_dependency_graph.nodes {
@@ -452,41 +494,881 @@ impl<'a> PdgAdapter<'a> {
         }
         None
     }
-    
-    // 从源代码中提取完整函数定义
-    fn extract_full_function_by_name(&self, func_name: &str) -> String {
-        let lines: Vec<&str> = self.source_code.lines().collect();
-        let mut result = String::new();
-        let mut i = 0;
-        
-        while i < lines.len() {
-            let line = lines[i];
-            
-            if line.contains("function") && line.contains(func_name) {
-                let mut brace_count = 0;
-                let mut j = i;
-                
-                while j < lines.len() {
-                    let current = lines[j];
-                    result.push_str(current);
-                    result.push('\n');
-                    
-                    brace_count += current.chars().filter(|&c| c == '{').count() as i32;
-                    brace_count -= current.chars().filter(|&c| c == '}').count() as i32;
-                    
-                    if brace_count == 0 && current.contains('}') {
-                        break;
-                    }
-                    j += 1;
-                }
-                
-                return result;
-            }
-            
-            i += 1;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AstContractItemKind {
+    Function,
+    Modifier,
+    Variable,
+    Struct,
+    Enum,
+    Udvt,
+    Error,
+    Event,
+    Using,
+}
+
+#[derive(Debug, Clone)]
+struct AstContractItem {
+    kind: AstContractItemKind,
+    name: Option<String>,
+    type_name: Option<String>,
+    type_refs: HashSet<String>,
+    code: String,
+}
+
+#[derive(Debug, Clone)]
+struct AstTopLevelItem {
+    name: Option<String>,
+    type_refs: HashSet<String>,
+    code: String,
+}
+
+#[derive(Debug, Clone)]
+struct AstContractSlice {
+    name: String,
+    kind: ast::ContractKind,
+    signature: String,
+    body_items: Vec<AstContractItem>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct AstSliceIndex {
+    top_level_headers: Vec<String>,
+    top_level_types: Vec<AstTopLevelItem>,
+    contracts: Vec<AstContractSlice>,
+    variable_types: HashMap<String, String>,
+    using_libraries: HashSet<String>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct SliceSelection {
+    pub relevant_contracts: HashSet<String>,
+    pub full_contracts: HashSet<String>,
+    pub relevant_functions: HashSet<String>,
+    pub relevant_contract_functions: HashSet<String>,
+    pub relevant_variables: HashSet<String>,
+    pub function_levels: HashMap<String, usize>,
+    pub contract_levels: HashMap<String, usize>,
+    pub dependency_traces: HashMap<String, String>,
+    pub target_contract: String,
+    pub target_entry_function: String,
+}
+
+impl SliceSelection {
+    pub fn contract_function_key(contract: &str, function: &str) -> String {
+        format!("{}::{}", contract, function)
+    }
+
+    pub fn add_contract_function(&mut self, contract: &str, function: &str, reason: &str) -> bool {
+        if contract.trim().is_empty() || function.trim().is_empty() {
+            return false;
         }
-        
-        String::new()
+
+        self.relevant_contracts.insert(contract.to_string());
+        self.relevant_functions.insert(function.to_string());
+        let key = Self::contract_function_key(contract, function);
+        let inserted = self.relevant_contract_functions.insert(key.clone());
+        self.dependency_traces
+            .entry(key)
+            .or_insert_with(|| reason.to_string());
+        inserted
+    }
+
+    pub fn contains_contract_function(&self, contract: &str, function: &str) -> bool {
+        self.relevant_contract_functions
+            .contains(&Self::contract_function_key(contract, function))
+    }
+
+    pub fn has_target_entry(&self) -> bool {
+        !self.target_contract.trim().is_empty() && !self.target_entry_function.trim().is_empty()
+    }
+}
+
+impl AstSliceIndex {
+    fn from_asts(asts: &[SourceUnit], source_map: &SourceMap) -> Self {
+        let mut index = AstSliceIndex::default();
+
+        for source_unit in asts {
+            for item in source_unit.items.iter() {
+                match &item.kind {
+                    ItemKind::Pragma(_) | ItemKind::Import(_) | ItemKind::Using(_) => {
+                        if let ItemKind::Using(using_directive) = &item.kind {
+                            collect_using_libraries(using_directive, &mut index.using_libraries);
+                        }
+                        if let Some(code) = snippet_for_span(source_map, item.span) {
+                            push_unique(&mut index.top_level_headers, code);
+                        }
+                    }
+                    ItemKind::Struct(_)
+                    | ItemKind::Enum(_)
+                    | ItemKind::Udvt(_)
+                    | ItemKind::Error(_)
+                    | ItemKind::Event(_) => {
+                        if let Some(top_level_item) = top_level_item_from_ast(source_map, item) {
+                            push_unique_top_level(&mut index.top_level_types, top_level_item);
+                        }
+                    }
+                    ItemKind::Contract(contract) => {
+                        let signature = contract_signature_snippet(source_map, item, contract);
+                        let mut body_items = Vec::new();
+
+                        for body_item in contract.body.iter() {
+                            if let ItemKind::Using(using_directive) = &body_item.kind {
+                                collect_using_libraries(
+                                    using_directive,
+                                    &mut index.using_libraries,
+                                );
+                            }
+                            if let Some(contract_item) =
+                                contract_body_item_from_ast(source_map, body_item)
+                            {
+                                if let AstContractItemKind::Variable = contract_item.kind {
+                                    if let (Some(var_name), Some(type_name)) =
+                                        (&contract_item.name, &contract_item.type_name)
+                                    {
+                                        index
+                                            .variable_types
+                                            .insert(var_name.clone(), type_name.clone());
+                                    }
+                                }
+                                body_items.push(contract_item);
+                            }
+                        }
+
+                        index.contracts.push(AstContractSlice {
+                            name: contract.name.to_string(),
+                            kind: contract.kind,
+                            signature,
+                            body_items,
+                        });
+                    }
+                    ItemKind::Function(_) | ItemKind::Variable(_) => {
+                        if let Some(top_level_item) = top_level_item_from_ast(source_map, item) {
+                            push_unique_top_level(&mut index.top_level_types, top_level_item);
+                        }
+                    }
+                }
+            }
+        }
+
+        index
+    }
+
+    fn contract_has_function(&self, contract_name: &str, function_name: &str) -> bool {
+        self.contracts
+            .iter()
+            .find(|contract| contract.name == contract_name)
+            .map(|contract| {
+                contract.body_items.iter().any(|item| {
+                    matches!(item.kind, AstContractItemKind::Function)
+                        && item.name.as_deref() == Some(function_name)
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    fn base_contracts(&self, contract_name: &str) -> Vec<String> {
+        let Some(contract) = self
+            .contracts
+            .iter()
+            .find(|contract| contract.name == contract_name)
+        else {
+            return Vec::new();
+        };
+
+        parse_base_contracts_from_signature(&contract.signature)
+            .into_iter()
+            .filter(|base| self.contracts.iter().any(|contract| contract.name == *base))
+            .collect()
+    }
+
+    fn render(
+        &self,
+        selection: &SliceSelection,
+        include_types: bool,
+        exclude_libs: bool,
+        max_level: usize,
+    ) -> Vec<String> {
+        let mut output = Vec::new();
+
+        for header in &self.top_level_headers {
+            push_unique(&mut output, header.clone());
+        }
+
+        if include_types {
+            for type_def in &self.top_level_types {
+                push_unique(&mut output, type_def.code.clone());
+            }
+        }
+
+        let mut emitted_defs = HashSet::new();
+        let mut required_type_refs = HashSet::new();
+        let mut required_base_refs = HashSet::new();
+
+        if include_types {
+            for type_def in &self.top_level_types {
+                if let Some(name) = &type_def.name {
+                    emitted_defs.insert(name.clone());
+                }
+                required_type_refs.extend(type_def.type_refs.iter().cloned());
+            }
+        }
+
+        for contract in &self.contracts {
+            let is_interface = matches!(contract.kind, ast::ContractKind::Interface);
+            let is_selected = selection.relevant_contracts.contains(&contract.name)
+                || selection
+                    .contract_levels
+                    .get(&contract.name)
+                    .map_or(false, |level| *level <= max_level)
+                || contract.body_items.iter().any(|item| {
+                    matches!(item.kind, AstContractItemKind::Function)
+                        && item.name.as_ref().map_or(false, |name| {
+                            selection.contains_contract_function(&contract.name, name)
+                        })
+                        || item
+                            .name
+                            .as_ref()
+                            .map_or(false, |name| selection.relevant_variables.contains(name))
+                });
+
+            if is_interface && !selection.relevant_contracts.contains(&contract.name) {
+                continue;
+            }
+
+            if !is_selected {
+                continue;
+            }
+
+            if exclude_libs && contract.kind == ast::ContractKind::Library {
+                continue;
+            }
+
+            required_base_refs.extend(parse_base_contracts_from_signature(&contract.signature));
+
+            if is_standard_library_contract(&contract.name) {
+                // Most stdlib contracts get an empty stub.
+                // But some (like Clone) provide inherited functions that child contracts need —
+                // these must be emitted with their real body.
+                if is_stdlib_needing_full_body(&contract.name) {
+                    let mut rendered = String::new();
+                    let signature = contract.signature.trim_end();
+                    if signature.ends_with('{') {
+                        rendered.push_str(signature);
+                    } else {
+                        rendered.push_str(signature);
+                        rendered.push_str(" {");
+                    }
+                    for item in &contract.body_items {
+                        rendered.push_str("\n");
+                        rendered.push_str(indent_contract_item(&item.code).trim_end());
+                        rendered.push_str("\n");
+                    }
+                    rendered.push_str("}");
+                    push_unique(&mut output, rendered);
+                } else {
+                    push_unique(
+                        &mut output,
+                        format!("{} {} {{}}", contract.kind.to_str(), contract.name),
+                    );
+                }
+                emitted_defs.insert(contract.name.clone());
+                continue;
+            }
+
+            let mut rendered = String::new();
+            let signature = contract.signature.trim_end();
+            if signature.ends_with('{') {
+                rendered.push_str(signature);
+            } else if signature.trim_end().ends_with('}') {
+                rendered.push_str(signature.trim_end_matches('}').trim_end());
+                rendered.push_str(" {");
+            } else {
+                rendered.push_str(signature);
+                rendered.push_str(" {");
+            }
+
+            for item in &contract.body_items {
+                if should_exclude_harness_item(&contract.name, item, selection) {
+                    continue;
+                }
+
+                if selection.full_contracts.contains(&contract.name)
+                    || should_include_contract_item(&contract.name, item, selection, include_types)
+                {
+                    required_type_refs.extend(item.type_refs.iter().cloned());
+                    rendered.push_str("\n");
+                    rendered.push_str(indent_contract_item(&item.code).trim_end());
+                    rendered.push_str("\n");
+                }
+            }
+
+            rendered.push_str("}");
+            emitted_defs.insert(contract.name.clone());
+            push_unique(&mut output, rendered);
+        }
+
+        let mut missing_library_stubs = Vec::new();
+        for library_name in &self.using_libraries {
+            let has_library = self
+                .contracts
+                .iter()
+                .any(|contract| contract.name == *library_name);
+            let emitted_library = output.iter().any(|block| {
+                block.starts_with(&format!("library {} ", library_name))
+                    || block.starts_with(&format!("library {}{{", library_name))
+                    || block.starts_with(&format!("library {} {{", library_name))
+            });
+
+            if !has_library || !emitted_library {
+                push_unique(
+                    &mut missing_library_stubs,
+                    format!("library {} {{}}", library_name),
+                );
+            }
+            emitted_defs.insert(library_name.clone());
+        }
+        insert_before_contract_blocks(&mut output, missing_library_stubs);
+
+        let mut missing_base_stubs = Vec::new();
+        for base_name in required_base_refs {
+            if should_stub_type(&base_name, &emitted_defs) {
+                push_unique(
+                    &mut missing_base_stubs,
+                    format!(
+                        "abstract contract {} {{\n    modifier onlyOwner() virtual {{ _; }}\n}}",
+                        base_name
+                    ),
+                );
+                emitted_defs.insert(base_name);
+            }
+        }
+        insert_before_contract_blocks(&mut output, missing_base_stubs);
+
+        let mut missing_type_stubs = Vec::new();
+        for type_name in required_type_refs {
+            if should_stub_type(&type_name, &emitted_defs) {
+                push_unique(
+                    &mut missing_type_stubs,
+                    format!("interface {} {{}}", type_name),
+                );
+                emitted_defs.insert(type_name);
+            }
+        }
+        insert_before_contract_blocks(&mut output, missing_type_stubs);
+
+        report_harness_budget(&output, selection);
+        output
+    }
+}
+
+fn insert_before_contract_blocks(output: &mut Vec<String>, blocks: Vec<String>) {
+    if blocks.is_empty() {
+        return;
+    }
+
+    let insert_at = output
+        .iter()
+        .position(|block| {
+            block
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| starts_top_level_container_block(line.trim_start()))
+                .unwrap_or(false)
+        })
+        .unwrap_or(output.len());
+
+    for block in blocks.into_iter().rev() {
+        if !output.iter().any(|existing| existing == &block) {
+            output.insert(insert_at, block);
+        }
+    }
+}
+
+fn starts_top_level_container_block(line: &str) -> bool {
+    line.starts_with("contract ")
+        || line.starts_with("abstract contract ")
+        || line.starts_with("interface ")
+        || line.starts_with("library ")
+}
+
+fn report_harness_budget(output: &[String], selection: &SliceSelection) {
+    if !selection.has_target_entry() {
+        return;
+    }
+
+    let mut target_test_count = 0usize;
+    let mut non_target_tests = Vec::new();
+    let mut non_target_setups = Vec::new();
+
+    for block in output {
+        let contract_name = parse_rendered_contract_name(block);
+        for line in block.lines() {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with("function ") && !trimmed.starts_with("constructor") {
+                continue;
+            }
+
+            let function_name = if trimmed.starts_with("constructor") {
+                "constructor".to_string()
+            } else {
+                extract_function_name_from_line(trimmed)
+            };
+
+            if function_name.is_empty() {
+                continue;
+            }
+
+            if contract_name.as_deref() == Some(selection.target_contract.as_str())
+                && function_name == selection.target_entry_function
+            {
+                target_test_count += 1;
+            } else if is_test_like_function(&function_name) {
+                non_target_tests.push(format!(
+                    "{}.{}",
+                    contract_name.as_deref().unwrap_or("<unknown>"),
+                    function_name
+                ));
+            } else if is_setup_function(&function_name)
+                && contract_name.as_deref() != Some(selection.target_contract.as_str())
+            {
+                non_target_setups.push(format!(
+                    "{}.{}",
+                    contract_name.as_deref().unwrap_or("<unknown>"),
+                    function_name
+                ));
+            }
+        }
+    }
+
+    println!(
+        "📦 Harness budget: target test count={}, selected functions={}, contracts={}",
+        target_test_count,
+        selection.relevant_contract_functions.len(),
+        selection.relevant_contracts.len()
+    );
+    if target_test_count != 1 {
+        println!(
+            "⚠️  Harness budget warning: expected exactly one target test {}.{}, found {}",
+            selection.target_contract, selection.target_entry_function, target_test_count
+        );
+    }
+    if !non_target_tests.is_empty() {
+        println!(
+            "⚠️  Harness budget warning: non-target test functions rendered: {:?}",
+            non_target_tests
+        );
+    }
+    if !non_target_setups.is_empty() {
+        println!(
+            "⚠️  Harness budget warning: non-target setup functions rendered: {:?}",
+            non_target_setups
+        );
+    }
+}
+
+fn parse_rendered_contract_name(block: &str) -> Option<String> {
+    for line in block.lines() {
+        let trimmed = line.trim_start();
+        for prefix in ["contract ", "abstract contract ", "interface ", "library "] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                let name = rest
+                    .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                    .next()
+                    .unwrap_or("");
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn collect_using_libraries(
+    using_directive: &ast::UsingDirective<'_>,
+    libraries: &mut HashSet<String>,
+) {
+    if let ast::UsingList::Single(path) = &using_directive.list {
+        if let Some(library_name) = path.to_string().split('.').next() {
+            if !library_name.is_empty() {
+                libraries.insert(library_name.to_string());
+            }
+        }
+    }
+}
+
+fn top_level_item_from_ast(
+    source_map: &SourceMap,
+    item: &solar_ast::Item<'_>,
+) -> Option<AstTopLevelItem> {
+    let code = snippet_for_span(source_map, item.span)?;
+    let mut type_refs = HashSet::new();
+
+    match &item.kind {
+        ItemKind::Struct(item) => {
+            for field in item.fields.iter() {
+                collect_type_refs_from_variable(field, &mut type_refs);
+            }
+            Some(AstTopLevelItem {
+                name: Some(item.name.to_string()),
+                type_refs,
+                code,
+            })
+        }
+        ItemKind::Enum(item) => Some(AstTopLevelItem {
+            name: Some(item.name.to_string()),
+            type_refs,
+            code,
+        }),
+        ItemKind::Udvt(item) => {
+            collect_type_refs_from_type(&item.ty, &mut type_refs);
+            Some(AstTopLevelItem {
+                name: Some(item.name.to_string()),
+                type_refs,
+                code,
+            })
+        }
+        ItemKind::Error(item) => {
+            collect_type_refs_from_parameter_list(&item.parameters, &mut type_refs);
+            Some(AstTopLevelItem {
+                name: Some(item.name.to_string()),
+                type_refs,
+                code,
+            })
+        }
+        ItemKind::Event(item) => {
+            collect_type_refs_from_parameter_list(&item.parameters, &mut type_refs);
+            Some(AstTopLevelItem {
+                name: Some(item.name.to_string()),
+                type_refs,
+                code,
+            })
+        }
+        ItemKind::Variable(var) => {
+            collect_type_refs_from_variable(var, &mut type_refs);
+            Some(AstTopLevelItem {
+                name: var.name.map(|name| name.to_string()),
+                type_refs,
+                code,
+            })
+        }
+        ItemKind::Function(func) => {
+            collect_type_refs_from_function(func, &mut type_refs);
+            Some(AstTopLevelItem {
+                name: Some(function_item_name(func)),
+                type_refs,
+                code,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn snippet_for_span(source_map: &SourceMap, span: Span) -> Option<String> {
+    source_map
+        .span_to_snippet(span)
+        .ok()
+        .map(|snippet| snippet.trim().to_string())
+        .filter(|snippet| !snippet.is_empty())
+}
+
+fn contract_signature_snippet(
+    source_map: &SourceMap,
+    item: &solar_ast::Item<'_>,
+    contract: &ast::ItemContract<'_>,
+) -> String {
+    let signature_span = contract
+        .body
+        .first()
+        .map(|first| Span::new(item.span.lo(), first.span.lo()))
+        .unwrap_or(item.span);
+
+    let mut signature = source_map
+        .span_to_snippet(signature_span)
+        .unwrap_or_else(|_| format!("{} {} {{", contract.kind.to_str(), contract.name));
+
+    if !contract.body.is_empty() {
+        if let Some(open_brace) = signature.rfind('{') {
+            signature.truncate(open_brace + 1);
+        }
+    }
+
+    signature.trim_end().to_string()
+}
+
+fn contract_body_item_from_ast(
+    source_map: &SourceMap,
+    item: &solar_ast::Item<'_>,
+) -> Option<AstContractItem> {
+    let code = snippet_for_span(source_map, item.span)?;
+
+    match &item.kind {
+        ItemKind::Function(func) => {
+            let kind = match func.kind {
+                FunctionKind::Modifier => AstContractItemKind::Modifier,
+                _ => AstContractItemKind::Function,
+            };
+            let mut type_refs = HashSet::new();
+            collect_type_refs_from_function(func, &mut type_refs);
+            let name = function_item_name(func);
+            Some(AstContractItem {
+                kind,
+                name: Some(name),
+                type_name: None,
+                type_refs,
+                code,
+            })
+        }
+        ItemKind::Variable(var) => {
+            let mut type_refs = HashSet::new();
+            collect_type_refs_from_variable(var, &mut type_refs);
+            Some(AstContractItem {
+                kind: AstContractItemKind::Variable,
+                name: var.name.map(|name| name.to_string()),
+                type_name: snippet_for_span(source_map, var.ty.span),
+                type_refs,
+                code,
+            })
+        }
+        ItemKind::Struct(item) => {
+            let mut type_refs = HashSet::new();
+            for field in item.fields.iter() {
+                collect_type_refs_from_variable(field, &mut type_refs);
+            }
+            Some(AstContractItem {
+                kind: AstContractItemKind::Struct,
+                name: Some(item.name.to_string()),
+                type_name: None,
+                type_refs,
+                code,
+            })
+        }
+        ItemKind::Enum(item) => Some(AstContractItem {
+            kind: AstContractItemKind::Enum,
+            name: Some(item.name.to_string()),
+            type_name: None,
+            type_refs: HashSet::new(),
+            code,
+        }),
+        ItemKind::Udvt(item) => {
+            let mut type_refs = HashSet::new();
+            collect_type_refs_from_type(&item.ty, &mut type_refs);
+            Some(AstContractItem {
+                kind: AstContractItemKind::Udvt,
+                name: Some(item.name.to_string()),
+                type_name: None,
+                type_refs,
+                code,
+            })
+        }
+        ItemKind::Error(item) => {
+            let mut type_refs = HashSet::new();
+            collect_type_refs_from_parameter_list(&item.parameters, &mut type_refs);
+            Some(AstContractItem {
+                kind: AstContractItemKind::Error,
+                name: Some(item.name.to_string()),
+                type_name: None,
+                type_refs,
+                code,
+            })
+        }
+        ItemKind::Event(item) => {
+            let mut type_refs = HashSet::new();
+            collect_type_refs_from_parameter_list(&item.parameters, &mut type_refs);
+            Some(AstContractItem {
+                kind: AstContractItemKind::Event,
+                name: Some(item.name.to_string()),
+                type_name: None,
+                type_refs,
+                code,
+            })
+        }
+        ItemKind::Using(_) => Some(AstContractItem {
+            kind: AstContractItemKind::Using,
+            name: None,
+            type_name: None,
+            type_refs: HashSet::new(),
+            code,
+        }),
+        _ => None,
+    }
+}
+
+fn function_item_name(func: &ast::ItemFunction<'_>) -> String {
+    func.header
+        .name
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| func.kind.to_str().to_string())
+}
+
+fn collect_type_refs_from_function(func: &ast::ItemFunction<'_>, refs: &mut HashSet<String>) {
+    collect_type_refs_from_parameter_list(&func.header.parameters, refs);
+    if let Some(returns) = &func.header.returns {
+        collect_type_refs_from_parameter_list(returns, refs);
+    }
+}
+
+fn collect_type_refs_from_parameter_list(
+    parameters: &ast::ParameterList<'_>,
+    refs: &mut HashSet<String>,
+) {
+    for parameter in parameters.iter() {
+        collect_type_refs_from_variable(parameter, refs);
+    }
+}
+
+fn collect_type_refs_from_variable(var: &ast::VariableDefinition<'_>, refs: &mut HashSet<String>) {
+    collect_type_refs_from_type(&var.ty, refs);
+}
+
+fn collect_type_refs_from_type(ty: &ast::Type<'_>, refs: &mut HashSet<String>) {
+    match &ty.kind {
+        ast::TypeKind::Custom(path) => {
+            if let Some(name) = path.to_string().split('.').next() {
+                if !name.is_empty() {
+                    refs.insert(name.to_string());
+                }
+            }
+        }
+        ast::TypeKind::Array(array) => collect_type_refs_from_type(&array.element, refs),
+        ast::TypeKind::Mapping(mapping) => {
+            collect_type_refs_from_type(&mapping.key, refs);
+            collect_type_refs_from_type(&mapping.value, refs);
+        }
+        ast::TypeKind::Function(function) => {
+            collect_type_refs_from_parameter_list(&function.parameters, refs);
+            if let Some(returns) = &function.returns {
+                collect_type_refs_from_parameter_list(returns, refs);
+            }
+        }
+        ast::TypeKind::Elementary(_) => {}
+    }
+}
+
+fn should_stub_type(type_name: &str, emitted_defs: &HashSet<String>) -> bool {
+    !type_name.is_empty()
+        && !emitted_defs.contains(type_name)
+        && !matches!(
+            type_name,
+            "address" | "bool" | "string" | "bytes" | "uint" | "uint256" | "int" | "int256"
+        )
+}
+
+fn parse_base_contracts_from_signature(signature: &str) -> Vec<String> {
+    let Some((_, tail)) = signature.split_once(" is ") else {
+        return Vec::new();
+    };
+    let base_segment = tail.split('{').next().unwrap_or(tail);
+    base_segment
+        .split(',')
+        .filter_map(|part| {
+            let name = part
+                .trim()
+                .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                .next()
+                .unwrap_or("");
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            }
+        })
+        .collect()
+}
+
+fn should_include_contract_item(
+    contract_name: &str,
+    item: &AstContractItem,
+    selection: &SliceSelection,
+    include_types: bool,
+) -> bool {
+    match item.kind {
+        AstContractItemKind::Function => item.name.as_ref().map_or(false, |name| {
+            if selection.has_target_entry() {
+                selection.contains_contract_function(contract_name, name)
+            } else {
+                selection.relevant_functions.contains(name)
+            }
+        }),
+        AstContractItemKind::Variable => item
+            .name
+            .as_ref()
+            .map_or(false, |name| selection.relevant_variables.contains(name)),
+        AstContractItemKind::Modifier => item.name.as_ref().map_or(false, |name| {
+            if selection.has_target_entry() {
+                selection.contains_contract_function(contract_name, name)
+            } else {
+                selection.relevant_functions.contains(name)
+            }
+        }),
+        AstContractItemKind::Struct
+        | AstContractItemKind::Enum
+        | AstContractItemKind::Udvt
+        | AstContractItemKind::Error
+        | AstContractItemKind::Event
+        | AstContractItemKind::Using => include_types,
+    }
+}
+
+fn should_exclude_harness_item(
+    contract_name: &str,
+    item: &AstContractItem,
+    selection: &SliceSelection,
+) -> bool {
+    if !selection.has_target_entry() || !matches!(item.kind, AstContractItemKind::Function) {
+        return false;
+    }
+
+    let Some(name) = item.name.as_deref() else {
+        return false;
+    };
+
+    if contract_name == selection.target_contract {
+        return is_test_like_function(name)
+            && name != selection.target_entry_function
+            && !selection.contains_contract_function(contract_name, name);
+    }
+
+    if is_setup_function(name) {
+        return !selection.contains_contract_function(contract_name, name);
+    }
+
+    is_test_like_function(name)
+}
+
+fn is_test_like_function(name: &str) -> bool {
+    name == "test" || name.starts_with("test_") || name.starts_with("test")
+}
+
+fn is_setup_function(name: &str) -> bool {
+    matches!(name, "setUp" | "beforeEach" | "constructor")
+}
+
+fn indent_contract_item(code: &str) -> String {
+    code.lines()
+        .map(|line| {
+            if line.trim().is_empty() {
+                String::new()
+            } else {
+                format!("    {}", line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn push_unique(items: &mut Vec<String>, item: String) {
+    if !items.iter().any(|existing| existing == &item) {
+        items.push(item);
+    }
+}
+
+fn push_unique_top_level(items: &mut Vec<AstTopLevelItem>, item: AstTopLevelItem) {
+    if !items.iter().any(|existing| existing.code == item.code) {
+        items.push(item);
     }
 }
 
@@ -516,8 +1398,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .arg(
             Arg::new("function_name")
-                .help("Optional: Name of the function (for targeted analysis)")
+                .help("Optional: target test/function entry (legacy positional form)")
                 .index(4),
+        )
+        .arg(
+            Arg::new("target_test")
+                .help("Target PoC test entry to preserve and validate with forge --match-test")
+                .long("target-test")
+                .value_name("FUNCTION"),
         )
         .arg(
             Arg::new("slice_level")
@@ -549,19 +1437,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .arg(
             Arg::new("semantic")
-                .help("Use semantic slicing with LLM scoring")
+                .help("Use deterministic semantic slicing")
                 .long("semantic")
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
             Arg::new("api_key")
-                .help("API key for LLM service (required if --semantic is used)")
+                .help("Ignored: remote model calls are disabled")
                 .long("api-key")
                 .value_name("KEY"),
         )
         .arg(
             Arg::new("model")
-                .help("LLM model name (default: deepseek-ai/DeepSeek-V3.2)")
+                .help("Ignored: remote model calls are disabled")
                 .long("model")
                 .value_name("MODEL")
                 .default_value("deepseek-ai/DeepSeek-V3.2"),
@@ -574,20 +1462,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .arg(
             Arg::new("llm_threshold")
-                .help("Minimum static score to trigger LLM analysis (0-100, default 30)")
+                .help("Compatibility option; deterministic scoring ignores remote model calls")
                 .long("llm-threshold")
                 .value_name("SCORE")
                 .default_value("30"),
         )
         .arg(
             Arg::new("parallel")
-                .help("Enable parallel LLM calls (default: 4 concurrent requests)")
+                .help("Compatibility option; remote model calls are disabled")
                 .long("parallel")
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
             Arg::new("max_concurrent")
-                .help("Maximum concurrent LLM requests (default: 4)")
+                .help("Compatibility option; remote model calls are disabled")
                 .long("max-concurrent")
                 .value_name("NUM")
                 .default_value("4"),
@@ -620,7 +1508,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .arg(
             Arg::new("llm_completion")
-                .help("Enable LLM three-stage completion pipeline (analyze->complete->fix). Universal: works for any contract/variable by analyzing slice target context.")
+                .help("Ignored: LLM completion is disabled to keep slices deterministic")
                 .long("llm-completion")
                 .action(clap::ArgAction::SetTrue),
         )
@@ -630,13 +1518,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .long("resurrect")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("resurrect_v2")
+                .help("Enable source-backed AST-valid resurrection v2")
+                .long("resurrect-v2")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("compile_guarantee")
+                .help("Allow resurrection v2 to widen monotonically up to the full source unit")
+                .long("compile-guarantee")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("poc_deps")
+                .help("Specify PoC minimal dependency requirements as a string for goal-oriented resurrection")
+                .long("poc-deps")
+                .value_name("STRING"),
+        )
+        .arg(
+            Arg::new("poc_deps_file")
+                .help("Specify PoC minimal dependency requirements from a file for goal-oriented resurrection")
+                .long("poc-deps-file")
+                .value_name("FILE"),
+        )
         .get_matches();
 
     let input_path = matches.get_one::<String>("input").unwrap();
     let contract_name = matches.get_one::<String>("contract_name").unwrap();
     let variable_name = matches.get_one::<String>("variable_name").unwrap();
     let function_name_str = matches.get_one::<String>("function_name");
-    let function_name = function_name_str.map(|s| s.as_str()).unwrap_or("");
+    let target_test_from_arg = matches.get_one::<String>("target_test");
+    let function_name = target_test_from_arg
+        .or(function_name_str)
+        .map(|s| s.as_str())
+        .unwrap_or("");
     let slice_level = matches.get_one::<String>("slice_level").unwrap();
     let output_file = matches.get_one::<String>("output");
     let exclude_libs = matches.get_flag("exclude_libs");
@@ -645,36 +1561,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let use_two_phase = matches.get_flag("two_phase");
     let use_parallel = matches.get_flag("parallel");
     let use_prefilter = matches.get_flag("prefilter");
+    let use_resurrect_v2 = matches.get_flag("resurrect_v2")
+        || std::env::var("SC_SLICER_RESURRECT_V2")
+            .map(|value| value != "0" && !value.trim().is_empty())
+            .unwrap_or(false);
+    let compile_guarantee = matches.get_flag("compile_guarantee") || use_resurrect_v2;
     let aggressive_cleanup = matches.get_flag("aggressive_noise_reduction");
-    let use_llm_completion = matches.get_flag("llm_completion");
-    let max_level: usize = matches.get_one::<String>("max_level")
+    let llm_completion_requested = matches.get_flag("llm_completion");
+    let max_level: usize = matches
+        .get_one::<String>("max_level")
         .and_then(|s| s.parse().ok())
         .unwrap_or(3)
         .min(10);
-    let llm_threshold: u8 = matches.get_one::<String>("llm_threshold")
+    let llm_threshold: u8 = matches
+        .get_one::<String>("llm_threshold")
         .and_then(|s| s.parse().ok())
         .unwrap_or(30)
         .min(100);
-    let max_concurrent: usize = matches.get_one::<String>("max_concurrent")
+    let max_concurrent: usize = matches
+        .get_one::<String>("max_concurrent")
         .and_then(|s| s.parse().ok())
         .unwrap_or(4)
         .max(1)
         .min(20);
     let cache_file = matches.get_one::<String>("cache_file").map(|s| s.as_str());
-    let api_key_from_arg = matches.get_one::<String>("api_key").map(|s| s.as_str()).unwrap_or("");
+    let api_key_from_arg = matches
+        .get_one::<String>("api_key")
+        .map(|s| s.as_str())
+        .unwrap_or("");
     let api_key = if !api_key_from_arg.is_empty() {
         api_key_from_arg.to_string()
     } else {
         std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| String::new())
     };
-    let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".to_string());
+    let base_url =
+        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".to_string());
     let model_name = matches.get_one::<String>("model").unwrap().to_string();
 
+    let execution_log_path = resolve_execution_log_path(
+        contract_name,
+        function_name,
+        variable_name,
+        if use_semantic { "full" } else { "quick" },
+        output_file.map(|s| s.as_str()),
+    );
+    let execution_log_path =
+        execution_log::init(execution_log_path, &std::env::args().collect::<Vec<_>>())?;
+    println!("📝 Execution log: {}", execution_log_path.display());
+    execution_log::phase_start("configuration");
+    execution_log::log_line(format!(
+        "config input={} contract={} function={} variable={} semantic={} two_phase={} resurrect={} resurrect_v2={} compile_guarantee={} output={}",
+        input_path,
+        contract_name,
+        if function_name.is_empty() { "<all>" } else { function_name },
+        variable_name,
+        use_semantic,
+        use_two_phase,
+        matches.get_flag("resurrect"),
+        use_resurrect_v2,
+        compile_guarantee,
+        output_file.map(|s| s.as_str()).unwrap_or("<stdout>")
+    ));
+    execution_log::detail(
+        "runtime",
+        format!(
+            "model={} base_url={} llm_threshold={} parallel={} max_concurrent={} cache={} max_level={} aggressive_cleanup={} llm_completion_requested={} llm_completion_disabled=true",
+            model_name,
+            base_url,
+            llm_threshold,
+            use_parallel,
+            max_concurrent,
+            cache_file.unwrap_or("<none>"),
+            max_level,
+            aggressive_cleanup,
+            llm_completion_requested
+        ),
+    );
+    execution_log::phase_end("configuration", "ok");
+
     // Collect all .sol files
+    execution_log::phase_start("input_collection");
     let file_paths = collect_sol_files(input_path)?;
 
     if file_paths.is_empty() {
         eprintln!("❌ No .sol files found in {}", input_path);
+        execution_log::log_line(format!("error no .sol files found in {}", input_path));
         return Err("No .sol files found".into());
     }
 
@@ -685,37 +1656,102 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("Failed to read file {}: {}", file_path, e))?;
         source_codes.push(source_code);
     }
+    log_input_files(&file_paths, &source_codes);
     let combined_source = source_codes.join("\n");
+    execution_log::phase_end(
+        "input_collection",
+        format!(
+            "files={} combined_lines={} combined_bytes={}",
+            file_paths.len(),
+            combined_source.lines().count(),
+            combined_source.len()
+        ),
+    );
 
     // 解析AST并分析
-    let sess = solar_interface::Session::builder().with_buffer_emitter(solar_interface::ColorChoice::Auto).build();
-    let result = sess.enter(|| -> solar_interface::Result<AnalysisResult> {
-        let arena = solar_ast::Arena::new();
-        let mut all_asts = Vec::new();
-        for file_path in &file_paths {
-            let mut parser = solar_parse::Parser::from_file(&sess, &arena, Path::new(file_path))?;
-            let ast = parser.parse_file().map_err(|e| e.emit())?;
-            all_asts.push(ast);
-        }
-        // 使用目标导向的分析
-        Ok(analyzer::analyze_asts_targeted(&all_asts, &combined_source, contract_name, function_name, variable_name))
-    });
+    execution_log::phase_start("ast_parse_and_pdg_analysis");
+    let sess = solar_interface::Session::builder()
+        .with_buffer_emitter(solar_interface::ColorChoice::Auto)
+        .build();
+    let result = sess.enter(
+        || -> solar_interface::Result<(AnalysisResult, AstSliceIndex)> {
+            let arena = solar_ast::Arena::new();
+            let mut all_asts = Vec::new();
+            for file_path in &file_paths {
+                let mut parser =
+                    solar_parse::Parser::from_file(&sess, &arena, Path::new(file_path))?;
+                let ast = parser.parse_file().map_err(|e| e.emit())?;
+                all_asts.push(ast);
+            }
+            // 使用目标导向的分析
+            let analysis = analyzer::analyze_asts_targeted(
+                &all_asts,
+                &combined_source,
+                contract_name,
+                function_name,
+                variable_name,
+            );
+            let ast_index = AstSliceIndex::from_asts(&all_asts, sess.source_map());
+            Ok((analysis, ast_index))
+        },
+    );
 
-    let analysis = match result {
-        Ok(analysis) => analysis,
-        Err(_) => return Err("Failed to parse or analyze the contracts".into()),
+    let (analysis, ast_index) = match result {
+        Ok(result) => result,
+        Err(_) => {
+            execution_log::log_line("error failed to parse or analyze contracts");
+            return Err("Failed to parse or analyze the contracts".into());
+        }
     };
+    execution_log::log_line(format!(
+        "analysis parsed files={} pdg_nodes={} pdg_edges={}",
+        file_paths.len(),
+        analysis.program_dependency_graph.nodes.len(),
+        analysis.program_dependency_graph.edges.len()
+    ));
+    log_ast_index_summary(&ast_index);
+    log_pdg_summary(&analysis, contract_name, function_name, variable_name);
+    execution_log::phase_end(
+        "ast_parse_and_pdg_analysis",
+        format!(
+            "pdg_nodes={} pdg_edges={} contracts={}",
+            analysis.program_dependency_graph.nodes.len(),
+            analysis.program_dependency_graph.edges.len(),
+            ast_index.contracts.len()
+        ),
+    );
 
+    let target = TargetSpec {
+        contract: contract_name.to_string(),
+        entry_function: function_name.to_string(),
+        focus_symbol: variable_name.to_string(),
+    };
+    let harness_policy = HarnessPolicy::default();
+
+    if !target.entry_function.is_empty()
+        && !ast_index.contract_has_function(&target.contract, &target.entry_function)
+    {
+        execution_log::log_line(format!(
+            "error target function not found target={}.{}",
+            target.contract, target.entry_function
+        ));
+        return Err(format!(
+            "Target function '{}.{}' was not found; refusing to fall back to variable-wide slicing",
+            target.contract, target.entry_function
+        )
+        .into());
+    }
+
+    let mut final_selection = SliceSelection::default();
     let slice = if use_semantic {
-        if api_key.is_empty() {
-            eprintln!("❌ API key required for semantic slicing");
-            return Err("API key required".into());
-        }
-        
         if use_two_phase {
+            execution_log::phase_start("semantic_two_phase");
             println!("🔄 Using two-phase processing for large files...");
             if use_parallel {
-                println!("⚡ Parallel processing enabled: {} concurrent requests", max_concurrent);
+                println!(
+                    "⚡ Parallel processing enabled: {} concurrent requests",
+                    max_concurrent
+                );
             }
             if use_prefilter {
                 println!("🔍 Pre-filtering enabled");
@@ -723,20 +1759,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(cache) = cache_file {
                 println!("💾 Using cache file: {}", cache);
             }
-            
+
             // 第一阶段：快速静态切片
             println!("📍 Phase 1: Static slicing to identify relevant code...");
-            let static_slice = analyzer::get_source_slice(&analysis, &combined_source, contract_name, function_name, variable_name, exclude_libs, include_types);
-            println!("✅ Phase 1 complete: {} code blocks identified", static_slice.len());
-            
+            execution_log::phase_start("phase1_static_slice");
+            let static_slice = analyzer::get_source_slice(
+                &analysis,
+                &combined_source,
+                contract_name,
+                function_name,
+                variable_name,
+                exclude_libs,
+                include_types,
+            );
+            println!(
+                "✅ Phase 1 complete: {} code blocks identified",
+                static_slice.len()
+            );
+            execution_log::phase_end(
+                "phase1_static_slice",
+                format!(
+                    "blocks={} lines={}",
+                    static_slice.len(),
+                    count_block_lines(&static_slice)
+                ),
+            );
+
             // 提取静态切片中的合约和函数信息
-            let (phase1_contracts, phase1_functions) = extract_contracts_and_functions(&static_slice);
+            let (phase1_contracts, phase1_functions) =
+                extract_contracts_and_functions(&static_slice);
             println!("📊 Relevant contracts: {:?}", phase1_contracts);
-            println!("📊 Relevant functions: {} functions", phase1_functions.len());
-            
+            println!(
+                "📊 Relevant functions: {} functions",
+                phase1_functions.len()
+            );
+            execution_log::sample("phase1_contracts", &phase1_contracts, 40);
+            execution_log::sample("phase1_functions", &phase1_functions, 60);
+
             // 三层漏斗过滤
+            execution_log::phase_start("contract_filter");
             let filter_result = if use_prefilter {
-                three_layer_filter(&phase1_contracts, variable_name)
+                three_layer_filter(&phase1_contracts, contract_name)
             } else {
                 // 不启用预过滤时，全部进入白名单
                 ThreeLayerFilterResult {
@@ -745,79 +1808,255 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     graylist: std::collections::HashSet::new(),
                 }
             };
-            
-            // 如果有灰名单，调用LLM仲裁
-            let llm_kept = if !filter_result.graylist.is_empty() {
-                match llm_arbitrate_graylist(
-                    &filter_result.graylist,
-                    &api_key,
-                    &base_url,
-                    &model_name
-                ).await {
-                    Ok(kept) => kept,
-                    Err(e) => {
-                        eprintln!("⚠️  LLM arbitration failed: {}, keeping all graylist contracts", e);
-                        filter_result.graylist.clone()
-                    }
-                }
-            } else {
-                std::collections::HashSet::new()
-            };
-            
-            // 合并最终过滤结果：白名单 + LLM保留的灰名单
+
+            let graylist_kept = std::collections::HashSet::new();
+            if !filter_result.graylist.is_empty() {
+                println!(
+                    "🔒 Graylist arbitration disabled; dropping {} uncertain contracts",
+                    filter_result.graylist.len()
+                );
+                execution_log::log_line(format!(
+                    "contract_filter graylist_arbitration_disabled dropped={}",
+                    filter_result.graylist.len()
+                ));
+            }
+            execution_log::detail(
+                "contract_filter",
+                format!(
+                    "blacklist={} whitelist={} graylist={} graylist_kept=0 llm_disabled=true",
+                    filter_result.blacklist.len(),
+                    filter_result.whitelist.len(),
+                    filter_result.graylist.len()
+                ),
+            );
+            execution_log::sample("contract_filter_blacklist", &filter_result.blacklist, 25);
+            execution_log::sample("contract_filter_graylist", &filter_result.graylist, 25);
+
+            // 合并最终过滤结果：只保留确定性白名单。
             let mut filtered_contracts = filter_result.whitelist.clone();
-            filtered_contracts.extend(llm_kept);
-            
-            println!("📊 Final filtered contracts: {} contracts\n", filtered_contracts.len());
-            
+            filtered_contracts.extend(graylist_kept);
+
+            println!(
+                "📊 Final filtered contracts: {} contracts\n",
+                filtered_contracts.len()
+            );
+            execution_log::sample("contract_filter_final", &filtered_contracts, 40);
+            execution_log::phase_end(
+                "contract_filter",
+                format!("final_contracts={}", filtered_contracts.len()),
+            );
+
             // 第二阶段：只对相关代码进行语义分析
             println!("📍 Phase 2: Semantic analysis on relevant code only...");
-            let adapter = PdgAdapter { analysis: &analysis, source_code: &combined_source };
+            execution_log::phase_start("phase2_semantic_slice");
+            let adapter = PdgAdapter {
+                analysis: &analysis,
+                source_code: &combined_source,
+            };
             let model = model_name.clone();
             let mut slicer = crate::semantic_slicer::SemanticSlicer::new_with_options(
-                &adapter, 
-                api_key.to_string(), 
-                base_url.to_string(), 
-                model, 
+                &adapter,
+                api_key.to_string(),
+                base_url.to_string(),
+                model,
                 llm_threshold,
                 use_parallel,
                 max_concurrent,
-                cache_file.map(|s| s.to_string())
+                cache_file.map(|s| s.to_string()),
             );
-            
-            let sink_nodes = find_sink_nodes(&analysis, variable_name);
-            
+
+            let sink_nodes = find_harness_seed_nodes(&analysis, &target);
+            log_seed_nodes(&analysis, &sink_nodes, "semantic_two_phase_seed_nodes");
+
             // 使用新的函数级混合切片（CHSS），传入Phase 1过滤的合约列表
-            let slice_nodes = slicer.run_slicing(sink_nodes).await;
+            let slice_atoms = slicer
+                .run_slicing_with_max_depth(sink_nodes, max_level)
+                .await;
             println!("✅ Phase 2 complete: Function-Level CHSS finished");
-            
+
+            let slice_nodes: std::collections::HashSet<usize> = slice_atoms
+                .into_iter()
+                .filter_map(|atom| match atom {
+                    crate::semantic_slicer::SliceAtom::FullStatement(id) => Some(id),
+                    crate::semantic_slicer::SliceAtom::FullVariableDeclStatement(id) => Some(id),
+                    crate::semantic_slicer::SliceAtom::FullExpressionStatement(id) => Some(id),
+                    crate::semantic_slicer::SliceAtom::FullReturnStatement(id) => Some(id),
+                    crate::semantic_slicer::SliceAtom::FullIfStatement(id) => Some(id),
+                    crate::semantic_slicer::SliceAtom::FullForStatement(id) => Some(id),
+                    crate::semantic_slicer::SliceAtom::FullBlockWindow {
+                        block_id: _,
+                        start_stmt: _,
+                        end_stmt: _,
+                    } => None,
+                })
+                .collect();
+
+            log_seed_nodes(
+                &analysis,
+                &slice_nodes.iter().copied().collect::<Vec<_>>(),
+                "semantic_selected_nodes",
+            );
+            execution_log::phase_end(
+                "phase2_semantic_slice",
+                format!("selected_nodes={}", slice_nodes.len()),
+            );
+
             // 转换为 Vec<String> 格式以保持兼容性
-            get_source_from_nodes(&mut slicer, &analysis, &combined_source, &slice_nodes, contract_name, function_name, variable_name, exclude_libs, include_types, max_level, aggressive_cleanup).await
+            let rendered = get_source_from_nodes(
+                &mut slicer,
+                &analysis,
+                &ast_index,
+                &combined_source,
+                &slice_nodes,
+                &target,
+                &harness_policy,
+                exclude_libs,
+                include_types,
+                max_level,
+                aggressive_cleanup,
+            )
+            .await;
+            execution_log::phase_end(
+                "semantic_two_phase",
+                format!(
+                    "rendered_blocks={} rendered_lines={}",
+                    rendered.len(),
+                    count_block_lines(&rendered)
+                ),
+            );
+            rendered
         } else {
+            execution_log::phase_start("semantic_single_phase");
             // 使用语义切片（传统单阶段）- 保留旧逻辑作为后备
-            let adapter = PdgAdapter { analysis: &analysis, source_code: &combined_source };
+            let adapter = PdgAdapter {
+                analysis: &analysis,
+                source_code: &combined_source,
+            };
             let model = model_name.clone();
-            let mut slicer = crate::semantic_slicer::SemanticSlicer::new_with_threshold(&adapter, api_key.to_string(), base_url.to_string(), model, llm_threshold);
-            let sink_nodes = find_sink_nodes(&analysis, variable_name);
-            
+            let mut slicer = crate::semantic_slicer::SemanticSlicer::new_with_threshold(
+                &adapter,
+                api_key.to_string(),
+                base_url.to_string(),
+                model,
+                llm_threshold,
+            );
+            let sink_nodes = find_harness_seed_nodes(&analysis, &target);
+            log_seed_nodes(&analysis, &sink_nodes, "semantic_single_phase_seed_nodes");
+
             // 使用语义切片
-            let slice_nodes = slicer.run_slicing(sink_nodes).await;
-            get_source_from_nodes(&mut slicer, &analysis, &combined_source, &slice_nodes, contract_name, function_name, variable_name, exclude_libs, include_types, max_level, aggressive_cleanup).await
+            let slice_atoms = slicer
+                .run_slicing_with_max_depth(sink_nodes, max_level)
+                .await;
+            let slice_nodes: std::collections::HashSet<usize> = slice_atoms
+                .into_iter()
+                .filter_map(|atom| match atom {
+                    crate::semantic_slicer::SliceAtom::FullStatement(id) => Some(id),
+                    crate::semantic_slicer::SliceAtom::FullVariableDeclStatement(id) => Some(id),
+                    crate::semantic_slicer::SliceAtom::FullExpressionStatement(id) => Some(id),
+                    crate::semantic_slicer::SliceAtom::FullReturnStatement(id) => Some(id),
+                    crate::semantic_slicer::SliceAtom::FullIfStatement(id) => Some(id),
+                    crate::semantic_slicer::SliceAtom::FullForStatement(id) => Some(id),
+                    crate::semantic_slicer::SliceAtom::FullBlockWindow {
+                        block_id: _,
+                        start_stmt: _,
+                        end_stmt: _,
+                    } => None,
+                })
+                .collect();
+            log_seed_nodes(
+                &analysis,
+                &slice_nodes.iter().copied().collect::<Vec<_>>(),
+                "semantic_single_phase_selected_nodes",
+            );
+            let rendered = get_source_from_nodes(
+                &mut slicer,
+                &analysis,
+                &ast_index,
+                &combined_source,
+                &slice_nodes,
+                &target,
+                &harness_policy,
+                exclude_libs,
+                include_types,
+                max_level,
+                aggressive_cleanup,
+            )
+            .await;
+            execution_log::phase_end(
+                "semantic_single_phase",
+                format!(
+                    "selected_nodes={} rendered_blocks={} rendered_lines={}",
+                    slice_nodes.len(),
+                    rendered.len(),
+                    count_block_lines(&rendered)
+                ),
+            );
+            rendered
         }
     } else {
+        execution_log::phase_start("static_slice");
         match slice_level.as_str() {
             "line" => {
-                match analyzer::get_source_line_slice(&analysis, &combined_source, contract_name, function_name, variable_name, exclude_libs, include_types) {
-                    slice => slice
-                }
+                let slice_node_ids =
+                    collect_static_slice_node_ids(&analysis, function_name, variable_name);
+                log_pdg_node_ids(&analysis, &slice_node_ids, "static_slice_node_ids");
+                log_pdg_node_ids(&analysis, &slice_node_ids, "static_slice_node_ids");
+                let selection = build_slice_selection(
+                    &analysis,
+                    &ast_index,
+                    &slice_node_ids,
+                    &target,
+                    &harness_policy,
+                    max_level,
+                );
+                log_slice_selection(&selection, "static_line_selection");
+                let rendered = ast_index.render(&selection, include_types, exclude_libs, max_level);
+                final_selection = selection;
+                execution_log::phase_end(
+                    "static_slice",
+                    format!(
+                        "mode=line nodes={} rendered_blocks={} rendered_lines={}",
+                        slice_node_ids.len(),
+                        rendered.len(),
+                        count_block_lines(&rendered)
+                    ),
+                );
+                rendered
             }
             "function" | _ => {
-                analyzer::get_source_slice(&analysis, &combined_source, contract_name, function_name, variable_name, exclude_libs, include_types)
+                let slice_node_ids =
+                    collect_static_slice_node_ids(&analysis, function_name, variable_name);
+                log_pdg_node_ids(&analysis, &slice_node_ids, "static_slice_node_ids");
+                log_pdg_node_ids(&analysis, &slice_node_ids, "static_slice_node_ids");
+                let selection = build_slice_selection(
+                    &analysis,
+                    &ast_index,
+                    &slice_node_ids,
+                    &target,
+                    &harness_policy,
+                    max_level,
+                );
+                log_slice_selection(&selection, "static_function_selection");
+                let rendered = ast_index.render(&selection, include_types, exclude_libs, max_level);
+                final_selection = selection;
+                execution_log::phase_end(
+                    "static_slice",
+                    format!(
+                        "mode=function nodes={} rendered_blocks={} rendered_lines={}",
+                        slice_node_ids.len(),
+                        rendered.len(),
+                        count_block_lines(&rendered)
+                    ),
+                );
+                rendered
             }
         }
     };
 
-    let mut log_file = OpenOptions::new().create(true).append(true).open("analysis.log")?;
+    let mut log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("analysis.log")?;
 
     // ⏭️ 跳过 S1.2 PoC 质量分析，直接输出切片结果
     // 如需启用质量分析，取消下面的注释
@@ -825,27 +2064,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if use_semantic {
         println!("🤖 Performing S1.2 PoC Quality Analysis...");
         let slice_code = slice.join("\n");
-        
+
         let adapter = PdgAdapter { analysis: &analysis, source_code: &combined_source };
         let model = model_name.clone();
         let slicer = crate::semantic_slicer::SemanticSlicer::new_with_options(
-            &adapter, 
-            api_key.to_string(), 
-            base_url.to_string(), 
-            model, 
+            &adapter,
+            api_key.to_string(),
+            base_url.to_string(),
+            model,
             llm_threshold,
             use_parallel,
             max_concurrent,
             None
         );
-        
+
         match slicer.analyze_poc_quality(&slice_code).await {
             Ok(report) => {
                 println!("\n📊 S1.2 PoC Quality Analysis Report:");
                 println!("{}", "=".repeat(60));
                 println!("{}", report);
                 println!("{}", "=".repeat(60));
-                
+
                 writeln!(log_file, "\n📊 S1.2 PoC Quality Analysis Report:")?;
                 writeln!(log_file, "{}", "=".repeat(60))?;
                 writeln!(log_file, "{}", report)?;
@@ -858,61 +2097,199 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     */
 
-    // 🔧 新增功能：代码补全（在输出前检查是否需要补全缺失的类型）
     let slice_code = slice.join("\n");
-    let final_output = if use_semantic {
-        println!("🔧 Checking for missing type definitions...");
-        let adapter = PdgAdapter { analysis: &analysis, source_code: &combined_source };
-        let model = model_name.clone();
-        let slicer = crate::semantic_slicer::SemanticSlicer::new_with_options(
-            &adapter, 
-            api_key.to_string(), 
-            base_url.to_string(), 
-            model, 
-            llm_threshold,
-            use_parallel,
-            max_concurrent,
-            None
+    execution_log::detail(
+        "pre_completion_slice",
+        format!(
+            "blocks={} lines={} bytes={}",
+            slice.len(),
+            slice_code.lines().count(),
+            slice_code.len()
+        ),
+    );
+    if use_semantic {
+        println!("🔒 Skipping missing-type code completion; deterministic slicing is enforced.");
+        execution_log::phase_start("code_completion_missing_types");
+        execution_log::phase_end(
+            "code_completion_missing_types",
+            format!(
+                "disabled_no_mutation input_lines={} output_lines={} delta_lines=0",
+                slice_code.lines().count(),
+                slice_code.lines().count()
+            ),
         );
-        
-        match slicer.complete_code(&slice_code, &combined_source).await {
-            Ok(completed_code) => {
-                println!("✅ Code completion finished");
-                completed_code
-            },
+    }
+    let final_output = slice_code;
+
+    if llm_completion_requested {
+        execution_log::phase_start("llm_completion_pipeline");
+        writeln!(
+            log_file,
+            "LLM completion requested but ignored: LLM participation is disabled"
+        )?;
+        execution_log::phase_end("llm_completion_pipeline", "disabled_no_mutation");
+    }
+
+    let normalized_output = sol_resurrect_pipeline::normalizer::normalize_source(&final_output);
+    let final_output =
+        if normalized_output.report.has_changes() {
+            println!(
+                "🧹 Final preflight normalized {} malformed/comment lines",
+                normalized_output.report.actions.len()
+            );
+            writeln!(
+                log_file,
+                "🧹 Final preflight normalized {} malformed/comment lines",
+                normalized_output.report.actions.len()
+            )?;
+            execution_log::detail(
+                "final_preflight_normalize",
+                format!("actions={}", normalized_output.report.actions.len()),
+            );
+            execution_log::sample(
+                "final_preflight_actions",
+                normalized_output.report.actions.iter().map(|action| {
+                    format!("{:?}@{}:{}", action.kind, action.line, action.text.trim())
+                }),
+                20,
+            );
+            normalized_output.code
+        } else {
+            final_output
+        };
+    let final_output = repair_dangling_value_continuations(&final_output, &combined_source);
+
+    // AST-based Code Resurrection
+    let use_resurrect = matches.get_flag("resurrect");
+    let final_output = if use_resurrect_v2 {
+        println!("🚀 Starting source-backed Resurrection V2...");
+        execution_log::log_line("resurrection_v2 pipeline started");
+        let output_path = match output_file {
+            Some(path) => std::path::PathBuf::from(path),
+            None => std::path::PathBuf::from("results/ResurrectedV2.t.sol"),
+        };
+        let request = sol_resurrect_v2::ResurrectionV2Request {
+            input_files: file_paths.iter().map(PathBuf::from).collect(),
+            project_root: infer_project_root(input_path),
+            seed_slice: final_output.clone(),
+            target_contract: target.contract.clone(),
+            target_test: target.entry_function.clone(),
+            focus_symbol: target.focus_symbol.clone(),
+            output_path: output_path.clone(),
+            compile_guarantee,
+        };
+
+        match sol_resurrect_v2::run_resurrection_v2(request).await {
+            Ok(result) => {
+                writeln!(
+                    log_file,
+                    "✅ Resurrection V2 returned output: compile_success={} fallback_level={} ({})",
+                    result.metadata.compile_success,
+                    result.metadata.fallback_level,
+                    result.metadata.fallback_level_name
+                )?;
+                execution_log::log_line(format!(
+                    "resurrection_v2 returned lines={} compile_success={} fallback_level={}",
+                    result.code.lines().count(),
+                    result.metadata.compile_success,
+                    result.metadata.fallback_level
+                ));
+                result.code
+            }
             Err(e) => {
-                eprintln!("⚠️  Code completion failed: {}, using original slice", e);
-                slice_code
+                eprintln!("⚠️ Resurrection V2 failed: {}", e);
+                writeln!(log_file, "⚠️ Resurrection V2 failed: {}", e)?;
+                execution_log::log_line(format!("resurrection_v2 failed: {}", e));
+                final_output
             }
         }
-    } else {
-        slice_code
-    };
+    } else if use_resurrect {
+        println!("🚀 Starting AST-based Code Resurrection...");
+        execution_log::log_line("resurrection pipeline started");
+        let output_path = match output_file {
+            Some(path) => std::path::PathBuf::from(path),
+            None => std::path::PathBuf::from("results/Resurrected.t.sol"),
+        };
+        let validation_target = if target.entry_function.trim().is_empty() {
+            None
+        } else {
+            Some(sol_resurrect_pipeline::HarnessValidationTarget::new(
+                target.contract.clone(),
+                target.entry_function.clone(),
+            ))
+        };
+        let repair_guidance = if target.entry_function.trim().is_empty() {
+            None
+        } else {
+            let mut rg = sol_resurrect_pipeline::RepairGuidance::new(
+                target.contract.clone(),
+                target.entry_function.clone(),
+                target.focus_symbol.clone(),
+            );
+            if let Some(poc) = load_poc_deps(&matches) {
+                rg = rg.with_poc_dependencies(poc);
+            }
+            Some(rg)
+        };
 
-    // LLM三阶段补全（如果启用）
-    let final_output = if use_llm_completion {
-        match LLMCompletionPipeline::new() {
-            Ok(pipeline) => {
-                // 传递源文件路径（使用第一个.sol文件作为源码）
-                let pipeline_with_source = if !file_paths.is_empty() {
-                    pipeline.with_source_file(file_paths[0].clone())
-                } else {
-                    pipeline
-                };
-                
-                match pipeline_with_source.run_completion_pipeline(&final_output) {
-                    Ok(completed_code) => {
-                        writeln!(log_file, "✅ LLM补全成功")?;
-                        completed_code
-                    },
-                    Err(e) => {
-                        writeln!(log_file, "⚠️  LLM补全失败: {}, 使用原始代码", e)?;
-                        final_output
+        let ast_extraction =
+            if std::env::var("USE_AST_EXTRACTOR").unwrap_or_else(|_| "1".to_string()) == "1" {
+                let temp_sess = solar_interface::Session::builder()
+                    .with_buffer_emitter(solar_interface::ColorChoice::Auto)
+                    .build();
+                temp_sess.enter(|| {
+                    let temp_arena = solar_ast::Arena::new();
+                    let mut temp_asts = Vec::new();
+                    for file_path in &file_paths {
+                        if let Ok(mut parser) = solar_parse::Parser::from_file(
+                            &temp_sess,
+                            &temp_arena,
+                            std::path::Path::new(file_path),
+                        ) {
+                            if let Ok(ast) = parser.parse_file() {
+                                temp_asts.push((file_path.clone(), ast));
+                            }
+                        }
                     }
-                }
-            },
+                    Some(
+                    sol_resurrect_pipeline::ast_extractor::extract_missing_dependencies_from_ast(
+                        &temp_sess,
+                        &temp_asts,
+                        &final_selection,
+                        &final_output,
+                    ),
+                )
+                })
+            } else {
+                None
+            };
+
+        match sol_resurrect_pipeline::run_resurrection(
+            &final_output,
+            &combined_source,
+            &output_path,
+            &api_key,
+            &base_url,
+            &model_name,
+            6, // max_fix_iterations
+            validation_target,
+            repair_guidance,
+            ast_extraction,
+        )
+        .await
+        {
+            Ok(resurrected) => {
+                writeln!(log_file, "✅ Resurrection pipeline returned output")?;
+                execution_log::log_line(format!(
+                    "resurrection pipeline returned output lines={}",
+                    resurrected.lines().count()
+                ));
+                resurrected
+            }
             Err(e) => {
-                writeln!(log_file, "⚠️  LLM初始化失败: {}, 跳过补全", e)?;
+                eprintln!("⚠️ Resurrection failed: {}", e);
+                writeln!(log_file, "⚠️ Resurrection failed: {}", e)?;
+                execution_log::log_line(format!("resurrection failed: {}", e));
                 final_output
             }
         }
@@ -920,29 +2297,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         final_output
     };
 
-    // AST-based Code Resurrection（功能开发中）
-    let use_resurrect = matches.get_flag("resurrect");
-    let final_output = if use_resurrect {
-        eprintln!("⚠️  Code resurrection feature is under development");
-        eprintln!("   Current status: AST pattern matching needs adjustment for solar crate");
-        eprintln!("   See RESURRECTION_README.md for details");
-        writeln!(log_file, "⚠️  Resurrection feature not yet available")?;
+    // Legacy token repair is explicitly outside resurrection v2. The v2 renderer only emits
+    // complete source-backed atoms and widens the graph/fallback level on compiler feedback.
+    let final_output = if use_resurrect_v2 {
         final_output
     } else {
-        final_output
+        repair_dangling_value_continuations(&final_output, &combined_source)
     };
 
     if let Some(output_file) = output_file {
         fs::write(output_file, final_output.clone()).expect("Failed to write to file");
         writeln!(log_file, "✅ Results written to {}", output_file)?;
+        execution_log::log_line(format!(
+            "results written output={} lines={}",
+            output_file,
+            final_output.lines().count()
+        ));
     } else {
         writeln!(log_file, "🔍 Source Code Slice Analysis")?;
         writeln!(log_file, "📁 Input: {}", input_path)?;
         writeln!(log_file, "🏢 Contract: {}", contract_name)?;
-        writeln!(log_file, "⚡ Function: {}", if function_name.is_empty() { "All functions" } else { function_name })?;
-        writeln!(log_file, "📊 Variable: {}", variable_name)?;
+        writeln!(
+            log_file,
+            "⚡ Target test/function: {}",
+            if function_name.is_empty() {
+                "All functions"
+            } else {
+                function_name
+            }
+        )?;
+        writeln!(log_file, "📊 Focus symbol: {}", variable_name)?;
         writeln!(log_file, "🎯 Slice Level: {}", slice_level)?;
-        writeln!(log_file, "📋 Slice Results ({} lines):", final_output.lines().count())?;
+        writeln!(
+            log_file,
+            "📋 Slice Results ({} lines):",
+            final_output.lines().count()
+        )?;
         writeln!(log_file, "{}", "=".repeat(60))?;
 
         for line in final_output.lines() {
@@ -952,29 +2342,1220 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         writeln!(log_file, "{}", "=".repeat(60))?;
         writeln!(log_file, "✅ Analysis completed successfully!")?;
     }
+    execution_log::log_line("execution completed");
     Ok(())
+}
+
+fn resolve_execution_log_path(
+    contract_name: &str,
+    function_name: &str,
+    variable_name: &str,
+    run_mode: &str,
+    output_file: Option<&str>,
+) -> PathBuf {
+    if let Ok(path) = std::env::var("SC_SLICER_LOG_FILE") {
+        if !path.trim().is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+
+    if let Some(output_file) = output_file {
+        let output_path = Path::new(output_file);
+        if let Some(stem) = output_path.file_stem().and_then(|stem| stem.to_str()) {
+            let log_file = format!("{}.log", sanitize_log_name(stem));
+            if let Some(parent) = output_path.parent().and_then(|p| p.parent()) {
+                if !parent.as_os_str().is_empty() {
+                    return parent.join("logs").join(log_file);
+                }
+            }
+            return PathBuf::from("logs").join(log_file);
+        }
+    }
+
+    let run_id = execution_log::unix_timestamp();
+    let function_part = if function_name.trim().is_empty() {
+        "all"
+    } else {
+        function_name
+    };
+    let file_name = format!(
+        "slice_{}_{}_{}_{}_{}.log",
+        sanitize_log_name(contract_name),
+        sanitize_log_name(function_part),
+        sanitize_log_name(variable_name),
+        sanitize_log_name(run_mode),
+        run_id
+    );
+
+    PathBuf::from("logs").join(file_name)
+}
+
+fn infer_project_root(input_path: &str) -> PathBuf {
+    let path = Path::new(input_path);
+    let start = if path.is_file() {
+        path.parent().unwrap_or_else(|| Path::new("."))
+    } else {
+        path
+    };
+    for ancestor in start.ancestors() {
+        if ancestor.join("foundry.toml").exists() {
+            return ancestor.to_path_buf();
+        }
+    }
+    start.to_path_buf()
+}
+
+fn sanitize_log_name(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn count_block_lines(blocks: &[String]) -> usize {
+    blocks.iter().map(|block| block.lines().count()).sum()
+}
+
+fn log_input_files(file_paths: &[String], source_codes: &[String]) {
+    let total_lines: usize = source_codes.iter().map(|code| code.lines().count()).sum();
+    let total_bytes: usize = source_codes.iter().map(|code| code.len()).sum();
+    execution_log::detail(
+        "input_files",
+        format!(
+            "count={} total_lines={} total_bytes={}",
+            file_paths.len(),
+            total_lines,
+            total_bytes
+        ),
+    );
+
+    execution_log::sample(
+        "input_file_paths",
+        file_paths.iter().map(|path| path.as_str()),
+        30,
+    );
+
+    for (path, code) in file_paths.iter().zip(source_codes.iter()).take(20) {
+        execution_log::detail(
+            "input_file",
+            format!(
+                "path={} lines={} bytes={}",
+                path,
+                code.lines().count(),
+                code.len()
+            ),
+        );
+    }
+}
+
+fn log_ast_index_summary(ast_index: &AstSliceIndex) {
+    let mut item_counts: HashMap<&'static str, usize> = HashMap::new();
+    let mut contract_summaries = Vec::new();
+
+    for contract in &ast_index.contracts {
+        let mut functions = 0usize;
+        let mut variables = 0usize;
+        for item in &contract.body_items {
+            match item.kind {
+                AstContractItemKind::Function => functions += 1,
+                AstContractItemKind::Variable => variables += 1,
+                AstContractItemKind::Modifier => {
+                    *item_counts.entry("modifier").or_default() += 1;
+                }
+                AstContractItemKind::Struct => {
+                    *item_counts.entry("struct").or_default() += 1;
+                }
+                AstContractItemKind::Enum => {
+                    *item_counts.entry("enum").or_default() += 1;
+                }
+                AstContractItemKind::Udvt => {
+                    *item_counts.entry("udvt").or_default() += 1;
+                }
+                AstContractItemKind::Error => {
+                    *item_counts.entry("error").or_default() += 1;
+                }
+                AstContractItemKind::Event => {
+                    *item_counts.entry("event").or_default() += 1;
+                }
+                AstContractItemKind::Using => {
+                    *item_counts.entry("using").or_default() += 1;
+                }
+            }
+        }
+        *item_counts.entry("function").or_default() += functions;
+        *item_counts.entry("variable").or_default() += variables;
+        contract_summaries.push(format!(
+            "{}({:?}, functions={}, vars={}, items={})",
+            contract.name,
+            contract.kind,
+            functions,
+            variables,
+            contract.body_items.len()
+        ));
+    }
+
+    execution_log::detail(
+        "ast_index",
+        format!(
+            "headers={} top_level_types={} contracts={} variable_types={} using_libraries={} item_counts={}",
+            ast_index.top_level_headers.len(),
+            ast_index.top_level_types.len(),
+            ast_index.contracts.len(),
+            ast_index.variable_types.len(),
+            ast_index.using_libraries.len(),
+            format_counts(&item_counts)
+        ),
+    );
+    execution_log::sample("ast_contracts", contract_summaries, 60);
+    execution_log::sample("ast_using_libraries", &ast_index.using_libraries, 30);
+}
+
+fn log_pdg_summary(
+    analysis: &AnalysisResult,
+    contract_name: &str,
+    function_name: &str,
+    variable_name: &str,
+) {
+    let mut node_counts: HashMap<&'static str, usize> = HashMap::new();
+    let mut edge_counts: HashMap<&'static str, usize> = HashMap::new();
+    let mut target_context_nodes = Vec::new();
+    let mut variable_nodes = Vec::new();
+
+    for (&node_id, node) in &analysis.program_dependency_graph.nodes {
+        *node_counts.entry(node_kind_name(&node.kind)).or_default() += 1;
+        if node.contract_context.as_deref() == Some(contract_name)
+            && (function_name.is_empty() || node.function_context.as_deref() == Some(function_name))
+        {
+            target_context_nodes.push(format!(
+                "{}:{}:{}:{}",
+                node_id,
+                node_kind_name(&node.kind),
+                node.function_context.as_deref().unwrap_or("<none>"),
+                compact_text(&node.label, 120)
+            ));
+        }
+        if !variable_name.is_empty() && node.label.contains(variable_name) {
+            variable_nodes.push(format!(
+                "{}:{}:{}:{}",
+                node_id,
+                node_kind_name(&node.kind),
+                node.function_context.as_deref().unwrap_or("<none>"),
+                compact_text(&node.label, 120)
+            ));
+        }
+    }
+
+    for edge in &analysis.program_dependency_graph.edges {
+        *edge_counts.entry(edge_kind_name(&edge.kind)).or_default() += 1;
+    }
+
+    execution_log::detail(
+        "pdg_summary",
+        format!(
+            "nodes={} edges={} node_counts={} edge_counts={}",
+            analysis.program_dependency_graph.nodes.len(),
+            analysis.program_dependency_graph.edges.len(),
+            format_counts(&node_counts),
+            format_counts(&edge_counts)
+        ),
+    );
+    execution_log::sample("pdg_target_context_nodes", target_context_nodes, 60);
+    execution_log::sample("pdg_focus_symbol_nodes", variable_nodes, 60);
+}
+
+fn log_seed_nodes(analysis: &AnalysisResult, graph_node_indices: &[usize], name: &str) {
+    let entries = graph_node_indices
+        .iter()
+        .filter_map(|graph_idx| {
+            let node_idx = petgraph::graph::NodeIndex::new(*graph_idx);
+            let stored_id = analysis
+                .program_dependency_graph
+                .graph
+                .node_weight(node_idx)?;
+            let node = analysis.program_dependency_graph.nodes.get(stored_id)?;
+            Some(format!(
+                "graph={} pdg={} kind={} contract={} function={} label={}",
+                graph_idx,
+                stored_id,
+                node_kind_name(&node.kind),
+                node.contract_context.as_deref().unwrap_or("<none>"),
+                node.function_context.as_deref().unwrap_or("<none>"),
+                compact_text(&node.label, 120)
+            ))
+        })
+        .collect::<Vec<_>>();
+    execution_log::sample(name, entries, 80);
+}
+
+fn log_pdg_node_ids(analysis: &AnalysisResult, pdg_node_ids: &HashSet<usize>, name: &str) {
+    let entries = pdg_node_ids
+        .iter()
+        .filter_map(|node_id| {
+            let node = analysis.program_dependency_graph.nodes.get(node_id)?;
+            Some(format!(
+                "pdg={} kind={} contract={} function={} label={}",
+                node_id,
+                node_kind_name(&node.kind),
+                node.contract_context.as_deref().unwrap_or("<none>"),
+                node.function_context.as_deref().unwrap_or("<none>"),
+                compact_text(&node.label, 120)
+            ))
+        })
+        .collect::<Vec<_>>();
+    execution_log::sample(name, entries, 80);
+}
+
+fn log_slice_selection(selection: &SliceSelection, name: &str) {
+    execution_log::detail(
+        name,
+        format!(
+            "contracts={} full_contracts={} functions={} contract_functions={} variables={} dependency_traces={}",
+            selection.relevant_contracts.len(),
+            selection.full_contracts.len(),
+            selection.relevant_functions.len(),
+            selection.relevant_contract_functions.len(),
+            selection.relevant_variables.len(),
+            selection.dependency_traces.len()
+        ),
+    );
+    execution_log::sample(
+        &format!("{}_contracts", name),
+        &selection.relevant_contracts,
+        80,
+    );
+    execution_log::sample(
+        &format!("{}_full_contracts", name),
+        &selection.full_contracts,
+        80,
+    );
+    execution_log::sample(
+        &format!("{}_contract_functions", name),
+        &selection.relevant_contract_functions,
+        120,
+    );
+    execution_log::sample(
+        &format!("{}_variables", name),
+        &selection.relevant_variables,
+        80,
+    );
+    execution_log::sample(
+        &format!("{}_dependency_traces", name),
+        selection
+            .dependency_traces
+            .iter()
+            .map(|(key, reason)| format!("{} => {}", key, reason)),
+        120,
+    );
+}
+
+fn format_counts(counts: &HashMap<&'static str, usize>) -> String {
+    let mut entries = counts
+        .iter()
+        .map(|(name, count)| format!("{}={}", name, count))
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries.join(",")
+}
+
+fn node_kind_name(kind: &crate::analyzer::NodeKind) -> &'static str {
+    match kind {
+        crate::analyzer::NodeKind::Assignment => "Assignment",
+        crate::analyzer::NodeKind::FunctionCall => "FunctionCall",
+        crate::analyzer::NodeKind::ControlCondition => "ControlCondition",
+        crate::analyzer::NodeKind::ExternalCall => "ExternalCall",
+        crate::analyzer::NodeKind::Return => "Return",
+        crate::analyzer::NodeKind::VariableRead => "VariableRead",
+        crate::analyzer::NodeKind::TaintSource => "TaintSource",
+        crate::analyzer::NodeKind::TaintSink => "TaintSink",
+        crate::analyzer::NodeKind::ConstraintNode => "ConstraintNode",
+        crate::analyzer::NodeKind::StorageRead(_) => "StorageRead",
+        crate::analyzer::NodeKind::StorageWrite(_) => "StorageWrite",
+        crate::analyzer::NodeKind::VariableWrite(_) => "VariableWrite",
+    }
+}
+
+fn edge_kind_name(kind: &crate::analyzer::EdgeKind) -> &'static str {
+    match kind {
+        crate::analyzer::EdgeKind::DataDependency(_) => "DataDependency",
+        crate::analyzer::EdgeKind::ControlDependency => "ControlDependency",
+        crate::analyzer::EdgeKind::ParameterIn => "ParameterIn",
+        crate::analyzer::EdgeKind::ParameterOut => "ParameterOut",
+        crate::analyzer::EdgeKind::Call => "Call",
+        crate::analyzer::EdgeKind::TaintPropagation => "TaintPropagation",
+        crate::analyzer::EdgeKind::ValidatedDataDependency(_) => "ValidatedDataDependency",
+        crate::analyzer::EdgeKind::Return => "Return",
+        crate::analyzer::EdgeKind::StorageDependency(_) => "StorageDependency",
+    }
+}
+
+fn compact_text(text: &str, max_chars: usize) -> String {
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() <= max_chars {
+        one_line
+    } else {
+        format!(
+            "{}...",
+            one_line.chars().take(max_chars).collect::<String>()
+        )
+    }
+}
+
+fn repair_dangling_value_continuations(code: &str, original_source: &str) -> String {
+    let mut source_declaration_heads: HashMap<String, String> = HashMap::new();
+    // multiline type-then-visibility declarations: `mapping(...)\n    public varName;`
+    let mut source_type_heads: HashMap<String, String> = HashMap::new();
+    let source_lines: Vec<&str> = original_source.lines().collect();
+
+    for (idx, line) in source_lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        // Numeric/literal constant value continuations (ends with `;`, starts with digit/quote)
+        if looks_like_value_continuation(trimmed) {
+            if let Some(head) = previous_nonempty_line(&source_lines, idx) {
+                let head_trimmed = head.trim();
+                if looks_like_multiline_declaration_head(head_trimmed) {
+                    source_declaration_heads
+                        .entry(trimmed.to_string())
+                        .or_insert_with(|| head.to_string());
+                }
+            }
+        }
+
+        // Visibility+name tail: `public varName;` / `internal _state;`
+        if looks_like_visibility_name_tail(trimmed) {
+            if let Some(head) = previous_nonempty_line(&source_lines, idx) {
+                let head_trimmed = head.trim();
+                if looks_like_multiline_type_head(head_trimmed) {
+                    source_type_heads
+                        .entry(trimmed.to_string())
+                        .or_insert_with(|| head.to_string());
+                }
+            }
+        }
+    }
+
+    if source_declaration_heads.is_empty() && source_type_heads.is_empty() {
+        return code.to_string();
+    }
+
+    let lines: Vec<&str> = code.lines().collect();
+    let mut repaired = Vec::with_capacity(lines.len());
+    let mut inserted = 0usize;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        if looks_like_value_continuation(trimmed)
+            && !previous_output_line_is_declaration_head(&lines, idx)
+        {
+            if let Some(head) = source_declaration_heads.get(trimmed) {
+                repaired.push(head.clone());
+                inserted += 1;
+            }
+        }
+
+        if looks_like_visibility_name_tail(trimmed)
+            && !previous_output_line_is_type_head(&lines, idx)
+        {
+            if let Some(head) = source_type_heads.get(trimmed) {
+                repaired.push(head.clone());
+                inserted += 1;
+            }
+        }
+
+        repaired.push((*line).to_string());
+    }
+
+    if inserted > 0 {
+        println!(
+            "🧩 Final preflight restored {} multiline declaration heads",
+            inserted
+        );
+    }
+
+    repaired.join("\n")
+}
+
+fn previous_nonempty_line<'a>(lines: &'a [&str], idx: usize) -> Option<&'a str> {
+    lines[..idx]
+        .iter()
+        .rev()
+        .copied()
+        .find(|line| !line.trim().is_empty())
+}
+
+fn previous_output_line_is_declaration_head(lines: &[&str], idx: usize) -> bool {
+    previous_nonempty_line(lines, idx)
+        .map(|line| looks_like_multiline_declaration_head(line.trim()))
+        .unwrap_or(false)
+}
+
+fn previous_output_line_is_type_head(lines: &[&str], idx: usize) -> bool {
+    previous_nonempty_line(lines, idx)
+        .map(|line| looks_like_multiline_type_head(line.trim()))
+        .unwrap_or(false)
+}
+
+fn looks_like_value_continuation(trimmed: &str) -> bool {
+    if !trimmed.ends_with(';') || trimmed.contains('=') || trimmed.contains('{') {
+        return false;
+    }
+
+    trimmed
+        .chars()
+        .next()
+        .map(|ch| ch.is_ascii_digit() || ch == '"' || ch == '\'' || ch == '-')
+        .unwrap_or(false)
+        || trimmed.starts_with("0x")
+        || trimmed.starts_with("address(")
+        || trimmed.starts_with("bytes")
+}
+
+fn looks_like_multiline_declaration_head(trimmed: &str) -> bool {
+    trimmed.ends_with('=')
+        && (trimmed.contains(" constant ")
+            || trimmed.contains(" immutable ")
+            || trimmed.contains(" public ")
+            || trimmed.contains(" internal ")
+            || trimmed.contains(" private ")
+            || trimmed.contains(" external "))
+        && !trimmed.starts_with("if ")
+        && !trimmed.starts_with("while ")
+        && !trimmed.starts_with("for ")
+}
+
+/// Returns true for lines like `    public queuedWithdrawal;` — the trailing
+/// visibility+name half of a multiline type declaration.
+fn looks_like_visibility_name_tail(trimmed: &str) -> bool {
+    if !trimmed.ends_with(';') || trimmed.contains('(') || trimmed.contains('=') {
+        return false;
+    }
+    trimmed.starts_with("public ")
+        || trimmed.starts_with("internal ")
+        || trimmed.starts_with("private ")
+        || trimmed.starts_with("external ")
+        || trimmed.starts_with("override ")
+        || trimmed.starts_with("virtual ")
+}
+
+/// Returns true for `mapping(address => mapping(...))` style lines that are the
+/// type-head of a multiline variable declaration.
+fn looks_like_multiline_type_head(trimmed: &str) -> bool {
+    if trimmed.is_empty()
+        || trimmed.ends_with(';')
+        || trimmed.ends_with('=')
+        || trimmed.ends_with(',')
+        || trimmed.starts_with("//")
+        || trimmed.starts_with("function ")
+        || trimmed.starts_with("if ")
+        || trimmed.starts_with("for ")
+        || trimmed.starts_with("while ")
+        || trimmed.starts_with("return ")
+    {
+        return false;
+    }
+    (trimmed.ends_with(')') || trimmed.ends_with(']') || trimmed.ends_with('>'))
+        && (trimmed.starts_with("mapping(") || trimmed.contains(" => ") || trimmed.ends_with(')'))
+}
+
+fn collect_static_slice_node_ids(
+    analysis: &AnalysisResult,
+    function: &str,
+    variable: &str,
+) -> HashSet<usize> {
+    let mut all_candidate_nodes = Vec::new();
+
+    for (&node_id, node) in &analysis.program_dependency_graph.nodes {
+        if node.label.contains(variable) {
+            all_candidate_nodes.push(node_id);
+        }
+    }
+
+    let mut candidate_nodes = if function.is_empty() {
+        all_candidate_nodes.clone()
+    } else {
+        all_candidate_nodes
+            .iter()
+            .copied()
+            .filter(|node_id| {
+                analysis
+                    .program_dependency_graph
+                    .nodes
+                    .get(node_id)
+                    .and_then(|node| node.function_context.as_ref())
+                    .map(|context| context == function)
+                    .unwrap_or(false)
+            })
+            .collect()
+    };
+
+    if candidate_nodes.is_empty() && !function.is_empty() {
+        candidate_nodes = all_candidate_nodes;
+    }
+
+    let mut all_slice_nodes = HashSet::new();
+    for node_id in candidate_nodes {
+        all_slice_nodes.extend(analysis.program_dependency_graph.backward_slice(node_id));
+    }
+
+    let mut related_vars = HashSet::new();
+    for node_id in &all_slice_nodes {
+        if let Some(node) = analysis.program_dependency_graph.nodes.get(node_id) {
+            match &node.kind {
+                crate::analyzer::NodeKind::StorageRead(var)
+                | crate::analyzer::NodeKind::StorageWrite(var)
+                | crate::analyzer::NodeKind::VariableWrite(var) => {
+                    related_vars.insert(var.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for var in &related_vars {
+        for (&node_id, node) in &analysis.program_dependency_graph.nodes {
+            if matches!(node.kind, crate::analyzer::NodeKind::StorageWrite(ref v) if v == var)
+                || matches!(node.kind, crate::analyzer::NodeKind::VariableWrite(ref v) if v == var)
+            {
+                all_slice_nodes.extend(analysis.program_dependency_graph.backward_slice(node_id));
+            }
+        }
+    }
+
+    all_slice_nodes
+}
+
+fn graph_indices_to_pdg_node_ids(
+    analysis: &AnalysisResult,
+    graph_indices: &HashSet<usize>,
+) -> HashSet<usize> {
+    let mut node_ids = HashSet::new();
+    for graph_index in graph_indices {
+        if let Some(&node_id) = analysis
+            .program_dependency_graph
+            .graph
+            .node_weight(petgraph::graph::NodeIndex::new(*graph_index))
+        {
+            node_ids.insert(node_id);
+        }
+    }
+    node_ids
+}
+
+fn build_slice_selection(
+    analysis: &AnalysisResult,
+    ast_index: &AstSliceIndex,
+    pdg_node_ids: &HashSet<usize>,
+    target: &TargetSpec,
+    policy: &HarnessPolicy,
+    max_level: usize,
+) -> SliceSelection {
+    let mut selection = SliceSelection::default();
+    selection.target_contract = target.contract.clone();
+    selection.target_entry_function = target.entry_function.clone();
+    selection.relevant_contracts.insert(target.contract.clone());
+    if !target.focus_symbol.trim().is_empty() {
+        selection
+            .relevant_variables
+            .insert(target.focus_symbol.clone());
+    }
+
+    if !target.entry_function.is_empty() {
+        selection.add_contract_function(
+            &target.contract,
+            &target.entry_function,
+            "Harness deps: target test entry",
+        );
+    }
+
+    for node_id in pdg_node_ids {
+        if let Some(node) = analysis.program_dependency_graph.nodes.get(node_id) {
+            if let (Some(contract), Some(function)) =
+                (&node.contract_context, &node.function_context)
+            {
+                if should_allow_harness_function(contract, function, target, &selection) {
+                    selection.add_contract_function(
+                        contract,
+                        function,
+                        "Harness deps: PDG node in target slice",
+                    );
+                }
+            }
+            if let Some(contract) = &node.contract_context {
+                selection.relevant_contracts.insert(contract.clone());
+            }
+            match &node.kind {
+                crate::analyzer::NodeKind::StorageRead(var)
+                | crate::analyzer::NodeKind::StorageWrite(var)
+                | crate::analyzer::NodeKind::VariableWrite(var) => {
+                    selection.relevant_variables.insert(var.clone());
+                }
+                crate::analyzer::NodeKind::VariableRead => {
+                    if let Some(var) = extract_variable_from_pdg_label(&node.label) {
+                        selection.relevant_variables.insert(var);
+                    }
+                }
+                crate::analyzer::NodeKind::ExternalCall
+                | crate::analyzer::NodeKind::TaintSource => {
+                    if let Some(receiver) = extract_receiver_variable(&node.label) {
+                        selection.relevant_variables.insert(receiver.clone());
+                        if let Some(contract_type) = ast_index.variable_types.get(&receiver) {
+                            add_contract_dependency(
+                                &mut selection,
+                                contract_type.trim(),
+                                target,
+                                "Scenario deps: external receiver type used by target slice",
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if policy.include_setup {
+        for setup_function in ["setUp", "constructor"] {
+            if analysis
+                .contract_registry
+                .function_map
+                .get(&target.contract)
+                .map_or(false, |functions| functions.contains_key(setup_function))
+            {
+                selection.add_contract_function(
+                    &target.contract,
+                    setup_function,
+                    "Harness deps: target contract setup",
+                );
+            }
+        }
+    }
+
+    if policy.include_same_contract_helpers || policy.include_inherited_helpers {
+        expand_harness_call_closure(analysis, ast_index, target, policy, &mut selection);
+    }
+
+    if selection.has_target_entry() {
+        for key in &selection.relevant_contract_functions {
+            if let Some((contract, function)) = key.split_once("::") {
+                selection.function_levels.insert(function.to_string(), 0);
+                selection.contract_levels.insert(contract.to_string(), 0);
+            }
+        }
+    } else {
+        let (function_levels, contract_levels) =
+            build_function_level_hierarchy(analysis, &selection.relevant_functions);
+        selection.function_levels = function_levels;
+        selection.contract_levels = contract_levels;
+    }
+
+    for (function, level) in &selection.function_levels {
+        if *level <= max_level {
+            selection.relevant_functions.insert(function.clone());
+        }
+    }
+
+    for (contract, level) in &selection.contract_levels {
+        if *level <= max_level {
+            selection.relevant_contracts.insert(contract.clone());
+        }
+    }
+
+    for (contract, variables) in &analysis.contract_registry.storage_map {
+        if variables
+            .keys()
+            .any(|variable| selection.relevant_variables.contains(variable))
+        {
+            add_contract_dependency(
+                &mut selection,
+                contract,
+                target,
+                "Scenario deps: storage referenced by selected harness code",
+            );
+        }
+    }
+
+    collect_variables_for_selected_functions(analysis, ast_index, &mut selection);
+    collect_qualified_definition_dependencies(ast_index, target, &mut selection);
+
+    // NEW: Resolve missing dependencies based on text (e.g., Constants.MAX_TICK, Errors.InvalidTick)
+    if policy.allow_text_dependency_expansion {
+        let mut iteration = 0;
+        loop {
+            iteration += 1;
+            // Temporarily render the current selection to text
+            let temp_blocks = ast_index.render(&selection, true, false, max_level);
+            let temp_text = temp_blocks.join("\n");
+
+            let mut discovered_contracts = HashSet::new();
+            for c in &ast_index.contracts {
+                if !selection.relevant_contracts.contains(&c.name) {
+                    let pattern = format!(r"\b{}\b", regex::escape(&c.name));
+                    if let Ok(re) = regex::Regex::new(&pattern) {
+                        if re.is_match(&temp_text) {
+                            discovered_contracts.insert(c.name.clone());
+                        }
+                    }
+                }
+            }
+
+            if discovered_contracts.is_empty() || iteration > 5 {
+                break;
+            }
+
+            println!(
+                "🔍 Discovered missing dependencies from text (iter {}): {:?}",
+                iteration, discovered_contracts
+            );
+
+            for contract_name in &discovered_contracts {
+                add_contract_dependency(
+                    &mut selection,
+                    contract_name,
+                    target,
+                    "Compiler-driven deps: referenced by rendered harness text",
+                );
+                if let Some(c) = ast_index
+                    .contracts
+                    .iter()
+                    .find(|c| c.name == *contract_name)
+                {
+                    for item in &c.body_items {
+                        if let Some(name) = &item.name {
+                            if matches!(item.kind, AstContractItemKind::Function)
+                                && should_allow_harness_function(
+                                    contract_name,
+                                    name,
+                                    target,
+                                    &selection,
+                                )
+                            {
+                                selection.add_contract_function(
+                                    contract_name,
+                                    name,
+                                    "Compiler-driven deps: function referenced by rendered harness text",
+                                );
+                            }
+                            selection.relevant_variables.insert(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    selection
+}
+
+fn expand_harness_call_closure(
+    analysis: &AnalysisResult,
+    ast_index: &AstSliceIndex,
+    target: &TargetSpec,
+    policy: &HarnessPolicy,
+    selection: &mut SliceSelection,
+) {
+    use std::collections::VecDeque;
+
+    let mut queue = VecDeque::new();
+    let mut depth_by_key = HashMap::new();
+    for key in selection.relevant_contract_functions.clone() {
+        depth_by_key.insert(key.clone(), 0usize);
+        queue.push_back(key);
+    }
+
+    while let Some(key) = queue.pop_front() {
+        if selection.relevant_contract_functions.len() >= policy.max_harness_functions {
+            println!(
+                "⚠️  Harness budget reached: {} selected functions",
+                policy.max_harness_functions
+            );
+            break;
+        }
+
+        let depth = *depth_by_key.get(&key).unwrap_or(&0);
+        let Some((contract, function)) = key.split_once("::") else {
+            continue;
+        };
+        if depth >= 8 {
+            continue;
+        }
+
+        for (called_contract, called_function, reason) in
+            find_called_contract_functions(analysis, ast_index, contract, function, policy)
+        {
+            if !should_allow_harness_function(&called_contract, &called_function, target, selection)
+            {
+                continue;
+            }
+
+            add_contract_dependency(selection, &called_contract, target, &reason);
+            let inserted =
+                selection.add_contract_function(&called_contract, &called_function, &reason);
+            if inserted {
+                let called_key =
+                    SliceSelection::contract_function_key(&called_contract, &called_function);
+                depth_by_key.insert(called_key.clone(), depth + 1);
+                queue.push_back(called_key);
+            }
+        }
+    }
+}
+
+fn add_contract_dependency(
+    selection: &mut SliceSelection,
+    contract: &str,
+    target: &TargetSpec,
+    reason: &str,
+) {
+    if contract.trim().is_empty() {
+        return;
+    }
+
+    selection.relevant_contracts.insert(contract.to_string());
+    selection
+        .dependency_traces
+        .entry(format!("contract::{}", contract))
+        .or_insert_with(|| reason.to_string());
+
+    if classify_harness_dependency(contract, target) == HarnessDependencyClass::Scenario {
+        selection.full_contracts.insert(contract.to_string());
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HarnessDependencyClass {
+    Harness,
+    Scenario,
+    Protocol,
+}
+
+fn classify_harness_dependency(contract: &str, target: &TargetSpec) -> HarnessDependencyClass {
+    if contract == target.contract {
+        return HarnessDependencyClass::Harness;
+    }
+
+    let lower = contract.to_ascii_lowercase();
+    if ["mock", "token", "oracle", "pool", "vault", "fixture"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        HarnessDependencyClass::Scenario
+    } else {
+        HarnessDependencyClass::Protocol
+    }
+}
+
+fn should_allow_harness_function(
+    contract: &str,
+    function: &str,
+    target: &TargetSpec,
+    selection: &SliceSelection,
+) -> bool {
+    if target.entry_function.trim().is_empty() {
+        return true;
+    }
+
+    if contract == target.contract {
+        return function == target.entry_function
+            || is_setup_function(function)
+            || !is_test_like_function(function)
+            || selection.contains_contract_function(contract, function);
+    }
+
+    if is_test_like_function(function) {
+        return false;
+    }
+
+    if is_setup_function(function) {
+        return selection.contains_contract_function(contract, function);
+    }
+
+    true
+}
+
+fn collect_qualified_definition_dependencies(
+    ast_index: &AstSliceIndex,
+    target: &TargetSpec,
+    selection: &mut SliceSelection,
+) {
+    let known_defs: HashMap<String, ast::ContractKind> = ast_index
+        .contracts
+        .iter()
+        .map(|contract| (contract.name.clone(), contract.kind))
+        .collect();
+
+    for _ in 0..5 {
+        let mut discovered = Vec::new();
+
+        for contract in &ast_index.contracts {
+            let contract_selected = selection.relevant_contracts.contains(&contract.name)
+                || selection.full_contracts.contains(&contract.name);
+            if !contract_selected {
+                continue;
+            }
+
+            for item in &contract.body_items {
+                if should_exclude_harness_item(&contract.name, item, selection) {
+                    continue;
+                }
+                if !(selection.full_contracts.contains(&contract.name)
+                    || should_include_contract_item(&contract.name, item, selection, true))
+                {
+                    continue;
+                }
+
+                let mut referenced_defs = extract_qualified_definition_names(&item.code);
+                referenced_defs.extend(extract_direct_definition_names(&item.code, &known_defs));
+
+                for def_name in referenced_defs {
+                    let Some(kind) = known_defs.get(&def_name).copied() else {
+                        continue;
+                    };
+                    if selection.relevant_contracts.contains(&def_name) {
+                        continue;
+                    }
+                    discovered.push((def_name, kind));
+                }
+            }
+        }
+
+        if discovered.is_empty() {
+            break;
+        }
+
+        for (def_name, kind) in discovered {
+            add_contract_dependency(
+                selection,
+                &def_name,
+                target,
+                "Protocol deps: qualified Definition.member reference",
+            );
+            if matches!(kind, ast::ContractKind::Library)
+                || matches!(kind, ast::ContractKind::Interface)
+                || classify_harness_dependency(&def_name, target)
+                    == HarnessDependencyClass::Scenario
+            {
+                selection.full_contracts.insert(def_name);
+            }
+        }
+    }
+}
+
+fn extract_qualified_definition_names(code: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let tokens = tokenize_code_for_qualified_refs(code);
+    for window in tokens.windows(2) {
+        if window[1] == "." && is_symbol_like_identifier(&window[0]) {
+            names.insert(window[0].clone());
+        }
+    }
+    names
+}
+
+fn extract_direct_definition_names(
+    code: &str,
+    known_defs: &HashMap<String, ast::ContractKind>,
+) -> HashSet<String> {
+    tokenize_code_for_qualified_refs(code)
+        .into_iter()
+        .filter(|token| is_symbol_like_identifier(token) && known_defs.contains_key(token))
+        .collect()
+}
+
+fn tokenize_code_for_qualified_refs(code: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in code.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            current.push(ch);
+        } else {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            if ch == '.' {
+                tokens.push(ch.to_string());
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn is_symbol_like_identifier(token: &str) -> bool {
+    token
+        .chars()
+        .next()
+        .map(|ch| ch.is_ascii_uppercase())
+        .unwrap_or(false)
+}
+
+fn collect_variables_for_selected_functions(
+    analysis: &AnalysisResult,
+    ast_index: &AstSliceIndex,
+    selection: &mut SliceSelection,
+) {
+    for node in analysis.program_dependency_graph.nodes.values() {
+        let in_selected_function = match (&node.contract_context, &node.function_context) {
+            (Some(contract), Some(function)) if selection.has_target_entry() => {
+                selection.contains_contract_function(contract, function)
+            }
+            (_, Some(function)) => selection.relevant_functions.contains(function),
+            _ => false,
+        };
+
+        if !in_selected_function {
+            continue;
+        }
+
+        match &node.kind {
+            crate::analyzer::NodeKind::StorageRead(var)
+            | crate::analyzer::NodeKind::StorageWrite(var)
+            | crate::analyzer::NodeKind::VariableWrite(var) => {
+                selection.relevant_variables.insert(var.clone());
+            }
+            crate::analyzer::NodeKind::VariableRead => {
+                if let Some(var) = extract_variable_from_pdg_label(&node.label) {
+                    selection.relevant_variables.insert(var);
+                }
+            }
+            crate::analyzer::NodeKind::ExternalCall | crate::analyzer::NodeKind::TaintSource => {
+                if let Some(receiver) = extract_receiver_variable(&node.label) {
+                    selection.relevant_variables.insert(receiver.clone());
+                    if let Some(contract_type) = ast_index.variable_types.get(&receiver) {
+                        let contract_type = contract_type.trim().to_string();
+                        let target = TargetSpec {
+                            contract: selection.target_contract.clone(),
+                            entry_function: selection.target_entry_function.clone(),
+                            focus_symbol: String::new(),
+                        };
+                        add_contract_dependency(
+                            selection,
+                            &contract_type,
+                            &target,
+                            "Scenario deps: external receiver used by selected harness code",
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for (contract, variables) in &analysis.contract_registry.storage_map {
+        if variables
+            .keys()
+            .any(|variable| selection.relevant_variables.contains(variable))
+        {
+            selection.relevant_contracts.insert(contract.clone());
+        }
+    }
+}
+
+fn extract_variable_from_pdg_label(label: &str) -> Option<String> {
+    let candidate = label
+        .strip_prefix("read state var ")
+        .or_else(|| label.strip_prefix("read global "))
+        .or_else(|| label.strip_prefix("read "))
+        .or_else(|| {
+            label
+                .strip_prefix("storage: ")
+                .and_then(|s| s.rsplit('.').next())
+        })?;
+
+    let name = candidate.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn find_harness_seed_nodes(analysis: &AnalysisResult, target: &TargetSpec) -> Vec<usize> {
+    if target.entry_function.is_empty() {
+        return find_sink_nodes(analysis, &target.focus_symbol);
+    }
+
+    println!(
+        "🔍 Looking for harness seed nodes in target function: {}.{}",
+        target.contract, target.entry_function
+    );
+
+    let mut function_nodes = Vec::new();
+
+    for node_index in analysis.program_dependency_graph.graph.node_indices() {
+        let Some(&stored_node_id) = analysis
+            .program_dependency_graph
+            .graph
+            .node_weight(node_index)
+        else {
+            continue;
+        };
+        let Some(node) = analysis.program_dependency_graph.nodes.get(&stored_node_id) else {
+            continue;
+        };
+        let in_target_function = node.function_context.as_deref() == Some(&target.entry_function)
+            && node.contract_context.as_deref() == Some(&target.contract);
+        if !in_target_function {
+            continue;
+        }
+
+        function_nodes.push(node_index.index());
+    }
+
+    println!(
+        "📊 Harness seed: {} target-function nodes",
+        function_nodes.len()
+    );
+    function_nodes
 }
 
 fn find_sink_nodes(analysis: &AnalysisResult, variable_name: &str) -> Vec<usize> {
     let mut sinks = Vec::new();
-    println!("🔍 Looking for StorageWrite/VariableWrite nodes for variable: {}", variable_name);
+    println!(
+        "🔍 Looking for StorageWrite/VariableWrite nodes for variable: {}",
+        variable_name
+    );
 
     // 遍历graph的节点索引，找到对应的存储节点或变量节点
     for node_index in analysis.program_dependency_graph.graph.node_indices() {
-        if let Some(&stored_node_id) = analysis.program_dependency_graph.graph.node_weight(node_index) {
+        if let Some(&stored_node_id) = analysis
+            .program_dependency_graph
+            .graph
+            .node_weight(node_index)
+        {
             if let Some(node) = analysis.program_dependency_graph.nodes.get(&stored_node_id) {
                 // 1. 匹配变量写入
-                if matches!(node.kind, crate::analyzer::NodeKind::StorageWrite(ref v) if v == variable_name) ||
-                   matches!(node.kind, crate::analyzer::NodeKind::VariableWrite(ref v) if v == variable_name) {
+                if matches!(node.kind, crate::analyzer::NodeKind::StorageWrite(ref v) if v == variable_name)
+                    || matches!(node.kind, crate::analyzer::NodeKind::VariableWrite(ref v) if v == variable_name)
+                {
                     println!("✅ Found sink node {} (graph index {}) : kind={:?}, label='{}', function_context={:?}",
                         stored_node_id, node_index.index(), node.kind, node.label, node.function_context);
                     sinks.push(node_index.index()); // 返回graph节点索引
                 }
                 // 2. 匹配断言节点 (ConstraintNode) - 如果变量名是 "ASSERT" 或 "REQUIRE"
-                else if (variable_name == "ASSERT" || variable_name == "REQUIRE") && 
-                        matches!(node.kind, crate::analyzer::NodeKind::ConstraintNode) {
-                    println!("✅ Found assertion sink node {} (graph index {}) : kind={:?}, label='{}'",
-                        stored_node_id, node_index.index(), node.kind, node.label);
+                else if (variable_name == "ASSERT" || variable_name == "REQUIRE")
+                    && matches!(node.kind, crate::analyzer::NodeKind::ConstraintNode)
+                {
+                    println!(
+                        "✅ Found assertion sink node {} (graph index {}) : kind={:?}, label='{}'",
+                        stored_node_id,
+                        node_index.index(),
+                        node.kind,
+                        node.label
+                    );
                     sinks.push(node_index.index());
                 }
             }
@@ -985,430 +3566,58 @@ fn find_sink_nodes(analysis: &AnalysisResult, variable_name: &str) -> Vec<usize>
     sinks
 }
 
-async fn get_source_from_nodes<'a>(_slicer: &mut crate::semantic_slicer::SemanticSlicer<'a, PdgAdapter<'a>>, analysis: &AnalysisResult, source_code: &str, slice_nodes: &std::collections::HashSet<usize>, contract: &str, _function: &str, _variable: &str, _exclude_libs: bool, include_types: bool, max_level: usize, aggressive_cleanup: bool) -> Vec<String> {
-    // 🔥 使用AST分析结果，而非字符串解析
-    // 从slice_nodes中提取相关的合约和函数（基于PDG分析）
-    let mut relevant_contracts = std::collections::HashSet::new();
-    let mut relevant_functions = std::collections::HashSet::new();
+async fn get_source_from_nodes<'a>(
+    _slicer: &mut crate::semantic_slicer::SemanticSlicer<'a, PdgAdapter<'a>>,
+    analysis: &AnalysisResult,
+    ast_index: &AstSliceIndex,
+    _source_code: &str,
+    slice_nodes: &std::collections::HashSet<usize>,
+    target: &TargetSpec,
+    policy: &HarnessPolicy,
+    _exclude_libs: bool,
+    include_types: bool,
+    max_level: usize,
+    aggressive_cleanup: bool,
+) -> Vec<String> {
+    let pdg_node_ids = graph_indices_to_pdg_node_ids(analysis, slice_nodes);
+    let selection = build_slice_selection(
+        analysis,
+        ast_index,
+        &pdg_node_ids,
+        target,
+        policy,
+        max_level,
+    );
+    log_pdg_node_ids(analysis, &pdg_node_ids, "semantic_render_pdg_node_ids");
+    log_slice_selection(&selection, "semantic_render_selection");
+    let ast_blocks = ast_index.render(&selection, include_types, _exclude_libs, max_level);
+    execution_log::detail(
+        "semantic_render_blocks",
+        format!(
+            "before_cleanup_blocks={} before_cleanup_lines={}",
+            ast_blocks.len(),
+            count_block_lines(&ast_blocks)
+        ),
+    );
 
-    for &node_id in slice_nodes {
-        if let Some(&stored_node_id) = analysis.program_dependency_graph.graph.node_weight(petgraph::graph::NodeIndex::new(node_id)) {
-            if let Some(node) = analysis.program_dependency_graph.nodes.get(&stored_node_id) {
-                // 提取函数上下文（来自AST分析）
-                if let Some(func_name) = &node.function_context {
-                    relevant_functions.insert(func_name.clone());
-                }
-            }
-        }
+    if !aggressive_cleanup {
+        return ast_blocks;
     }
 
-    // 🔥 从ContractRegistry（AST分析结果）中找到相关的合约
-    // 而非通过字符串匹配
-    for (contract_name, functions) in &analysis.contract_registry.function_map {
-        for func_name in functions.keys() {
-            if relevant_functions.contains(func_name) {
-                relevant_contracts.insert(contract_name.clone());
-            }
-        }
-    }
-
-    // 确保目标合约被包含
-    relevant_contracts.insert(contract.to_string());
-
-    // 🔥 改进0：提取状态变量的类型映射（用于追踪外部调用）
-    let var_type_map = extract_variable_type_mapping(source_code, &analysis.contract_registry);
-    println!("📋 Variable type mapping: {} variables found", var_type_map.len());
-    
-    // 🔥 改进0.1：从外部调用中识别被调用的合约类型
-    let mut external_contract_types = std::collections::HashSet::new();
-    for &node_id in slice_nodes {
-        if let Some(&stored_node_id) = analysis.program_dependency_graph.graph.node_weight(petgraph::graph::NodeIndex::new(node_id)) {
-            if let Some(node) = analysis.program_dependency_graph.nodes.get(&stored_node_id) {
-                // 检测外部调用节点
-                if matches!(node.kind, crate::analyzer::NodeKind::ExternalCall) || 
-                   matches!(node.kind, crate::analyzer::NodeKind::TaintSource) {
-                    // 从label中提取接收者变量名
-                    // 格式如: "external: accountant.computeNAV" 或 "receiver.method"
-                    let receiver_var = extract_receiver_variable(&node.label);
-                    if let Some(var_name) = receiver_var {
-                        if let Some(contract_type) = var_type_map.get(&var_name) {
-                            println!("🔍 External call detected: {}.xxx -> type: {}", var_name, contract_type);
-                            external_contract_types.insert(contract_type.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    // 🔥 改进0.2：强制包含被调用的外部合约及其所有函数
-    for contract_type in &external_contract_types {
-        relevant_contracts.insert(contract_type.clone());
-        println!("✅ Force-included external contract: {}", contract_type);
-        
-        // 包含该合约的所有函数（因为我们不确定哪些会被调用）
-        if let Some(functions) = analysis.contract_registry.function_map.get(contract_type) {
-            for func_name in functions.keys() {
-                relevant_functions.insert(func_name.clone());
-                println!("  ↳ Including function: {}", func_name);
-            }
-        }
-    }
-
-    // 🔥 改进1：强制包含测试设置函数（setUp, constructor等）
-    const TEST_SETUP_FUNCTIONS: &[&str] = &["setUp", "beforeEach", "constructor"];
-    for setup_func in TEST_SETUP_FUNCTIONS {
-        for functions in analysis.contract_registry.function_map.values() {
-            if functions.contains_key(*setup_func) {
-                relevant_functions.insert(setup_func.to_string());
-                println!("✅ Force-included test setup function: {}", setup_func);
-            }
-        }
-    }
-    
-    // 🔥 改进2：追踪被调用但未实现的函数（深度调用链）
-    // 这解决了 "computeNAV 实现缺失" 的问题
-    let mut iteration = 0;
-    let max_iterations = 5; // 防止无限循环
-    let initial_size = relevant_functions.len();
-    
-    loop {
-        iteration += 1;
-        if iteration > max_iterations {
-            break;
-        }
-        
-        let current_funcs: Vec<String> = relevant_functions.iter().cloned().collect();
-        let mut new_called_funcs = std::collections::HashSet::new();
-        
-        for func_name in &current_funcs {
-            let called = find_called_functions(analysis, func_name);
-            for called_func in called {
-                if !relevant_functions.contains(&called_func) {
-                    new_called_funcs.insert(called_func);
-                }
-            }
-        }
-        
-        if new_called_funcs.is_empty() {
-            break;
-        }
-        
-        println!("🔍 Iteration {}: Found {} additional called functions", iteration, new_called_funcs.len());
-        relevant_functions.extend(new_called_funcs);
-    }
-    
-    println!("🎯 Deep call chain tracking: {} -> {} functions (+{})", 
-        initial_size, relevant_functions.len(), relevant_functions.len() - initial_size);
-    
-    // 🔥 改进3：构建函数级层级系统（以函数为最小粒度）
-    // 从relevant_functions（PDG切片的核心函数）开始，向外扩展调用层级
-    let (function_levels, contract_levels) = build_function_level_hierarchy(analysis, &relevant_functions);
-    
-    // 🔥 扩展：将层级系统内的所有函数加入relevant_functions（基于max_level过滤）
-    for (func_name, &level) in &function_levels {
-        if level <= max_level {
-            relevant_functions.insert(func_name.clone());
-        }
-    }
-    
-    println!("🎯 Initial relevant functions (from PDG): {} functions", initial_size);
-    println!("📊 Function hierarchy: {} functions across {} levels", function_levels.len(), function_levels.values().max().unwrap_or(&0) + 1);
-    println!("📊 Contract hierarchy (derived): {:?}", contract_levels);
-    println!("🎯 Final expanded functions (with hierarchy, max_level={}): {} functions", max_level, relevant_functions.len());
-
-    // 直接从源码中提取相关的合约和类型定义（函数级别过滤）
-    let lines: Vec<&str> = source_code.lines().collect();
-    let mut result = Vec::new();
-    let mut i = 0;
-    
-    // 🔥 标记是否在文件头部（前50行用于SPDX/Pragma检测）
-    let mut is_in_file_header = true;
-    let mut header_line_count = 0;
-
-    while i < lines.len() {
-        let line = lines[i];
-        let trimmed = line.trim();
-        
-        // 🔥 改进方案2：追踪文件头部（前50行用于注释清洗）
-        if header_line_count < 50 {
-            header_line_count += 1;
-            if trimmed.starts_with("contract ") || trimmed.starts_with("library ") || trimmed.starts_with("interface ") {
-                is_in_file_header = false; // 遇到第一个合约/库/接口定义，结束文件头
-            }
-        }
-
-        // 检查是否是合约、库或类型定义的开始
-        let is_contract_or_lib = trimmed.starts_with("contract ") || trimmed.starts_with("library ");
-        let is_interface = trimmed.starts_with("interface ");
-        let is_type_def = trimmed.starts_with("type ") || trimmed.starts_with("struct ") || trimmed.starts_with("enum ");
-
-        // 🔥 跳过接口定义 - 接口只有函数声明，对分析没有用处
-        if is_interface {
-            // 跳过整个接口定义
-            let mut brace_count: i32 = 0;
-            let mut j = i;
-            while j < lines.len() {
-                let current_line = lines[j];
-                brace_count += current_line.chars().filter(|&c| c == '{').count() as i32;
-                let close_count = current_line.chars().filter(|&c| c == '}').count() as i32;
-                if brace_count >= close_count {
-                    brace_count -= close_count;
-                } else {
-                    brace_count = 0;
-                }
-                
-                if brace_count == 0 && current_line.contains('}') {
-                    i = j;
-                    break;
-                }
-                j += 1;
-            }
-            i += 1;
-            continue;
-        }
-
-        if is_contract_or_lib || is_type_def {
-            // 提取合约/库/类型名称
-            let name = if is_contract_or_lib {
-                extract_contract_name(line)
-            } else if is_type_def {
-                extract_type_name(line)
-            } else {
-                String::new()
-            };
-            
-            // 🔥 改进4：标准库检测和存根化（优先于相关性检查）
-            let is_stdlib = is_standard_library_contract(&name);
-            
-            if is_stdlib && is_contract_or_lib {
-                // 🔥 规则2：标准库存根化（输出空壳）
-                println!("📚 Stdlib stubbed: {}", name);
-                result.push(format!("{} {} {{}}",  // 空壳，无注释
-                    if line.contains("contract") { "contract" } else { "library" },
-                    name));
-                
-                // 跳过整个标准库合约
-                let mut brace_count: i32 = 0;
-                let mut j = i;
-                while j < lines.len() {
-                    let current_line = lines[j];
-                    brace_count += current_line.chars().filter(|&c| c == '{').count() as i32;
-                    let close_count = current_line.chars().filter(|&c| c == '}').count() as i32;
-                    if brace_count >= close_count {
-                        brace_count -= close_count;
-                    } else {
-                        brace_count = 0;
-                    }
-                    
-                    if brace_count == 0 && current_line.contains('}') {
-                        i = j;
-                        break;
-                    }
-                    j += 1;
-                }
-                i += 1;
-                continue;
-            }
-
-            // 🔥 改进方案1：在第一遍收集时先暂存所有可能的内容
-            // 第二遍才根据标识符使用情况过滤类型定义
-            let is_relevant_for_first_pass = if is_contract_or_lib {
-                // 必须在relevant_contracts中 && (存在于层级系统中 || 是目标合约)
-                // 但标准库已经在上面被存根化了
-                if !relevant_contracts.contains(&name) {
-                    false
-                } else {
-                    // 如果在层级系统中，检查层级是否在用户指定的阈值内
-                    contract_levels.get(&name).map_or(false, |&level| level <= max_level)
-                        || name == contract // 目标合约总是保留
-                }
-            } else if is_type_def {
-                include_types // 第一遍先暂时保留，第二遍检查使用情况
-            } else {
-                false
-            };
-            
-            let is_relevant = is_relevant_for_first_pass;
-
-            if is_relevant {
-                if is_contract_or_lib {
-                    // 函数级别过滤：只提取相关函数（基于层级过滤，同时过滤接口函数）
-                    let filtered_contract = extract_contract_with_functions_filtered(&lines, i, &relevant_functions, &function_levels, max_level);
-                    result.push(filtered_contract);
-                } else {
-                    // 类型定义直接提取
-                    let definition_code = extract_entire_definition(&lines, i);
-                    result.push(definition_code);
-                }
-
-                // 跳过已处理的行
-                let mut brace_count: i32 = 0;
-                let mut j = i;
-                while j < lines.len() {
-                    let current_line = lines[j];
-                    brace_count += current_line.chars().filter(|&c| c == '{').count() as i32;
-                    let close_count = current_line.chars().filter(|&c| c == '}').count() as i32;
-                    if brace_count >= close_count {
-                        brace_count -= close_count;
-                    } else {
-                        brace_count = 0;
-                    }
-
-                    if brace_count == 0 && current_line.contains('}') {
-                        i = j;
-                        break;
-                    }
-                    j += 1;
-                }
-            }
-        }
-        i += 1;
-    }
-
-    // 🔥 改进方案1 - 第二遍：类型树摇 (Type Tree Shaking)
-    println!("🌳 Starting Type Tree Shaking...");
-    let initial_count = result.len();
-    
-    // 1. 提取所有保留代码中使用的标识符
-    let used_identifiers = extract_used_identifiers(&result);
-    println!("   Found {} unique identifiers in preserved code", used_identifiers.len());
-    
-    // 2. 过滤掉未使用的类型定义
-    let mut filtered_result = Vec::new();
-    let mut removed_types = Vec::new();
-    
-    for item in &result {
-        let first_line = item.lines().next().unwrap_or("").trim();
-        
-        // 检查是否是类型定义
-        if first_line.starts_with("struct ") || first_line.starts_with("enum ") || first_line.starts_with("type ") {
-            let type_name = extract_type_name(first_line);
-            
-            // 🔥 规则1：强制删除 Foundry 内部类型
-            if is_foundry_internal_type(&type_name) {
-                removed_types.push(type_name.clone());
-                println!("   🚫 Removed Foundry internal type: {}", type_name);
-                continue;
-            }
-            
-            // 检查该类型是否被使用
-            if is_type_used(first_line, &used_identifiers) {
-                filtered_result.push(item.clone());
-            } else {
-                removed_types.push(type_name.clone());
-                println!("   ✂️  Removed unused type: {}", type_name);
-            }
-        } else {
-            // 非类型定义，直接保留
-            filtered_result.push(item.clone());
-        }
-    }
-    
-    println!("🌳 Type Tree Shaking complete: {} items -> {} items (-{})",
-        initial_count, filtered_result.len(), initial_count - filtered_result.len());
-    
-    // 🔥 改进方案2：激进的注释清洗
-    println!("✂️  Starting Aggressive Comment Stripping...");
-    let mut cleaned_result = Vec::new();
-    let mut total_comment_lines_removed = 0;
-    
-    for (_idx, item) in filtered_result.iter().enumerate() {
-        let lines_in_item: Vec<&str> = item.lines().collect();
-        let mut cleaned_lines = Vec::new();
-        
-        // 检测是否是库文件（通过第一行判断）
-        let first_line = lines_in_item.first().map(|s| s.trim()).unwrap_or("");
-        
-        // 🔥 改进：更精确的库检测
-        let is_in_lib = first_line.starts_with("library ") || 
-                        is_standard_library_contract(&extract_contract_name(first_line));
-        
-        // 🔥 改进：检测是否是节点模块或依赖库的合约
-        let contract_name = extract_contract_name(first_line);
-        let is_dependency_contract = is_standard_library_contract(&contract_name) ||
-                                     contract_name.contains("Lib") ||
-                                     contract_name == "Address" ||
-                                     contract_name == "Ownable" ||
-                                     contract_name.starts_with("ERC");
-        
-        let original_line_count = lines_in_item.len();
-        
-        // 🔥 规则3：追踪是否在函数体内部（用于区分文档注释和逻辑注释）
-        let mut in_function_body = false;
-        let mut brace_depth = 0;
-        
-        // 对每一行进行注释清洗
-        for (line_idx, line) in lines_in_item.iter().enumerate() {
-            let trimmed = line.trim();
-            
-            // 追踪大括号深度，判断是否在函数体内
-            if trimmed.starts_with("function ") || trimmed.starts_with("constructor") {
-                // 检查是否是单行函数声明（如接口）
-                if trimmed.ends_with(";") {
-                    in_function_body = false;
-                } else if trimmed.contains("{") {
-                    in_function_body = true;
-                    brace_depth = trimmed.matches('{').count() as i32;
-                    brace_depth -= trimmed.matches('}').count() as i32;
-                }
-            } else {
-                // 更新大括号深度
-                brace_depth += trimmed.matches('{').count() as i32;
-                brace_depth -= trimmed.matches('}').count() as i32;
-                
-                if brace_depth <= 0 {
-                    in_function_body = false;
-                    brace_depth = 0;
-                }
-            }
-            
-            // 判断是否在文件头部（前20行，包含ASCII Art）
-            let is_header_line = line_idx < 20;
-            
-            let cleaned_line = strip_aggressive_comments(
-                line, 
-                is_in_lib || is_dependency_contract, 
-                is_header_line,
-                in_function_body  // 🔥 新增：传递函数体内外标记
-            );
-            
-            // 只保留非空行
-            if !cleaned_line.trim().is_empty() {
-                cleaned_lines.push(cleaned_line);
-            }
-        }
-        
-        let removed_count = original_line_count - cleaned_lines.len();
-        total_comment_lines_removed += removed_count;
-        
-        if removed_count > 5 && is_in_lib {
-            println!("   ✂️  Cleaned {} (lib): removed {} comment lines", contract_name, removed_count);
-        }
-        
-        // 重组清洗后的代码块
-        let cleaned_item = cleaned_lines.join("\n");
-        
-        // 只有非空的代码块才保留
-        if !cleaned_item.trim().is_empty() {
-            cleaned_result.push(cleaned_item);
-        }
-    }
-    
-    println!("✂️  Comment stripping complete: removed {} comment/blank lines total", total_comment_lines_removed);
-    
-    // 🔥 新增：激进的噪音削减管道（可选）
-    if aggressive_cleanup {
-        println!("\n🚀 Starting Advanced Noise Reduction Pipeline...");
-        let mut pipeline = NoiseReductionPipeline::default();
-        let result = pipeline.reduce(cleaned_result);
-        
-        result.stats.print_summary();
-        
-        result.code_blocks
-    } else {
-        cleaned_result
-    }
+    execution_log::phase_start("aggressive_noise_reduction");
+    println!("\n🚀 Starting Advanced Noise Reduction Pipeline...");
+    let mut pipeline = NoiseReductionPipeline::default();
+    let result = pipeline.reduce(ast_blocks);
+    result.stats.print_summary();
+    execution_log::phase_end(
+        "aggressive_noise_reduction",
+        format!(
+            "after_blocks={} after_lines={}",
+            result.code_blocks.len(),
+            count_block_lines(&result.code_blocks)
+        ),
+    );
+    result.code_blocks
 }
 
 // 🔥 提取接收者变量名
@@ -1420,333 +3629,99 @@ fn extract_receiver_variable(label: &str) -> Option<String> {
     } else {
         label
     };
-    
+
     // 查找第一个点号，提取之前的部分
     if let Some(dot_idx) = cleaned.find('.') {
         let receiver = cleaned[..dot_idx].trim();
         // 排除常见的非变量模式
-        if !receiver.is_empty() && 
-           !receiver.starts_with("call") &&
-           !receiver.starts_with("Expr") &&
-           !receiver.contains('(') {
+        if !receiver.is_empty()
+            && !receiver.starts_with("call")
+            && !receiver.starts_with("Expr")
+            && !receiver.contains('(')
+        {
             return Some(receiver.to_string());
         }
     }
-    
+
     None
-}
-
-// 🔥 从源代码中提取变量类型映射
-// 解析如 "PanopticVaultAccountant accountant;" 这样的声明
-fn extract_variable_type_mapping(
-    source_code: &str,
-    contract_registry: &analyzer::ContractRegistry,
-) -> std::collections::HashMap<String, String> {
-    let mut var_type_map = std::collections::HashMap::new();
-    
-    // 收集所有已知的合约/类型名称
-    let mut known_types = std::collections::HashSet::new();
-    for contract_name in contract_registry.function_map.keys() {
-        known_types.insert(contract_name.clone());
-    }
-    
-    // 正则匹配变量声明（简化版）
-    // 格式: ContractType variableName;
-    let lines: Vec<&str> = source_code.lines().collect();
-    
-    for line in lines {
-        let trimmed = line.trim();
-        
-        // 跳过注释和空行
-        if trimmed.starts_with("//") || trimmed.is_empty() {
-            continue;
-        }
-        
-        // 查找类型声明模式：TypeName variableName;
-        for type_name in &known_types {
-            if trimmed.contains(type_name) && trimmed.contains(';') {
-                // 尝试提取变量名
-                // 模式: TypeName variableName;
-                if let Some(type_start) = trimmed.find(type_name) {
-                    let after_type = &trimmed[type_start + type_name.len()..];
-                    
-                    // 提取变量名（在类型名之后，分号之前）
-                    if let Some(semicolon) = after_type.find(';') {
-                        let var_part = after_type[..semicolon].trim();
-                        
-                        // 清理变量名（移除可见性修饰符等）
-                        let var_name = var_part
-                            .split_whitespace()
-                            .last()
-                            .unwrap_or("")
-                            .trim();
-                        
-                        if !var_name.is_empty() && is_valid_identifier(var_name) {
-                            var_type_map.insert(var_name.to_string(), type_name.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    var_type_map
-}
-
-// 检查是否是有效的标识符
-fn is_valid_identifier(s: &str) -> bool {
-    !s.is_empty() && 
-    s.chars().all(|c| c.is_alphanumeric() || c == '_') &&
-    !s.chars().next().unwrap().is_numeric()
-}
-
-// 🔥 改进方案1：从保留函数的源代码中提取所有标识符
-fn extract_used_identifiers(source_lines: &[String]) -> std::collections::HashSet<String> {
-    let mut identifiers = std::collections::HashSet::new();
-    
-    // 连接所有源代码
-    let full_source = source_lines.join("\n");
-    
-    // 提取所有可能的标识符（字母数字和下划线组合）
-    let mut current_identifier = String::new();
-    
-    for ch in full_source.chars() {
-        if ch.is_alphanumeric() || ch == '_' {
-            current_identifier.push(ch);
-        } else {
-            if !current_identifier.is_empty() {
-                // 过滤掉纯数字和 Solidity 关键字
-                if is_valid_identifier(&current_identifier) && !is_solidity_keyword(&current_identifier) {
-                    identifiers.insert(current_identifier.clone());
-                }
-                current_identifier.clear();
-            }
-        }
-    }
-    
-    // 处理最后一个标识符
-    if !current_identifier.is_empty() && is_valid_identifier(&current_identifier) {
-        identifiers.insert(current_identifier);
-    }
-    
-    identifiers
-}
-
-// 检查是否是 Solidity 关键字
-fn is_solidity_keyword(s: &str) -> bool {
-    const KEYWORDS: &[&str] = &[
-        "function", "contract", "library", "interface", "struct", "enum",
-        "mapping", "address", "uint256", "uint128", "uint64", "uint32",
-        "int256", "int128", "bool", "string", "bytes", "bytes32",
-        "public", "private", "internal", "external", "view", "pure",
-        "payable", "constant", "immutable", "storage", "memory", "calldata",
-        "return", "returns", "if", "else", "for", "while", "do",
-        "require", "assert", "revert", "emit", "event", "modifier",
-        "constructor", "fallback", "receive", "virtual", "override",
-        "abstract", "is", "new", "delete", "this", "super", "true", "false"
-    ];
-    KEYWORDS.contains(&s)
-}
-
-// 🔥 规则1：Foundry/Hardhat 内部类型黑名单
-fn is_foundry_internal_type(type_name: &str) -> bool {
-    const FOUNDRY_BLACKLIST: &[&str] = &[
-        // Forge-std 内部类型
-        "RawTx1559", "TxLegacy", "TxEIP2930", "TxEIP4844",
-        "Receipt", "Log", "Chain", "Wallet",
-        "FuzzSelector", "FuzzInterface", "FuzzInterfaceFunction",
-        "ScriptArtifact", "Broadcast", "BroadcastTxSummary",
-        "AccountAccess", "StorageAccess", "GasMetering",
-        "Rpc", "RpcUrls", "FsMetadata",
-        // Hardhat Console 内部类型
-        "ConsoleLog", "HardhatConsole",
-        // Foundry 测试框架类型
-        "StdInvariant", "InvariantTest", "FuzzTest",
-    ];
-    
-    FOUNDRY_BLACKLIST.iter().any(|&blacklisted| type_name == blacklisted)
-}
-
-// 🔥 改进方案1：检查类型定义是否被使用
-fn is_type_used(type_def_line: &str, used_identifiers: &std::collections::HashSet<String>) -> bool {
-    // 提取类型名称
-    let type_name = if type_def_line.trim().starts_with("struct ") {
-        extract_type_name(type_def_line)
-    } else if type_def_line.trim().starts_with("enum ") {
-        extract_type_name(type_def_line)
-    } else if type_def_line.trim().starts_with("type ") {
-        extract_type_name(type_def_line)
-    } else {
-        return true; // 非类型定义，保留
-    };
-    
-    // 检查类型名是否在使用的标识符集合中
-    used_identifiers.contains(&type_name)
-}
-
-// 🔥 改进方案2：激进的注释清洗
-// 🔥 规则3：区分文档注释和逻辑注释
-fn strip_aggressive_comments(line: &str, is_in_lib: bool, is_file_header: bool, in_function_body: bool) -> String {
-    let trimmed = line.trim();
-    
-    // 1. 文件头清洗：删除 SPDX、Pragma 附近的注释
-    if is_file_header {
-        if trimmed.starts_with("//") {
-            // 🔥 改进：检测ASCII Art（包含特殊字符）
-            let has_ascii_art = trimmed.chars().any(|c| {
-                "▲▼◄►│┌┐└┘├┤┬┴┼─═║╔╗╚╝╠╣╦╩╬".contains(c)
-            });
-            
-            if has_ascii_art {
-                return String::new(); // 删除ASCII Art注释
-            }
-            
-            // 删除文件头常见注释模式
-            if trimmed.starts_with("// SPDX") || 
-               trimmed.starts_with("// pragma") ||
-               trimmed.starts_with("// solc") {
-                return String::new();
-            }
-        }
-        
-        // 删除多行注释开始标记
-        if trimmed.starts_with("/*") || trimmed.starts_with("/**") {
-            return String::new();
-        }
-    }
-    
-    // 2. 库文件清洗：激进删除所有文档注释（漏洞分析不需要库文档）
-    if is_in_lib {
-        // 🔥 激进：删除所有 /// 文档注释
-        if trimmed.starts_with("///") {
-            return String::new();
-        }
-        
-        // 🔥 激进：删除所有 /** ... */ 多行文档注释
-        if trimmed.starts_with("/**") || trimmed.starts_with("*/") {
-            return String::new();
-        }
-        
-        // 🔥 激进：删除多行注释内的所有 * 开头行（不仅是@标签）
-        if trimmed.starts_with("*") {
-            return String::new();
-        }
-        
-        // 删除单行文档注释
-        if trimmed.starts_with("// @") {
-            return String::new();
-        }
-    }
-    
-    // 3. ASCII Art 和装饰性注释清洗（全局）
-    if trimmed.starts_with("//") {
-        let comment_content = &trimmed[2..].trim();
-        
-        // 检测装饰性注释（连续的特殊字符）
-        let special_char_count = comment_content.chars()
-            .filter(|c| "=-*_#│┌┐└┘├┤┬┴┼▲▼◄►".contains(*c))
-            .count();
-        
-        if special_char_count > comment_content.len() / 2 {
-            return String::new(); // 删除装饰性注释
-        }
-        
-        // 🔥 改进：删除空注释行
-        if comment_content.is_empty() {
-            return String::new();
-        }
-        
-        // 🔥 改进：删除 PACKING RULES 等大段说明注释
-        if comment_content.to_uppercase().contains("PACKING RULES") ||
-           comment_content.to_uppercase().contains("FROM THE LSB") ||
-           comment_content.to_uppercase().contains("ZERO-BITS") {
-            return String::new();
-        }
-    }
-    
-    // 4. 保留函数体内的逻辑注释（可能是漏洞逻辑解释）
-    if in_function_body && trimmed.starts_with("//") {
-        // 🔥 规则3：函数体内的单行注释可能解释漏洞逻辑，保留
-        // 但仍然删除装饰性注释
-        let comment_content = &trimmed[2..].trim();
-        let special_char_count = comment_content.chars()
-            .filter(|c| "=-*_#".contains(*c))
-            .count();
-        
-        if special_char_count <= comment_content.len() / 3 {
-            // 不是装饰性注释，保留
-            return line.to_string();
-        }
-    }
-    
-    // 行内注释处理：如果行内既有代码又有注释
-    if line.contains("//") && !line.trim().starts_with("//") {
-        if in_function_body {
-            // 函数体内：保留代码和注释（可能是重要说明）
-            return line.to_string();
-        } else {
-            // 函数体外：只保留代码部分
-            if let Some(idx) = line.find("//") {
-                return line[..idx].to_string();
-            }
-        }
-    }
-    
-    line.to_string()
-}
-
-// 🔥 库辅助函数黑名单（对漏洞分析无用的通用工具函数）
-fn is_library_helper_function(func_name: &str) -> bool {
-    const HELPER_BLACKLIST: &[&str] = &[
-        // Address 库辅助函数
-        "functionCall", "functionCallWithValue", "functionStaticCall",
-        "functionDelegateCall", "verifyCallResult", "verifyCallResultFromTarget",
-        "sendValue", "isContract", "_revert",
-        
-        // SafeMath 等数学库基础函数
-        "tryAdd", "trySub", "tryMul", "tryDiv", "tryMod",
-        "add", "sub", "mul", "div", "mod",
-        
-        // String 库函数
-        "toString", "toHexString", "equal",
-        
-        // Arrays 库函数  
-        "findUpperBound", "unsafeAccess",
-        
-        // 其他常见辅助函数
-        "_msgSender", "_msgData", "_contextSuffixLength",
-    ];
-    
-    HELPER_BLACKLIST.contains(&func_name)
 }
 
 // 🔥 标准库检测函数
 fn is_standard_library_contract(contract_name: &str) -> bool {
     const STDLIB_CONTRACTS: &[&str] = &[
         // OpenZeppelin
-        "Address", "SafeMath", "Math", "SignedMath", "Strings", "Arrays",
-        "ECDSA", "ERC165", "ERC20", "ERC721", "ERC1155", "Ownable",
-        "ReentrancyGuard", "Pausable", "AccessControl",
-        
+        "Address",
+        "SafeMath",
+        "Math",
+        "SignedMath",
+        "Strings",
+        "Arrays",
+        "ECDSA",
+        "ERC165",
+        "ERC20",
+        "ERC721",
+        "ERC1155",
+        "Ownable",
+        "ReentrancyGuard",
+        "Pausable",
+        "AccessControl",
         // Forge Standard Library
-        "Test", "Script", "Vm", "VmSafe", "console", "safeconsole",
-        "StdAssertions", "StdCheats", "StdUtils", "StdInvariant",
-        "StdError", "StdStorage", "StdStyle", "StdMath", "StdJson",
-        "CommonBase", "ScriptBase", "TestBase",
-        
+        "Test",
+        "Script",
+        "Vm",
+        "VmSafe",
+        "console",
+        "safeconsole",
+        "StdAssertions",
+        "StdCheats",
+        "StdUtils",
+        "StdInvariant",
+        "StdError",
+        "StdStorage",
+        "StdStyle",
+        "StdMath",
+        "StdJson",
+        "CommonBase",
+        "ScriptBase",
+        "TestBase",
         // Solmate
-        "ERC20Minimal", "ERC721Minimal", "Auth", "Owned", "WETH",
-        "SafeTransferLib", "FixedPointMathLib", "MerkleProofLib",
-        
+        "ERC20Minimal",
+        "ERC721Minimal",
+        "Auth",
+        "Owned",
+        "WETH",
+        "SafeTransferLib",
+        "FixedPointMathLib",
+        "MerkleProofLib",
         // Common utilities (not business logic)
-        "Create2", "Clone", "Multicall", "TransientReentrancyGuard",
-        "Clones", "Context", "Counters", "EnumerableSet", "EnumerableMap",
+        "Create2",
+        // Note: "Clone" is kept here so it doesn't fall into the missing_base_stubs path.
+        // However, Clone's body IS emitted (see STDLIB_FULL_BODY_CONTRACTS below).
+        "Clone",
+        "Multicall",
+        "TransientReentrancyGuard",
+        "Clones",
+        "Context",
+        "Counters",
+        "EnumerableSet",
+        "EnumerableMap",
     ];
-    
+
     // 精确匹配或前缀匹配
     STDLIB_CONTRACTS.iter().any(|&stdlib| {
-        contract_name == stdlib || 
-        contract_name.starts_with(&format!("{}_", stdlib)) // 处理 Math_0, Math_1 等
+        contract_name == stdlib || contract_name.starts_with(&format!("{}_", stdlib))
+        // 处理 Math_0, Math_1 等
+    })
+}
+
+fn is_stdlib_needing_full_body(contract_name: &str) -> bool {
+    const STDLIB_FULL_BODY_CONTRACTS: &[&str] = &[
+        // Provides inherited helper functions used by child contracts.
+        "Clone",
+    ];
+
+    STDLIB_FULL_BODY_CONTRACTS.iter().any(|&stdlib| {
+        contract_name == stdlib || contract_name.starts_with(&format!("{}_", stdlib))
     })
 }
 
@@ -1772,266 +3747,6 @@ fn extract_contract_name(line: &str) -> String {
     String::new()
 }
 
-// 🔥 改进：基于AST的类型名提取（用于文本重建时的格式保留）
-// 注意：不包括 interface，因为接口会被单独过滤
-fn extract_type_name(line: &str) -> String {
-    let keywords = ["type ", "struct ", "enum "];
-    for keyword in &keywords {
-        if let Some(start) = line.find(keyword) {
-            let after_keyword = &line[start + keyword.len()..];
-            if let Some(end) = after_keyword.find(|c: char| !c.is_alphanumeric() && c != '_') {
-                return after_keyword[..end].trim().to_string();
-            } else {
-                return after_keyword.trim().to_string();
-            }
-        }
-    }
-    String::new()
-}
-
-// 辅助函数：提取完整的定义
-fn extract_entire_definition(lines: &[&str], start_line: usize) -> String {
-    let mut definition_lines = Vec::new();
-    let mut brace_count: i32 = 0;
-    let mut i = start_line;
-
-    while i < lines.len() {
-        let line = lines[i];
-        definition_lines.push(line.to_string());
-
-        brace_count += line.chars().filter(|&c| c == '{').count() as i32;
-        let close_count = line.chars().filter(|&c| c == '}').count() as i32;
-        if brace_count >= close_count {
-            brace_count -= close_count;
-        } else {
-            brace_count = 0;
-        }
-
-        if brace_count == 0 && line.contains('}') {
-            break;
-        }
-        i += 1;
-    }
-
-    definition_lines.join("\n")
-}
-
-// 🔥 新增：增强版函数提取 - 基于AST分析过滤接口函数和孤立注释
-fn extract_contract_with_functions_filtered(
-    lines: &[&str], 
-    start_line: usize, 
-    relevant_functions: &std::collections::HashSet<String>,
-    function_levels: &std::collections::HashMap<String, usize>,
-    max_level: usize,
-) -> String {
-    let mut result_lines = Vec::new();
-    let mut i = start_line;
-    let mut contract_brace_count = 0;
-    let mut found_opening_brace = false;
-
-    // 首先添加合约声明（直到第一个 {）
-    while i < lines.len() {
-        let line = lines[i];
-        result_lines.push(line.to_string());
-        
-        if line.contains('{') {
-            contract_brace_count = 1;
-            found_opening_brace = true;
-            i += 1;
-            break;
-        }
-        i += 1;
-    }
-
-    if !found_opening_brace {
-        return lines[start_line].to_string();
-    }
-
-    // 解析合约体
-    while i < lines.len() && contract_brace_count > 0 {
-        let line = lines[i];
-        let trimmed = line.trim();
-
-        // 检查是否是函数定义
-        if is_function_start(trimmed) {
-            let func_name = extract_function_name_from_line(trimmed);
-            
-            // 🔥 规则：过滤库辅助函数黑名单（这些对漏洞分析无用）
-            if is_library_helper_function(&func_name) {
-                i = skip_function_body(lines, i);
-                continue;
-            }
-            
-            // 🔥 函数级过滤：检查函数是否在relevant_functions中，并且层级在阈值内
-            let is_in_relevant = !func_name.is_empty() && relevant_functions.contains(&func_name);
-            let is_in_level = function_levels.get(&func_name).map_or(false, |&level| level <= max_level);
-            
-            let should_include = is_in_relevant || is_in_level;
-            
-            if should_include {
-                // 提取整个函数
-                let function_code = extract_function_at_position(lines, i);
-                result_lines.push(function_code);
-                
-                // 跳过函数体
-                i = skip_function_body(lines, i);
-            } else {
-                // 跳过不相关的函数
-                i = skip_function_body(lines, i);
-            }
-        } else if is_state_variable_or_other(trimmed) {
-            // 保留状态变量、事件、modifier、构造函数等
-            if trimmed.starts_with("constructor") || 
-               trimmed.starts_with("event ") || 
-               trimmed.starts_with("modifier ") ||
-               trimmed.starts_with("error ") ||
-               is_state_variable_declaration(trimmed) {
-                
-                if trimmed.contains(';') {
-                    // 单行声明
-                    result_lines.push(line.to_string());
-                } else {
-                    // 多行声明（如 constructor 或 modifier）
-                    let block_code = extract_block_at_position(lines, i);
-                    result_lines.push(block_code);
-                    i = skip_block(lines, i);
-                }
-            }
-        } else {
-            // 🔥 过滤孤立注释：只有紧邻函数/声明的注释才保留
-            if trimmed.starts_with("//") || trimmed.starts_with("/*") {
-                // 检查下一个非空行是否是相关内容
-                if i + 1 < lines.len() {
-                    let next_non_empty = find_next_non_empty_line(lines, i + 1);
-                    if next_non_empty < lines.len() {
-                        let next_trimmed = lines[next_non_empty].trim();
-                        if is_function_start(next_trimmed) || next_trimmed.starts_with("constructor") || 
-                           next_trimmed.starts_with("modifier") || is_state_variable_declaration(next_trimmed) {
-                            result_lines.push(line.to_string());
-                        }
-                        // 否则跳过孤立的注释
-                    }
-                }
-            } else if trimmed.is_empty() || trimmed == "}" {
-                result_lines.push(line.to_string());
-            }
-        }
-
-        // 更新括号计数
-        contract_brace_count += line.chars().filter(|&c| c == '{').count() as i32;
-        contract_brace_count -= line.chars().filter(|&c| c == '}').count() as i32;
-        
-        if contract_brace_count <= 0 {
-            break;
-        }
-        
-        i += 1;
-    }
-
-    result_lines.join("\n")
-}
-
-// 🔥 辅助函数：找到下一个非空行（用于孤立注释过滤）
-fn find_next_non_empty_line(lines: &[&str], start: usize) -> usize {
-    for i in start..lines.len().min(start + 5) {
-        if !lines[i].trim().is_empty() {
-            return i;
-        }
-    }
-    lines.len()
-}
-
-// 辅助函数：提取合约，但只包含相关的函数
-fn extract_contract_with_functions(lines: &[&str], start_line: usize, relevant_functions: &std::collections::HashSet<String>) -> String {
-    let mut result_lines = Vec::new();
-    let mut i = start_line;
-    let mut contract_brace_count = 0;
-    let mut found_opening_brace = false;
-
-    // 首先添加合约声明（直到第一个 {）
-    while i < lines.len() {
-        let line = lines[i];
-        result_lines.push(line.to_string());
-        
-        if line.contains('{') {
-            contract_brace_count = 1;
-            found_opening_brace = true;
-            i += 1;
-            break;
-        }
-        i += 1;
-    }
-
-    if !found_opening_brace {
-        return lines[start_line].to_string();
-    }
-
-    // 解析合约体
-    while i < lines.len() && contract_brace_count > 0 {
-        let line = lines[i];
-        let trimmed = line.trim();
-
-        // 检查是否是函数定义
-        if is_function_start(trimmed) {
-            let func_name = extract_function_name_from_line(trimmed);
-            
-            // 只有相关的函数才包含
-            if !func_name.is_empty() && relevant_functions.contains(&func_name) {
-                // 提取整个函数
-                let function_code = extract_function_at_position(lines, i);
-                result_lines.push(function_code);
-                
-                // 跳过函数体
-                i = skip_function_body(lines, i);
-            } else {
-                // 跳过不相关的函数
-                i = skip_function_body(lines, i);
-            }
-        } else if is_state_variable_or_other(trimmed) {
-            // 保留状态变量、事件、modifier、构造函数等
-            if trimmed.starts_with("constructor") || 
-               trimmed.starts_with("event ") || 
-               trimmed.starts_with("modifier ") ||
-               trimmed.starts_with("error ") ||
-               is_state_variable_declaration(trimmed) {
-                
-                if trimmed.contains(';') {
-                    // 单行声明
-                    result_lines.push(line.to_string());
-                } else {
-                    // 多行声明（如 constructor 或 modifier）
-                    let block_code = extract_block_at_position(lines, i);
-                    result_lines.push(block_code);
-                    i = skip_block(lines, i);
-                }
-            }
-        } else {
-            // 其他行（注释、空行等）可以选择性保留
-            if trimmed.starts_with("//") || trimmed.is_empty() || trimmed == "}" {
-                result_lines.push(line.to_string());
-            }
-        }
-
-        // 更新括号计数
-        contract_brace_count += line.chars().filter(|&c| c == '{').count() as i32;
-        contract_brace_count -= line.chars().filter(|&c| c == '}').count() as i32;
-        
-        if contract_brace_count <= 0 {
-            break;
-        }
-        
-        i += 1;
-    }
-
-    result_lines.join("\n")
-}
-
-// 🔥 改进：基于AST验证的函数开始判断
-// PDG分析已经识别了所有函数，这里只是文本匹配辅助
-fn is_function_start(line: &str) -> bool {
-    line.starts_with("function ") && !line.contains(';')
-}
-
 // 🔥 改进：函数名提取（配合AST验证）
 // relevant_functions来自AST，这里提取是为了匹配验证
 fn extract_function_name_from_line(line: &str) -> String {
@@ -2044,142 +3759,39 @@ fn extract_function_name_from_line(line: &str) -> String {
     String::new()
 }
 
-// 辅助函数：提取函数代码
-fn extract_function_at_position(lines: &[&str], start: usize) -> String {
-    let mut func_lines = Vec::new();
-    let mut brace_count = 0;
-    let mut i = start;
-    let mut found_opening = false;
-
-    while i < lines.len() {
-        let line = lines[i];
-        func_lines.push(line.to_string());
-
-        for ch in line.chars() {
-            if ch == '{' {
-                brace_count += 1;
-                found_opening = true;
-            } else if ch == '}' {
-                brace_count -= 1;
-            }
-        }
-
-        if found_opening && brace_count == 0 {
-            break;
-        }
-        i += 1;
-    }
-
-    func_lines.join("\n")
-}
-
-// 辅助函数：跳过函数体
-fn skip_function_body(lines: &[&str], start: usize) -> usize {
-    let mut brace_count = 0;
-    let mut i = start;
-    let mut found_opening = false;
-
-    while i < lines.len() {
-        let line = lines[i];
-
-        for ch in line.chars() {
-            if ch == '{' {
-                brace_count += 1;
-                found_opening = true;
-            } else if ch == '}' {
-                brace_count -= 1;
-            }
-        }
-
-        if found_opening && brace_count == 0 {
-            return i + 1;
-        }
-        i += 1;
-    }
-
-    i
-}
-
-// 辅助函数：提取代码块
-fn extract_block_at_position(lines: &[&str], start: usize) -> String {
-    extract_function_at_position(lines, start)
-}
-
-// 辅助函数：跳过代码块
-fn skip_block(lines: &[&str], start: usize) -> usize {
-    skip_function_body(lines, start)
-}
-
-// 辅助函数：判断是否是状态变量或其他声明
-fn is_state_variable_or_other(line: &str) -> bool {
-    !line.starts_with("function ") && !line.is_empty() && !line.starts_with("//")
-}
-
-// 辅助函数：判断是否是状态变量声明
-fn is_state_variable_declaration(line: &str) -> bool {
-    // 简化判断：包含类型关键字
-    let keywords = ["uint", "int", "bool", "address", "bytes", "string", "mapping"];
-    keywords.iter().any(|&kw| line.contains(kw)) && !line.starts_with("function")
-}
-
 /// 三层过滤结果
 struct ThreeLayerFilterResult {
-    blacklist: std::collections::HashSet<String>,  // 第一层：静态黑名单（直接剔除）
-    whitelist: std::collections::HashSet<String>,  // 第二层：S1.2保护白名单（强制保留）
-    graylist: std::collections::HashSet<String>,   // 第三层：语义灰名单（待LLM仲裁）
+    blacklist: std::collections::HashSet<String>, // 第一层：静态黑名单（直接剔除）
+    whitelist: std::collections::HashSet<String>, // 第二层：S1.2保护白名单（强制保留）
+    graylist: std::collections::HashSet<String>,  // 第三层：语义灰名单（待LLM仲裁）
 }
 
-/// 第一层：静态黑名单过滤（Rust正则 - 绝对噪音）
-/// 直接剔除：std*, console, Vm, IMulticall3 等标准库
-fn apply_static_blacklist(contract: &str) -> bool {
-    use regex::Regex;
-    
-    let blacklist_patterns = vec![
-        Regex::new(r"^std").unwrap(),             // std*, stdMath, stdStorage等
-        Regex::new(r"^Std").unwrap(),             // Std*, StdStyle, StdConstants等
-        Regex::new(r"console").unwrap(),          // console, safeconsole
-        Regex::new(r"^Math_\d+$").unwrap(),       // Math_0, Math_1, Math_2等
-        Regex::new(r"^Strings_\d+$").unwrap(),    // Strings_0, Strings_1等
-        Regex::new(r"^Vm$").unwrap(),             // Foundry VM
-        Regex::new(r"^Script$").unwrap(),         // Foundry Script
-        Regex::new(r"^IMulticall").unwrap(),      // IMulticall3等接口
-    ];
-    
-    blacklist_patterns.iter().any(|re| re.is_match(contract))
+/// 第一层：静态黑名单过滤。
+///
+/// 保持核心路径通用：这里不按名称模式剔除合约。框架/标准库裁剪应由
+/// framework profile 或后续编译诊断驱动，而不是写死在 slicer 正确性逻辑里。
+fn apply_static_blacklist(_contract: &str) -> bool {
+    false
 }
 
-/// 第二层：S1.2保护白名单（强制保留 - 防止LLM误删）
-/// 保留：*Mock*, *Test*, PoC, *Setup* 等PoC环境关键合约
-fn apply_s12_whitelist(contract: &str, variable_name: &str) -> bool {
-    let must_keep_patterns = [
-        "Mock",     // Mock合约：S1.2需要验证环境设置
-        "Test",     // 测试合约：PoC的核心逻辑
-        "PoC",      // PoC合约本身
-        "Setup",    // 环境设置合约
-    ];
-    
-    // 规则1: 包含目标变量名 → 强制保留
-    if contract.to_lowercase().contains(&variable_name.to_lowercase()) {
-        return true;
-    }
-    
-    // 规则2: 匹配S1.2关键模式 → 强制保留
-    must_keep_patterns.iter().any(|p| contract.contains(p))
+/// 第二层：目标合约白名单（强制保留 - 防止LLM误删）
+fn apply_target_whitelist(contract: &str, target_contract: &str) -> bool {
+    contract == target_contract
 }
 
 /// 三层漏斗过滤：黑名单 → 白名单 → 灰名单
 fn three_layer_filter(
-    contracts: &std::collections::HashSet<String>, 
-    variable_name: &str,
+    contracts: &std::collections::HashSet<String>,
+    target_contract: &str,
 ) -> ThreeLayerFilterResult {
     let mut result = ThreeLayerFilterResult {
         blacklist: std::collections::HashSet::new(),
         whitelist: std::collections::HashSet::new(),
         graylist: std::collections::HashSet::new(),
     };
-    
+
     println!("\n🔄 Applying Three-Layer Funnel Filter...\n");
-    
+
     for contract in contracts {
         // 第一层：静态黑名单检查
         if apply_static_blacklist(contract) {
@@ -2187,137 +3799,29 @@ fn three_layer_filter(
             result.blacklist.insert(contract.clone());
             continue;
         }
-        
-        // 第二层：S1.2保护白名单检查
-        if apply_s12_whitelist(contract, variable_name) {
-            println!("✅ Layer 2 Whitelist: {} (S1.2 protected)", contract);
+
+        // 第二层：显式目标白名单检查
+        if apply_target_whitelist(contract, target_contract) {
+            println!("✅ Layer 2 Whitelist: {} (target contract)", contract);
             result.whitelist.insert(contract.clone());
             continue;
         }
-        
+
         // 第三层：语义灰名单（待LLM仲裁）
-        println!("⚠️  Layer 3 Graylist: {} (pending LLM arbitration)", contract);
+        println!(
+            "⚠️  Layer 3 Graylist: {} (pending LLM arbitration)",
+            contract
+        );
         result.graylist.insert(contract.clone());
     }
-    
+
     println!("\n📊 Three-Layer Filter Summary:");
     println!("   Total contracts: {}", contracts.len());
     println!("   🚫 Blacklist (filtered): {}", result.blacklist.len());
     println!("   ✅ Whitelist (kept): {}", result.whitelist.len());
     println!("   ⚠️  Graylist (pending LLM): {}\n", result.graylist.len());
-    
+
     result
-}
-
-/// LLM仲裁：判断灰名单合约是"通用库"还是"业务逻辑"
-async fn llm_arbitrate_graylist(
-    graylist: &std::collections::HashSet<String>,
-    api_key: &str,
-    base_url: &str,
-    model: &str,
-) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
-    if graylist.is_empty() {
-        return Ok(std::collections::HashSet::new());
-    }
-    
-    println!("🤖 Asking LLM to arbitrate {} graylist contracts...", graylist.len());
-    
-    let contract_list = graylist.iter()
-        .enumerate()
-        .map(|(i, c)| format!("[{}] {}", i + 1, c))
-        .collect::<Vec<_>>()
-        .join("\n");
-    
-    let system_prompt = r#"You are a Solidity security expert analyzing PoC (Proof-of-Concept) code.
-
-Your task: Classify contracts as either "Generic Library" or "Business Logic".
-
-Classification Rules:
-1. **Generic Library** (should be FILTERED to save context):
-   - Pure math utilities (FixedPointMath, SafeCast, SignedMath, FullMath)
-   - Token standard helpers (ERC20, ERC721 base implementations)
-   - Common data structures (EnumerableSet, BitMaps)
-   - General-purpose utilities (Clone, Errors, Constants)
-   - OpenZeppelin/Solady standard libraries
-
-2. **Business Logic** (should be KEPT for PoC analysis):
-   - Protocol-specific contracts (Vault, Pool, Manager, Accountant)
-   - Custom financial logic (PanopticMath, CollateralTracker)
-   - Integration adapters (specific to the protocol)
-   - State management contracts
-
-Output Format (VALID JSON ONLY):
-{
-  "keep": [<list of contract names to KEEP>],
-  "filter": [<list of contract names to FILTER>],
-  "reasoning": "<brief explanation>"
-}
-
-Example:
-{
-  "keep": ["PanopticVaultAccountant", "CollateralTracker"],
-  "filter": ["FixedPointMathLib", "SafeCast", "FullMath"],
-  "reasoning": "Math libs are generic; Vault/Tracker are protocol-specific"
-}"#;
-
-    let user_prompt = format!(
-        "Classify these contracts:\n\n{}\n\nReturn JSON with 'keep' and 'filter' arrays.",
-        contract_list
-    );
-    
-    let client = reqwest::Client::new();
-    let request_body = serde_json::json!({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.1,
-        "max_tokens": 4000
-    });
-    
-    let response = client
-        .post(format!("{}/chat/completions", base_url))
-        .header("Authorization", format!("Bearer {}", api_key))
-        .json(&request_body)
-        .timeout(std::time::Duration::from_secs(60))
-        .send()
-        .await?;
-    
-    let response_text = response.text().await?;
-    
-    // 解析LLM响应
-    let parsed: serde_json::Value = serde_json::from_str(&response_text)
-        .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
-    
-    let content = parsed["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or("No content in LLM response")?;
-    
-    // 提取JSON
-    let json_start = content.find('{').ok_or("No JSON found in response")?;
-    let json_end = content.rfind('}').ok_or("No JSON end found")?;
-    let json_str = &content[json_start..=json_end];
-    
-    let decision: serde_json::Value = serde_json::from_str(json_str)?;
-    
-    let mut keep_set = std::collections::HashSet::new();
-    if let Some(keep_array) = decision["keep"].as_array() {
-        for item in keep_array {
-            if let Some(name) = item.as_str() {
-                keep_set.insert(name.to_string());
-            }
-        }
-    }
-    
-    println!("🤖 LLM Decision:");
-    println!("   ✅ Keep: {} contracts", keep_set.len());
-    println!("   🗑️  Filter: {} contracts", graylist.len() - keep_set.len());
-    if let Some(reasoning) = decision["reasoning"].as_str() {
-        println!("   💡 Reasoning: {}\n", reasoning);
-    }
-    
-    Ok(keep_set)
 }
 
 // 🔥 从静态切片结果中提取合约和函数信息
@@ -2325,14 +3829,19 @@ Example:
 // 1. 输入是analyzer::get_source_slice的字符串输出（已经是文本格式）
 // 2. 这是two-phase处理的Phase 1，用于快速过滤，避免LLM分析所有代码
 // 3. 真正的AST验证在Phase 2（get_source_from_nodes）中完成
-fn extract_contracts_and_functions(slice: &[String]) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+fn extract_contracts_and_functions(
+    slice: &[String],
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
     let mut contracts = std::collections::HashSet::new();
     let mut functions = std::collections::HashSet::new();
-    
+
     for code_block in slice {
         for line in code_block.lines() {
             let trimmed = line.trim();
-            
+
             // 提取合约名（文本匹配，Phase 2会用AST验证）
             if trimmed.starts_with("contract ") || trimmed.starts_with("library ") {
                 let name = extract_contract_name(trimmed);
@@ -2340,7 +3849,7 @@ fn extract_contracts_and_functions(slice: &[String]) -> (std::collections::HashS
                     contracts.insert(name);
                 }
             }
-            
+
             // 提取函数名（文本匹配，Phase 2会用AST验证）
             if trimmed.starts_with("function ") {
                 let name = extract_function_name_from_line(trimmed);
@@ -2350,7 +3859,7 @@ fn extract_contracts_and_functions(slice: &[String]) -> (std::collections::HashS
             }
         }
     }
-    
+
     (contracts, functions)
 }
 
@@ -2360,26 +3869,29 @@ fn extract_contracts_and_functions(slice: &[String]) -> (std::collections::HashS
 fn build_function_level_hierarchy(
     analysis: &AnalysisResult,
     relevant_functions: &std::collections::HashSet<String>,
-) -> (std::collections::HashMap<String, usize>, std::collections::HashMap<String, usize>) {
+) -> (
+    std::collections::HashMap<String, usize>,
+    std::collections::HashMap<String, usize>,
+) {
     use std::collections::{HashMap, HashSet, VecDeque};
-    
+
     let mut function_levels = HashMap::new();
     let mut contract_levels = HashMap::new();
     let mut queue = VecDeque::new();
     let mut visited = HashSet::new();
-    
+
     // 🔥 将relevant_functions中的所有函数设为0级（这些是PDG切片的结果）
     for func in relevant_functions {
         function_levels.insert(func.clone(), 0);
         queue.push_back((func.clone(), 0));
         visited.insert(func.clone());
     }
-    
+
     // 🔥 BFS遍历函数调用关系（向被调用方向扩展 - 找当前函数调用了哪些函数）
     while let Some((current_func, current_level)) = queue.pop_front() {
         // 查找当前函数调用的其他函数（被调用者）
         let called_functions = find_called_functions(analysis, &current_func);
-        
+
         for called_func in called_functions {
             if !visited.contains(&called_func) {
                 visited.insert(called_func.clone());
@@ -2388,7 +3900,7 @@ fn build_function_level_hierarchy(
             }
         }
     }
-    
+
     // 🔥 从函数层级推导合约层级（合约的层级 = 其所有函数的最小层级）
     for (contract_name, functions) in &analysis.contract_registry.function_map {
         let mut min_level = usize::MAX;
@@ -2401,19 +3913,16 @@ fn build_function_level_hierarchy(
             contract_levels.insert(contract_name.clone(), min_level);
         }
     }
-    
+
     (function_levels, contract_levels)
 }
 
 // 🔥 改进：基于AST分析函数调用关系（不依赖PDG Call edges）
 // 通过分析函数的label字段来提取被调用的函数名
 // 注意：这里使用字符串解析是因为PDG不track内部函数调用的Call边
-fn find_called_functions(
-    analysis: &AnalysisResult,
-    function_name: &str,
-) -> Vec<String> {
+fn find_called_functions(analysis: &AnalysisResult, function_name: &str) -> Vec<String> {
     let mut called_functions: std::collections::HashSet<String> = std::collections::HashSet::new();
-    
+
     // 第一步：找到当前函数的所有节点
     let mut function_nodes = std::collections::HashSet::new();
     for (node_id, node) in &analysis.program_dependency_graph.nodes {
@@ -2423,53 +3932,173 @@ fn find_called_functions(
             }
         }
     }
-    
+
     // 第二步：从节点label中提取函数调用（AST级别）
     // PDG label格式: "call Expr { span: ..., kind: Ident(functionName) }"
     for node_id in &function_nodes {
         if let Some(node) = analysis.program_dependency_graph.nodes.get(node_id) {
             let label = &node.label;
-            
+
             // Case 1: ExternalCall nodes (跨合约调用)
             if matches!(node.kind, crate::analyzer::NodeKind::ExternalCall) {
-                 let called_name = if let Some(idx) = label.rfind('.') {
-                     &label[idx + 1..]
-                 } else {
-                     label.as_str()
-                 };
-                 
-                 // Check if this name corresponds to a known function
-                 let is_known = analysis.contract_registry.function_map.values()
-                     .any(|funcs| funcs.contains_key(called_name));
-                     
-                 if is_known {
-                     if !is_interface_function(analysis, called_name) && called_name != function_name {
-                         called_functions.insert(called_name.to_string());
-                     }
-                 }
+                let called_name = if let Some(idx) = label.rfind('.') {
+                    &label[idx + 1..]
+                } else {
+                    label.as_str()
+                };
+
+                // Check if this name corresponds to a known function
+                let is_known = analysis
+                    .contract_registry
+                    .function_map
+                    .values()
+                    .any(|funcs| funcs.contains_key(called_name));
+
+                if is_known {
+                    if !is_interface_function(analysis, called_name) && called_name != function_name
+                    {
+                        called_functions.insert(called_name.to_string());
+                    }
+                }
             }
 
             // Case 2: Internal calls (AST pattern matching)
             // 检查所有已知函数名
-            for (func_name, _) in analysis.contract_registry.function_map.iter()
-                .flat_map(|(_, funcs)| funcs.iter()) {
+            for (func_name, _) in analysis
+                .contract_registry
+                .function_map
+                .iter()
+                .flat_map(|(_, funcs)| funcs.iter())
+            {
                 // 🔥 匹配PDG label中的函数调用模式:
                 // 1. "kind: Ident(functionName)" - AST表达式调用
                 // 2. "functionName(" - 简单函数调用
                 let ident_pattern = format!("Ident({})", func_name);
                 let call_pattern = format!("{}(", func_name);
-                
+
                 if label.contains(&ident_pattern) || label.contains(&call_pattern) {
                     // 🔥 过滤接口函数和自身
-                    if !is_interface_function(analysis, func_name) && func_name.as_str() != function_name {
+                    if !is_interface_function(analysis, func_name)
+                        && func_name.as_str() != function_name
+                    {
                         called_functions.insert(func_name.to_string());
                     }
                 }
             }
         }
     }
-    
+
     called_functions.into_iter().collect()
+}
+
+fn find_called_contract_functions(
+    analysis: &AnalysisResult,
+    ast_index: &AstSliceIndex,
+    contract_name: &str,
+    function_name: &str,
+    policy: &HarnessPolicy,
+) -> Vec<(String, String, String)> {
+    let mut called = HashSet::new();
+    let mut result = Vec::new();
+    let mut candidate_contracts = vec![contract_name.to_string()];
+    if policy.include_inherited_helpers {
+        candidate_contracts.extend(ast_index.base_contracts(contract_name));
+    }
+
+    let same_contract_functions: HashSet<String> = candidate_contracts
+        .iter()
+        .filter_map(|contract| analysis.contract_registry.function_map.get(contract))
+        .flat_map(|functions| functions.keys().cloned())
+        .collect();
+
+    for node in analysis.program_dependency_graph.nodes.values() {
+        if node.function_context.as_deref() != Some(function_name)
+            || node.contract_context.as_deref() != Some(contract_name)
+        {
+            continue;
+        }
+
+        for callee in &same_contract_functions {
+            if callee == function_name {
+                continue;
+            }
+            let ident_pattern = format!("Ident({})", callee);
+            let call_pattern = format!("{}(", callee);
+            if !(node.label.contains(&ident_pattern) || node.label.contains(&call_pattern)) {
+                continue;
+            }
+
+            for candidate_contract in &candidate_contracts {
+                if analysis
+                    .contract_registry
+                    .function_map
+                    .get(candidate_contract)
+                    .map_or(false, |functions| functions.contains_key(callee))
+                {
+                    let key = (candidate_contract.clone(), callee.clone());
+                    if called.insert(key.clone()) {
+                        result.push((
+                            key.0,
+                            key.1,
+                            "Harness deps: direct/indirect helper call".to_string(),
+                        ));
+                    }
+                    break;
+                }
+            }
+        }
+
+        if matches!(
+            node.kind,
+            crate::analyzer::NodeKind::ExternalCall | crate::analyzer::NodeKind::TaintSource
+        ) {
+            let Some(receiver) = extract_receiver_variable(&node.label) else {
+                continue;
+            };
+            let Some(method) = extract_called_member_name(&node.label) else {
+                continue;
+            };
+            let Some(receiver_type) = ast_index.variable_types.get(&receiver) else {
+                continue;
+            };
+            let receiver_contract = receiver_type.trim().to_string();
+            if analysis
+                .contract_registry
+                .function_map
+                .get(&receiver_contract)
+                .map_or(false, |functions| functions.contains_key(&method))
+            {
+                let key = (receiver_contract, method);
+                if called.insert(key.clone()) {
+                    result.push((
+                        key.0,
+                        key.1,
+                        "Scenario deps: receiver.method() used by harness".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
+    result
+}
+
+fn extract_called_member_name(label: &str) -> Option<String> {
+    let cleaned = label
+        .strip_prefix("external:")
+        .map(str::trim)
+        .unwrap_or(label.trim());
+    let (_, tail) = cleaned.rsplit_once('.')?;
+    let name = tail
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .next()
+        .unwrap_or("")
+        .trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
 }
 
 // 🔥 改进：基于PDG节点判断函数是否为接口函数（只有声明，无实现）
@@ -2484,7 +4113,7 @@ fn is_interface_function(analysis: &AnalysisResult, function_name: &str) -> bool
             }
         }
     }
-    
+
     // 没有找到任何PDG节点
     // 🔥 但这不一定是接口函数！可能是two-phase模式下phase 1没有包含的函数
     // 解决方案：检查ContractRegistry - 只要在Registry中有entry_id，就说明有实现
@@ -2494,7 +4123,7 @@ fn is_interface_function(analysis: &AnalysisResult, function_name: &str) -> bool
             return false;
         }
     }
-    
+
     // 既不在PDG也不在ContractRegistry，确实是接口函数
     true
 }
@@ -2508,13 +4137,13 @@ fn find_called_contracts(
     relevant_functions: &std::collections::HashSet<String>,
 ) -> Vec<String> {
     let mut called = std::collections::HashSet::new();
-    
+
     // 🔥 策略改进：通过PDG的Call边追踪调用
     // 1. 找到属于当前合约的所有函数节点
     // 2. 查找这些节点的出边（outgoing edges）
     // 3. 如果边的类型是Call，找到目标节点
     // 4. 从目标节点的function_context反查合约（ContractRegistry）
-    
+
     // 第一步：收集当前合约的所有函数节点ID
     let mut contract_function_nodes = std::collections::HashSet::new();
     for (node_id, node) in &analysis.program_dependency_graph.nodes {
@@ -2529,19 +4158,19 @@ fn find_called_contracts(
             }
         }
     }
-    
+
     // 第二步：遍历PDG edges，找到Call类型的边
     for edge in &analysis.program_dependency_graph.edges {
         // 检查是否是从当前合约发出的调用
         if !contract_function_nodes.contains(&edge.from) {
             continue;
         }
-        
+
         // 只处理Call类型的边（精确的调用关系）
         if !matches!(edge.kind, crate::analyzer::EdgeKind::Call) {
             continue;
         }
-        
+
         // 找到被调用的目标节点
         if let Some(target_node) = analysis.program_dependency_graph.nodes.get(&edge.to) {
             // 从目标节点的function_context获取被调用的函数
@@ -2550,14 +4179,16 @@ fn find_called_contracts(
                 // 完全避免了label字符串匹配
                 if let Some(target_contract) = find_contract_for_function(analysis, called_func) {
                     // 只关注relevant_contracts中的合约（跨合约调用）
-                    if relevant_contracts.contains(&target_contract) && target_contract != contract_name {
+                    if relevant_contracts.contains(&target_contract)
+                        && target_contract != contract_name
+                    {
                         called.insert(target_contract);
                     }
                 }
             }
         }
     }
-    
+
     called.into_iter().collect()
 }
 
@@ -2583,7 +4214,10 @@ fn collect_sol_files(input_path: &str) -> Result<Vec<String>, String> {
     } else if path.is_dir() {
         collect_sol_files_recursive(path, &mut files)?;
     } else {
-        return Err(format!("Path {} is neither a file nor a directory", input_path));
+        return Err(format!(
+            "Path {} is neither a file nor a directory",
+            input_path
+        ));
     }
 
     Ok(files)
@@ -2600,11 +4234,46 @@ fn collect_sol_files_recursive(dir: &Path, files: &mut Vec<String>) -> Result<()
             }
         } else if path.is_dir() {
             // Skip common non-source directories
-            if !path.ends_with("node_modules") && !path.ends_with(".git") && !path.ends_with("target") {
+            if !path.ends_with("node_modules")
+                && !path.ends_with(".git")
+                && !path.ends_with("target")
+            {
                 collect_sol_files_recursive(&path, files)?;
             }
         }
     }
 
     Ok(())
+}
+
+fn load_poc_deps(matches: &clap::ArgMatches) -> Option<String> {
+    if let Some(path) = matches.get_one::<String>("poc_deps_file") {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let content = content.trim().to_string();
+            if !content.is_empty() {
+                return Some(content);
+            }
+        }
+    }
+
+    if let Some(deps) = matches.get_one::<String>("poc_deps") {
+        let deps = deps.trim().to_string();
+        if !deps.is_empty() {
+            return Some(deps);
+        }
+    }
+
+    if let Ok(path) = std::env::var("SC_SLICER_POC_DEPS_FILE") {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let content = content.trim().to_string();
+            if !content.is_empty() {
+                return Some(content);
+            }
+        }
+    }
+
+    std::env::var("SC_SLICER_POC_DEPS")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }

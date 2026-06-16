@@ -1,5 +1,5 @@
 //! LLM辅助代码补全模块
-//! 
+//!
 //! 三阶段智能修复策略：
 //! 1. LLM分析识别关键缺失函数（最多3个）
 //! 2. AST精确补全关键函数
@@ -49,9 +49,8 @@ pub struct LLMCompletionPipeline {
 
 impl LLMCompletionPipeline {
     pub fn new() -> Result<Self, String> {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .unwrap_or_else(|_| "sk-4d65d403d3a14e10b027c1cd65f3da77".to_string());
-        
+        let api_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+
         if api_key.is_empty() {
             return Err("API密钥未设置".to_string());
         }
@@ -60,8 +59,7 @@ impl LLMCompletionPipeline {
             api_key,
             base_url: std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.deepseek.com".to_string()),
-            model: std::env::var("LLM_MODEL")
-                .unwrap_or_else(|_| "deepseek-chat".to_string()),
+            model: std::env::var("LLM_MODEL").unwrap_or_else(|_| "deepseek-chat".to_string()),
             source_file_path: None,
         })
     }
@@ -72,10 +70,14 @@ impl LLMCompletionPipeline {
     }
 
     /// 阶段1: LLM分析识别关键缺失函数
-    pub fn analyze_missing_functions(&self, sliced_code: &str) -> Result<Vec<MissingFunction>, String> {
+    pub fn analyze_missing_functions(
+        &self,
+        sliced_code: &str,
+    ) -> Result<Vec<MissingFunction>, String> {
         println!("\n� 阶段1: LLM分析识别关键缺失函数...");
-        
-        let prompt = format!(r#"你是Solidity代码分析专家。分析以下切片后的代码，识别**最关键**的缺失函数定义（最多3个）。
+
+        let prompt = format!(
+            r#"你是Solidity代码分析专家。分析以下切片后的代码，识别**最关键**的缺失函数定义（最多3个）。
 
 **分析重点**：
 1. 测试函数中直接调用但未定义的函数
@@ -100,10 +102,12 @@ impl LLMCompletionPipeline {
 代码：
 ```solidity
 {}
-```"#, sliced_code);
+```"#,
+            sliced_code
+        );
 
-        let response = self.call_llm(&prompt, 1024)?;
-        
+        let response = self.call_llm(&prompt, 8192)?;
+
         // 日志：LLM原始响应
         println!("\n   [DEBUG] LLM阶段1原始响应:");
         println!("   {}", "─".repeat(50));
@@ -114,14 +118,18 @@ impl LLMCompletionPipeline {
             println!("   ... (共 {} 行)", response.lines().count());
         }
         println!("   {}", "─".repeat(50));
-        
+
         self.parse_missing_functions(&response)
     }
 
     /// 阶段2: AST从源码提取缺失函数
-    pub fn complete_functional_code(&self, code: &str, missing_funcs: &[MissingFunction]) -> Result<String, String> {
+    pub fn complete_functional_code(
+        &self,
+        code: &str,
+        missing_funcs: &[MissingFunction],
+    ) -> Result<String, String> {
         println!("\n� 阶段2: AST从源码提取缺失函数...");
-        
+
         if missing_funcs.is_empty() {
             println!("   ℹ️  无需补全功能性函数");
             return Ok(code.to_string());
@@ -136,21 +144,36 @@ impl LLMCompletionPipeline {
             return self.complete_functional_code_with_llm(code, missing_funcs);
         };
 
-        println!("   [源码] 文件: {:?}, 大小: {} 字节", self.source_file_path, source_code.len());
+        println!(
+            "   [源码] 文件: {:?}, 大小: {} 字节",
+            self.source_file_path,
+            source_code.len()
+        );
 
         let mut completed_code = code.to_string();
         let mut extracted_count = 0;
 
         // 为每个缺失函数从源码提取
         for func in missing_funcs {
-            println!("\n   [提取] {}.{} (优先级: {})", func.contract, func.name, func.priority);
-            
+            println!(
+                "\n   [提取] {}.{} (优先级: {})",
+                func.contract, func.name, func.priority
+            );
+
             match self.extract_function_from_source(&source_code, &func.contract, &func.name) {
                 Ok(func_code) => {
-                    println!("   ✓ 成功提取，{} 字符, {} 行", func_code.len(), func_code.lines().count());
-                    
+                    println!(
+                        "   ✓ 成功提取，{} 字符, {} 行",
+                        func_code.len(),
+                        func_code.lines().count()
+                    );
+
                     // 插入到代码中（智能插入到对应的合约内部）
-                    if let Some(inserted) = self.insert_function_into_contract(&completed_code, &func.contract, &func_code) {
+                    if let Some(inserted) = self.insert_function_into_contract(
+                        &completed_code,
+                        &func.contract,
+                        &func_code,
+                    ) {
                         completed_code = inserted;
                         extracted_count += 1;
                     } else {
@@ -165,26 +188,36 @@ impl LLMCompletionPipeline {
                 }
             }
         }
-        
-        println!("\n   [总结] 成功提取 {}/{} 个函数", extracted_count, missing_funcs.len());
-        
+
+        println!(
+            "\n   [总结] 成功提取 {}/{} 个函数",
+            extracted_count,
+            missing_funcs.len()
+        );
+
         if extracted_count == 0 {
             println!("   ⚠️  未能从源码提取任何函数，回退到LLM生成模式");
             return self.complete_functional_code_with_llm(code, missing_funcs);
         }
-        
+
         Ok(completed_code)
     }
 
     /// 阶段2备选: LLM补全功能性函数（简化实现）
-    fn complete_functional_code_with_llm(&self, code: &str, missing_funcs: &[MissingFunction]) -> Result<String, String> {
+    fn complete_functional_code_with_llm(
+        &self,
+        code: &str,
+        missing_funcs: &[MissingFunction],
+    ) -> Result<String, String> {
         println!("\n   [LLM模式] 使用LLM生成缺失函数...");
-        
-        let func_list: Vec<String> = missing_funcs.iter()
+
+        let func_list: Vec<String> = missing_funcs
+            .iter()
             .map(|f| format!("- {}.{}()", f.contract, f.name))
             .collect();
 
-        let prompt = format!(r#"你是Solidity代码专家。为以下函数或其所在的合约/依赖项提供**简化的功能实现**：
+        let prompt = format!(
+            r#"你是Solidity代码专家。为以下函数或其所在的合约/依赖项提供**简化的功能实现**：
 
 {}
 
@@ -201,21 +234,28 @@ impl LLMCompletionPipeline {
 原始代码片段（仅供上下文参考）：
 ```solidity
 {}
-```"#, func_list.join("\n"), if code.len() > 2000 { &code[..2000] } else { code });
+```"#,
+            func_list.join("\n"),
+            if code.len() > 2000 {
+                &code[..2000]
+            } else {
+                code
+            }
+        );
 
         let response = self.call_llm(&prompt, 4096)?;
-        
+
         let new_code = self.extract_code_block(&response)?;
-        
+
         println!("\n   [合并] 将生成的代码合并到原始代码中...");
-        
+
         // 合并策略：将新生成的桩代码置于文件顶部，以确保依赖关系正确
         let mut final_code = String::new();
         final_code.push_str("// --- LLM Generated Stubs ---\n");
         final_code.push_str(&new_code);
         final_code.push_str("\n\n// --- Original Sliced Code ---\n");
         final_code.push_str(code);
-        
+
         // 验证函数是否被补充（简单检查）
         println!("\n   [检查] 验证函数补充情况:");
         for func in missing_funcs {
@@ -225,7 +265,7 @@ impl LLMCompletionPipeline {
                 println!("   ✗ {} 未找到", func.name);
             }
         }
-        
+
         Ok(final_code)
     }
 
@@ -233,7 +273,7 @@ impl LLMCompletionPipeline {
     #[allow(dead_code)]
     pub fn final_compilation_fix(&self, code: &str) -> Result<String, String> {
         println!("\n� 阶段3: LLM最终编译修复 (已禁用)...");
-        
+
         // 直接返回代码，不进行LLM修复
         println!("   ℹ️  阶段3已禁用，直接返回阶段2的结果");
         Ok(code.to_string())
@@ -247,24 +287,27 @@ impl LLMCompletionPipeline {
 
         // 阶段1: 分析缺失函数
         let missing_funcs = self.analyze_missing_functions(sliced_code)?;
-        
+
         if !missing_funcs.is_empty() {
             println!("   发现 {} 个关键缺失函数:", missing_funcs.len());
             for func in &missing_funcs {
-                println!("   - {}.{} (优先级: {})", func.contract, func.name, func.priority);
+                println!(
+                    "   - {}.{} (优先级: {})",
+                    func.contract, func.name, func.priority
+                );
             }
         }
 
         // 阶段2: 补全功能性代码
         let code_with_funcs = self.complete_functional_code(sliced_code, &missing_funcs)?;
-        
+
         // 阶段3: 最终编译修复
         let final_code = self.final_compilation_fix(&code_with_funcs)?;
-        
+
         println!("\n✅ 三阶段补全完成");
         println!("   原始代码: {} 行", sliced_code.lines().count());
         println!("   最终代码: {} 行", final_code.lines().count());
-        
+
         Ok(final_code)
     }
 
@@ -272,12 +315,16 @@ impl LLMCompletionPipeline {
 
     fn call_llm(&self, prompt: &str, max_tokens: usize) -> Result<String, String> {
         use std::time::Duration;
-        
-        println!("   [LLM调用] 模型: {}, Max Tokens: {}, Prompt长度: {} 字符", 
-                 self.model, max_tokens, prompt.len());
-        
+
+        println!(
+            "   [LLM调用] 模型: {}, Max Tokens: {}, Prompt长度: {} 字符",
+            self.model,
+            max_tokens,
+            prompt.len()
+        );
+
         let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(180))
+            .timeout(Duration::from_secs(600))
             .build()
             .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
 
@@ -308,8 +355,12 @@ impl LLMCompletionPipeline {
             .map_err(|e| format!("解析响应失败: {}", e))?;
 
         let content = llm_response.choices[0].message.content.clone();
-        println!("   [LLM响应] 长度: {} 字符, {} 行", content.len(), content.lines().count());
-        
+        println!(
+            "   [LLM响应] 长度: {} 字符, {} 行",
+            content.len(),
+            content.lines().count()
+        );
+
         Ok(content)
     }
 
@@ -335,33 +386,40 @@ impl LLMCompletionPipeline {
             priority: usize,
         }
 
-        let funcs: Vec<FuncJson> = serde_json::from_str(json_str)
-            .unwrap_or_else(|e| {
-                println!("   [警告] JSON解析失败: {}", e);
-                vec![]
-            });
+        let funcs: Vec<FuncJson> = serde_json::from_str(json_str).unwrap_or_else(|e| {
+            println!("   [警告] JSON解析失败: {}", e);
+            vec![]
+        });
 
         println!("   [解析] 成功解析 {} 个函数", funcs.len());
 
-        Ok(funcs.into_iter().map(|f| MissingFunction {
-            name: f.name,
-            contract: f.contract,
-            priority: f.priority,
-        }).collect())
+        Ok(funcs
+            .into_iter()
+            .map(|f| MissingFunction {
+                name: f.name,
+                contract: f.contract,
+                priority: f.priority,
+            })
+            .collect())
     }
 
     /// 从源码中提取指定合约的指定函数 (使用Solar AST精确提取)
-    fn extract_function_from_source(&self, source_code: &str, contract_name: &str, func_name: &str) -> Result<String, String> {
+    fn extract_function_from_source(
+        &self,
+        source_code: &str,
+        contract_name: &str,
+        func_name: &str,
+    ) -> Result<String, String> {
         println!("      [AST] 解析源码以提取 {}.{}", contract_name, func_name);
-        
+
         // 使用Solar解析AST
         let sess = Session::builder()
             .with_buffer_emitter(solar_interface::ColorChoice::Never)
             .build();
-        
+
         let result = sess.enter(|| -> solar_interface::Result<Option<String>> {
             let arena = solar_ast::Arena::new();
-            
+
             // 将源码写入临时文件，因为Parser::from_file需要文件路径
             let temp_dir = std::env::temp_dir();
             let temp_file = temp_dir.join("temp_source.sol");
@@ -369,16 +427,16 @@ impl LLMCompletionPipeline {
                 eprintln!("      [错误] 无法写入临时文件: {}", e);
                 return Ok(None);
             }
-            
+
             let mut parser = solar_parse::Parser::from_file(&sess, &arena, &temp_file)?;
             let ast = parser.parse_file().map_err(|e| e.emit())?;
-            
+
             // 遍历AST查找目标合约和函数
             for item in ast.items.iter() {
                 if let ItemKind::Contract(contract) = &item.kind {
                     if contract.name.to_string() == contract_name {
                         println!("      [AST] 找到合约 {}", contract_name);
-                        
+
                         // 查找目标函数
                         for body_item in contract.body.iter() {
                             if let ItemKind::Function(func) = &body_item.kind {
@@ -386,15 +444,20 @@ impl LLMCompletionPipeline {
                                     if name.to_string() == func_name {
                                         // 找到目标函数！提取其源码
                                         println!("      [AST] 找到函数 {}", func_name);
-                                        
+
                                         // 使用span提取源码
                                         let span = body_item.span;
                                         let start = span.lo().to_usize();
                                         let end = span.hi().to_usize();
-                                        
+
                                         if start < source_code.len() && end <= source_code.len() {
                                             let func_code = &source_code[start..end];
-                                            println!("      [AST] 成功提取函数, span: {}..{}, {} 字符", start, end, func_code.len());
+                                            println!(
+                                                "      [AST] 成功提取函数, span: {}..{}, {} 字符",
+                                                start,
+                                                end,
+                                                func_code.len()
+                                            );
                                             return Ok(Some(func_code.to_string()));
                                         }
                                     }
@@ -404,38 +467,43 @@ impl LLMCompletionPipeline {
                     }
                 }
             }
-            
+
             Ok(None)
         });
-        
+
         match result {
             Ok(Some(code)) => Ok(code),
             Ok(None) => Err(format!("未找到 {}.{}", contract_name, func_name)),
             Err(_) => Err("AST解析失败".to_string()),
         }
     }
-    
+
     /// 将函数插入到指定合约内部
-    fn insert_function_into_contract(&self, code: &str, contract_name: &str, func_code: &str) -> Option<String> {
+    fn insert_function_into_contract(
+        &self,
+        code: &str,
+        contract_name: &str,
+        func_code: &str,
+    ) -> Option<String> {
         let lines: Vec<&str> = code.lines().collect();
         let mut result = Vec::new();
         let mut in_contract = false;
         let mut inserted = false;
         let mut contract_brace_count = 0;
-        
+
         for (_i, line) in lines.iter().enumerate() {
             result.push(line.to_string());
-            
+
             // 检测合约开始
             if !in_contract && line.contains(&format!("contract {}", contract_name)) {
                 in_contract = true;
                 contract_brace_count = 0;
             }
-            
+
             if in_contract {
                 contract_brace_count += line.chars().filter(|&c| c == '{').count() as i32;
                 contract_brace_count -= line.chars().filter(|&c| c == '}').count() as i32;
-                
+
                 // 在合约结束大括号前插入
                 if !inserted && contract_brace_count == 0 && line.trim().starts_with('}') {
                     // 在结束大括号前插入函数
@@ -446,7 +514,7 @@ impl LLMCompletionPipeline {
                 }
             }
         }
-        
+
         if inserted {
             Some(result.join("\n"))
         } else {
@@ -460,8 +528,11 @@ impl LLMCompletionPipeline {
             let code_start = start + "```solidity".len();
             if let Some(end) = response[code_start..].find("```") {
                 let code = response[code_start..code_start + end].trim().to_string();
-                println!("   [提取] 成功提取 ```solidity 代码块, {} 字符, {} 行", 
-                         code.len(), code.lines().count());
+                println!(
+                    "   [提取] 成功提取 ```solidity 代码块, {} 字符, {} 行",
+                    code.len(),
+                    code.lines().count()
+                );
                 return Ok(code);
             }
         }
@@ -471,8 +542,11 @@ impl LLMCompletionPipeline {
             let code_start = start + "```".len();
             if let Some(end) = response[code_start..].find("```") {
                 let code = response[code_start..code_start + end].trim().to_string();
-                println!("   [提取] 成功提取普通 ``` 代码块, {} 字符, {} 行", 
-                         code.len(), code.lines().count());
+                println!(
+                    "   [提取] 成功提取普通 ``` 代码块, {} 字符, {} 行",
+                    code.len(),
+                    code.lines().count()
+                );
                 return Ok(code);
             }
         }
