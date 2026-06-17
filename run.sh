@@ -33,7 +33,6 @@ usage() {
 
 运行模式:
       --v2                  使用 --resurrect-v2，默认
-      --v1                  使用旧 --resurrect
   -q, --quick               仅切片，不复活
   -f, --full                完整模式，等同默认 v2
       --compile-guarantee   给 v2 添加 --compile-guarantee
@@ -65,10 +64,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --full|-f|--v2)
             MODE_ARG="v2"
-            shift
-            ;;
-        --v1)
-            MODE_ARG="v1"
             shift
             ;;
         --level|-l)
@@ -239,9 +234,6 @@ fi
 case "$RUN_MODE" in
     quick)
         CMD+=(--max-level "$MAX_LEVEL" -o "$OUTPUT_FILE")
-        ;;
-    v1)
-        CMD+=(--aggressive-cleanup --resurrect --max-level "$MAX_LEVEL" -o "$OUTPUT_FILE")
         ;;
     v2|full)
         CMD+=(--aggressive-cleanup --resurrect-v2 --max-level "$MAX_LEVEL" -o "$OUTPUT_FILE")

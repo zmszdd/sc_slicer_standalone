@@ -9,7 +9,7 @@
 use petgraph::graph::DiGraph;
 use solar_ast::{self as ast, Expr, ExprKind, Item, ItemKind, SourceUnit, Span, Stmt, StmtKind};
 use solar_interface::diagnostics::EmittedDiagnostics;
-use solar_interface::{BytePos, Session};
+use solar_interface::{BytePos, Session, SpannedOption};
 use solar_parse::Parser;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -512,12 +512,160 @@ fn analyze_function_with_dependencies(
     context.current_function_type = None;
 }
 
-// 检查函数是否访问特定变量（简化版本，避免复杂的递归遍历）
-fn function_accesses_variable(_func: &ast::ItemFunction, _variable_name: &str) -> bool {
-    // 简化实现：假设所有函数都可能访问状态变量
-    // 完整实现需要深度遍历AST，但这会导致类型匹配问题
-    // 在目标导向分析中，我们倾向于多分析一些函数而不是遗漏
-    true
+fn function_accesses_variable(func: &ast::ItemFunction, variable_name: &str) -> bool {
+    let variable_name = variable_name.trim();
+    if variable_name.is_empty() {
+        return false;
+    }
+    func.body
+        .as_ref()
+        .map(|block| block_accesses_variable(block, variable_name))
+        .unwrap_or(false)
+}
+
+fn block_accesses_variable(block: &ast::Block, variable_name: &str) -> bool {
+    block
+        .stmts
+        .iter()
+        .any(|stmt| stmt_accesses_variable(stmt, variable_name))
+}
+
+fn stmt_accesses_variable(stmt: &Stmt, variable_name: &str) -> bool {
+    match &stmt.kind {
+        StmtKind::Assembly(_) | StmtKind::Try(_) => {
+            format!("{:?}", stmt).contains(variable_name)
+        }
+        StmtKind::DeclSingle(var_def) => {
+            var_def
+                .name
+                .as_ref()
+                .map(|name| name.to_string() == variable_name)
+                .unwrap_or(false)
+                || var_def
+                    .initializer
+                    .as_ref()
+                    .map(|expr| expr_accesses_variable(expr, variable_name))
+                    .unwrap_or(false)
+        }
+        StmtKind::DeclMulti(vars, rhs) => {
+            vars.iter().any(|var| match var.as_ref() {
+                SpannedOption::Some(var_def) => var_def
+                    .name
+                    .as_ref()
+                    .map(|name| name.to_string() == variable_name)
+                    .unwrap_or(false),
+                SpannedOption::None(_) => false,
+            }) || expr_accesses_variable(rhs, variable_name)
+        }
+        StmtKind::Block(block) | StmtKind::UncheckedBlock(block) => {
+            block_accesses_variable(block, variable_name)
+        }
+        StmtKind::DoWhile(body, cond) | StmtKind::While(cond, body) => {
+            expr_accesses_variable(cond, variable_name)
+                || stmt_accesses_variable(body, variable_name)
+        }
+        StmtKind::Emit(path, args) | StmtKind::Revert(path, args) => {
+            format!("{:?}", path).contains(variable_name)
+                || args
+                    .exprs()
+                    .any(|expr| expr_accesses_variable(expr, variable_name))
+        }
+        StmtKind::Expr(expr) => expr_accesses_variable(expr, variable_name),
+        StmtKind::For {
+            init,
+            cond,
+            next,
+            body,
+        } => {
+            init.as_ref()
+                .map(|stmt| stmt_accesses_variable(stmt, variable_name))
+                .unwrap_or(false)
+                || cond
+                    .as_ref()
+                    .map(|expr| expr_accesses_variable(expr, variable_name))
+                    .unwrap_or(false)
+                || next
+                    .as_ref()
+                    .map(|expr| expr_accesses_variable(expr, variable_name))
+                    .unwrap_or(false)
+                || stmt_accesses_variable(body, variable_name)
+        }
+        StmtKind::If(cond, then_branch, else_branch) => {
+            expr_accesses_variable(cond, variable_name)
+                || stmt_accesses_variable(then_branch, variable_name)
+                || else_branch
+                    .as_ref()
+                    .map(|branch| stmt_accesses_variable(branch, variable_name))
+                    .unwrap_or(false)
+        }
+        StmtKind::Return(expr) => expr
+            .as_ref()
+            .map(|expr| expr_accesses_variable(expr, variable_name))
+            .unwrap_or(false),
+        StmtKind::Break | StmtKind::Continue | StmtKind::Placeholder => false,
+    }
+}
+
+fn expr_accesses_variable(expr: &Expr, variable_name: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Array(exprs) => exprs
+            .iter()
+            .any(|expr| expr_accesses_variable(expr, variable_name)),
+        ExprKind::Assign(lhs, _, rhs) | ExprKind::Binary(lhs, _, rhs) => {
+            expr_accesses_variable(lhs, variable_name)
+                || expr_accesses_variable(rhs, variable_name)
+        }
+        ExprKind::Call(callee, args) => {
+            expr_accesses_variable(callee, variable_name)
+                || args
+                    .exprs()
+                    .any(|expr| expr_accesses_variable(expr, variable_name))
+        }
+        ExprKind::CallOptions(callee, args) => {
+            expr_accesses_variable(callee, variable_name)
+                || args.iter().any(|arg| expr_accesses_variable(&arg.value, variable_name))
+        }
+        ExprKind::Delete(inner) | ExprKind::Unary(_, inner) => {
+            expr_accesses_variable(inner, variable_name)
+        }
+        ExprKind::Ident(ident) => ident.to_string() == variable_name,
+        ExprKind::Index(target, index) => {
+            expr_accesses_variable(target, variable_name)
+                || match index {
+                    ast::IndexKind::Index(Some(index)) => {
+                        expr_accesses_variable(index, variable_name)
+                    }
+                    ast::IndexKind::Range(start, end) => {
+                        start
+                            .as_ref()
+                            .map(|expr| expr_accesses_variable(expr, variable_name))
+                            .unwrap_or(false)
+                            || end
+                                .as_ref()
+                                .map(|expr| expr_accesses_variable(expr, variable_name))
+                                .unwrap_or(false)
+                    }
+                    _ => false,
+                }
+        }
+        ExprKind::Member(target, member) => {
+            member.to_string() == variable_name
+                || expr_accesses_variable(target, variable_name)
+        }
+        ExprKind::Payable(args) => args
+            .exprs()
+            .any(|expr| expr_accesses_variable(expr, variable_name)),
+        ExprKind::Ternary(cond, then_expr, else_expr) => {
+            expr_accesses_variable(cond, variable_name)
+                || expr_accesses_variable(then_expr, variable_name)
+                || expr_accesses_variable(else_expr, variable_name)
+        }
+        ExprKind::Tuple(items) => items.iter().any(|item| match item.as_deref() {
+            SpannedOption::Some(expr) => expr_accesses_variable(expr, variable_name),
+            SpannedOption::None(_) => false,
+        }),
+        ExprKind::Lit(_, _) | ExprKind::New(_) | ExprKind::TypeCall(_) | ExprKind::Type(_) => false,
+    }
 }
 
 fn build_contract_registry(ast: &SourceUnit, result: &mut AnalysisResult) {

@@ -40,7 +40,7 @@ mod analyzer;
 mod execution_log;
 pub mod noise_reduction;
 pub mod semantic_slicer;
-pub mod sol_resurrect_pipeline;
+mod source_normalizer;
 pub mod sol_resurrect_v2;
 
 use crate::analyzer::AnalysisResult;
@@ -1375,7 +1375,7 @@ fn push_unique_top_level(items: &mut Vec<AstTopLevelItem>, item: AstTopLevelItem
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = Command::new("SC_Slicer")
-        .version("0.1.0")
+        .version("0.2.0")
         .author("SC_Slicer Team")
         .about("Solidity code slicing analysis tool based on Program Dependency Graph (PDG)")
         .arg(
@@ -1513,12 +1513,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
-            Arg::new("resurrect")
-                .help("Enable AST-based code resurrection to reconstruct fragmented slices into compilable code")
-                .long("resurrect")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
             Arg::new("resurrect_v2")
                 .help("Enable source-backed AST-valid resurrection v2")
                 .long("resurrect-v2")
@@ -1529,18 +1523,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .help("Allow resurrection v2 to widen monotonically up to the full source unit")
                 .long("compile-guarantee")
                 .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("poc_deps")
-                .help("Specify PoC minimal dependency requirements as a string for goal-oriented resurrection")
-                .long("poc-deps")
-                .value_name("STRING"),
-        )
-        .arg(
-            Arg::new("poc_deps_file")
-                .help("Specify PoC minimal dependency requirements from a file for goal-oriented resurrection")
-                .long("poc-deps-file")
-                .value_name("FILE"),
         )
         .get_matches();
 
@@ -1610,14 +1592,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📝 Execution log: {}", execution_log_path.display());
     execution_log::phase_start("configuration");
     execution_log::log_line(format!(
-        "config input={} contract={} function={} variable={} semantic={} two_phase={} resurrect={} resurrect_v2={} compile_guarantee={} output={}",
+        "config input={} contract={} function={} variable={} semantic={} two_phase={} resurrect_v2={} compile_guarantee={} output={}",
         input_path,
         contract_name,
         if function_name.is_empty() { "<all>" } else { function_name },
         variable_name,
         use_semantic,
         use_two_phase,
-        matches.get_flag("resurrect"),
         use_resurrect_v2,
         compile_guarantee,
         output_file.map(|s| s.as_str()).unwrap_or("<stdout>")
@@ -1742,7 +1723,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    let mut final_selection = SliceSelection::default();
     let slice = if use_semantic {
         if use_two_phase {
             execution_log::phase_start("semantic_two_phase");
@@ -2011,7 +1991,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 log_slice_selection(&selection, "static_line_selection");
                 let rendered = ast_index.render(&selection, include_types, exclude_libs, max_level);
-                final_selection = selection;
                 execution_log::phase_end(
                     "static_slice",
                     format!(
@@ -2038,7 +2017,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 log_slice_selection(&selection, "static_function_selection");
                 let rendered = ast_index.render(&selection, include_types, exclude_libs, max_level);
-                final_selection = selection;
                 execution_log::phase_end(
                     "static_slice",
                     format!(
@@ -2130,7 +2108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         execution_log::phase_end("llm_completion_pipeline", "disabled_no_mutation");
     }
 
-    let normalized_output = sol_resurrect_pipeline::normalizer::normalize_source(&final_output);
+    let normalized_output = source_normalizer::normalize_source(&final_output);
     let final_output =
         if normalized_output.report.has_changes() {
             println!(
@@ -2159,8 +2137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
     let final_output = repair_dangling_value_continuations(&final_output, &combined_source);
 
-    // AST-based Code Resurrection
-    let use_resurrect = matches.get_flag("resurrect");
+    // Source-backed Code Resurrection V2
     let final_output = if use_resurrect_v2 {
         println!("🚀 Starting source-backed Resurrection V2...");
         execution_log::log_line("resurrection_v2 pipeline started");
@@ -2200,96 +2177,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("⚠️ Resurrection V2 failed: {}", e);
                 writeln!(log_file, "⚠️ Resurrection V2 failed: {}", e)?;
                 execution_log::log_line(format!("resurrection_v2 failed: {}", e));
-                final_output
-            }
-        }
-    } else if use_resurrect {
-        println!("🚀 Starting AST-based Code Resurrection...");
-        execution_log::log_line("resurrection pipeline started");
-        let output_path = match output_file {
-            Some(path) => std::path::PathBuf::from(path),
-            None => std::path::PathBuf::from("results/Resurrected.t.sol"),
-        };
-        let validation_target = if target.entry_function.trim().is_empty() {
-            None
-        } else {
-            Some(sol_resurrect_pipeline::HarnessValidationTarget::new(
-                target.contract.clone(),
-                target.entry_function.clone(),
-            ))
-        };
-        let repair_guidance = if target.entry_function.trim().is_empty() {
-            None
-        } else {
-            let mut rg = sol_resurrect_pipeline::RepairGuidance::new(
-                target.contract.clone(),
-                target.entry_function.clone(),
-                target.focus_symbol.clone(),
-            );
-            if let Some(poc) = load_poc_deps(&matches) {
-                rg = rg.with_poc_dependencies(poc);
-            }
-            Some(rg)
-        };
-
-        let ast_extraction =
-            if std::env::var("USE_AST_EXTRACTOR").unwrap_or_else(|_| "1".to_string()) == "1" {
-                let temp_sess = solar_interface::Session::builder()
-                    .with_buffer_emitter(solar_interface::ColorChoice::Auto)
-                    .build();
-                temp_sess.enter(|| {
-                    let temp_arena = solar_ast::Arena::new();
-                    let mut temp_asts = Vec::new();
-                    for file_path in &file_paths {
-                        if let Ok(mut parser) = solar_parse::Parser::from_file(
-                            &temp_sess,
-                            &temp_arena,
-                            std::path::Path::new(file_path),
-                        ) {
-                            if let Ok(ast) = parser.parse_file() {
-                                temp_asts.push((file_path.clone(), ast));
-                            }
-                        }
-                    }
-                    Some(
-                    sol_resurrect_pipeline::ast_extractor::extract_missing_dependencies_from_ast(
-                        &temp_sess,
-                        &temp_asts,
-                        &final_selection,
-                        &final_output,
-                    ),
-                )
-                })
-            } else {
-                None
-            };
-
-        match sol_resurrect_pipeline::run_resurrection(
-            &final_output,
-            &combined_source,
-            &output_path,
-            &api_key,
-            &base_url,
-            &model_name,
-            6, // max_fix_iterations
-            validation_target,
-            repair_guidance,
-            ast_extraction,
-        )
-        .await
-        {
-            Ok(resurrected) => {
-                writeln!(log_file, "✅ Resurrection pipeline returned output")?;
-                execution_log::log_line(format!(
-                    "resurrection pipeline returned output lines={}",
-                    resurrected.lines().count()
-                ));
-                resurrected
-            }
-            Err(e) => {
-                eprintln!("⚠️ Resurrection failed: {}", e);
-                writeln!(log_file, "⚠️ Resurrection failed: {}", e)?;
-                execution_log::log_line(format!("resurrection failed: {}", e));
                 final_output
             }
         }
@@ -4244,36 +4131,4 @@ fn collect_sol_files_recursive(dir: &Path, files: &mut Vec<String>) -> Result<()
     }
 
     Ok(())
-}
-
-fn load_poc_deps(matches: &clap::ArgMatches) -> Option<String> {
-    if let Some(path) = matches.get_one::<String>("poc_deps_file") {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let content = content.trim().to_string();
-            if !content.is_empty() {
-                return Some(content);
-            }
-        }
-    }
-
-    if let Some(deps) = matches.get_one::<String>("poc_deps") {
-        let deps = deps.trim().to_string();
-        if !deps.is_empty() {
-            return Some(deps);
-        }
-    }
-
-    if let Ok(path) = std::env::var("SC_SLICER_POC_DEPS_FILE") {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let content = content.trim().to_string();
-            if !content.is_empty() {
-                return Some(content);
-            }
-        }
-    }
-
-    std::env::var("SC_SLICER_POC_DEPS")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
 }

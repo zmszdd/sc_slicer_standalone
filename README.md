@@ -146,12 +146,6 @@ forge test --root ./foundry_runs/<run-id> \
 ./run.sh --v2
 ```
 
-使用旧版 resurrect：
-
-```bash
-./run.sh --v1
-```
-
 只做快速切片，不做复活：
 
 ```bash
