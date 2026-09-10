@@ -57,6 +57,72 @@ foundry_runs/slice_PoC_test_submissionValidity_availableForWithdrawal_v2_2026061
 foundry_runs/.../    本地 Foundry 验证工程
 ```
 
+## 目录布局
+
+根目录只保留主入口和 Rust 工程文件。辅助数据和批处理脚本放在下面这些目录：
+
+```text
+data/code4rena/          Code4rena 项目清单 CSV
+scripts/code4rena/       Code4rena 报告抓取、批量 flatten、fallback flatten 脚本
+tools/sol_resurrect_tool/ Python 版 Solidity Resurrector 子工具
+config/llm.env           统一 LLM 运行配置，本地真实 key，不提交
+logs/code4rena/          历史 Code4rena 抓取日志
+code4rena_reports/       已抓取的报告、coverage manifest 和 repo queue
+c4_pipeline_output/      flatten pipeline 的批量输出和 GitHub 仓库缓存
+```
+
+常用 Code4rena 辅助命令：
+
+```bash
+python3 scripts/code4rena/fetch_code4rena_reports.py --audit-only
+bash scripts/code4rena/run_code4rena_flatten_batch_from_csv.sh
+```
+
+## Solidity Resurrector 子工具
+
+Python 版 `sol_resurrect_tool` 已整合到：
+
+```text
+tools/sol_resurrect_tool/
+```
+
+LLM 配置统一放在项目根目录：
+
+```text
+config/llm.env
+config/llm.env.example
+```
+
+当前配置字段：
+
+```bash
+LLM_PROVIDER=opencode
+MODEL_NAME=opencode-go/deepseek-v4-flash
+
+# 仅在 LLM_PROVIDER=openai 时需要：
+# OPENAI_API_KEY=...
+# API_BASE_URL=https://api.openai.com/v1
+```
+
+运行 smoke test：
+
+```bash
+./run_sol_resurrect.sh --smoke
+```
+
+运行完整重构：
+
+```bash
+./run_sol_resurrect.sh tools/sol_resurrect_tool/examples/raw.sol
+```
+
+默认输出：
+
+```text
+runs/sol_resurrect/latest/Resurrected.t.sol
+logs/sol_resurrect/*.log
+```
+
 ## 自定义输入参数
 
 推荐直接通过命令行参数传入，不需要修改脚本。
