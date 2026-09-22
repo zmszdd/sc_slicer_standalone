@@ -376,7 +376,7 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 ### 第一步：冻结 v3.17
 
 - 不修改 v3.17 Prompt、schema 和既有产物语义。
-- 确认当前 276 个主线测试继续通过。
+- 确认当前 286 个主线测试继续通过。
 - 保留 `evaluation/prompt_v317_development_03/` 原始结果。
 
 ### 第二步：设计 v3.18/schema v6
@@ -500,7 +500,7 @@ cd /root/sc_slicer_standalone
   -t tools/report_constraints_v2 -p 'test_*.py' -q
 ```
 
-当前基线应为：`Ran 276 tests \.\.\. OK`。
+当前基线应为：`Ran 276 tests ... OK`。
 
 ### 检查格式问题
 

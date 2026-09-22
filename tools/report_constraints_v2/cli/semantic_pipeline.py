@@ -13,6 +13,7 @@ from pathlib import Path
 import subprocess
 
 import report_only as r
+from lib.normalization import NORMALIZE, normalize_readiness
 from semantic_core import compile_bundle, validate_elements
 from prompts.registry import (
     ADDRESS_GUARD_VERSIONS, ALLOWED_STATEMENT_ID_VERSIONS, CORE_COUNT_VERSIONS,
@@ -691,8 +692,18 @@ def main():
             screen_payload = model_payload(catalog)
             (screen_dir / 'prompt.txt').write_text(READINESS_PROMPT + screen_payload)
             calls += 1
-            readiness = validate_readiness(
-                extract_fn(screen_payload, screen_dir, model, READINESS_PROMPT), catalog)
+            screening_raw = extract_fn(screen_payload, screen_dir, model,
+                                       READINESS_PROMPT)
+            screening_raw, normalized = normalize_readiness(screening_raw)
+            if normalized:
+                # Never hide a correction: the raw response stays untouched in
+                # model-claim.json, and both the log and provenance name what moved.
+                write_json(screen_dir / 'normalization-log.json', {
+                    'schema_version': 'stage2-normalization-log/1',
+                    'stage': 'input-screening', 'mode': NORMALIZE,
+                    'changes': normalized})
+                provenance['input_screening_normalizations'] = normalized
+            readiness = validate_readiness(screening_raw, catalog)
             write_json(args.output / 'input-readiness.json', readiness)
             provenance['input_screening'] = 'deepseek-report-readiness-v1'
             write_json(args.output / 'provenance.json', provenance)

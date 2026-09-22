@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **新增规范化边界（`lib/normalization.py`）。**lib 层原本从 **228 个判废点**中止一轮
+  运行（`require(...)` 加直接 `raise`），而且**一个都没被分类** —— 那不是边界，是雷区：
+  任何一处形状失误都会静默丢掉一轮本来正确的结果。gold-v1 盲测里
+  `intuition_pause_escrow` 就死于 `invalid report-readiness fields`，而它四个筛查维度
+  全部存在、判断正确、证据 ID 真实。
+- 判据：**规范化只能改"怎么写下来"，不能改"声称了什么"。**
+  三分法 `NORMALIZE`（机械修正，语义断言不变）／`WARN`（不改编声称，只改编我们有多确信）／
+  `REJECT`（修正会改变 P/I/V 对报告的声称）。
+  `WARN` 目前**按设计为空**：这些校验器只检查**声明格式**是否合法，格式错误仍应
+  `reject`；"已声明的未确定性不否决断言"那层语义在 `compile_bundle` 的 `signals`
+  策略里（S12），两层不可混。
+- 边界表 `BOUNDARY` 逐条列出全部 **210 条**不同消息（2 `NORMALIZE` / 208 `REJECT`）。
+  `tests/test_normalization_boundary.py` 用 `ast` 从源码重新导出判废面，任何未登记的
+  消息都会让测试失败 —— 边界因此无法静默漂移。防护用 `exact_entry_for`（精确匹配），
+  而不是 `entry_for`（带前缀兜底）：前缀兜底会让一条被截短的条目继续"覆盖"它本该声明
+  的消息，从而悄悄丢掉一个点。
+- 首个落地修复器 `normalize_readiness()`：把模型嵌套错一层的 `missing_dimensions`/
+  `summary` 上提。**在真实失败产物上端到端验证**：修复前 `ValueError: invalid
+  report-readiness fields` → 修复后 `decision = ready`。它是纯函数（不修改输入），
+  原始响应保持可审计，改正内容写进 `neural-input-screen/normalization-log.json` 与
+  `provenance.input_screening_normalizations`。
+- 归责结论（离线重放，零 API 调用）：
+  - `sequence_domain_fork` → **`reject` 正确**。其第 3 条 P term 的符号
+    `new_chain_signature_valid` 的 `source_ids` 是 impact + intent，没有任何前置条件支撑
+    —— 即模型把自己的坏结果当成了前提。这正是 `HANDOFF.md` §6.4 记录的缺陷。
+  - `panoptic_builder_init` / `olas_permissionless_sweep` → 归 `reject`：impact 只支撑
+    条件侧，关系侧由 intent 支撑，等于把"声称的对象"换了。
+- 测试基线 276 -> 286（+8 边界覆盖/修复器测试，+2 接线与纯函数）。两条关键防护均负向
+  验证：新增未分类判废点、删条目、截短条目文字，三者都以预期断言失败。
+- 已知覆盖缺口（与 `cli/batch_verify.py` 同类）：`lib/normalization.py` 决定一轮是否
+  中止，但它**不在**任何清单的 `code_sha256` 里 —— 清单只记历史遗留的 11 个名字。
+- 重设 `code_sha256`：`semantic_pipeline.py`，7 个 key。
 - **新增 `--deepseek-proxy` 开关，神经流程默认直连。**官方传输此前**隐式**继承
   环境里的 `*_proxy` 变量（`build_opener` 会自动装 `ProxyHandler(getproxies())`）。
   当 `HTTPS_PROXY` 指向一个不响应 HTTP CONNECT 的端口时，urllib 把请求交给它并立刻
