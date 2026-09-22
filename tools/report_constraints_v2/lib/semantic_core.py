@@ -168,6 +168,15 @@ def validate_formalization(formal, elements, text):
     return symbol_base, claimed_impacts
 
 
+#: Feasibility checks whose ``unsat`` makes the report spec VACUOUS rather than
+#: merely weak.  ``precondition_feasibility`` unsat means P is contradictory, so
+#: I, V and every query over them carry no information; ``safety_feasibility``
+#: unsat means P AND I is unsatisfiable, so V (which is P AND NOT I) is true in
+#: every P-model.  The V-side checks describe the encoding's STRENGTH instead --
+#: see ``compile_bundle``.
+CONTRADICTION_CHECKS = frozenset({'precondition_feasibility', 'safety_feasibility'})
+
+
 def compile_bundle(elements, formal, text, strict_piv=False, verdict_v2=False):
     symbol_base, covered = validate_formalization(formal, elements, text)
     impacts = {x['id'] for x in elements['statements'] if x['kind'] == 'impact'}
@@ -228,12 +237,30 @@ def compile_bundle(elements, formal, text, strict_piv=False, verdict_v2=False):
         warnings.append('formalization has declared limitations')
     core = 'formalized_candidate' if output and all(x['structural_formalization_status'] != 'not_formalized' for x in output) else 'partial'
     review = 'needs_review' if warnings or any(x['formalization_status'] != 'formalized_candidate' for x in output) else 'candidate_checks_passed'
+    # A contradictory feasibility check is NOT a declared uncertainty.  Under the
+    # signals policy every non-clean bundle lands in `needs_review`, which
+    # automation is allowed to carry on past; but "P unsatisfiable" means the
+    # formulas say nothing about the report at all, so it must not share that tier
+    # with declared ambiguity/limitations/coverage.  Measured on the v3.20 probe:
+    # 6 runs had `precondition_feasibility` unsat and only they were vacuous.
+    # Only the two P/I-side checks escalate.  `effects_feasibility` and
+    # `safety_negation_feasibility` unsat describe the encoding's strength, and
+    # three frozen runs carry them, so they stay review items -- escalating those
+    # would break replay for artifacts that are already recorded.
+    contradictions = sorted({
+        name for claim in output
+        for name, value in (claim['validation'].get('checks') or {}).items()
+        if value == 'unsat' and name in CONTRADICTION_CHECKS})
+    if contradictions:
+        review = 'rejected'
     result = {'schema_version': 'stage2-semantic-bundle/1', 'core_formalization_status': core,
             'acceptance_status': review, 'report_warnings': warnings,
             'unassigned_impact_ids': sorted(impacts - covered), 'claims': output,
             'coverage_is_model_declared_not_semantically_verified': True,
             'human_semantic_review_required': True, 'code_alignment_status': 'not_attempted',
             'execution_ready': False, 'consistency_verdict': 'not_evaluated'}
+    if contradictions:
+        result['contradiction_checks'] = contradictions
     if verdict_v2:
         result['verdict_policy'] = 'signals-v2'
         result['report_ambiguities_declared'] = list(elements['ambiguities'])

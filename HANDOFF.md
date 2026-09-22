@@ -252,6 +252,23 @@ v3.20 提示词修正的对照实测（5 例 × 10 次 = 50 次调用）：
 `--continue-on-review` 只放行公式完整、V 能直接否定 I、无阻塞未决项的候选。次级影响未
 覆盖、报告歧义等作为警告；未知证据、缺失变量、公式矛盾和关键限定遗漏仍拒绝。
 
+**分档缺口已补（本次）**：上面这句原先只是**意图** —— `compile_bundle` 里没有任何
+产生硬拒绝的路径，一切非干净结果都是 `needs_review`，而 `--continue-on-review` 可以
+越过它。现在：
+
+- `lib/semantic_core.py` 定义 `CONTRADICTION_CHECKS = {precondition_feasibility,
+  safety_feasibility}`；任一项 `unsat` ⇒ `acceptance_status = 'rejected'`，并把命中的
+  检查名写进 `contradiction_checks`；
+- `lib/solving.py::attach_review` **只升不降** —— 否则评审告警会把拒绝覆写回
+  `needs_review`，正是要逃出的那一档；
+- `lib/solving.py::from_bundle` 把 `rejected` 路由为 `abstain`
+  （`stage2_can_continue: false`），不再当作 `review`。
+
+为什么只有这两项：`precondition_feasibility` unsat 是 P 自相矛盾（I、V 与一切查询都
+无信息）；`safety_feasibility` unsat 使 V 在每个 P 模型里都为真（V 空真）。
+`effects_feasibility` / `safety_negation_feasibility` unsat 描述的是**编码强度**而非
+空真，且有 3 个已跟踪运行带它们 —— 升级会改写已记录的产物，故维持 review 并在此记明。
+
 ### 4.6 Z3 不承担自然语言语义判断
 
 Z3 只判断提供给它的公式。错误公式也可能得到完美的 SAT/UNSAT 结果。因此任何文档都不能
@@ -434,7 +451,8 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 
 ## 7. 还没有完成的工作
 
-- 尚未实现 `report-formal-plan/6`（`semantic_axioms` 那一套，顺延为 v3.21）。
+- 尚未实现 `report-formal-plan/6`（`semantic_axioms` 那一套，顺延为 v3.21）；
+  P 谓词重复的**强制**拒绝也留在那里（现在只在 `verify` 输出里报告）。
 - 尚未修复派生定义空真。
 - 尚未实现来源、谓词和定义的联动局部修复。
 - 尚未统一 action/root-cause 对派生定义的证据资格。
@@ -453,7 +471,7 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 
 - 不修改 v3.17 Prompt、schema 和既有产物语义。**已遵守**：v3.18 是新文件，
   v3.5–v3.17 冻结文件一字未改。
-- 确认当前主线测试继续通过：**319/319**（v3.17 时代为 286）。
+- 确认当前主线测试继续通过：**331/331**（v3.17 时代为 286）。
 - 保留 `evaluation/prompt_v317_development_03/` 原始结果。
 
 ### 第二步：设计 v3.21/schema v6
@@ -467,6 +485,11 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 5. 局部修复按依赖组同时开放 `symbols`、context、definitions 和 pattern；
 6. 增加 P 时序角色检查；
 7. 增加 selected impact 与关系模板的一致性检查。
+8. 把 `identical_p_predicates()` 接进 `/6` 的校验并随 v3.21 路由：两条不同的 P 来源
+   复用同一谓词时合取会塌缩（`(and X X)` 即 `X`），报告的一条事实静默消失。发生率实测
+   （限通过校验的计划）：v3.19 12/40、v3.20 4/43。**`/4` 不能原地收紧** —— 已跟踪的
+   `deepseek_live_probe_04` 带重复且位于重放电池内 —— 因此现在只在 `main.py verify`
+   的输出里报告（`redundant_p_predicates`），强制留到 `/6`。
 
 新版本至少需要新增：
 

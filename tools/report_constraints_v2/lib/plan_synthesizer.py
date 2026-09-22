@@ -535,6 +535,33 @@ def _pattern_expressions(pattern, symbols):
     return {'op': 'implies', 'args': [trigger, equal]}, _and([trigger, _not(equal)])
 
 
+def identical_p_predicates(plan):
+    """``source_id``s whose P predicate repeats an earlier source's exactly.
+
+    Two distinct precondition sources must not share one predicate: the
+    conjunction then collapses (``(and X X)`` is just ``X``) and one of the
+    report's facts stops being represented, with nothing left to notice it.  The
+    SMT shows it directly as a doubled conjunct in ``report_preconditions``.
+
+    Deliberately NOT used to reject under ``report-formal-plan/4``: one frozen run
+    in the replay battery carries a duplicate, so tightening the live schema would
+    break its recorded artifacts.  ``cli/batch_verify.py`` reports this instead --
+    verification output is not an artifact, so old runs stay replayable while the
+    defect becomes visible for every run, old and new.
+    """
+    seen, duplicates = set(), []
+    for term in plan.get('precondition_terms') or []:
+        if not isinstance(term, dict) or 'predicate' not in term:
+            continue
+        canonical = json.dumps(term['predicate'], sort_keys=True,
+                               separators=(',', ':'))
+        if canonical in seen:
+            duplicates.append(term.get('source_id'))
+        else:
+            seen.add(canonical)
+    return duplicates
+
+
 def synthesize_id_formalization(plan, elements):
     base_fields = {
         'schema_version', 'precondition_ids', 'intent_id', 'impact_ids', 'symbols',
@@ -674,10 +701,7 @@ def synthesize_id_formalization(plan, elements):
             len(term_sources) == len(plan['precondition_ids']),
             'P terms must cover selected preconditions exactly once')
     if version == EXPANDED_PLAN_VERSION:
-        canonical_terms = [json.dumps(term['predicate'], sort_keys=True,
-                                      separators=(',', ':'))
-                           for term in plan['precondition_terms']]
-        require(len(canonical_terms) == len(set(canonical_terms)),
+        require(not identical_p_predicates(plan),
                 'distinct P sources reuse identical predicate')
     p_expression = _and(p_expressions) if p_expressions else None
     if version in (CLASSIFIED_PLAN_VERSION, FIXED_PLAN_VERSION,

@@ -29,7 +29,8 @@ import report_only as r
 from fidelity import check_numeric_plan, check_address_plan
 from semantic_core import (compile_bundle, normalize_truth_binding, require,
                            validate_elements)
-from plan_synthesizer import (classified_relation_alignment, structured_unresolved_review,
+from plan_synthesizer import (classified_relation_alignment, identical_p_predicates,
+                              structured_unresolved_review,
                               synthesize_id_formalization)
 from evidence_catalog import build_catalog, hydrate_elements, hydrate_formalization
 from symbolic_queries import solve_queries, verify_witness
@@ -256,6 +257,7 @@ def verify(directory):
     for claim in bundle['claims']:
         require(claim.pop('smt') == (directory / (claim['id'] + '.smt2')).read_text(), 'SMT replay mismatch')
     require(bundle == saved, 'bundle replay mismatch')
+    redundant_p_predicates = []
     if provenance['candidate_origin'] == 'external_model':
         raw_elements = json.loads((directory / ('elements-ids.json' if (directory / 'elements-ids.json').exists() else 'elements.json')).read_text())
         raw_formal = json.loads((directory / ('formalization-ids.json' if (directory / 'formalization-ids.json').exists() else 'formalization.json')).read_text())
@@ -276,6 +278,8 @@ def verify(directory):
                     'neural elements changed')
         if provenance.get('prompt_version') in PLAN_VERSIONS:
             plan = json.loads((directory / 'formal-plan.json').read_text())
+            # Reported, not enforced: see identical_p_predicates().
+            redundant_p_predicates = identical_p_predicates(plan)
             claim_path = accepted_model_claim_path(directory)
             claim = json.loads(claim_path.read_text())
             # Boundary NORMALIZE: the live pipeline declares the boolean an
@@ -342,7 +346,9 @@ def verify(directory):
     require(interface['execution_ready'] is False, 'unexpected execution-ready claim')
     return {'offline_verified': True, 'model_calls': 0, 'candidate_origin': provenance['candidate_origin'],
             'core_formalization_status': bundle['core_formalization_status'],
-            'acceptance_status': bundle['acceptance_status'], 'consistency_verdict': 'not_evaluated'}
+            'acceptance_status': bundle['acceptance_status'],
+            'redundant_p_predicates': redundant_p_predicates,
+            'consistency_verdict': 'not_evaluated'}
 
 
 def verify_main():

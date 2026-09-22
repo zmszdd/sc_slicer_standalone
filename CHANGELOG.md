@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- **验收分档：矛盾不是"声明的不确定性"，不再降级为 `needs_review`。**
+  §4.5 一直写着"公式矛盾……仍拒绝"，但 `compile_bundle` **实际上没有任何产生硬拒绝的
+  路径** —— 一切非干净结果都落到 `needs_review`，而自动化被允许越过它。本次补上：
+  可行性检查 `unsat` 是**矛盾**而非不确定性：
+  - `precondition_feasibility` unsat ⇒ P 自相矛盾，I、V 与一切查询都无信息；
+  - `safety_feasibility` unsat ⇒ P ∧ I 不可满足 ⇒ V（= P ∧ ¬I）在每个 P 模型里都为真。
+
+  两者现在把 `acceptance_status` 升为 **`rejected`**，并列出 `contradiction_checks`
+  （`CONTRADICTION_CHECKS = {precondition_feasibility, safety_feasibility}`）。
+  只有这两项升级：`effects_feasibility` / `safety_negation_feasibility` unsat 描述的是
+  **编码强度**而非空真，而且 **3 个冻结运行带它们**，升级会改写已记录的产物 → 维持
+  review。实测（0 次模型调用，对真实产物重算）：4 个空洞探针 `needs_review` →
+  **`rejected`**；已跟踪的 V 侧 unsat 运行
+  （`generalization_probe_01/merkl_epoch_duration`）**仍是 `needs_review`** 且
+  `main.py verify` 仍 `offline_verified: true`。
+  配套两处守卫，否则升级会被说回去：
+  - `attach_review` 原先无条件覆写 `acceptance_status = needs_review` → 现在**只升不降**
+    （评审可以加重，不能软化拒绝）；
+  - `from_bundle` 把 `rejected` 路由为 **`abstain`**（`stage2_can_continue: false`），
+    而不是 `review`。
+  副作用（已实测并接受）：6 个 v3.19/v3.20 的 `olas` 空洞探针记录的是旧分档，现在
+  `main.py verify` 报 `bundle replay mismatch`。它们**全部未跟踪**；已跟踪集合的影响为 0
+  （已逐一验证 5 个重放锚点仍通过）。
+- **P 谓词重复：`/4` 不能原地收紧，改为在 `verify` 里报告。**
+  两条不同 precondition 复用一个谓词时合取会塌缩（`(and X X)` 就是 `X`），报告的一条
+  事实**静默地不再被表示** —— SMT 里直接表现为 `report_preconditions` 的双份合取。
+  该检查**已存在**但只对 `report-formal-plan/5`（`EXPANDED_PLAN_VERSION`）执行。
+  实测发生率（限通过校验的计划）：v3.16 3/7、v3.18 5/27、v3.19 12/40、v3.20 4/43。
+  **为什么不在 `/4` 上收紧**：19 个已跟踪 plan 里有 1 个重复
+  （`deepseek_live_probe_04` 的 `p_inherited_paynative_strict_equality`），且它在重放
+  电池内 —— 收紧会打断其重放。故把判定抽成
+  `plan_synthesizer.identical_p_predicates()`（`/5` 分支改为复用它，行为不变），并让
+  `cli/batch_verify.py` 在**验证输出**里报告 `redundant_p_predicates`。验证输出不是产物，
+  所以旧运行全部仍可重放，而缺陷对**每一次**验证都可见。
+  实测：`deepseek_live_probe_04` → `['p_inherited_paynative_strict_equality']` 且
+  `offline_verified: true`；`deepseek_live_probe_02` → `[]`。
+  在 `/6` 上强制该要求的具体方案见 HANDOFF §8 第二步第 8 条。
+- 测试基线 319 -> 331（+12：矛盾分档 5、P 谓词重复 4、评审只升不降 2、triage abstain 1）。
+  `code_sha256` 重基线 8 处（`semantic_core.py`、`plan_synthesizer.py`、
+  `review.py`/`symbolic_queries.py`，覆盖 3 个清单），重基线后零漂移。
+
 - **新增 `semantic-v3.20`：给最后两个系统性缺陷各一条可执行配方。**v3.19 之后只剩
   `sequence_domain_fork`（0/10），其 10 次失败是"一个可归一化形状 + 两个真缺陷"：
   - 6/10：把"block.chainid 在部署时读一次"编成了自反比较

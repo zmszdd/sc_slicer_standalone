@@ -758,4 +758,114 @@ class PlanNormalizationReplayTest(unittest.TestCase):
                                         'neural formal plan changed'):
                 verify_semantic.verify(run)
 
+
+class ContradictionTierTest(unittest.TestCase):
+    """A contradiction is not a declared uncertainty.
+
+    Under the signals policy every non-clean bundle lands in ``needs_review``,
+    which automation is allowed to carry on past.  A contradictory P is different
+    in kind -- the formulas say nothing about the report -- so it must be a hard
+    rejection.  Measured on the v3.20 probe: 6 runs had
+    ``precondition_feasibility`` unsat and only those were vacuous.
+    """
+
+    @staticmethod
+    def _sources(elements):
+        return ['pre_overpay', 'assume_nonnegative']
+
+    def _contradictory(self):
+        elements, formal = inputs()
+        claim = formal['claims'][0]
+        predicates = claim['properties']['preconditions']
+        clause = {'op': 'gt', 'args': [{'var': 'paid_fee'}, {'var': 'quoted_fee'}]}
+        predicates['expression'] = {'op': 'and',
+                                    'args': [clause, {'op': 'not', 'args': [clause]}]}
+        claim['formula_sources']['preconditions'] = {
+            path: self._sources(elements)
+            for path in s.predicate_paths(predicates['expression'], formal['symbols'])}
+        return elements, formal
+
+    def test_a_contradictory_precondition_is_rejected_under_signals(self):
+        elements, formal = self._contradictory()
+        result = s.compile_bundle(elements, formal, TEXT, verdict_v2=True)
+        self.assertEqual(result['acceptance_status'], 'rejected')
+        self.assertIn('precondition_feasibility', result['contradiction_checks'])
+
+    def test_a_contradictory_precondition_is_rejected_under_legacy(self):
+        elements, formal = self._contradictory()
+        result = s.compile_bundle(elements, formal, TEXT)
+        self.assertEqual(result['acceptance_status'], 'rejected')
+
+    def test_a_clean_bundle_carries_no_contradiction_field(self):
+        elements, formal = inputs()
+        result = s.compile_bundle(elements, formal, TEXT, verdict_v2=True)
+        self.assertNotIn('contradiction_checks', result)
+
+    def test_a_merely_weak_bundle_stays_a_review_item(self):
+        """The V-side checks describe strength, not vacuity: never escalate them."""
+        elements, formal = inputs()
+        claim = formal['claims'][0]
+        claim['properties']['safety']['expression'] = copy.deepcopy(
+            claim['properties']['effects']['expression'])
+        claim['formula_sources']['safety'] = {
+            path: ['intent_accept_buffer'] for path in
+            s.predicate_paths(claim['properties']['safety']['expression'],
+                              formal['symbols'])}
+        result = s.compile_bundle(elements, formal, TEXT, strict_piv=True,
+                                  verdict_v2=True)
+        self.assertEqual(result['acceptance_status'], 'needs_review')
+        self.assertNotIn('contradiction_checks', result)
+
+    def test_a_frozen_run_with_v_side_unsat_keeps_its_recorded_verdict(self):
+        """Negative control on real data, and a replay proof at the same time.
+
+        This run has ``effects_feasibility`` and ``safety_negation_feasibility``
+        unsat, so escalating those two would rewrite an artifact that is already
+        recorded.  It must keep ``needs_review``.
+        """
+        report = verify_semantic.verify(
+            HERE / 'results/semantic/generalization_probe_01/merkl_epoch_duration')
+        self.assertIs(report['offline_verified'], True)
+        self.assertEqual(report['acceptance_status'], 'needs_review')
+
+
+class RedundantPPredicateTest(unittest.TestCase):
+    """Two distinct P sources sharing one predicate silently drops a fact.
+
+    The conjunction collapses -- ``(and X X)`` is just ``X`` -- and nothing else
+    notices, so one of the report's facts stops being represented.  ``/4`` cannot
+    be tightened in place (a frozen run carries a duplicate), so ``verify``
+    reports it instead.
+    """
+
+    @staticmethod
+    def _term(source_id, symbol):
+        return {'source_id': source_id,
+                'predicate': {'kind': 'truth', 'symbol': symbol, 'value': True}}
+
+    def test_a_reused_predicate_names_the_later_source(self):
+        plan = {'precondition_terms': [self._term('p_a', 'x'),
+                                       self._term('p_b', 'y'),
+                                       self._term('p_c', 'x')]}
+        self.assertEqual(plan_synthesizer.identical_p_predicates(plan), ['p_c'])
+
+    def test_distinct_predicates_and_malformed_input_are_clean(self):
+        self.assertEqual(plan_synthesizer.identical_p_predicates(
+            {'precondition_terms': [self._term('p_a', 'x'), self._term('p_b', 'y')]}), [])
+        self.assertEqual(plan_synthesizer.identical_p_predicates({}), [])
+        self.assertEqual(plan_synthesizer.identical_p_predicates(
+            {'precondition_terms': [None, 'text', {'source_id': 'p_a'}]}), [])
+
+    def test_a_frozen_run_reports_its_redundancy_without_losing_replay(self):
+        report = verify_semantic.verify(
+            HERE / 'results/semantic/deepseek_live_probe_04')
+        self.assertEqual(report['redundant_p_predicates'],
+                         ['p_inherited_paynative_strict_equality'])
+        self.assertIs(report['offline_verified'], True)
+
+    def test_a_clean_frozen_run_reports_nothing(self):
+        report = verify_semantic.verify(
+            HERE / 'results/semantic/deepseek_live_probe_02')
+        self.assertEqual(report['redundant_p_predicates'], [])
+
 if __name__ == '__main__': unittest.main()

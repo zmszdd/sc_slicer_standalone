@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from review import from_bundle, from_failure
+from review import attach_review, from_bundle, from_failure
 from semantic_pipeline import formal_retry_hint, request_formalization
 
 
@@ -152,6 +152,18 @@ class TriageTests(unittest.TestCase):
         self.assertEqual(from_failure({'error_type': 'TimeoutExpired',
                                        'error': 'model timeout'})['route'], 'pipeline_failure')
 
+    def test_a_rejected_bundle_abstains(self):
+        """A contradiction must not be routed as a review item."""
+        bundle = {'core_formalization_status': 'formalized_candidate',
+                  'acceptance_status': 'rejected', 'report_warnings': [],
+                  'claims': [{'id': 'core_claim', 'review_reasons': [],
+                              'semantic_relationship': {'queries': {
+                                  'P_and_V': 'sat', 'P_and_V_and_not_I': 'sat',
+                                  'P_and_V_and_I': 'unsat'}}}]}
+        result = from_bundle(bundle)
+        self.assertEqual(result['route'], 'abstain')
+        self.assertFalse(result['stage2_can_continue'])
+
     def test_infeasible_core_abstains_even_when_structurally_formalized(self):
         bundle = {'core_formalization_status': 'formalized_candidate',
                   'acceptance_status': 'needs_review', 'report_warnings': [],
@@ -182,6 +194,48 @@ class TriageTests(unittest.TestCase):
         bundle['claims'][0]['unresolved'] = ['[unsupported_relation] core relation absent']
         self.assertFalse(from_bundle(bundle)['stage2_can_continue'])
 
+
+
+class ObservabilityReviewGateTest(unittest.TestCase):
+    """The review gate may escalate severity, never soften a rejection.
+
+    ``attach_review`` used to overwrite ``acceptance_status`` with
+    ``needs_review`` whenever the observability review warned, which would have
+    talked a bundle the compiler rejected for a contradictory P back up to a
+    review item -- exactly the tier the contradiction rule exists to escape.
+    """
+
+    @staticmethod
+    def _isolated_safety_bundle():
+        """A bundle whose safety side uses a bool nothing else defines."""
+        formal = {'symbols': {'guard': {'sort': 'bool'},
+                              'reverted': {'sort': 'bool'},
+                              'extra': {'sort': 'bool'}},
+                  'claims': [{'id': 'core_claim', 'properties': {
+                      'preconditions': {'expression': {'var': 'guard'}},
+                      'safety': {'expression': {'op': 'and', 'args': [
+                          {'op': 'not', 'args': [{'var': 'reverted'}]},
+                          {'var': 'extra'}]}},
+                      'effects': {'expression': {'var': 'reverted'}}}}]}
+        bundle = {'acceptance_status': 'rejected',
+                  'claims': [{'id': 'core_claim',
+                              'formalization_status': 'formalized_candidate',
+                              'review_reasons': [],
+                              'semantic_relationship': {'queries': {}}}]}
+        return bundle, formal
+
+    def test_a_rejection_survives_a_review_warning(self):
+        bundle, formal = self._isolated_safety_bundle()
+        result = attach_review(bundle, formal)
+        self.assertEqual(result['review_status'], 'needs_review')
+        self.assertEqual(bundle['acceptance_status'], 'rejected')
+
+    def test_a_review_warning_still_escalates_a_clean_bundle(self):
+        bundle, formal = self._isolated_safety_bundle()
+        bundle['acceptance_status'] = 'candidate_checks_passed'
+        result = attach_review(bundle, formal)
+        self.assertEqual(result['review_status'], 'needs_review')
+        self.assertEqual(bundle['acceptance_status'], 'needs_review')
 
 if __name__ == '__main__':
     unittest.main()

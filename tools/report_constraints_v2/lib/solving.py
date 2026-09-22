@@ -129,7 +129,10 @@ def from_bundle(bundle, unresolved_review=None):
     infeasible_claims = [claim['id'] for claim in bundle.get('claims', [])
                          if claim.get('semantic_relationship', {}).get('queries', {}).get(
                              'P_and_V') in ('unsat', 'unknown')]
-    if bundle['core_formalization_status'] != 'formalized_candidate' or infeasible_claims:
+    # `rejected` means the compiler found a contradiction, so automation must
+    # abstain rather than route the bundle to review.
+    if (bundle['core_formalization_status'] != 'formalized_candidate' or
+            infeasible_claims or acceptance == 'rejected'):
         route = 'abstain'
     elif acceptance == 'candidate_checks_passed':
         route = 'candidate'
@@ -207,7 +210,11 @@ def attach_review(bundle, formal):
             target['review_reasons'].extend(claim['warnings'])
             if target['formalization_status'] == 'formalized_candidate':
                 target['formalization_status'] = 'needs_review'
-    if result['review_status'] == 'needs_review':
+    # A review may escalate severity, never soften it: a bundle the compiler
+    # already rejected for a contradictory P must not be talked back up to
+    # `needs_review` by the observability layer.
+    if (result['review_status'] == 'needs_review' and
+            bundle['acceptance_status'] != 'rejected'):
         bundle['acceptance_status'] = 'needs_review'
     return result
 
