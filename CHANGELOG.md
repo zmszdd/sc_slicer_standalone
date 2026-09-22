@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **修复 S12 引入的回归：`main.py batch` 曾完全不可用。**`main.py` 会为
+  `batch` 注入 `--claim-verdict signals`，但 `cli/batch_verify.py` 既没有声明该
+  参数（argparse 直接 `unrecognized arguments` 并退出 2），也没有把它转发给
+  `run` 子进程（即使不报错，每个 batch run 也会静默落回 `legacy`，而子进程写下的
+  `provenance.claim_verdict_policy` 正是 `verify` 重放的依据）。现已声明并转发。
+- 新增两条回归防护（`tests/test_main_entry.py`），均已做负向验证：
+  1. `test_every_injected_flag_is_declared_by_its_target_script` —— 静态检查
+     `main.py` 注入的每个 flag 都出现在目标脚本的 parser 源码里。**`cmd --help`
+     冒烟测试在结构上不可能发现这类问题**：argparse 处理 `--help` 时就退出 0，
+     早于报告未识别参数；而不给必填参数同样无效，argparse 会先报
+     `the following arguments are required`，同样早于未识别参数。
+  2. `test_verdict_policy_reaches_the_run_subprocess` —— patch 掉
+     `subprocess.run`，断言 `--claim-verdict signals` 确实进了子进程 argv，
+     全程零模型调用。
+- 测试基线 266 -> 268。
 - **S12: 断言策略改为可切换。** `compile_bundle()` 新增 `verdict_v2` 形参，
   `cli/semantic_pipeline.py` 新增 `--claim-verdict {legacy,signals}`（默认
   `legacy`）。`main.py` 对 `run` / `batch` 自动注入 `--claim-verdict signals`

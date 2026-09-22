@@ -154,7 +154,7 @@ v3.17 五例开发回归：
 - P/I/V 规范已集中到 `prompts/definitions.py`，生产流程经 `prompts/active.py`
   显式解析最终 Prompt；可用 `python main.py preview-prompt --part
   definitions|element|formal` 查看，不调用模型。v3.5–v3.17 冻结文件未修改。
-- 自动测试已迁到 `tools/report_constraints_v2/tests/`；删除退役分支的 22 项专用测试后，当前主线 266 项通过。
+- 自动测试已迁到 `tools/report_constraints_v2/tests/`；删除退役分支的 22 项专用测试后，当前主线 268 项通过。
 - 阶段二根目录现在**没有任何 `.py`**：入口在 `cli/`，共享模块在 `lib/`。
   重构前的 14 个旧模块名（`fidelity`、`evidence_catalog`、`verify_semantic` 等）
   由 `lib/compat.py` 的 `sys.meta_path` finder 惰性解析，并保持模块同一性；
@@ -376,7 +376,7 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 ### 第一步：冻结 v3.17
 
 - 不修改 v3.17 Prompt、schema 和既有产物语义。
-- 确认当前 266 个主线测试继续通过。
+- 确认当前 268 个主线测试继续通过。
 - 保留 `evaluation/prompt_v317_development_03/` 原始结果。
 
 ### 第二步：设计 v3.18/schema v6
@@ -469,7 +469,7 @@ cd /root/sc_slicer_standalone
   -t tools/report_constraints_v2 -p 'test_*.py' -q
 ```
 
-当前基线应为：`Ran 266 tests ... OK`。
+当前基线应为：`Ran 268 tests ... OK`。
 
 ### 检查格式问题
 

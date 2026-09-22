@@ -74,6 +74,10 @@ def main():
     parser.add_argument('--formal-retries', type=int, choices=(0, 1), default=0)
     parser.add_argument('--lean-formal-input', action='store_true')
     parser.add_argument('--continue-on-review', action='store_true')
+    parser.add_argument('--claim-verdict', choices=('legacy', 'signals'),
+                        default='legacy',
+                        help='forwarded to every run subprocess; legacy keeps the '
+                             'historical veto on report-declared uncertainty')
     parser.add_argument('--prompt-version', choices=tuple(PROMPT_MODULES),
                         default=DEFAULT_VERSION)
     args = parser.parse_args()
@@ -119,6 +123,10 @@ def main():
                    '--prompt-version', args.prompt_version,
                    '--evidence-mode', 'ids', '--formalization-scope', 'core',
                    '--output', str(output)]
+        # Must be forwarded: the child writes provenance.claim_verdict_policy,
+        # and `verify` replays from that value. Dropping it would silently pin
+        # every batch run back to the legacy verdict.
+        command.extend(['--claim-verdict', args.claim_verdict])
         if args.element_retries:
             command.extend(['--element-retries', str(args.element_retries)])
         if args.formal_retries:

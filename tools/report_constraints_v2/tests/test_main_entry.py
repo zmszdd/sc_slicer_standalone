@@ -208,5 +208,88 @@ class CommandSmokeTest(unittest.TestCase):
                                  f'{command} --help failed:\n{proc.stderr[-1500:]}')
                 self.assertIn('usage', (proc.stdout + proc.stderr).lower())
 
+    def test_every_injected_flag_is_declared_by_its_target_script(self):
+        """A flag `main.py` injects must appear in the target script's parser.
+
+        Static check on purpose. Both dynamic alternatives provably fail to
+        catch a violation, each verified against the real
+        `main.py batch` / `--claim-verdict` regression:
+
+        1. `cmd --help` exits 0 -- argparse handles --help before it reports
+           unrecognised arguments.
+        2. Omitting required args to avoid running the pipeline backfires --
+           argparse reports "the following arguments are required" BEFORE
+           "unrecognized arguments", so the bogus flag is never mentioned.
+
+        So the invariant is asserted where it is verifiable: the target
+        script's own source must declare each injected flag.
+        """
+        tables = (entry.STAGE2_DEEPSEEK_DEFAULTS, entry.STAGE2_VERDICT_DEFAULTS)
+        for table in tables:
+            for command, defaults in sorted(table.items()):
+                script = entry._script_path(entry.STAGE2_COMMANDS[command][0])
+                source = script.read_text(encoding='utf-8')
+                for flag in (item for item in defaults if item.startswith('--')):
+                    with self.subTest(command=command, flag=flag):
+                        self.assertIn(
+                            f"add_argument('{flag}'", source,
+                            f'`main.py {command}` injects {flag} but '
+                            f'{script.name} never declares it')
+
+
+class BatchVerdictForwardingTest(unittest.TestCase):
+    """`batch` must hand its verdict policy down to every run subprocess.
+
+    The child writes ``provenance.claim_verdict_policy`` and ``verify`` replays
+    from that value, so dropping the flag would silently pin every batch run
+    back to the legacy verdict while the run summary still advertised signals.
+    ``subprocess.run`` is patched, so no model is ever contacted.
+    """
+
+    def test_verdict_policy_reaches_the_run_subprocess(self):
+        import tempfile
+        from unittest.mock import patch
+
+        from cli import batch_verify
+
+        captured = []
+
+        class FakeProc:
+            returncode = 0
+            stdout = ''
+            stderr = ''
+
+        def fake_run(command, **_kwargs):
+            captured.append(list(command))
+            # The real child creates its own --output directory.
+            Path(command[command.index('--output') + 1]).mkdir(
+                parents=True, exist_ok=True)
+            return FakeProc()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'reports'
+            (root / 'case_a').mkdir(parents=True)
+            (root / 'case_a' / 'report.json').write_text(
+                '{"title": "t", "body": "b"}', encoding='utf-8')
+            previous = sys.argv
+            try:
+                sys.argv = ['batch_verify.py', '--reports-root', str(root),
+                            '--output', str(Path(tmp) / 'out'),
+                            '--allow-report-upload', '--provider', 'opencode',
+                            '--concurrency', '1',
+                            '--claim-verdict', 'signals']
+                with patch.object(batch_verify.subprocess, 'run', fake_run):
+                    batch_verify.main()
+            finally:
+                sys.argv = previous
+
+        self.assertEqual(len(captured), 1, 'one case must spawn one subprocess')
+        command = captured[0]
+        self.assertIn('--claim-verdict', command,
+                      'batch dropped --claim-verdict on the way to the child')
+        self.assertEqual(command[command.index('--claim-verdict') + 1], 'signals')
+        self.assertIn('cli.semantic_pipeline', command)
+
+
 if __name__ == '__main__':
     unittest.main()
