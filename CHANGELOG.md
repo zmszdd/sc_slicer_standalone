@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **新增 `semantic-v3.19`：修正 `access_control` 类内容规则与 grounding 规则的冲突。**
+  v3.18 之后剩下的 grounding 失败，根因是**提示词两条规则无法同时满足**：
+  类规则说 access control 的 `relation`
+  *is the required authorization*，而 grounding 规则要求
+  "those core symbols' source_ids MUST include intent_id and EVERY selected
+  impact_id. Trigger/condition-only variables do not count"。授权谓词的天然来源是
+  precondition，impact（一个下游回滚/损失）挂不上去；提示词里
+  `outrank` / `precedence` / `conflict` 等词出现 **0 次**，从未说明谁优先。
+  决定性证据：**能通过校验的编码全都违反类规则** —— `panoptic_builder_init` 通过的
+  7 次把 `relation` 写成 impact 的否定形态（`builder_admin_overwritten = false`），
+  没通过的 3 次写 `caller_is_authorized`；`olas_permissionless_sweep` 则 **10/10**
+  都写 `caller_is_authorized`（一次都没过），其中 7 次把 impact 塞进了提示词明令
+  不计的 condition 侧。模型是想服从 grounding 但没有合法落点。
+  v3.19 把该句改为：condition 是受保护动作**加上缺失或被绕过的 guard**，且
+  `relation` 必须能引用被选中的 impact —— 当 impact 是后果（回滚/损失/grief）而非
+  授权事实时，`relation` 取**该 impact 自身可观察量的否定**。
+  只改这一处，不动验证器、不动 schema（仍是 `report-formal-plan/4`）。
+- **v3.19 对照实测（同样 5 例 × 10 次 = 50 次调用）**：
+  校验通过 **27/50 -> 40/50（80%）**；kind 合规保持 50/50，无回归；
+  `olas_permissionless_sweep` **0/10 -> 10/10**；`panoptic_builder_init` 7/10 -> **10/10**；
+  `core relation observables lack intent/impact grounding` **13 次 -> 0 次**；
+  `sequence_domain_fork` 仍 0/10（truth binding，与本次改动无关）；
+  **没有出现任何新的失败类别**。
+  副作用需记明：`intuition_pause_escrow` 的 `relation_class` 变为 access_control 5 /
+  progress_or_liveness 5。两类的 `relation` 谓词形态一致、且都映射到
+  `relation_obligation`，发出的公式相同，10/10 全部通过 —— 只是**标签不稳定**。
+- 测试基线 292 -> 297（+5：v3.19 的旧规则已删、引用义务已写入、grounding 规则未被
+  软化、progress/liveness 未被波及，以及"每个版本只在其声明的区域偏离其基线"这条
+  结构性不变量改为逐版本参数化）。
+- 版本号顺延：`v3.19` 已被本次仅提示词的修复占用，`semantic_axioms` / schema v6 那套
+  顺延为 **v3.20**。
+
 - **新增 `semantic-v3.18`：只改提示词，删除与编译器固定模板自相矛盾的继承文字。**
   v3.16 的正式提示词里继承了 v3.15 的三处 legacy 形状说明
   （`condition_forbids_effect` / `condition_requires_effect`），其中一段还**明确
@@ -28,7 +60,7 @@
 - `code_sha256` 零漂移：8 个清单、9 个 key 全部一致；`prompts/registry.py` 与
   `semantic_prompts_v318.py` 不在任何清单的跟踪范围内。
 - HANDOFF 原先把 "v3.18/schema v6" 预留给了 `semantic_axioms` / I 空真那套更大的改造。
-  本次 v3.18 是**仅提示词**的窄修复、schema 仍为 `/4`；那套 schema-v6 工作顺延为 v3.19。
+  本次 v3.18 是**仅提示词**的窄修复、schema 仍为 `/4`；那套 schema-v6 工作顺延为 v3.20。
 
 - **`temperature: 0` 没能带来确定性，而且移动了输出分布。**追加该字段后，同一提示词
   两次运行的 `model-claim.json` **语义仍不同**（`dimensions`/`summary`、

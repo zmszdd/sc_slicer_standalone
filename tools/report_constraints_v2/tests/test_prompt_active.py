@@ -8,7 +8,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from prompts.active import resolve_prompt_set
 from prompts.definitions import PIV_DEFINITIONS, render_definitions
 from prompts.registry import EXPERIMENTAL_VERSION, RECOMMENDED_VERSION
-from prompts.versions import semantic_prompts_v316, semantic_prompts_v318
+from prompts.versions import (semantic_prompts_v316, semantic_prompts_v318,
+                              semantic_prompts_v319)
 import preview
 
 
@@ -46,7 +47,7 @@ class ActivePromptTest(unittest.TestCase):
         resolved = resolve_prompt_set(EXPERIMENTAL_VERSION)
         self.assertEqual(resolved.version, EXPERIMENTAL_VERSION)
         self.assertEqual(resolved.formal_prompt,
-                         semantic_prompts_v318.formal_prompt('ids', 'core'))
+                         semantic_prompts_v319.formal_prompt('ids', 'core'))
 
     def test_preview_prints_exact_resolved_prompt_without_model(self):
         previous = sys.argv
@@ -110,21 +111,71 @@ class LegacyPatternKindRemovalTest(unittest.TestCase):
         self.assertIn('report-formal-plan/4', prompt)
         self.assertNotIn('report-formal-plan/5', prompt)
 
-    def test_the_two_formal_prompts_differ_only_in_the_declared_regions(self):
-        legacy = resolve_prompt_set(RECOMMENDED_VERSION).formal_prompt
-        fixed = resolve_prompt_set(EXPERIMENTAL_VERSION).formal_prompt
-        self.assertNotEqual(legacy, fixed)
-        pairs = ((semantic_prompts_v318._LEGACY_POLARITY,
-                  semantic_prompts_v318._FIXED_POLARITY),
-                 (semantic_prompts_v318._LEGACY_FIELD_SPEC,
-                  semantic_prompts_v318._FIXED_FIELD_SPEC),
-                 (semantic_prompts_v318._LEGACY_AUDIT_MENTION,
-                  semantic_prompts_v318._FIXED_AUDIT_MENTION))
-        for old, new in pairs:
-            self.assertIn(old, legacy)
-            self.assertIn(new, fixed)
-            legacy = legacy.replace(old, '\x00')
-            fixed = fixed.replace(new, '\x00')
-        # Everything outside those three regions is byte-identical, so the
-        # measured effect cannot be attributed to an accidental extra edit.
-        self.assertEqual(legacy, fixed)
+    def test_each_version_differs_from_its_base_only_in_declared_regions(self):
+        # (derived module, the version it derives from, the regions it declares)
+        cases = (
+            (semantic_prompts_v318, 'semantic-v3.16',
+             ((semantic_prompts_v318._LEGACY_POLARITY,
+               semantic_prompts_v318._FIXED_POLARITY),
+              (semantic_prompts_v318._LEGACY_FIELD_SPEC,
+               semantic_prompts_v318._FIXED_FIELD_SPEC),
+              (semantic_prompts_v318._LEGACY_AUDIT_MENTION,
+               semantic_prompts_v318._FIXED_AUDIT_MENTION))),
+            (semantic_prompts_v319, 'semantic-v3.18',
+             ((semantic_prompts_v319._LEGACY_ACCESS_CONTROL_RULE,
+               semantic_prompts_v319._FIXED_ACCESS_CONTROL_RULE),)),
+        )
+        for module, base, pairs in cases:
+            with self.subTest(version=module.PROMPT_VERSION):
+                legacy = resolve_prompt_set(base).formal_prompt
+                fixed = module.formal_prompt('ids', 'core')
+                self.assertNotEqual(legacy, fixed)
+                for old, new in pairs:
+                    self.assertIn(old, legacy)
+                    self.assertIn(new, fixed)
+                    legacy = legacy.replace(old, '\x00')
+                    fixed = fixed.replace(new, '\x00')
+                # Everything outside the declared regions is byte-identical, so a
+                # measured effect cannot be attributed to an accidental extra edit.
+                self.assertEqual(legacy, fixed)
+
+
+class AccessControlImpactCitationTest(unittest.TestCase):
+    """The access-control relation must be able to cite the selected impact.
+
+    ``classified_relation_alignment`` requires every selected ``impact_id`` to be
+    cited by a symbol appearing in ``relation``; condition-only triggers explicitly
+    do not count.  The v3.16 class guidance instead said access control's ``relation``
+    *is the required authorization*, and only preconditions can source an
+    authorization predicate -- so the two rules could not both hold and the prompt
+    never stated precedence.  The measured consequence was that the only plans
+    passing validation were the ones that broke the class rule.
+    """
+
+    LEGACY_RULE = 'relation is the required\nauthorization'
+    FIXED_RULE = 'Relation must cite the selected impact on a relation symbol'
+
+    def test_base_version_still_pins_relation_to_authorization(self):
+        # Negative control: the contradiction must be visible where it started.
+        prompt = resolve_prompt_set('semantic-v3.18').formal_prompt
+        self.assertIn(self.LEGACY_RULE, prompt)
+
+    def test_experimental_version_drops_the_authorization_only_rule(self):
+        prompt = resolve_prompt_set(EXPERIMENTAL_VERSION).formal_prompt
+        self.assertNotIn(self.LEGACY_RULE, prompt)
+
+    def test_experimental_version_states_the_citation_duty(self):
+        prompt = resolve_prompt_set(EXPERIMENTAL_VERSION).formal_prompt
+        self.assertIn(self.FIXED_RULE, prompt)
+        self.assertIn("relation is the ABSENCE of the impact", prompt)
+
+    def test_experimental_version_keeps_the_grounding_rule_itself(self):
+        # The fix must not soften the rule it exists to satisfy.
+        prompt = resolve_prompt_set(EXPERIMENTAL_VERSION).formal_prompt
+        self.assertIn('Trigger/condition-only variables do', prompt)
+        self.assertIn('EVERY selected impact_id', prompt)
+
+    def test_experimental_version_leaves_progress_or_liveness_alone(self):
+        prompt = resolve_prompt_set(EXPERIMENTAL_VERSION).formal_prompt
+        self.assertIn(
+            'For progress/liveness, condition is the valid operation scenario', prompt)
