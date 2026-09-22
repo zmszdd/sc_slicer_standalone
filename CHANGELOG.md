@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **新增 `semantic-v3.18`：只改提示词，删除与编译器固定模板自相矛盾的继承文字。**
+  v3.16 的正式提示词里继承了 v3.15 的三处 legacy 形状说明
+  （`condition_forbids_effect` / `condition_requires_effect`），其中一段还**明确
+  指示**模型："若报告称某合法操作本应完成却发生 revert，就用 condition forbids
+  revert / condition requires completion"。而 `FIXED_RELATION_CLASS_PATTERN` 只允许
+  `monotonicity` / `conservation` / `relation_obligation` 三种 kind，而"本应完成却
+  revert"正是 `progress_or_liveness`，固定模板要求该类别用 `relation_obligation`。
+  **提示词自己跟自己打架**，模型只能在两者中选一个服从。
+  50 次采样的基线把两种失败分得很干净：kind 违背**只**出现在两个
+  `progress_or_liveness` 案例上（各 3/10，另 7 次发出 `condition_forbids_effect`），
+  其余三个案例 10/10 服从固定模板。
+  v3.18 删掉这三处，不改模板、不改 schema（仍是 `report-formal-plan/4`，所以
+  `lib/plan_synthesizer.py` 一行未动），只新增
+  `prompts/versions/semantic_prompts_v318.py` 与 `prompts/registry.py` 的一行注册，
+  `EXPERIMENTAL_VERSION` 由 v3.17 指向 v3.18。
+- **v3.18 对照实测（50 次调用，5 例 × 10 次，输入与命令和基线逐字节一致）**：
+  kind 合规 **36/50 -> 50/50**；两个 liveness 案例 **3/10 -> 10/10**，其
+  `fixed relation template mismatch` 由 14 次降到 **0 次**；
+  `panoptic_builder_init` 校验通过 0/10 -> 7/10（grounding 失败由 10/10 降到 3/10）；
+  `sequence_domain_fork` 仍 0/10（truth binding，与本次改动无关）；
+  **没有出现任何新的失败类别** —— 问题是被消除，不是被转移。
+- 测试基线 286 -> 292（+6：legacy 形状已清除、固定模板指令仍保留、schema 未迁移、
+  以及"两个版本只在声明的三处不同"这条结构性不变量）。
+- `code_sha256` 零漂移：8 个清单、9 个 key 全部一致；`prompts/registry.py` 与
+  `semantic_prompts_v318.py` 不在任何清单的跟踪范围内。
+- HANDOFF 原先把 "v3.18/schema v6" 预留给了 `semantic_axioms` / I 空真那套更大的改造。
+  本次 v3.18 是**仅提示词**的窄修复、schema 仍为 `/4`；那套 schema-v6 工作顺延为 v3.19。
+
 - **`temperature: 0` 没能带来确定性，而且移动了输出分布。**追加该字段后，同一提示词
   两次运行的 `model-claim.json` **语义仍不同**（`dimensions`/`summary`、
   `ambiguities`/`statements`、`intent_id`/`impact_ids`/`assumptions` 均异）。且
