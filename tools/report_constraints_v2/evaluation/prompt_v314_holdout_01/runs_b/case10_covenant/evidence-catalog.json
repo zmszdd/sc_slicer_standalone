@@ -1,0 +1,174 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "effee0c184bed3610456046b874413986841f7f1004f053a25d3fbaeff111a8f",
+  "fragments": [
+    {
+      "id": "e_effee0c184be_0001",
+      "text": "# Nested multicall resets payment flag causing DOS",
+      "start": 0,
+      "end": 50,
+      "line": 1
+    },
+    {
+      "id": "e_effee0c184be_0002",
+      "text": "## Finding Description",
+      "start": 52,
+      "end": 74,
+      "line": 3
+    },
+    {
+      "id": "e_effee0c184be_0003",
+      "text": "The Covenant core batches operations via [`Covenant.multicall()`](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/Covenant.sol#L507-L524) and enforces ETH payment correctness at the batch level. Per [`ICovenant.multicall()`](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/interfaces/ICovenant.sol#L261), “Does not check msg.value received. Instead, it uses any msgValues encoded in data and sends those onwards,” with a final pre/post balance check.",
+      "start": 75,
+      "end": 623,
+      "line": 4
+    },
+    {
+      "id": "e_effee0c184be_0004",
+      "text": "Implementation uses a global boolean [`Covenant._isMulticall`](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/Covenant.sol#L516-L518) to skip per-call payment checks inside a batch. The inner logic is:",
+      "start": 625,
+      "end": 876,
+      "line": 6
+    },
+    {
+      "id": "e_effee0c184be_0005",
+      "text": "Affected function code:",
+      "start": 878,
+      "end": 901,
+      "line": 8
+    },
+    {
+      "id": "e_effee0c184be_0006",
+      "text": "Batch execution uses delegatecall on self:",
+      "start": 903,
+      "end": 945,
+      "line": 10
+    },
+    {
+      "id": "e_effee0c184be_0007",
+      "text": "Affected function code:",
+      "start": 947,
+      "end": 970,
+      "line": 12
+    },
+    {
+      "id": "e_effee0c184be_0008",
+      "text": "https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/libraries/MultiCall.sol#L26-L32",
+      "start": 971,
+      "end": 1099,
+      "line": 13
+    },
+    {
+      "id": "e_effee0c184be_0009",
+      "text": "Since nested calls run in the same context, an inner `multicall()` toggles the shared `_isMulticall` flag to `true` and then resets it to `false` before returning to the outer loop. This breaks the intended payment bypass for the remainder of the outer batch, making subsequent operations fail their individual `msg.value == msgValue` check in `_checkPayment()`.",
+      "start": 1101,
+      "end": 1463,
+      "line": 15
+    },
+    {
+      "id": "e_effee0c184be_0010",
+      "text": "The `noDelegateCall` guard does not prevent this because it only checks that delegatecall does not change `address(this)`:",
+      "start": 1465,
+      "end": 1587,
+      "line": 17
+    },
+    {
+      "id": "e_effee0c184be_0011",
+      "text": "Affected function code:",
+      "start": 1589,
+      "end": 1612,
+      "line": 19
+    },
+    {
+      "id": "e_effee0c184be_0012",
+      "text": "https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/libraries/NoDelegateCall.sol#L12-L15",
+      "start": 1613,
+      "end": 1746,
+      "line": 20
+    },
+    {
+      "id": "e_effee0c184be_0013",
+      "text": "In our case, `Address.functionDelegateCall(address(this), ...)` keeps `address(this)` unchanged, so `noDelegateCall` does not revert.",
+      "start": 1748,
+      "end": 1881,
+      "line": 22
+    },
+    {
+      "id": "e_effee0c184be_0014",
+      "text": "Root cause:",
+      "start": 1883,
+      "end": 1894,
+      "line": 24
+    },
+    {
+      "id": "e_effee0c184be_0015",
+      "text": "- The payment-bypass is controlled by a single global flag `Covenant._isMulticall`.",
+      "start": 1895,
+      "end": 1978,
+      "line": 25
+    },
+    {
+      "id": "e_effee0c184be_0016",
+      "text": "- Nested `multicall()` calls toggle this flag back to `false` mid-batch due to shared state and delegatecall, re-enabling per-call payment checks and causing reverts.",
+      "start": 1979,
+      "end": 2145,
+      "line": 26
+    },
+    {
+      "id": "e_effee0c184be_0017",
+      "text": "Highest impact scenario:",
+      "start": 2147,
+      "end": 2171,
+      "line": 28
+    },
+    {
+      "id": "e_effee0c184be_0018",
+      "text": "- A batch that legitimately relies on multicall semantics for per-call `msgValue` forwarding is front-loaded with a nested `multicall()` (even empty). When the inner returns, `_isMulticall == false`, so the next operations hit `_checkPayment()` and revert with `Errors.E_IncorrectPayment`.",
+      "start": 2172,
+      "end": 2461,
+      "line": 29
+    },
+    {
+      "id": "e_effee0c184be_0019",
+      "text": "## Impact",
+      "start": 2463,
+      "end": 2472,
+      "line": 31
+    },
+    {
+      "id": "e_effee0c184be_0020",
+      "text": "Medium.",
+      "start": 2473,
+      "end": 2480,
+      "line": 32
+    },
+    {
+      "id": "e_effee0c184be_0021",
+      "text": "- Denial-of-service on otherwise valid batched flows, preventing governance/ops batches (e.g., `updateState()`, `mint()`, `swap()`) from executing atomically as designed.",
+      "start": 2482,
+      "end": 2652,
+      "line": 34
+    },
+    {
+      "id": "e_effee0c184be_0022",
+      "text": "- No direct asset theft, but material protocol availability impact aligns with Medium per c4 docs",
+      "start": 2653,
+      "end": 2750,
+      "line": 35
+    },
+    {
+      "id": "e_effee0c184be_0023",
+      "text": "## Likelihood",
+      "start": 2752,
+      "end": 2765,
+      "line": 37
+    },
+    {
+      "id": "e_effee0c184be_0024",
+      "text": "High.",
+      "start": 2767,
+      "end": 2772,
+      "line": 38
+    }
+  ]
+}

@@ -1,0 +1,120 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Hybra Finance_xo4hapwL2Jy",
+    "audit_uid": "xo4hapwL2Jy",
+    "requested_submission_uid": "8Mfy6xJ35eR",
+    "requested_finding_uid": "LJk286Uvei7",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Hybra_Finance_xo4hapwL2Jy/20260618_145600/findings.json",
+    "source_submission_uid": "8Mfy6xJ35eR",
+    "source_finding_uid": "LJk286Uvei7",
+    "original_report_path": "Hybra Finance_xo4hapwL2Jy\\low_valid_8Mfy6xJ35eR.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "8Mfy6xJ35eR",
+  "finding_uid": "LJk286Uvei7",
+  "finding_number": "11",
+  "title": "Maturity lock variable never initialised – withdrawals are never time-gated",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "ChainSentry",
+  "body": "> A user can deposit, earn rewards, and pull out the very next block because the contract never writes the lock timestamp it later checks.\n\n### Summary\n\nGaugeV2 was designed to enforce a cooldown (“maturity”) before liquidity can be withdrawn, protecting the protocol from mercenary farming and short-cycle reward extraction. The mechanism hinges on the `maturityTime` mapping: deposits should set `maturityTime[user] = block.timestamp + lockPeriod`, and withdrawals should revert until that time passes.\n\nThe withdrawal path does include a `require(block.timestamp >= maturityTime[msg.sender], \"!MATURE\")`, but the deposit path never sets the mapping. Solidity’s default for a mapping value is zero, so the check always passes. Any user can therefore enter and exit the gauge instantly, capturing emissions without respecting the intended lock. This undermines the tokenomics assumptions documented under “Locks & Voting Power” and “G-1/G-2 invariants,” effectively nullifying the maturity design.\n\n### Vulnerability Details\n\n```solidity\n// Mapping is declared but never written\nmapping(address => uint256) public maturityTime;\n```\n\n```solidity\n// Deposit path neglects to set maturityTime[user]\nfunction _deposit(uint256 amount, address account) internal … {\n    _balances[account] = _balances[account] + amount;\n    _totalSupply = _totalSupply + amount;\n    // no maturityTime assignment here\n}\n```\n\n```solidity\n// Withdrawal enforces a timestamp that is always zero\nfunction _withdraw(uint256 amount) internal … {\n    require(block.timestamp >= maturityTime[msg.sender], \"!MATURE\"); // always true\n    … \n}\n```\n\n\n\n### Impact\n\nRemoving the mandatory hold period turns the gauge into a yield faucet for fast-moving liquidity. Users can cycle in and out before price-impact protection or emission decay applies, siphoning a disproportionate share of HYBR rewards and undermining fee alignment. Long-term LPs are disincentivised, trading depth erodes, and bribe economics suffer because nothing forces sustained stake.\n\n### Tools Used\n\nManual Review and Foundry\n\n### Recommendation\n\nAdd an explicit timestamp update in every successful deposit:\n\n```solidity\nmaturityTime[account] = block.timestamp + LOCK_PERIOD;\n```\n\n`LOCK_PERIOD` should be an immutable or at least reasonably bounded constant to avoid governance abuse. Alternatively, if the gauge is meant to stay fluid, delete the maturity check entirely to prevent false assumptions in future audits.",
+  "proof_of_concept": "**Proof-of-concept**\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.13;\n\nimport \"forge-std/Test.sol\";\nimport \"./C4PoCTestbed.t.sol\";\nimport {GaugeV2} from \"../contracts/GaugeV2.sol\";\n\ncontract C4PoC_MaturityLock is C4PoCTestbed {\n    GaugeV2 private gauge;\n\n    function setUp() public override {\n        super.setUp();\n\n        // Deploy a fresh GaugeV2 using already-deployed fixture contracts.\n        // TOKEN = HYBR for simplicity; rewards/Distribution paths are unused in this PoC.\n        gauge = new GaugeV2(\n            address(hybr),               // rewardToken\n            address(rewardHybr),         // rHYBR\n            address(votingEscrow),       // VE\n            address(hybr),               // TOKEN to deposit/withdraw\n            address(this),               // DISTRIBUTION (unused here)\n            address(0),                  // internal_bribe (unused)\n            address(0),                  // external_bribe (unused)\n            false                        // isForPair\n        );\n    }\n\n    function test_MaturityLock_NotEnforced_AllowsImmediateWithdraw() external {\n        // Arrange\n        uint256 amount = 1e18;\n        uint256 preUser = hybr.balanceOf(address(this));\n\n        // Approve and deposit\n        hybr.approve(address(gauge), amount);\n        gauge.deposit(amount);\n\n        // Assert: maturity never initialized on deposit\n        assertEq(gauge.maturityTime(address(this)), 0, \"maturityTime should remain unset (0) after deposit\");\n\n        // Gauge received funds\n        assertEq(hybr.balanceOf(address(gauge)), amount, \"gauge should hold the deposited HYBR\");\n\n        // Act: immediate withdraw in same block must NOT revert\n        gauge.withdraw(amount);\n\n        // Assert: balances restored; no lock enforced\n        assertEq(gauge.balanceOf(address(this)), 0, \"user gauge balance should be zero after withdraw\");\n        assertEq(hybr.balanceOf(address(gauge)), 0, \"gauge should be emptied after withdraw\");\n        assertEq(hybr.balanceOf(address(this)), preUser, \"user should recover full deposit without time lock\");\n    }\n}\n\n```\n\n\n```\nRESULT:\n\nRan 1 test for test/C4PoC.t.sol:C4PoC_MaturityLock [PASS] test_MaturityLock_NotEnforced_AllowsImmediateWithdraw() (gas: 125476) Suite result: ok. 1 passed; 0 failed; 0 skipped; finished in 33.98ms (181.19µs CPU time) Ran 1 test suite in 36.46ms (33.98ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests) kassi@KASSI:~/ubuntu-home/hybra/2025-10-hybra-finance/ve33$\n```\n\n**Key insights**\n\n* `maturityTime` remains zero for every address, so the withdrawal guard never fires.\n* No constructor or owner function populates the mapping; the omission is persistent even after upgrades are impossible because the contract is not upgradeable.\n* The bug violates invariant **[V-1] Lock Bounds** stated in the documentation, allowing early exits that skew reward accounting and fee recycling.\n* Real-world exploitability is trivial: a script can loop deposit-withdraw inside the same block to strip rewards while never providing sticky liquidity.",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeV2.sol#L54",
+    "https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeV2.sol#L228-L263"
+  ],
+  "source_record": {
+    "project_id": "xo4hapwL2Jy",
+    "submission_index": "183",
+    "api_submission_id": "",
+    "uid": "8Mfy6xJ35eR",
+    "number": "183",
+    "title": "Maturity lock variable never initialised – withdrawals are never time-gated",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "ChainSentry",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeV2.sol#L54",
+      "https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeV2.sol#L228-L263"
+    ],
+    "body": "> A user can deposit, earn rewards, and pull out the very next block because the contract never writes the lock timestamp it later checks.\n\n### Summary\n\nGaugeV2 was designed to enforce a cooldown (“maturity”) before liquidity can be withdrawn, protecting the protocol from mercenary farming and short-cycle reward extraction. The mechanism hinges on the `maturityTime` mapping: deposits should set `maturityTime[user] = block.timestamp + lockPeriod`, and withdrawals should revert until that time passes.\n\nThe withdrawal path does include a `require(block.timestamp >= maturityTime[msg.sender], \"!MATURE\")`, but the deposit path never sets the mapping. Solidity’s default for a mapping value is zero, so the check always passes. Any user can therefore enter and exit the gauge instantly, capturing emissions without respecting the intended lock. This undermines the tokenomics assumptions documented under “Locks & Voting Power” and “G-1/G-2 invariants,” effectively nullifying the maturity design.\n\n### Vulnerability Details\n\n```solidity\n// Mapping is declared but never written\nmapping(address => uint256) public maturityTime;\n```\n\n```solidity\n// Deposit path neglects to set maturityTime[user]\nfunction _deposit(uint256 amount, address account) internal … {\n    _balances[account] = _balances[account] + amount;\n    _totalSupply = _totalSupply + amount;\n    // no maturityTime assignment here\n}\n```\n\n```solidity\n// Withdrawal enforces a timestamp that is always zero\nfunction _withdraw(uint256 amount) internal … {\n    require(block.timestamp >= maturityTime[msg.sender], \"!MATURE\"); // always true\n    … \n}\n```\n\n\n\n### Impact\n\nRemoving the mandatory hold period turns the gauge into a yield faucet for fast-moving liquidity. Users can cycle in and out before price-impact protection or emission decay applies, siphoning a disproportionate share of HYBR rewards and undermining fee alignment. Long-term LPs are disincentivised, trading depth erodes, and bribe economics suffer because nothing forces sustained stake.\n\n### Tools Used\n\nManual Review and Foundry\n\n### Recommendation\n\nAdd an explicit timestamp update in every successful deposit:\n\n```solidity\nmaturityTime[account] = block.timestamp + LOCK_PERIOD;\n```\n\n`LOCK_PERIOD` should be an immutable or at least reasonably bounded constant to avoid governance abuse. Alternatively, if the gauge is meant to stay fluid, delete the maturity check entirely to prevent false assumptions in future audits.",
+    "proof_of_concept": "**Proof-of-concept**\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.13;\n\nimport \"forge-std/Test.sol\";\nimport \"./C4PoCTestbed.t.sol\";\nimport {GaugeV2} from \"../contracts/GaugeV2.sol\";\n\ncontract C4PoC_MaturityLock is C4PoCTestbed {\n    GaugeV2 private gauge;\n\n    function setUp() public override {\n        super.setUp();\n\n        // Deploy a fresh GaugeV2 using already-deployed fixture contracts.\n        // TOKEN = HYBR for simplicity; rewards/Distribution paths are unused in this PoC.\n        gauge = new GaugeV2(\n            address(hybr),               // rewardToken\n            address(rewardHybr),         // rHYBR\n            address(votingEscrow),       // VE\n            address(hybr),               // TOKEN to deposit/withdraw\n            address(this),               // DISTRIBUTION (unused here)\n            address(0),                  // internal_bribe (unused)\n            address(0),                  // external_bribe (unused)\n            false                        // isForPair\n        );\n    }\n\n    function test_MaturityLock_NotEnforced_AllowsImmediateWithdraw() external {\n        // Arrange\n        uint256 amount = 1e18;\n        uint256 preUser = hybr.balanceOf(address(this));\n\n        // Approve and deposit\n        hybr.approve(address(gauge), amount);\n        gauge.deposit(amount);\n\n        // Assert: maturity never initialized on deposit\n        assertEq(gauge.maturityTime(address(this)), 0, \"maturityTime should remain unset (0) after deposit\");\n\n        // Gauge received funds\n        assertEq(hybr.balanceOf(address(gauge)), amount, \"gauge should hold the deposited HYBR\");\n\n        // Act: immediate withdraw in same block must NOT revert\n        gauge.withdraw(amount);\n\n        // Assert: balances restored; no lock enforced\n        assertEq(gauge.balanceOf(address(this)), 0, \"user gauge balance should be zero after withdraw\");\n        assertEq(hybr.balanceOf(address(gauge)), 0, \"gauge should be emptied after withdraw\");\n        assertEq(hybr.balanceOf(address(this)), preUser, \"user should recover full deposit without time lock\");\n    }\n}\n\n```\n\n\n```\nRESULT:\n\nRan 1 test for test/C4PoC.t.sol:C4PoC_MaturityLock [PASS] test_MaturityLock_NotEnforced_AllowsImmediateWithdraw() (gas: 125476) Suite result: ok. 1 passed; 0 failed; 0 skipped; finished in 33.98ms (181.19µs CPU time) Ran 1 test suite in 36.46ms (33.98ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests) kassi@KASSI:~/ubuntu-home/hybra/2025-10-hybra-finance/ve33$\n```\n\n**Key insights**\n\n* `maturityTime` remains zero for every address, so the withdrawal guard never fires.\n* No constructor or owner function populates the mapping; the omission is persistent even after upgrades are impossible because the contract is not upgradeable.\n* The bug violates invariant **[V-1] Lock Bounds** stated in the documentation, allowing early exits that skew reward accounting and fee recycling.\n* Real-world exploitability is trivial: a script can loop deposit-withdraw inside the same block to strip rewards while never providing sticky liquidity.",
+    "detail_url": "https://code4rena.com/api/v1/audits/xo4hapwL2Jy/submissions/183",
+    "raw": {
+      "auditUid": "xo4hapwL2Jy",
+      "createdAt": "2025-10-09T10:58:40.890Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "kiYdPpJoLrE",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-08T21:57:20.586Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "LJk286Uvei7"
+        },
+        {
+          "uid": "WjW2U5mu8Xr",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-10T07:36:05.675Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "8Mfy6xJ35eR",
+          "findingUid": null
+        },
+        {
+          "uid": "2HA4evDqbFh",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-10T11:33:25.460Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "LJk286Uvei7"
+        }
+      ],
+      "finding": {
+        "uid": "LJk286Uvei7",
+        "number": 11,
+        "duplicates": 23
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-10-28T17:34:13.988Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Maturity lock variable never initialised – withdrawals are never time-gated",
+      "uid": "8Mfy6xJ35eR",
+      "updatedAt": "2025-10-09T10:58:40.890Z",
+      "user": {
+        "uid": "JaYD4aSVkpj",
+        "handle": "ChainSentry"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "> A user can deposit, earn rewards, and pull out the very next block because the contract never writes the lock timestamp it later checks.\n\n### Summary\n\nGaugeV2 was designed to enforce a cooldown (“maturity”) before liquidity can be withdrawn, protecting the protocol from mercenary farming and short-cycle reward extraction. The mechanism hinges on the `maturityTime` mapping: deposits should set `maturityTime[user] = block.timestamp + lockPeriod`, and withdrawals should revert until that time passes.\n\nThe withdrawal path does include a `require(block.timestamp >= maturityTime[msg.sender], \"!MATURE\")`, but the deposit path never sets the mapping. Solidity’s default for a mapping value is zero, so the check always passes. Any user can therefore enter and exit the gauge instantly, capturing emissions without respecting the intended lock. This undermines the tokenomics assumptions documented under “Locks & Voting Power” and “G-1/G-2 invariants,” effectively nullifying the maturity design.\n\n### Vulnerability Details\n\n```solidity\n// Mapping is declared but never written\nmapping(address => uint256) public maturityTime;\n```\n\n```solidity\n// Deposit path neglects to set maturityTime[user]\nfunction _deposit(uint256 amount, address account) internal … {\n    _balances[account] = _balances[account] + amount;\n    _totalSupply = _totalSupply + amount;\n    // no maturityTime assignment here\n}\n```\n\n```solidity\n// Withdrawal enforces a timestamp that is always zero\nfunction _withdraw(uint256 amount) internal … {\n    require(block.timestamp >= maturityTime[msg.sender], \"!MATURE\"); // always true\n    … \n}\n```\n\n\n\n### Impact\n\nRemoving the mandatory hold period turns the gauge into a yield faucet for fast-moving liquidity. Users can cycle in and out before price-impact protection or emission decay applies, siphoning a disproportionate share of HYBR rewards and undermining fee alignment. Long-term LPs are disincentivised, trading depth erodes, and bribe economics suffer because nothing forces sustained stake.\n\n### Tools Used\n\nManual Review and Foundry\n\n### Recommendation\n\nAdd an explicit timestamp update in every successful deposit:\n\n```solidity\nmaturityTime[account] = block.timestamp + LOCK_PERIOD;\n```\n\n`LOCK_PERIOD` should be an immutable or at least reasonably bounded constant to avoid governance abuse. Alternatively, if the gauge is meant to stay fluid, delete the maturity check entirely to prevent false assumptions in future audits.",
+      "proofOfConcept": "**Proof-of-concept**\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.13;\n\nimport \"forge-std/Test.sol\";\nimport \"./C4PoCTestbed.t.sol\";\nimport {GaugeV2} from \"../contracts/GaugeV2.sol\";\n\ncontract C4PoC_MaturityLock is C4PoCTestbed {\n    GaugeV2 private gauge;\n\n    function setUp() public override {\n        super.setUp();\n\n        // Deploy a fresh GaugeV2 using already-deployed fixture contracts.\n        // TOKEN = HYBR for simplicity; rewards/Distribution paths are unused in this PoC.\n        gauge = new GaugeV2(\n            address(hybr),               // rewardToken\n            address(rewardHybr),         // rHYBR\n            address(votingEscrow),       // VE\n            address(hybr),               // TOKEN to deposit/withdraw\n            address(this),               // DISTRIBUTION (unused here)\n            address(0),                  // internal_bribe (unused)\n            address(0),                  // external_bribe (unused)\n            false                        // isForPair\n        );\n    }\n\n    function test_MaturityLock_NotEnforced_AllowsImmediateWithdraw() external {\n        // Arrange\n        uint256 amount = 1e18;\n        uint256 preUser = hybr.balanceOf(address(this));\n\n        // Approve and deposit\n        hybr.approve(address(gauge), amount);\n        gauge.deposit(amount);\n\n        // Assert: maturity never initialized on deposit\n        assertEq(gauge.maturityTime(address(this)), 0, \"maturityTime should remain unset (0) after deposit\");\n\n        // Gauge received funds\n        assertEq(hybr.balanceOf(address(gauge)), amount, \"gauge should hold the deposited HYBR\");\n\n        // Act: immediate withdraw in same block must NOT revert\n        gauge.withdraw(amount);\n\n        // Assert: balances restored; no lock enforced\n        assertEq(gauge.balanceOf(address(this)), 0, \"user gauge balance should be zero after withdraw\");\n        assertEq(hybr.balanceOf(address(gauge)), 0, \"gauge should be emptied after withdraw\");\n        assertEq(hybr.balanceOf(address(this)), preUser, \"user should recover full deposit without time lock\");\n    }\n}\n\n```\n\n\n```\nRESULT:\n\nRan 1 test for test/C4PoC.t.sol:C4PoC_MaturityLock [PASS] test_MaturityLock_NotEnforced_AllowsImmediateWithdraw() (gas: 125476) Suite result: ok. 1 passed; 0 failed; 0 skipped; finished in 33.98ms (181.19µs CPU time) Ran 1 test suite in 36.46ms (33.98ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests) kassi@KASSI:~/ubuntu-home/hybra/2025-10-hybra-finance/ve33$\n```\n\n**Key insights**\n\n* `maturityTime` remains zero for every address, so the withdrawal guard never fires.\n* No constructor or owner function populates the mapping; the omission is persistent even after upgrades are impossible because the contract is not upgradeable.\n* The bug violates invariant **[V-1] Lock Bounds** stated in the documentation, allowing early exits that skew reward accounting and fee recycling.\n* Real-world exploitability is trivial: a script can loop deposit-withdraw inside the same block to strip rewards while never providing sticky liquidity.",
+      "linesOfCode": "https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeV2.sol#L54,https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeV2.sol#L228-L263",
+      "number": 183,
+      "aiExplanation": null,
+      "_index": 183
+    }
+  }
+}

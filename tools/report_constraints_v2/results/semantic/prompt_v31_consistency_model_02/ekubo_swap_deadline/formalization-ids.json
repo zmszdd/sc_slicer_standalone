@@ -1,0 +1,234 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "swap_has_deadline": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the submitted Router swap carries a user-specified deadline/expiration",
+      "checkpoint": "submission",
+      "evidence_ids": [
+        "e_21ff4205f52c_0003",
+        "e_21ff4205f52c_0004"
+      ],
+      "entity_ids": [
+        "router",
+        "user"
+      ]
+    },
+    "can_remain_pending": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the transaction can stay pending in the mempool past its intended window",
+      "checkpoint": "mempool pending",
+      "evidence_ids": [
+        "e_21ff4205f52c_0004"
+      ],
+      "entity_ids": [
+        "user",
+        "validator"
+      ]
+    },
+    "block_timestamp": {
+      "sort": "int",
+      "unit": "seconds",
+      "meaning": "timestamp of the block that includes the swap transaction",
+      "checkpoint": "execution",
+      "evidence_ids": [
+        "e_21ff4205f52c_0002",
+        "e_21ff4205f52c_0004"
+      ],
+      "entity_ids": [
+        "router",
+        "validator"
+      ]
+    },
+    "deadline": {
+      "sort": "int",
+      "unit": "seconds",
+      "meaning": "user-specified deadline/expiration timestamp for the swap",
+      "checkpoint": "submission",
+      "evidence_ids": [
+        "e_21ff4205f52c_0002",
+        "e_21ff4205f52c_0003"
+      ],
+      "entity_ids": [
+        "router",
+        "user"
+      ]
+    },
+    "swap_executed": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the pending Router swap transaction settles on-chain",
+      "checkpoint": "after execution",
+      "evidence_ids": [
+        "e_21ff4205f52c_0004"
+      ],
+      "entity_ids": [
+        "router",
+        "validator"
+      ]
+    },
+    "user_loss": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the user incurs unexpected loss on the settled swap",
+      "checkpoint": "after execution",
+      "evidence_ids": [
+        "e_21ff4205f52c_0004"
+      ],
+      "entity_ids": [
+        "user",
+        "router"
+      ]
+    }
+  },
+  "claims": [
+    {
+      "id": "swap_deadline_missing_loss",
+      "scope": "core",
+      "modality": "potential",
+      "impact_ids": [
+        "price_moved_loss"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "A user submits a Router swap with no deadline parameter; the transaction can remain pending in the mempool indefinitely.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "swap_has_deadline"
+                  },
+                  {
+                    "const": false
+                  }
+                ]
+              },
+              {
+                "var": "can_remain_pending"
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_21ff4205f52c_0003",
+            "e_21ff4205f52c_0004"
+          ],
+          "derivation": "Conjunction of the no-deadline submission state and the possible indefinite pending state.",
+          "source_ids": [
+            "user_submits_swap",
+            "tx_pending"
+          ]
+        },
+        "safety": {
+          "text": "Once the user-specified deadline has passed, the Router swap must not settle.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "block_timestamp"
+                  },
+                  {
+                    "var": "deadline"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "swap_executed"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_21ff4205f52c_0002",
+            "e_21ff4205f52c_0003"
+          ],
+          "derivation": "Execution timestamp strictly past the deadline implies non-execution (rejection).",
+          "source_ids": [
+            "intent_deadline"
+          ]
+        },
+        "effects": {
+          "text": "The user incurs unexpected loss on the settled swap.",
+          "expression": {
+            "var": "user_loss"
+          },
+          "evidence_ids": [
+            "e_21ff4205f52c_0004"
+          ],
+          "derivation": "Direct impact predicate as asserted by the impact source.",
+          "source_ids": [
+            "price_moved_loss"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "user_submits_swap",
+            "tx_pending"
+          ],
+          "args.0": [
+            "user_submits_swap"
+          ],
+          "args.1": [
+            "tx_pending"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_deadline"
+          ],
+          "args.0": [
+            "intent_deadline"
+          ],
+          "args.1": [
+            "intent_deadline"
+          ]
+        },
+        "effects": {
+          "": [
+            "price_moved_loss"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "price_moved_loss",
+          "status": "partial",
+          "reason": "loss formalized as boolean user_loss; magnitude of price move and loss not quantified"
+        }
+      ],
+      "assumptions": [
+        "Transaction expiration is a standard security practice in AMMs such as Uniswap.",
+        "The swap can remain pending due to a gas spike or a validator withholding the transaction.",
+        "Any user-specified deadline shares the seconds unit of block timestamps.",
+        "The inclusion block timestamp is observable at execution."
+      ],
+      "unresolved": [
+        "Report does not state whether any Router function variant accepts a deadline parameter.",
+        "No magnitude of price movement or quantified user loss is provided.",
+        "No specific deployed Router contract or code version is identified.",
+        "V does not assert that the swap executed after the deadline, so it does not formally witness NOT I."
+      ]
+    }
+  ],
+  "limitations": [
+    "Root-cause statement no_deadline_check and action late_execution are excluded from P/I/V source roles.",
+    "Impact is phrased as a possible downstream consequence, not a confirmed incident.",
+    "No aggregate or population-wide economic loss is formalized.",
+    "P states the swap carries no deadline, so the deadline symbol binds only to the intent source, not to P; this mismatch is unresolved.",
+    "V (user_loss) is a partial witness of NOT I; the settlement and timestamp-comparison conjuncts are unstated.",
+    "No multiplication, division, temporal or bitwise claims are made."
+  ]
+}

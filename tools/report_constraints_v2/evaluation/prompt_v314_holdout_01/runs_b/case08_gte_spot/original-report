@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Spot CLOB and Router_qa8y3zjgyCn",
+    "audit_uid": "qa8y3zjgyCn",
+    "requested_submission_uid": "jKkoqmMR9M6",
+    "requested_finding_uid": "vcmNqStwjRg",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Spot_CLOB_and_Router_qa8y3zjgyCn/20260618_143057/findings.json",
+    "source_submission_uid": "jKkoqmMR9M6",
+    "source_finding_uid": "vcmNqStwjRg",
+    "original_report_path": "GTE Spot CLOB and Router_qa8y3zjgyCn\\high_valid_jKkoqmMR9M6.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "jKkoqmMR9M6",
+  "finding_uid": "vcmNqStwjRg",
+  "finding_number": "18",
+  "title": "prevOrderId Not Persisted in _updateLimitPostOrder, Breaking FIFO Order Linking, effectively making Head Order unfillable",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "lodelux",
+  "body": "## Description\n```solidity\n    function _updateLimitPostOrder(Book storage self, Limit storage limit, Order memory order) private {\n        limit.numOrders++;\n\n\n        if (limit.headOrder.isNull()) {\n            limit.headOrder = order.id;\n            limit.tailOrder = order.id;\n        } else {\n            Order storage tailOrder = self.orders[limit.tailOrder];\n            tailOrder.nextOrderId = order.id;\n            order.prevOrderId = tailOrder.id;\n            limit.tailOrder = order.id;\n        }\n```\nIn `BookLib::_updateLimitPostOrder`, when appending a new order to an existing limit, the code correctly updates the previous tail’s `nextOrderId` and sets `order.prevOrderId = tailOrder.id` on the in-memory Order struct but ir  never writes that updated `order` back into storage. Because order lives only in memory at that point, its prevOrderId is never persisted. As a result, every newly added order ends up with a zero prevOrderId , breaking the doubly-linked list succession.\n\n## Impact\nWith this bug, a limit list is correctly linked in the `next` direction but completely broken in the `prev` one. When a middle order of this list is removed (canceled/amended/filled) the code that modifies the list is `_updateLimitRemoveOrder` which does:\n```solidity\n        OrderId prev = order.prevOrderId;\n        OrderId next = order.nextOrderId;\n\n\n        if (!prev.isNull()) self.orders[prev].nextOrderId = next;\n        else limit.headOrder = next;\n\n\n        if (!next.isNull()) self.orders[next].prevOrderId = prev;\n        else limit.tailOrder = prev;\n```\n\nwith the broken prev reference, we enter the first else branch meaning that the headOrder is overwritten with `order.next`. An example scenario (also given in the PoC) is:\n\n- order3 (tail) <-> order2 <-> order1 (head)\n\n- remove(order2)\n\n- order3 (tail) (head)   | we completely lose track of order1, which becomes unfillable.",
+  "proof_of_concept": "paste this code in `PoC.t.sol` and run it with `forge test --match-test submissionValidity -vv`\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PoCTestBase} from \"./PoCTestBase.t.sol\";\n\nimport {Side, Order} from \"contracts/clob/types/Order.sol\";\nimport {Limit} from \"contracts/clob/types/Book.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\n\n\ncontract PoC is PoCTestBase {\n    function test_submissionValidity() external {\n        address user = users[0];\n        setupTokens(Side.BUY, user, 10 ether, 1 ether, true);\n\n        ICLOB.PostLimitOrderArgs memory args = ICLOB.PostLimitOrderArgs({\n            amountInBase: 1 ether,\n            clientOrderId: 0,\n            price: 1 ether,\n            cancelTimestamp: 0,\n            side: Side.BUY,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        });\n\n        vm.startPrank(user);\n        //  order1 (head) (tail)\n        uint256 orderId1 = clob.postLimitOrder(user, args).orderId;\n        //  order2 (tail) <-> order1 (head)\n        uint256 orderId2 = clob.postLimitOrder(user, args).orderId;\n        // order3 (tail) <-> order2 <-> order1 (head)\n        uint256 orderId3 = clob.postLimitOrder(user, args).orderId;\n\n        Order memory order1 = clob.getOrder(orderId1);\n        Order memory order2 = clob.getOrder(orderId2);\n        Order memory order3 = clob.getOrder(orderId3);\n\n        assertEq(order2.prevOrderId.unwrap(), 0); // order2 doesn't have the pointer to order1!!!\n        assertEq(order3.prevOrderId.unwrap(), 0); // order3 doesn't have the pointer to order3!!!\n\n        uint256[] memory orderIds = new uint256[](1);\n        orderIds[0] = orderId2;\n        ICLOB.CancelArgs memory argsCancel = ICLOB.CancelArgs({orderIds: orderIds});\n        clob.cancel(user, argsCancel);\n\n        // after we cancel order2, the headOrder should still be order1 however it becomes order3\n        Limit memory limit = clob.getLimit(1 ether, Side.BUY);\n        assertEq(limit.headOrder.unwrap(), orderId3);\n\n        // since order3 is now both head and tail, if we remove order3 too the limit becomes empty,\n        // effectively making the original headOrder (order1) impossible to match\n\n        orderIds[0] = orderId3;\n        argsCancel = ICLOB.CancelArgs({orderIds: orderIds});\n        clob.cancel(user, argsCancel);\n        limit = clob.getLimit(1 ether, Side.BUY);\n        assertEq(limit.headOrder.unwrap(), 0);\n        assertEq(limit.tailOrder.unwrap(), 0);\n    }\n}\n\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/types/Book.sol#L272-L283"
+  ],
+  "source_record": {
+    "project_id": "qa8y3zjgyCn",
+    "submission_index": "818",
+    "api_submission_id": "",
+    "uid": "jKkoqmMR9M6",
+    "number": "818",
+    "title": "prevOrderId Not Persisted in _updateLimitPostOrder, Breaking FIFO Order Linking, effectively making Head Order unfillable",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "lodelux",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/types/Book.sol#L272-L283"
+    ],
+    "body": "## Description\n```solidity\n    function _updateLimitPostOrder(Book storage self, Limit storage limit, Order memory order) private {\n        limit.numOrders++;\n\n\n        if (limit.headOrder.isNull()) {\n            limit.headOrder = order.id;\n            limit.tailOrder = order.id;\n        } else {\n            Order storage tailOrder = self.orders[limit.tailOrder];\n            tailOrder.nextOrderId = order.id;\n            order.prevOrderId = tailOrder.id;\n            limit.tailOrder = order.id;\n        }\n```\nIn `BookLib::_updateLimitPostOrder`, when appending a new order to an existing limit, the code correctly updates the previous tail’s `nextOrderId` and sets `order.prevOrderId = tailOrder.id` on the in-memory Order struct but ir  never writes that updated `order` back into storage. Because order lives only in memory at that point, its prevOrderId is never persisted. As a result, every newly added order ends up with a zero prevOrderId , breaking the doubly-linked list succession.\n\n## Impact\nWith this bug, a limit list is correctly linked in the `next` direction but completely broken in the `prev` one. When a middle order of this list is removed (canceled/amended/filled) the code that modifies the list is `_updateLimitRemoveOrder` which does:\n```solidity\n        OrderId prev = order.prevOrderId;\n        OrderId next = order.nextOrderId;\n\n\n        if (!prev.isNull()) self.orders[prev].nextOrderId = next;\n        else limit.headOrder = next;\n\n\n        if (!next.isNull()) self.orders[next].prevOrderId = prev;\n        else limit.tailOrder = prev;\n```\n\nwith the broken prev reference, we enter the first else branch meaning that the headOrder is overwritten with `order.next`. An example scenario (also given in the PoC) is:\n\n- order3 (tail) <-> order2 <-> order1 (head)\n\n- remove(order2)\n\n- order3 (tail) (head)   | we completely lose track of order1, which becomes unfillable.",
+    "proof_of_concept": "paste this code in `PoC.t.sol` and run it with `forge test --match-test submissionValidity -vv`\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PoCTestBase} from \"./PoCTestBase.t.sol\";\n\nimport {Side, Order} from \"contracts/clob/types/Order.sol\";\nimport {Limit} from \"contracts/clob/types/Book.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\n\n\ncontract PoC is PoCTestBase {\n    function test_submissionValidity() external {\n        address user = users[0];\n        setupTokens(Side.BUY, user, 10 ether, 1 ether, true);\n\n        ICLOB.PostLimitOrderArgs memory args = ICLOB.PostLimitOrderArgs({\n            amountInBase: 1 ether,\n            clientOrderId: 0,\n            price: 1 ether,\n            cancelTimestamp: 0,\n            side: Side.BUY,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        });\n\n        vm.startPrank(user);\n        //  order1 (head) (tail)\n        uint256 orderId1 = clob.postLimitOrder(user, args).orderId;\n        //  order2 (tail) <-> order1 (head)\n        uint256 orderId2 = clob.postLimitOrder(user, args).orderId;\n        // order3 (tail) <-> order2 <-> order1 (head)\n        uint256 orderId3 = clob.postLimitOrder(user, args).orderId;\n\n        Order memory order1 = clob.getOrder(orderId1);\n        Order memory order2 = clob.getOrder(orderId2);\n        Order memory order3 = clob.getOrder(orderId3);\n\n        assertEq(order2.prevOrderId.unwrap(), 0); // order2 doesn't have the pointer to order1!!!\n        assertEq(order3.prevOrderId.unwrap(), 0); // order3 doesn't have the pointer to order3!!!\n\n        uint256[] memory orderIds = new uint256[](1);\n        orderIds[0] = orderId2;\n        ICLOB.CancelArgs memory argsCancel = ICLOB.CancelArgs({orderIds: orderIds});\n        clob.cancel(user, argsCancel);\n\n        // after we cancel order2, the headOrder should still be order1 however it becomes order3\n        Limit memory limit = clob.getLimit(1 ether, Side.BUY);\n        assertEq(limit.headOrder.unwrap(), orderId3);\n\n        // since order3 is now both head and tail, if we remove order3 too the limit becomes empty,\n        // effectively making the original headOrder (order1) impossible to match\n\n        orderIds[0] = orderId3;\n        argsCancel = ICLOB.CancelArgs({orderIds: orderIds});\n        clob.cancel(user, argsCancel);\n        limit = clob.getLimit(1 ether, Side.BUY);\n        assertEq(limit.headOrder.unwrap(), 0);\n        assertEq(limit.tailOrder.unwrap(), 0);\n    }\n}\n\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/qa8y3zjgyCn/submissions/818",
+    "raw": {
+      "auditUid": "qa8y3zjgyCn",
+      "createdAt": "2025-08-06T16:57:17.195Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "RGbvMoGECiK",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-31T17:15:09.008Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "vcmNqStwjRg"
+        },
+        {
+          "uid": "6pR7dUuHAZS",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-31T17:15:11.149Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "vcmNqStwjRg"
+        },
+        {
+          "uid": "esQLWTWzppN",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-08-07T14:59:09.685Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "vcmNqStwjRg"
+        },
+        {
+          "uid": "jC6QhTHwqdz",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-08-11T10:51:49.622Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "jKkoqmMR9M6",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "vcmNqStwjRg",
+        "number": 18,
+        "duplicates": 35
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-08-25T10:58:10.884Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "prevOrderId Not Persisted in _updateLimitPostOrder, Breaking FIFO Order Linking, effectively making Head Order unfillable",
+      "uid": "jKkoqmMR9M6",
+      "updatedAt": "2025-08-06T16:58:09.527Z",
+      "user": {
+        "uid": "88orq2iniWL",
+        "handle": "lodelux"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Description\n```solidity\n    function _updateLimitPostOrder(Book storage self, Limit storage limit, Order memory order) private {\n        limit.numOrders++;\n\n\n        if (limit.headOrder.isNull()) {\n            limit.headOrder = order.id;\n            limit.tailOrder = order.id;\n        } else {\n            Order storage tailOrder = self.orders[limit.tailOrder];\n            tailOrder.nextOrderId = order.id;\n            order.prevOrderId = tailOrder.id;\n            limit.tailOrder = order.id;\n        }\n```\nIn `BookLib::_updateLimitPostOrder`, when appending a new order to an existing limit, the code correctly updates the previous tail’s `nextOrderId` and sets `order.prevOrderId = tailOrder.id` on the in-memory Order struct but ir  never writes that updated `order` back into storage. Because order lives only in memory at that point, its prevOrderId is never persisted. As a result, every newly added order ends up with a zero prevOrderId , breaking the doubly-linked list succession.\n\n## Impact\nWith this bug, a limit list is correctly linked in the `next` direction but completely broken in the `prev` one. When a middle order of this list is removed (canceled/amended/filled) the code that modifies the list is `_updateLimitRemoveOrder` which does:\n```solidity\n        OrderId prev = order.prevOrderId;\n        OrderId next = order.nextOrderId;\n\n\n        if (!prev.isNull()) self.orders[prev].nextOrderId = next;\n        else limit.headOrder = next;\n\n\n        if (!next.isNull()) self.orders[next].prevOrderId = prev;\n        else limit.tailOrder = prev;\n```\n\nwith the broken prev reference, we enter the first else branch meaning that the headOrder is overwritten with `order.next`. An example scenario (also given in the PoC) is:\n\n- order3 (tail) <-> order2 <-> order1 (head)\n\n- remove(order2)\n\n- order3 (tail) (head)   | we completely lose track of order1, which becomes unfillable.",
+      "proofOfConcept": "paste this code in `PoC.t.sol` and run it with `forge test --match-test submissionValidity -vv`\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PoCTestBase} from \"./PoCTestBase.t.sol\";\n\nimport {Side, Order} from \"contracts/clob/types/Order.sol\";\nimport {Limit} from \"contracts/clob/types/Book.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\n\n\ncontract PoC is PoCTestBase {\n    function test_submissionValidity() external {\n        address user = users[0];\n        setupTokens(Side.BUY, user, 10 ether, 1 ether, true);\n\n        ICLOB.PostLimitOrderArgs memory args = ICLOB.PostLimitOrderArgs({\n            amountInBase: 1 ether,\n            clientOrderId: 0,\n            price: 1 ether,\n            cancelTimestamp: 0,\n            side: Side.BUY,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        });\n\n        vm.startPrank(user);\n        //  order1 (head) (tail)\n        uint256 orderId1 = clob.postLimitOrder(user, args).orderId;\n        //  order2 (tail) <-> order1 (head)\n        uint256 orderId2 = clob.postLimitOrder(user, args).orderId;\n        // order3 (tail) <-> order2 <-> order1 (head)\n        uint256 orderId3 = clob.postLimitOrder(user, args).orderId;\n\n        Order memory order1 = clob.getOrder(orderId1);\n        Order memory order2 = clob.getOrder(orderId2);\n        Order memory order3 = clob.getOrder(orderId3);\n\n        assertEq(order2.prevOrderId.unwrap(), 0); // order2 doesn't have the pointer to order1!!!\n        assertEq(order3.prevOrderId.unwrap(), 0); // order3 doesn't have the pointer to order3!!!\n\n        uint256[] memory orderIds = new uint256[](1);\n        orderIds[0] = orderId2;\n        ICLOB.CancelArgs memory argsCancel = ICLOB.CancelArgs({orderIds: orderIds});\n        clob.cancel(user, argsCancel);\n\n        // after we cancel order2, the headOrder should still be order1 however it becomes order3\n        Limit memory limit = clob.getLimit(1 ether, Side.BUY);\n        assertEq(limit.headOrder.unwrap(), orderId3);\n\n        // since order3 is now both head and tail, if we remove order3 too the limit becomes empty,\n        // effectively making the original headOrder (order1) impossible to match\n\n        orderIds[0] = orderId3;\n        argsCancel = ICLOB.CancelArgs({orderIds: orderIds});\n        clob.cancel(user, argsCancel);\n        limit = clob.getLimit(1 ether, Side.BUY);\n        assertEq(limit.headOrder.unwrap(), 0);\n        assertEq(limit.tailOrder.unwrap(), 0);\n    }\n}\n\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/types/Book.sol#L272-L283",
+      "number": 818,
+      "aiExplanation": null,
+      "_index": 818
+    }
+  }
+}

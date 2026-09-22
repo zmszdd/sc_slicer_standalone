@@ -1,0 +1,107 @@
+{
+  "schema_version": "stage2-piv-gold/1",
+  "status": "assistant_draft_pending_human_review",
+  "cases": [
+    {
+      "id": "panoptic_builder_init",
+      "scope": "BuilderWallet initialization and builderAdmin protection",
+      "P": [
+        "The wallet already has a configured builderAdmin.",
+        "An arbitrary caller invokes init and is not authorized to replace that administrator."
+      ],
+      "I": "Once builderAdmin is configured, an unauthorized init call must not change it.",
+      "V": "An arbitrary unauthorized caller invokes init and successfully overwrites builderAdmin.",
+      "logical_skeleton": "already_initialized AND unauthorized_init -> builder_admin_after == builder_admin_before",
+      "modality": "asserted",
+      "evidence": {
+        "P": ["anyone can call it and overwrite the `builderAdmin` address"],
+        "I": ["`builderAdmin` address, which is used to guard `sweep` from being called by anyone"],
+        "V": ["anyone can call it and overwrite the `builderAdmin` address"]
+      },
+      "expected_unresolved": [],
+      "excluded_secondary_effects": ["Subsequent sweep of accumulated builder fees"]
+    },
+    {
+      "id": "sequence_domain_fork",
+      "scope": "EIP-712 signature validation after a chain-ID change",
+      "P": [
+        "The current chain ID differs from the deployment chain ID embedded in the cached domain separator.",
+        "A signature is generated for the new/current chain and submitted to an affected intent flow."
+      ],
+      "I": "Signature validation on the current chain must use an EIP-712 domain separator bound to the current chain ID.",
+      "V": "The contract uses the cached old-chain domain, so a valid new-chain signature is rejected and the intent flow is blocked.",
+      "logical_skeleton": "chain_id_changed AND valid_current_chain_signature -> signature_validation_succeeds",
+      "modality": "asserted",
+      "evidence": {
+        "P": ["If the chain later forks or the chain ID changes"],
+        "I": ["the contract will continue validating signatures against an incorrect chain ID"],
+        "V": ["Any signature generated on the new chain will not match the original domain separator"]
+      },
+      "expected_unresolved": [],
+      "excluded_secondary_effects": ["Permanent denial of service across all affected signature-based flows"]
+    },
+    {
+      "id": "intuition_pause_escrow",
+      "scope": "Inherited VotingEscrow state changes while TrustBonding is paused",
+      "P": [
+        "The TrustBonding emergency pause flag is set.",
+        "A caller invokes create_lock, increase_amount, increase_unlock_time, or withdraw."
+      ],
+      "I": "While paused, the listed core escrow state-changing entry points must not complete state changes.",
+      "V": "One of the listed inherited entry points completes a core escrow state change while paused.",
+      "logical_skeleton": "paused -> NOT core_escrow_state_change_completed",
+      "modality": "asserted",
+      "evidence": {
+        "P": ["while the contract is paused"],
+        "I": ["the protocol cannot actually freeze lock creation, lock modification, or withdrawals"],
+        "V": ["core escrow state transitions remain live while the contract is paused"]
+      },
+      "expected_unresolved": [],
+      "excluded_secondary_effects": ["Reward-relevant state continues changing during incident response"]
+    },
+    {
+      "id": "olas_permissionless_sweep",
+      "scope": "BuyBackBurner inventory sweep before keeper buyback",
+      "P": [
+        "The burner holds non-OLAS second-token inventory required by buyBack.",
+        "An unauthorized caller invokes transfer before the keeper buyback."
+      ],
+      "I": "Sweeping the entire buyback inventory must require an authorized caller.",
+      "V": "An unauthorized caller successfully sweeps all second-token inventory, leaving zero balance and causing the keeper buyback to revert.",
+      "logical_skeleton": "inventory_sweep_completed -> caller_authorized",
+      "modality": "asserted",
+      "evidence": {
+        "P": ["an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback"],
+        "I": ["No access control on a privileged “sweep” function."],
+        "V": ["causing the keeper tx to revert with `ZeroValue()`"]
+      },
+      "expected_unresolved": [
+        {
+          "category": "ambiguous_actor",
+          "description": "The report says the sweep is privileged but does not name the intended authorized role.",
+          "blocks_formalization": false
+        }
+      ],
+      "excluded_secondary_effects": ["Keeper gas waste", "Potential disruption of inventory-to-OLAS cadence"]
+    },
+    {
+      "id": "gte_fok_dust",
+      "scope": "FOK fill with lot-size rounding dust",
+      "P": [
+        "The order type is fill-or-kill.",
+        "The positive remaining amount is only lot-size rounding dust and is smaller than the lot size."
+      ],
+      "I": "Under the dust condition, the FOK order must not revert with FOKOrderNotFilled solely because a positive amount remains.",
+      "V": "The implementation emits the specific FOKOrderNotFilled revert for a FOK order whose only remainder is positive dust below the lot size.",
+      "logical_skeleton": "is_fok AND 0 < remaining_amount < lot_size -> NOT fok_unfilled_revert",
+      "modality": "asserted",
+      "evidence": {
+        "P": ["only the amount rounded off due to lot size constraints is left unfilled"],
+        "I": ["FOK orders should not revert if only the amount rounded off due to lot size constraints is left unfilled"],
+        "V": ["the current implementation reverts on any unfilled amount regardless of whether it's just dust from lot size rounding"]
+      },
+      "expected_unresolved": [],
+      "excluded_secondary_effects": ["Reduced protocol availability"]
+    }
+  ]
+}

@@ -1,0 +1,231 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "cancelDepositRequest removal from activeDepositRequesters and unregisterVault safety check",
+    "environment": "deposit request management and vault unregistration in a DeFi protocol",
+    "evidence": [
+      "The vulnerability lies within the logic used to manage the `activeDepositRequesters` EnumerableSet. Specifically, the `cancelDepositRequest` function unconditionally removes the user from this set when a pending request is cleared.",
+      "This removal logic fails to account for the state where a user may still have a **claimable deposit liability** (funds that were processed by the Investment Manager but not yet claimed by the user's final `deposit()` call).",
+      "1.  **Initial State:** A user has `claimableDepositAssets > 0` (Liability 1). `activeDepositRequesters` correctly includes the user.",
+      "2.  **Action:** The user initiates and then cancels a **second** pending request (Liability 2).",
+      "The corrupted state directly compromises the `unregisterVault` safety mechanism. This function relies on an accurate `metrics.activeDepositRequestersCount == 0` check to guarantee that no user liabilities remain before the vault is removed from the system.",
+      "2.  **Unsafe State:** The Owner successfully calls `unregisterVault`, deregistering the vault while the user's 1000 tokens/shares are still owed (tracked only internally in `claimableDepositAssets`)."
+    ]
+  },
+  "entities": [
+    {
+      "id": "user",
+      "name": "user",
+      "role": "victim",
+      "evidence": [
+        "1.  **Initial State:** A user has `claimableDepositAssets > 0` (Liability 1). `activeDepositRequesters` correctly includes the user.",
+        "2.  **Action:** The user initiates and then cancels a **second** pending request (Liability 2).",
+        "2.  **Unsafe State:** The Owner successfully calls `unregisterVault`, deregistering the vault while the user's 1000 tokens/shares are still owed (tracked only internally in `claimableDepositAssets`)."
+      ]
+    },
+    {
+      "id": "vault",
+      "name": "vault",
+      "role": "contract",
+      "evidence": [
+        "The corrupted state directly compromises the `unregisterVault` safety mechanism. This function relies on an accurate `metrics.activeDepositRequestersCount == 0` check to guarantee that no user liabilities remain before the vault is removed from the system.",
+        "2.  **Unsafe State:** The Owner successfully calls `unregisterVault`, deregistering the vault while the user's 1000 tokens/shares are still owed (tracked only internally in `claimableDepositAssets`)."
+      ]
+    },
+    {
+      "id": "owner",
+      "name": "Owner",
+      "role": "authority",
+      "evidence": [
+        "2.  **Unsafe State:** The Owner successfully calls `unregisterVault`, deregistering the vault while the user's 1000 tokens/shares are still owed (tracked only internally in `claimableDepositAssets`)."
+      ]
+    },
+    {
+      "id": "activedepositrequesters",
+      "name": "activeDepositRequesters set",
+      "role": "asset",
+      "evidence": [
+        "The vulnerability lies within the logic used to manage the `activeDepositRequesters` EnumerableSet. Specifically, the `cancelDepositRequest` function unconditionally removes the user from this set when a pending request is cleared.",
+        "1.  **Initial State:** A user has `claimableDepositAssets > 0` (Liability 1). `activeDepositRequesters` correctly includes the user.",
+        "3.  **Error (The Bug):** The `cancelDepositRequest` function resolves Liability 2 and **prematurely removes the user** from `activeDepositRequesters`."
+      ]
+    },
+    {
+      "id": "claimabledepositassets",
+      "name": "claimableDepositAssets liability",
+      "role": "asset",
+      "evidence": [
+        "This removal logic fails to account for the state where a user may still have a **claimable deposit liability** (funds that were processed by the Investment Manager but not yet claimed by the user's final `deposit()` call).",
+        "1.  **Initial State:** A user has `claimableDepositAssets > 0` (Liability 1). `activeDepositRequesters` correctly includes the user.",
+        "2.  **Unsafe State:** The Owner successfully calls `unregisterVault`, deregistering the vault while the user's 1000 tokens/shares are still owed (tracked only internally in `claimableDepositAssets`)."
+      ]
+    },
+    {
+      "id": "activedepositrequesterscount",
+      "name": "activeDepositRequestersCount safety counter",
+      "role": "asset",
+      "evidence": [
+        "4.  **Result:** The user still holds Liability 1 (`claimableDepositAssets > 0`), but the primary safety counter, `activeDepositRequestersCount`, is forced to **0**.",
+        "The corrupted state directly compromises the `unregisterVault` safety mechanism. This function relies on an accurate `metrics.activeDepositRequestersCount == 0` check to guarantee that no user liabilities remain before the vault is removed from the system.",
+        "|**Safety Counter** (`activeDepositRequestersCount`)|$1$|$0$|**Safety Check Bypassed**|"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_claimable_positive",
+      "kind": "precondition",
+      "text": "A user has claimableDepositAssets greater than 0, a claimable deposit liability from funds processed by the Investment Manager but not yet claimed via deposit().",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "claimabledepositassets"
+      ],
+      "evidence": [
+        "This removal logic fails to account for the state where a user may still have a **claimable deposit liability** (funds that were processed by the Investment Manager but not yet claimed by the user's final `deposit()` call).",
+        "1.  **Initial State:** A user has `claimableDepositAssets > 0` (Liability 1). `activeDepositRequesters` correctly includes the user."
+      ]
+    },
+    {
+      "id": "p_user_in_set",
+      "kind": "precondition",
+      "text": "activeDepositRequesters correctly includes the user while the claimable liability exists.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "activedepositrequesters"
+      ],
+      "evidence": [
+        "1.  **Initial State:** A user has `claimableDepositAssets > 0` (Liability 1). `activeDepositRequesters` correctly includes the user."
+      ]
+    },
+    {
+      "id": "p_second_request_then_cancel",
+      "kind": "precondition",
+      "text": "The user initiates and then cancels a second pending deposit request.",
+      "modality": "potential",
+      "entity_ids": [
+        "user"
+      ],
+      "evidence": [
+        "2.  **Action:** The user initiates and then cancels a **second** pending request (Liability 2)."
+      ]
+    },
+    {
+      "id": "a_cancel_removes_user",
+      "kind": "action",
+      "text": "cancelDepositRequest resolves the second pending request and unconditionally removes the user from activeDepositRequesters.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "activedepositrequesters"
+      ],
+      "evidence": [
+        "The vulnerability lies within the logic used to manage the `activeDepositRequesters` EnumerableSet. Specifically, the `cancelDepositRequest` function unconditionally removes the user from this set when a pending request is cleared.",
+        "2.  **Action:** The user initiates and then cancels a **second** pending request (Liability 2).",
+        "3.  **Error (The Bug):** The `cancelDepositRequest` function resolves Liability 2 and **prematurely removes the user** from `activeDepositRequesters`."
+      ]
+    },
+    {
+      "id": "a_owner_unregister",
+      "kind": "action",
+      "text": "The Owner calls unregisterVault, deregistering the vault.",
+      "modality": "potential",
+      "entity_ids": [
+        "owner",
+        "vault"
+      ],
+      "evidence": [
+        "2.  **Unsafe State:** The Owner successfully calls `unregisterVault`, deregistering the vault while the user's 1000 tokens/shares are still owed (tracked only internally in `claimableDepositAssets`)."
+      ]
+    },
+    {
+      "id": "rc_removal_ignores_liability",
+      "kind": "root_cause",
+      "text": "cancelDepositRequest's removal logic fails to account for a still-existing claimable deposit liability, so the set removal occurs despite the outstanding liability.",
+      "modality": "asserted",
+      "entity_ids": [
+        "activedepositrequesters",
+        "claimabledepositassets"
+      ],
+      "evidence": [
+        "The vulnerability lies within the logic used to manage the `activeDepositRequesters` EnumerableSet. Specifically, the `cancelDepositRequest` function unconditionally removes the user from this set when a pending request is cleared.",
+        "This removal logic fails to account for the state where a user may still have a **claimable deposit liability** (funds that were processed by the Investment Manager but not yet claimed by the user's final `deposit()` call).",
+        "3.  **Error (The Bug):** The `cancelDepositRequest` function resolves Liability 2 and **prematurely removes the user** from `activeDepositRequesters`."
+      ]
+    },
+    {
+      "id": "v_count_zero_liability_positive",
+      "kind": "impact",
+      "text": "After the cancellation the user still holds claimableDepositAssets greater than 0, but activeDepositRequestersCount is forced to 0 instead of the expected 1.",
+      "modality": "asserted",
+      "entity_ids": [
+        "claimabledepositassets",
+        "activedepositrequesterscount",
+        "user"
+      ],
+      "evidence": [
+        "4.  **Result:** The user still holds Liability 1 (`claimableDepositAssets > 0`), but the primary safety counter, `activeDepositRequestersCount`, is forced to **0**.",
+        "|**User Liability** (`claimableDepositAssets[user]`)|$> 0$|$> 0$|Liability exists|",
+        "|**Safety Counter** (`activeDepositRequestersCount`)|$1$|$0$|**Safety Check Bypassed**|"
+      ]
+    },
+    {
+      "id": "v_unregister_bypass",
+      "kind": "impact",
+      "text": "unregisterVault's metrics.activeDepositRequestersCount == 0 check is bypassed by the falsely zero counter, allowing the vault to be deregistered while 1000 tokens/shares remain owed.",
+      "modality": "potential",
+      "entity_ids": [
+        "vault",
+        "activedepositrequesterscount",
+        "user"
+      ],
+      "evidence": [
+        "The corrupted state directly compromises the `unregisterVault` safety mechanism. This function relies on an accurate `metrics.activeDepositRequestersCount == 0` check to guarantee that no user liabilities remain before the vault is removed from the system.",
+        "1.  **Safety Bypass:** Because the counter is falsely reported as 0, the `unregisterVault` function's check is bypassed.",
+        "2.  **Unsafe State:** The Owner successfully calls `unregisterVault`, deregistering the vault while the user's 1000 tokens/shares are still owed (tracked only internally in `claimableDepositAssets`)."
+      ]
+    },
+    {
+      "id": "si_count_reflects_liabilities",
+      "kind": "security_intent",
+      "text": "activeDepositRequestersCount should equal 1 while the user has claimableDepositAssets greater than 0, so that unregisterVault's activeDepositRequestersCount == 0 check only succeeds when no user liabilities remain.",
+      "modality": "inferred",
+      "entity_ids": [
+        "activedepositrequesterscount",
+        "claimabledepositassets",
+        "vault"
+      ],
+      "evidence": [
+        "The corrupted state directly compromises the `unregisterVault` safety mechanism. This function relies on an accurate `metrics.activeDepositRequestersCount == 0` check to guarantee that no user liabilities remain before the vault is removed from the system.",
+        "The core bug is confirmed: The reliance on the count (`activeDepositRequestersCount`) as a proxy for outstanding deposit liability is invalid when the set removal logic is flawed.",
+        "|**User Liability** (`claimableDepositAssets[user]`)|$> 0$|$> 0$|Liability exists|",
+        "|**Safety Counter** (`activeDepositRequestersCount`)|$1$|$0$|**Safety Check Bypassed**|"
+      ]
+    },
+    {
+      "id": "as_claim_after_unregistration",
+      "kind": "assumption",
+      "text": "The proof-of-concept shows the user can still claim their funds after unregistration by calling deposit().",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "vault"
+      ],
+      "evidence": [
+        "3.  **Risk Escalation:** Although the proof-of-concept shows that the user can still claim their funds _after_ unregistration by calling `deposit()` (an unexpected mitigation), the protocol's state is critically inconsistent. The high-severity risk is now elevated to:"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_cancel_removes_user",
+    "a_owner_unregister"
+  ],
+  "ambiguities": [
+    "Report does not state that anyone can call cancelDepositRequest or unregisterVault; authorization is not specified for either call.",
+    "Whether the second request was funded or how Liability 2 arose before cancellation is not described.",
+    "The exact time/order relation between the second request, its cancellation, and any deposit() claim is not fully specified.",
+    "Whether an actual on-chain unregistration with outstanding 1000 tokens/shares occurred or only a proof-of-concept is asserted.",
+    "The mechanism by which an unregistered vault could be replaced with a malicious implementation is not described."
+  ]
+}

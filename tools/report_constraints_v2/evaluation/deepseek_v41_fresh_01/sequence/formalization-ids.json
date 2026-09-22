@@ -1,0 +1,200 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "router_funds_present": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "router holds ETH or ERC20 balances at call time",
+      "checkpoint": "pre-call",
+      "evidence_ids": [
+        "e_5483280651b7_0012",
+        "e_5483280651b7_0027"
+      ],
+      "entity_ids": [
+        "router",
+        "router_balance"
+      ]
+    },
+    "injectandcall_public": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "injectAndCall is publicly callable without access-control or onlyDelegatecall guard",
+      "checkpoint": "pre-call",
+      "evidence_ids": [
+        "e_5483280651b7_0003",
+        "e_5483280651b7_0005",
+        "e_5483280651b7_0008"
+      ],
+      "entity_ids": [
+        "router"
+      ]
+    },
+    "target_caller_chosen": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "caller can supply a caller-chosen target address to injectAndCall",
+      "checkpoint": "pre-call",
+      "evidence_ids": [
+        "e_5483280651b7_0006",
+        "e_5483280651b7_0009",
+        "e_5483280651b7_0014"
+      ],
+      "entity_ids": [
+        "attacker",
+        "drainer",
+        "router"
+      ]
+    },
+    "router_approves_target_balance": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "router ends up approving the attacker-selected target for its current balance",
+      "checkpoint": "post-call",
+      "evidence_ids": [
+        "e_5483280651b7_0015",
+        "e_5483280651b7_0022"
+      ],
+      "entity_ids": [
+        "router",
+        "drainer",
+        "router_balance"
+      ]
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "injectAndCall balance injection and arbitrary external call on the router contract",
+      "modality": "potential",
+      "impact_ids": [
+        "impact_forced_approval"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The router contract holds ETH or ERC20 tokens (leftovers, accidental transfers, or intermediate balances).; injectAndCall is declared public and lacks any access-control or onlyDelegatecall guard, even though it assumes delegated wallet context.; The caller can supply a caller-chosen target and calldata to injectAndCall.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "router_funds_present"
+              },
+              {
+                "var": "injectandcall_public"
+              },
+              {
+                "var": "target_caller_chosen"
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_5483280651b7_0012",
+            "e_5483280651b7_0027",
+            "e_5483280651b7_0003",
+            "e_5483280651b7_0005",
+            "e_5483280651b7_0008",
+            "e_5483280651b7_0006",
+            "e_5483280651b7_0009",
+            "e_5483280651b7_0014"
+          ],
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "router_holds_funds",
+            "injectandcall_public",
+            "attacker_controls_target"
+          ]
+        },
+        "safety": {
+          "text": "injectAndCall, which operates on address(this) balances for delegated wallet context, should only execute in a delegated call context (guarded like onlyDelegatecall), so direct calls cannot spend the router's own balances.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "var": "router_funds_present"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "router_approves_target_balance"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_5483280651b7_0003",
+            "e_5483280651b7_0005",
+            "e_5483280651b7_0010",
+            "e_5483280651b7_0024"
+          ],
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_delegated_only"
+          ]
+        },
+        "effects": {
+          "text": "The router ends up approving the attacker-selected target for its current balance, enabling subsequent transferFrom of that balance to the attacker.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "router_funds_present"
+              },
+              {
+                "var": "router_approves_target_balance"
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_5483280651b7_0015",
+            "e_5483280651b7_0022"
+          ],
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "impact_forced_approval"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "router_holds_funds",
+            "injectandcall_public",
+            "attacker_controls_target"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_delegated_only"
+          ],
+          "args.1": [
+            "intent_delegated_only"
+          ]
+        },
+        "effects": {
+          "": [
+            "impact_forced_approval"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_forced_approval",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The scenario is conditional: no concrete on-chain drain transaction is reported.",
+        "The exact signature/source of injectAndCall and whether offset/placeholder affect the balance amount are not specified."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Core V selects only impact_forced_approval; impact_unauthorized_drain is deferred as secondary consequence evidence.",
+    "Authorization-omission reasoning is not encoded as a separate authorization pattern because the delegated-only guard is a context condition rather than a permission predicate.",
+    "No concrete on-chain transaction binds the symbolic public-callable predicate.",
+    "Deferred report impact: impact_unauthorized_drain"
+  ]
+}

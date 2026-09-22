@@ -1,0 +1,392 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "amount_in_base": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "amountInBase of the taker's matching BID order",
+      "checkpoint": "before matching",
+      "entity_ids": [
+        "taker"
+      ],
+      "evidence": "2. Taker submits a matching buy (BID) with `amountInBase = 1` and `quoteAmount = 2`."
+    },
+    "quote_amount": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "quoteAmount of the taker's matching BID order",
+      "checkpoint": "before matching",
+      "entity_ids": [
+        "taker"
+      ],
+      "evidence": "2. Taker submits a matching buy (BID) with `amountInBase = 1` and `quoteAmount = 2`."
+    },
+    "revert_occurred": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "ZeroCostTrade() reverted, aborting the match",
+      "checkpoint": "after matching attempt",
+      "entity_ids": [
+        "zero_cost_trade",
+        "taker",
+        "maker"
+      ],
+      "evidence": "3. `1 != 2` is true, `1 & 2 == 0` is also true ⇒ `ZeroCostTrade()` reverts, aborting the otherwise valid match."
+    },
+    "base_token_amount_received": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "baseTokenAmountReceived used in the zero-amount guard",
+      "checkpoint": "during guard evaluation",
+      "entity_ids": [
+        "clob_contract"
+      ],
+      "evidence": "Inside `CLOB.sol`, both `_processLimitBidOrder()` (line 503) and `_processLimitAskOrder()` (line 544) contain:"
+    },
+    "quote_token_amount_sent": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "quoteTokenAmountSent used in the zero-amount guard",
+      "checkpoint": "during guard evaluation",
+      "entity_ids": [
+        "clob_contract"
+      ],
+      "evidence": "Inside `CLOB.sol`, both `_processLimitBidOrder()` (line 503) and `_processLimitAskOrder()` (line 544) contain:"
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "Limit order matching in CLOB._processLimitBidOrder/_processLimitAskOrder where a zero-amount guard uses bit-wise AND",
+      "modality": "potential",
+      "impact_ids": [
+        "imp_revert_valid_match"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "A taker submits a matching buy (BID) with amountInBase = 1 and quoteAmount = 2.; The zero-amount guard in _processLimitBidOrder and _processLimitAskOrder uses bit-wise AND on baseTokenAmountReceived and quoteTokenAmountSent.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "amount_in_base"
+                      },
+                      {
+                        "const": 1
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "quote_amount"
+                      },
+                      {
+                        "const": 2
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "ne",
+                    "args": [
+                      {
+                        "var": "base_token_amount_received"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  },
+                  {
+                    "op": "ne",
+                    "args": [
+                      {
+                        "var": "quote_token_amount_sent"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "pre_taker_bid_amounts",
+            "pre_bitwise_clause_present"
+          ],
+          "evidence": [
+            "2. Taker submits a matching buy (BID) with `amountInBase = 1` and `quoteAmount = 2`.",
+            "Inside `CLOB.sol`, both `_processLimitBidOrder()` (line 503) and `_processLimitAskOrder()` (line 544) contain:",
+            "Instead, `baseTokenAmountReceived & quoteTokenAmountSent` performs a bit-level comparison. Two **non-zero** integers that share no common set bits (e.g., `1` and `2`) pass this test, so the compound condition becomes true whenever the amounts differ and have no overlapping bits. In practice:"
+          ]
+        },
+        "safety": {
+          "text": "Inferred: the zero-amount guard should reject a trade only when either side is actually zero, allowing legitimate non-zero trades to complete.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "amount_in_base"
+                      },
+                      {
+                        "const": 1
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "quote_amount"
+                      },
+                      {
+                        "const": 2
+                      }
+                    ]
+                  },
+                  {
+                    "op": "ne",
+                    "args": [
+                      {
+                        "var": "base_token_amount_received"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  },
+                  {
+                    "op": "ne",
+                    "args": [
+                      {
+                        "var": "quote_token_amount_sent"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "revert_occurred"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "int_zero_guard"
+          ],
+          "evidence": [
+            "[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`.",
+            "The developer’s intention is to throw when either side of the trade is zero."
+          ]
+        },
+        "effects": {
+          "text": "Because 1 != 2 and 1 & 2 == 0, ZeroCostTrade() reverts, aborting the otherwise valid match.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "amount_in_base"
+                      },
+                      {
+                        "const": 1
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "quote_amount"
+                      },
+                      {
+                        "const": 2
+                      }
+                    ]
+                  },
+                  {
+                    "op": "ne",
+                    "args": [
+                      {
+                        "var": "base_token_amount_received"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  },
+                  {
+                    "op": "ne",
+                    "args": [
+                      {
+                        "var": "quote_token_amount_sent"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "revert_occurred"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "imp_revert_valid_match"
+          ],
+          "evidence": [
+            "3. `1 != 2` is true, `1 & 2 == 0` is also true ⇒ `ZeroCostTrade()` reverts, aborting the otherwise valid match."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "pre_taker_bid_amounts",
+            "pre_bitwise_clause_present"
+          ],
+          "args.0": [
+            "pre_taker_bid_amounts",
+            "pre_bitwise_clause_present"
+          ],
+          "args.0.args.0": [
+            "pre_taker_bid_amounts",
+            "pre_bitwise_clause_present"
+          ],
+          "args.0.args.1": [
+            "pre_taker_bid_amounts",
+            "pre_bitwise_clause_present"
+          ],
+          "args.1": [
+            "pre_taker_bid_amounts",
+            "pre_bitwise_clause_present"
+          ],
+          "args.1.args.0": [
+            "pre_taker_bid_amounts",
+            "pre_bitwise_clause_present"
+          ],
+          "args.1.args.1": [
+            "pre_taker_bid_amounts",
+            "pre_bitwise_clause_present"
+          ]
+        },
+        "safety": {
+          "": [
+            "int_zero_guard"
+          ],
+          "args.0": [
+            "int_zero_guard"
+          ],
+          "args.0.args.0": [
+            "int_zero_guard"
+          ],
+          "args.0.args.1": [
+            "int_zero_guard"
+          ],
+          "args.0.args.2": [
+            "int_zero_guard"
+          ],
+          "args.0.args.3": [
+            "int_zero_guard"
+          ],
+          "args.1": [
+            "int_zero_guard"
+          ]
+        },
+        "effects": {
+          "": [
+            "imp_revert_valid_match"
+          ],
+          "args.0": [
+            "imp_revert_valid_match"
+          ],
+          "args.0.args.0": [
+            "imp_revert_valid_match"
+          ],
+          "args.0.args.1": [
+            "imp_revert_valid_match"
+          ],
+          "args.0.args.2": [
+            "imp_revert_valid_match"
+          ],
+          "args.0.args.3": [
+            "imp_revert_valid_match"
+          ],
+          "args.1": [
+            "imp_revert_valid_match"
+          ],
+          "args.1.args.0": [
+            "imp_revert_valid_match"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "imp_revert_valid_match",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The zero-amount guard is evaluated during matching and, if true, reverts with ZeroCostTrade().",
+        "baseTokenAmountReceived and quoteTokenAmountSent take the non-zero values 1 and 2 respectively in this match.",
+        "The report describes a potential matching scenario rather than a guaranteed on-chain execution."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Only the immediate ZeroCostTrade revert is formalized; the broader DoS impact (imp_dos) is deferred.",
+    "Bit-wise AND behavior (1 & 2 == 0) is treated as the root cause context, not as a before-condition.",
+    "No concrete on-chain deployment address, block, or transaction hash is provided.",
+    "The maker ASK placement precondition is contextual and not part of the selected numeric formalization.",
+    "Deferred report impact: imp_dos"
+  ]
+}

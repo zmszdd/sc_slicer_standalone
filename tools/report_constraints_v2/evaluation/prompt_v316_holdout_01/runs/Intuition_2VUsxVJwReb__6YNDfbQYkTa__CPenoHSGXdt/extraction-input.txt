@@ -1,0 +1,39 @@
+AtomWallet does not authenticate validity-window metadata appended to `userOp.signature`
+
+## Finding description and impact
+
+`AtomWallet._validateSignature()` supports a 77-byte signature format where the trailing 12 bytes encode
+`validUntil` and `validAfter`. However, those values are not included in the digest that is recovered with ECDSA.
+As a result, any relayer can rewrite the validity window while reusing the same 65-byte signature and still pass
+signature validation.
+
+## Vulnerability Details
+
+The current validation flow parses `validUntil` and `validAfter` from the end of `userOp.signature`, then recovers
+the signer from an EIP-191 hash of `userOpHash` alone:
+
+
+This is unsafe because ERC-4337 `userOpHash` does not include `userOp.signature`. The optional 12-byte suffix is
+therefore entirely outside the signed payload unless the account explicitly re-hashes it before recovery.
+
+The local tests construct the 77-byte format exactly this way: sign `userOpHash`, then append the time window
+afterward:
+
+
+An attacker can exploit this as follows:
+
+1. Observe a signed `UserOperation` that was intended to expire quickly.
+2. Keep the original 65-byte ECDSA signature `(r, s, v)` unchanged.
+3. Replace the appended `validUntil`/`validAfter` bytes with attacker-chosen values.
+4. Submit the modified operation through the EntryPoint.
+
+Because recovery still happens over the original `userOpHash`, `AtomWallet` accepts the signature and returns the
+attacker-controlled validity window in `validationData`.
+
+## Impact
+
+This breaks the signer’s ability to constrain when a `UserOperation` is valid. A relayer can extend expiry,
+remove expiry, or move the start time without re-signing.
+
+For value-moving operations, this can lead to unauthorized later execution of transfers, approvals, or arbitrary
+wallet calls after the signer expected the operation to have expired.root cause and impact(s) of this finding.

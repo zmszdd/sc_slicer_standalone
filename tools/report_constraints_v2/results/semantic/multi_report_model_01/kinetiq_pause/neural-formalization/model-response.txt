@@ -1,0 +1,151 @@
+```json
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "confirm_call": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "A transaction invokes confirmWithdrawal or batchConfirmWithdrawals on StakingManager.",
+      "checkpoint": "at confirmation call entry",
+      "evidence_ids": ["e_80fa64641f0e_0003"],
+      "entity_ids": ["staking_manager", "user"]
+    },
+    "withdrawal_paused": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The contract's withdrawal-specific pause is active (withdrawal functionality paused).",
+      "checkpoint": "at confirmation call entry",
+      "evidence_ids": ["e_80fa64641f0e_0003", "e_80fa64641f0e_0004"],
+      "entity_ids": ["protocol", "staking_manager"]
+    },
+    "hype_withdrawn": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The user's queued HYPE withdrawal is finalized and tokens leave the contract.",
+      "checkpoint": "after confirmation call",
+      "evidence_ids": ["e_80fa64641f0e_0003", "e_80fa64641f0e_0006"],
+      "entity_ids": ["hype_token", "user"]
+    },
+    "queued_withdrawal_ready": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "A queued HYPE withdrawal has passed the mandatory delay and is ready to finalize.",
+      "checkpoint": "at confirmation call entry",
+      "evidence_ids": ["e_80fa64641f0e_0003"],
+      "entity_ids": ["staking_manager", "user"]
+    },
+    "withdrawal_pause_protective": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The active withdrawal pause is intended to protect the contract (e.g. suspected exploit or liquidity issue).",
+      "checkpoint": "at confirmation call entry",
+      "evidence_ids": ["e_80fa64641f0e_0004", "e_80fa64641f0e_0007"],
+      "entity_ids": ["protocol", "staking_manager"]
+    }
+  },
+  "claims": [
+    {
+      "id": "queued_withdrawal_pause_bypass",
+      "scope": "Confirmation of a ready queued HYPE withdrawal while the withdrawal pause is active.",
+      "modality": "potential",
+      "impact_ids": ["security_controls_violated", "pause_enforcement_undermined"],
+      "properties": {
+        "preconditions": {
+          "text": "A ready queued withdrawal is being confirmed and the withdrawal-specific pause may be active.",
+          "expression": {"op": "and", "args": [{"var": "confirm_call"}, {"var": "queued_withdrawal_ready"}, {"var": "withdrawal_paused"}]},
+          "evidence_ids": ["e_80fa64641f0e_0003", "e_80fa64641f0e_0004"],
+          "derivation": "queued_withdrawal_delay supplies the delayed queued withdrawal being finalized; pauses_during_emergencies supplies a possibly active withdrawal pause.",
+          "source_ids": ["queued_withdrawal_delay", "pauses_during_emergencies"]
+        },
+        "safety": {
+          "text": "While withdrawal functionality is paused, a confirmation call must not finalize/withdraw HYPE.",
+          "expression": {"op": "implies", "args": [{"op": "and", "args": [{"var": "confirm_call"}, {"var": "withdrawal_paused"}]}, {"op": "not", "args": [{"var": "hype_withdrawn"}]}]},
+          "evidence_ids": ["e_80fa64641f0e_0003"],
+          "derivation": "intended_withdrawal_pause_control states whenWithdrawalNotPaused is intended to block withdrawals when withdrawal functionality is paused, so an active pause must prevent withdrawal finalization.",
+          "source_ids": ["intended_withdrawal_pause_control"]
+        },
+        "effects": {
+          "text": "Confirmation still finalizes the withdrawal while the pause is active, so HYPE is withdrawn during a pause and the pause/security controls are undermined.",
+          "expression": {"op": "and", "args": [{"var": "confirm_call"}, {"var": "withdrawal_paused"}, {"var": "hype_withdrawn"}]},
+          "evidence_ids": ["e_80fa64641f0e_0004", "e_80fa64641f0e_0006"],
+          "derivation": "security_controls_violated and pause_enforcement_undermined describe the protocol losing withdrawal control because the withdrawal proceeds while the pause is active.",
+          "source_ids": ["security_controls_violated", "pause_enforcement_undermined"]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {"": ["queued_withdrawal_delay", "pauses_during_emergencies"]},
+        "safety": {"": ["intended_withdrawal_pause_control"], "args.0": ["intended_withdrawal_pause_control"], "args.1": ["intended_withdrawal_pause_control"]},
+        "effects": {"": ["security_controls_violated", "pause_enforcement_undermined"]}
+      },
+      "effect_coverage": [
+        {"statement_id": "security_controls_violated", "status": "formalized", "reason": "Effects AST is the negation of the safety obligation under withdrawal_paused."},
+        {"statement_id": "pause_enforcement_undermined", "status": "formalized", "reason": "Failure to block withdrawal while withdrawal_paused witnesses the undermined enforcement."}
+      ],
+      "assumptions": [
+        "Neither confirmWithdrawal nor batchConfirmWithdrawals includes whenWithdrawalNotPaused; only whenNotPaused (general pause) is applied.",
+        "Report asserts whenWithdrawalNotPaused is the intended/available withdrawal-pause control, unverified against contract source.",
+        "A queued HYPE withdrawal has passed its mandatory delay and is confirmable."
+      ],
+      "unresolved": [
+        "Whether the active pause in any real incident is withdrawal-specific or only general is unstated.",
+        "No evidence an incident occurred; impact remains potential.",
+        "Concrete actor, timing and call order beyond the generic confirm-then-withdraw flow are unspecified."
+      ]
+    },
+    {
+      "id": "protective_pause_fund_drain",
+      "scope": "User withdrawal during a protective withdrawal pause intended to safeguard the contract.",
+      "modality": "potential",
+      "impact_ids": ["unauthorized_fund_drains"],
+      "properties": {
+        "preconditions": {
+          "text": "A ready queued withdrawal is confirmed while a withdrawal pause may be active.",
+          "expression": {"op": "and", "args": [{"var": "confirm_call"}, {"var": "queued_withdrawal_ready"}, {"var": "withdrawal_paused"}]},
+          "evidence_ids": ["e_80fa64641f0e_0003", "e_80fa64641f0e_0004"],
+          "derivation": "queued_withdrawal_delay gives the confirmable queued withdrawal; pauses_during_emergencies gives the possibly active withdrawal pause.",
+          "source_ids": ["queued_withdrawal_delay", "pauses_during_emergencies"]
+        },
+        "safety": {
+          "text": "While withdrawal functionality is paused, a confirmation call must not finalize/withdraw HYPE.",
+          "expression": {"op": "implies", "args": [{"op": "and", "args": [{"var": "confirm_call"}, {"var": "withdrawal_paused"}]}, {"op": "not", "args": [{"var": "hype_withdrawn"}]}]},
+          "evidence_ids": ["e_80fa64641f0e_0003"],
+          "derivation": "intended_withdrawal_pause_control: the withdrawal pause is meant to block withdrawal finalization, including when the pause protects the contract.",
+          "source_ids": ["intended_withdrawal_pause_control"]
+        },
+        "effects": {
+          "text": "A user withdraws HYPE while a protective withdrawal pause (e.g. suspected exploit) is active.",
+          "expression": {"op": "and", "args": [{"var": "confirm_call"}, {"var": "withdrawal_paused"}, {"var": "withdrawal_pause_protective"}, {"var": "hype_withdrawn"}]},
+          "evidence_ids": ["e_80fa64641f0e_0007"],
+          "derivation": "unauthorized_fund_drains describes users withdrawing HYPE during a pause intended to protect the contract, e.g. a suspected exploit.",
+          "source_ids": ["unauthorized_fund_drains"]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {"": ["queued_withdrawal_delay", "pauses_during_emergencies"]},
+        "safety": {"": ["intended_withdrawal_pause_control"], "args.0": ["intended_withdrawal_pause_control"], "args.1": ["intended_withdrawal_pause_control"]},
+        "effects": {"": ["unauthorized_fund_drains"]}
+      },
+      "effect_coverage": [
+        {"statement_id": "unauthorized_fund_drains", "status": "partial", "reason": "Only the conditional withdrawal during a protective pause is expressible; drained HYPE amount/value and the 'unauthorized' entitlement cannot be expressed with allowed operators."}
+      ],
+      "assumptions": [
+        "The pause is intended to protect the contract during emergencies such as a suspected exploit or liquidity issue.",
+        "A queued HYPE withdrawal is ready to confirm at the time of the protective pause."
+      ],
+      "unresolved": [
+        "Whether any exploit, liquidity issue or fund loss actually occurred; impact is conditional/potential.",
+        "No economic quantification of the drain is available.",
+        "No concrete triggering actor or ordering is given."
+      ]
+    }
+  ],
+  "limitations": [
+    "withdraw_while_paused is an action statement, not an impact; per the V-source rule it is not listed as an impact_id, and its content (confirm + withdrawal_paused + hype_withdrawn) is captured by the effects AST.",
+    "unauthorized_fund_drains coverage is partial: economic magnitude and entitlement are inexpressible.",
+    "pause_enforcement_undermined is representable only as failure of the withdrawal-pause obligation, not as a governance/permission quantity.",
+    "Root-cause statements (missing_modifier, only_general_pause_used, bypass_withdrawal_restrictions) are code premises, not encoded as P/I/V.",
+    "No secondary timing, persistence, population-wide or refund claims were generated per core scope.",
+    "The gap between withdrawal-specific and general pause states is unresolved rather than assumed active."
+  ]
+}
+```

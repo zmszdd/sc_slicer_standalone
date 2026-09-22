@@ -1,0 +1,121 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "msg_value": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "native value (msg.value) forwarded by the caller into UnstakeMessenger.unstake()",
+      "checkpoint": "unstake_call_entry",
+      "evidence_ids": ["e_5d2a1d54551d_0012", "e_5d2a1d54551d_0014", "e_5d2a1d54551d_0018"],
+      "entity_ids": ["integrator", "unstake_messenger"]
+    },
+    "native_fee": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "exact LayerZero native fee fee.nativeFee returned by _quote(hubEid, payload, options, false)",
+      "checkpoint": "after_quote_before_lzsend",
+      "evidence_ids": ["e_5d2a1d54551d_0007", "e_5d2a1d54551d_0014"],
+      "entity_ids": ["native_fee", "layerzero_endpoint"]
+    },
+    "buffered_flow_used": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "integrator followed the buffered-fee pattern (used the buffer quote helper and forwarded that buffered value as msg.value)",
+      "checkpoint": "unstake_call_entry",
+      "evidence_ids": ["e_5d2a1d54551d_0010", "e_5d2a1d54551d_0012"],
+      "entity_ids": ["integrator", "buffer_helper", "unstake_messenger"]
+    },
+    "excess_tolerated": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "intended behavior: a msg.value at or above the exact quoted nativeFee is accepted (its excess refundable) at _payNative, i.e. a non-strict payment predicate, instead of being rejected",
+      "checkpoint": "paynative_strict_equality_check",
+      "evidence_ids": ["e_5d2a1d54551d_0010", "e_5d2a1d54551d_0012", "e_5d2a1d54551d_0013"],
+      "entity_ids": ["buffer_helper", "oapp_sender"]
+    },
+    "paynative_reverted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "inherited LayerZero OAppSender._payNative() reverted with NotEnoughNative during the unstake call",
+      "checkpoint": "paynative_strict_equality_check",
+      "evidence_ids": ["e_5d2a1d54551d_0013", "e_5d2a1d54551d_0014", "e_5d2a1d54551d_0017"],
+      "entity_ids": ["oapp_sender", "unstake_messenger"]
+    },
+    "message_dispatched": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the LayerZero message was dispatched by the endpoint during the unstake call",
+      "checkpoint": "after_lzsend",
+      "evidence_ids": ["e_5d2a1d54551d_0014", "e_5d2a1d54551d_0020"],
+      "entity_ids": ["layerzero_endpoint", "unstake_messenger"]
+    }
+  },
+  "claims": [
+    {
+      "id": "buffered_unstake_reverts_before_dispatch",
+      "scope": "core: cross-chain unstake via the buffered-fee flow",
+      "modality": "asserted",
+      "impact_ids": ["i_unstake_reverts", "i_buffer_pattern_unusable", "i_users_cannot_unstake"],
+      "properties": {
+        "preconditions": {
+          "text": "The caller follows the buffered-fee pattern and forwards a msg.value strictly greater than the exact quoted nativeFee as the unstake msg.value.",
+          "expression": {"op": "and", "args": [{"var": "buffered_flow_used"}, {"op": "gt", "args": [{"var": "msg_value"}, {"var": "native_fee"}]}]},
+          "evidence_ids": ["e_5d2a1d54551d_0007", "e_5d2a1d54551d_0010", "e_5d2a1d54551d_0012", "e_5d2a1d54551d_0014", "e_5d2a1d54551d_0020"],
+          "derivation": "p_buffered_helper_used supplies buffered_flow_used; p_msg_value_exceeds_exact and p_buffer_greater_than_exact supply the strict msg_value > native_fee; as_quote_is_exact fixes native_fee as the endpoint-required amount.",
+          "source_ids": ["p_buffered_helper_used", "p_msg_value_exceeds_exact", "p_buffer_greater_than_exact", "as_quote_is_exact"]
+        },
+        "safety": {
+          "text": "In the intended system the buffered-fee flow must tolerate msg.value above the exact quoted nativeFee: the non-strict condition msg.value >= fee.nativeFee is accepted and the excess is refundable to the refund address, rather than triggering a strict-equality rejection.",
+          "expression": {"var": "excess_tolerated"},
+          "evidence_ids": ["e_5d2a1d54551d_0010", "e_5d2a1d54551d_0012"],
+          "derivation": "si_buffered_design_intent states the helpers deliberately quote a fee larger than exact so integrators can rely on the refund address for the excess; that intent requires the excess to be an accepted/refundable condition, not a revert cause.",
+          "source_ids": ["si_buffered_design_intent"]
+        },
+        "effects": {
+          "text": "The buffered-flow unstake reverts: _payNative treats msg.value > fee.nativeFee as a mismatch and reverts with NotEnoughNative before any LayerZero message is dispatched, breaking the call and the exposed buffered pattern for users.",
+          "expression": {"op": "and", "args": [{"var": "paynative_reverted"}, {"op": "not", "args": [{"var": "message_dispatched"}]}]},
+          "evidence_ids": ["e_5d2a1d54551d_0003", "e_5d2a1d54551d_0014", "e_5d2a1d54551d_0017", "e_5d2a1d54551d_0018", "e_5d2a1d54551d_0019", "e_5d2a1d54551d_0020"],
+          "derivation": "i_unstake_reverts asserts the NotEnoughNative revert before dispatch; i_buffer_pattern_unusable and i_users_cannot_unstake restate the resulting pattern/user failure. The revert witnesses the violation of excess_tolerated under P.",
+          "source_ids": ["i_unstake_reverts", "i_buffer_pattern_unusable", "i_users_cannot_unstake"]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": ["p_buffered_helper_used", "p_msg_value_exceeds_exact"],
+          "args.0": ["p_buffered_helper_used"],
+          "args.1": ["p_msg_value_exceeds_exact", "p_buffer_greater_than_exact"]
+        },
+        "safety": {"": ["si_buffered_design_intent"]},
+        "effects": {
+          "": ["i_unstake_reverts", "i_buffer_pattern_unusable", "i_users_cannot_unstake"],
+          "args.1": ["i_unstake_reverts"]
+        }
+      },
+      "effect_coverage": [
+        {"statement_id": "i_unstake_reverts", "status": "formalized", "reason": "Effects conjunction encodes the NotEnoughNative revert together with the absence of LayerZero dispatch."},
+        {"statement_id": "i_buffer_pattern_unusable", "status": "partial", "reason": "'Unusable in practice' is the same single-call revert restated for the integration pattern, not an independent resource/measurable."},
+        {"statement_id": "i_users_cannot_unstake", "status": "partial", "reason": "Captured only for the buffered flow; the report does not establish behavior of any other unstake path."}
+      ],
+      "assumptions": [
+        "as_quote_is_exact: the fee returned by _quote(hubEid, payload, options, false) is the exact native amount required by the LayerZero endpoint.",
+        "The caller forwards the buffered helper's returned value unmodified as msg.value.",
+        "msg_value and nativeFee are denominated in the same native-token smallest unit (wei).",
+        "The buffered flow with msg.value > nativeFee is the in-scope scenario; the exact-fee flow is treated as out of scope."
+      ],
+      "unresolved": [
+        "Whether excess msg.value could be refunded at any point before _payNative() executes is unspecified.",
+        "The exact helper set beyond quoteUnstakeWithBuffer()/quoteUnstakeWithReturnValue() is not enumerated.",
+        "The exactness identity as_quote_is_exact is an assumption, not an independently sourced endpoint requirement.",
+        "Whether the affected code is deployed on a live network or only exercised in tests is not established."
+      ]
+    }
+  ],
+  "limitations": [
+    "Deferred impact i_ux_path_broken (potential): persistent/population-wide user-facing failure, not a bounded single-call fact; requires review.",
+    "Deferred impact i_integrators_must_use_exact: secondary timing/gas-price fragility between quote and execution; not formalizable without timing checkpoints.",
+    "Deferred impact i_no_direct_fund_loss: an absence of bad effect, so there is no V to formalize.",
+    "Economic impact beyond reverting-call gas consumption (e.g. locked funds) is unspecified; no direct fund loss is claimed.",
+    "No adversarial actor is identified; the report describes an integration/design mismatch, not an exploit.",
+    "Strict vs non-strict boundary is preserved: unstake() checks msg.value >= fee.nativeFee, while _payNative enforces equality; the violation concerns the latter."
+  ]
+}

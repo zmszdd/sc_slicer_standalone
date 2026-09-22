@@ -1,0 +1,173 @@
+{
+  "schema_version": "report-formal-plan/2",
+  "precondition_ids": [
+    "p_deployed_with_cached_separator",
+    "p_chain_forked",
+    "p_signatures_generated_new_chain"
+  ],
+  "intent_id": "si_current_chain_id",
+  "impact_ids": [
+    "i_signatures_invalid"
+  ],
+  "symbols": {
+    "current_chain_id": {
+      "sort": "int",
+      "unit": "chain_id",
+      "meaning": "Chain ID actually in effect on the chain after the fork / chain-ID change and used as the intended EIP-712 verification context.",
+      "checkpoint": "after fork, at EIP-712 verification time",
+      "entity_ids": [
+        "chain_id",
+        "trails_intent_entrypoint"
+      ],
+      "source_ids": [
+        "p_chain_forked"
+      ]
+    },
+    "deployment_chain_id": {
+      "sort": "int",
+      "unit": "chain_id",
+      "meaning": "Chain ID permanently embedded in the DOMAIN_SEPARATOR that was computed once at deployment.",
+      "checkpoint": "deployment (constructor)",
+      "entity_ids": [
+        "chain_id",
+        "cached_domain_separator",
+        "trails_intent_entrypoint"
+      ],
+      "source_ids": [
+        "p_deployed_with_cached_separator"
+      ]
+    },
+    "domain_separator_cached": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Whether the contract computed and stored its EIP-712 DOMAIN_SEPARATOR once at deployment instead of deriving it from the current chain ID.",
+      "checkpoint": "deployment (constructor)",
+      "entity_ids": [
+        "cached_domain_separator",
+        "trails_intent_entrypoint"
+      ],
+      "source_ids": [
+        "p_deployed_with_cached_separator"
+      ]
+    },
+    "signatures_generated_on_new_chain": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Whether the off-chain EIP-712 signatures submitted to depositToIntent / depositToIntentWithPermit were generated on the new chain.",
+      "checkpoint": "after fork, before the deposit call",
+      "entity_ids": [
+        "user",
+        "off_chain_signature",
+        "chain_id"
+      ],
+      "source_ids": [
+        "p_signatures_generated_new_chain"
+      ]
+    },
+    "signature_valid": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Observable outcome of validating a submitted signature against the contract's cached DOMAIN_SEPARATOR during depositToIntent / depositToIntentWithPermit.",
+      "checkpoint": "during signature verification in depositToIntent / depositToIntentWithPermit",
+      "entity_ids": [
+        "off_chain_signature",
+        "cached_domain_separator",
+        "trails_intent_entrypoint"
+      ],
+      "source_ids": [
+        "i_signatures_invalid"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_deployed_with_cached_separator",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "domain_separator_cached",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_chain_forked",
+      "predicate": {
+        "kind": "comparison",
+        "left": "current_chain_id",
+        "operator": "ne",
+        "right": {
+          "symbol": "deployment_chain_id"
+        }
+      }
+    },
+    {
+      "source_id": "p_signatures_generated_new_chain",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "signatures_generated_on_new_chain",
+        "value": true
+      }
+    }
+  ],
+  "pattern": {
+    "kind": "condition_forbids_effect",
+    "condition": {
+      "kind": "comparison",
+      "left": "current_chain_id",
+      "operator": "ne",
+      "right": {
+        "symbol": "deployment_chain_id"
+      }
+    },
+    "effect": {
+      "kind": "truth",
+      "symbol": "signature_valid",
+      "value": false
+    }
+  },
+  "assumptions": [
+    "Signatures used in depositToIntent and depositToIntentWithPermit are required to be generated with the same domain separator / chain ID that the contract uses for verification (as_signature_must_match).",
+    "depositToIntent and depositToIntentWithPermit share the same cached-DOMAIN_SEPARATOR EIP-712 verification path.",
+    "The fork / chain-ID change occurs after deployment and is external to the contract."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_actor",
+      "description": "No attacker or authority performing the chain fork / chain ID change is identified.",
+      "source_ids": [
+        "p_chain_forked"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "The precise failure mode of depositToIntent / depositToIntentWithPermit when the signature does not match the cached DOMAIN_SEPARATOR (e.g., revert) is not described.",
+      "source_ids": [
+        "i_signatures_invalid"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "missing_checkpoint",
+      "description": "The report does not state when the cached DOMAIN_SEPARATOR should be refreshed relative to the fork.",
+      "source_ids": [
+        "p_deployed_with_cached_separator",
+        "p_chain_forked"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "Behavior of signatures generated before the fork when submitted on the new chain is not detailed.",
+      "source_ids": [
+        "p_signatures_generated_new_chain"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Permanent DoS of intent verification (i_permanent_dos) is deferred as a secondary consequence; this core plan selects i_signatures_invalid as the single direct impact.",
+    "Chain IDs are symbolic integers; no concrete fork chain ID is bound.",
+    "Permanence assumes no contract upgrade, redeployment or chain-ID-aware separator mitigates the issue.",
+    "Behavior of pre-fork signatures on the new chain and any replay implications are out of scope."
+  ]
+}

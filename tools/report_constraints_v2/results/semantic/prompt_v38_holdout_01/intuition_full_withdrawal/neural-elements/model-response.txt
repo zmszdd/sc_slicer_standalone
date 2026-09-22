@@ -1,0 +1,34 @@
+```json
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "Full withdrawal of a user's deposited assets from OffsetProgressiveCurve",
+    "environment": "EVM/Solidity smart contract (arithmetic on blockchain state)",
+    "evidence_ids": ["e_0a3fb8582b88_0004", "e_0a3fb8582b88_0005", "e_0a3fb8582b88_0006", "e_0a3fb8582b88_0007", "e_0a3fb8582b88_0008", "e_0a3fb8582b88_0009", "e_0a3fb8582b88_0010", "e_0a3fb8582b88_0012"]
+  },
+  "entities": [
+    {"id": "user", "name": "User (depositor)", "role": "victim", "evidence_ids": ["e_0a3fb8582b88_0004", "e_0a3fb8582b88_0006", "e_0a3fb8582b88_0012"]},
+    {"id": "offset_progressive_curve", "name": "OffsetProgressiveCurve contract", "role": "contract", "evidence_ids": ["e_0a3fb8582b88_0004", "e_0a3fb8582b88_0005", "e_0a3fb8582b88_0012"]},
+    {"id": "deposit", "name": "User's deposit (assets)", "role": "asset", "evidence_ids": ["e_0a3fb8582b88_0004", "e_0a3fb8582b88_0012"]}
+  ],
+  "statements": [
+    {"id": "curve_initialized_with_low_offset", "kind": "precondition", "text": "OffsetProgressiveCurve was initialized with an offset18 parameter smaller than 1e9.", "modality": "asserted", "entity_ids": ["offset_progressive_curve"], "evidence_ids": ["e_0a3fb8582b88_0004", "e_0a3fb8582b88_0012"]},
+    {"id": "offset_truncates_to_zero", "kind": "precondition", "text": "During initialize, OFFSET = PCMath.divDown(OFFSET18, 1e18) truncates to 0 because OFFSET18 < 1e18, so the stored OFFSET is 0 before the withdrawal.", "modality": "asserted", "entity_ids": ["offset_progressive_curve"], "evidence_ids": ["e_0a3fb8582b88_0005"]},
+    {"id": "user_holds_deposit", "kind": "precondition", "text": "The user has a deposit (open position) in the curve whose full withdrawal is attempted.", "modality": "asserted", "entity_ids": ["user", "deposit", "offset_progressive_curve"], "evidence_ids": ["e_0a3fb8582b88_0004", "e_0a3fb8582b88_0006"]},
+    {"id": "attempt_full_withdrawal", "kind": "action", "text": "A user attempts a full withdrawal of their deposit.", "modality": "asserted", "entity_ids": ["user", "deposit", "offset_progressive_curve"], "evidence_ids": ["e_0a3fb8582b88_0006"]},
+    {"id": "offset_zero_underflow_cause", "kind": "root_cause", "text": "With OFFSET squaring to 0, the withdrawal math yields squaredShares = square(totalShares + OFFSET) strictly less than inner = mulDivUp(assets, SLOPE, 1e18) + square(OFFSET), so subtracting shares = squaredShares - inner underflows.", "modality": "asserted", "entity_ids": ["offset_progressive_curve"], "evidence_ids": ["e_0a3fb8582b88_0007", "e_0a3fb8582b88_0008", "e_0a3fb8582b88_0009", "e_0a3fb8582b88_0010"]},
+    {"id": "withdrawal_reverts_panic", "kind": "impact", "text": "The full withdrawal deterministically reverts with PANIC(0x11) arithmetic underflow.", "modality": "asserted", "entity_ids": ["user", "offset_progressive_curve"], "evidence_ids": ["e_0a3fb8582b88_0010"]},
+    {"id": "funds_trapped", "kind": "impact", "text": "The user is permanently blocked from fully closing their position, trapping their funds when liquidating assets.", "modality": "asserted", "entity_ids": ["user", "deposit"], "evidence_ids": ["e_0a3fb8582b88_0012"]},
+    {"id": "full_withdrawal_should_succeed", "kind": "security_intent", "text": "Users should be able to fully withdraw their deposited assets from OffsetProgressiveCurve without the withdrawal reverting and trapping funds (inferred from the claimed trapped-funds failure).", "modality": "inferred", "entity_ids": ["user", "offset_progressive_curve", "deposit"], "evidence_ids": ["e_0a3fb8582b88_0004", "e_0a3fb8582b88_0012"]},
+    {"id": "full_deposit_exit_assumed", "kind": "assumption", "text": "The attempted full withdrawal covers the user's entire deposit so that the reported underflowing conversion path is the applicable redemption path for their position.", "modality": "inferred", "entity_ids": ["user", "deposit"], "evidence_ids": ["e_0a3fb8582b88_0004", "e_0a3fb8582b88_0006"]}
+  ],
+  "attack_steps": ["attempt_full_withdrawal"],
+  "ambiguities": [
+    "Reported bound is inconsistent: title/impact say offset18 < 1e9, but the truncation mechanism requires OFFSET18 < 1e18.",
+    "The user's exact deposited balance/share quantity is not specified; only that a full withdrawal of the deposit is attempted.",
+    "No attacker or authorization claim is made; the affected caller is merely a user with a deposit, and the impact is trapped funds rather than theft.",
+    "'Permanently blocked' is asserted; alternative exits (e.g., partial withdrawals or admin recovery) are not addressed.",
+    "Whether any full-withdrawal amount triggers the underflow, or only specific amounts, is not fully specified; the description suggests it applies generally."
+  ]
+}
+```

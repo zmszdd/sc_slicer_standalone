@@ -1,0 +1,77 @@
+# [H-02] UniswapPriceOracle TWAP Calculation Is a Mathematical Identity, Rendering Validation Useless and Exposing BuyBackBurner V2 Buybacks to Sandwich Attacks
+
+## Severity
+**High**
+
+## Vulnerability Type
+Loss of Funds
+
+## Affected Contracts
+- `contracts/oracles/UniswapPriceOracle.sol` — Broken TWAP calculation
+- `contracts/utils/BuyBackBurnerUniswap.sol` — V2 swap with `amountOutMin = 0`
+- `contracts/utils/BuyBackBurner.sol` — Relies on the broken oracle for slippage protection
+
+## Description
+
+The TWAP (Time-Weighted Average Price) calculation in `UniswapPriceOracle.validatePrice()` contains a mathematical identity error: the computed `timeWeightedAverage` is **mathematically always equal to** the current spot price `tradePrice`, causing the function to **always return true** (except when `block.timestamp == blockTimestampLast`).
+
+Additionally, `BuyBackBurnerUniswap._performSwap()` sets `amountOutMin = 0` for the V2 DEX swap, providing zero minimum output protection.
+
+The combination of these two issues fully exposes the BuyBackBurner's V2 buyback operations to sandwich attacks, allowing attackers to extract value from the protocol's OLAS buyback-and-burn mechanism.
+
+## Vulnerable Code
+
+**Core Math Error — UniswapPriceOracle.sol lines 55-91:**
+
+
+**V2 Swap with Zero Protection — BuyBackBurnerUniswap.sol lines 81-95:**
+
+
+## Mathematical Proof
+
+Let:
+- `C` = `cumulativePriceLast` (cumulative price from the Uniswap V2 pair)
+- `P` = `tradePrice` (current spot price, i.e., `getPrice()` return value)
+- `t` = `elapsedTime` (time elapsed since last update)
+
+
+Therefore `timeWeightedAverage` is identically equal to `tradePrice` (mathematical identity), and `derivation` is identically `0`.
+
+**`validatePrice()` returns true for ANY manipulated spot price.**
+
+## Attack Steps
+
+Based on the BuyBack & Burn flow described in `process.md`:
+
+**Precondition**: The BuyBackBurner contract holds secondTokens (e.g., ETH/WETH) waiting to be bought back into OLAS and burned.
+
+**Sandwich Attack:**
+
+1. **Block N-1**: The attacker buys a large amount of OLAS in the Uniswap V2 OLAS/secondToken pool, pushing the OLAS price up.
+2. **Block N**: The attacker calls `BuyBackBurner.buyBack(secondToken, amount)`:
+   - Inside `_buyOLAS`:
+     - `validatePrice(maxSlippage)` -> **always returns true** (due to the identity bug)
+     - `previousPrice = getPrice()` -> reads the **manipulated high price**
+     - `_performSwap(...)` -> swaps at `amountOutMin = 0` at the inflated price -> BuyBackBurner receives **far fewer OLAS**
+     - `tradePrice = getPrice()` -> post-swap price
+     - After-swap check: `tradePrice` is within `previousPrice +/- maxSlippage%` -> **passes** (because `previousPrice` itself is the manipulated price)
+   - A small amount of OLAS is transferred to bridge2Burner
+3. **Block N**: The attacker sells OLAS back into the Uniswap V2 pool, restoring the price and pocketing the profit.
+
+**Attacker profit** = price manipulation spread x BuyBackBurner swap amount / pool liquidity
+
+## Impact
+
+- **Direct protocol fund loss**: The BuyBackBurner receives far fewer OLAS than the fair market price during V2 buybacks. The difference is extracted by the attacker.
+- **Reduced OLAS burn**: Fewer OLAS are burned than intended, undermining the deflationary mechanism.
+- **Repeatable exploit**: `buyBack` is permissionless (anyone can call it), so the attacker can choose the optimal timing (e.g., when the BuyBackBurner has accumulated a large secondToken balance) to maximize profit.
+- **Scope**: Affects all on-chain buyback operations using the `BuyBackBurnerUniswap` + `UniswapPriceOracle` combination.
+
+## Recommended Fix
+
+**1. Fix the UniswapPriceOracle TWAP Calculation**
+
+A correct TWAP requires two cumulative price snapshots taken at different times:
+
+
+**2. Set a Reasonable `amountOutMin` for V2 Swaps**

@@ -1,0 +1,290 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "maturity_time": {
+      "sort": "int",
+      "unit": "unix_timestamp_seconds",
+      "meaning": "maturityTime[msg.sender], the lock-up maturity timestamp for the withdrawing staker (uninitialized mapping entry)",
+      "checkpoint": "withdraw_entry",
+      "evidence_ids": [
+        "e_f072f2fde818_0006",
+        "e_f072f2fde818_0007"
+      ],
+      "entity_ids": [
+        "gauge_v2",
+        "staker"
+      ]
+    },
+    "block_timestamp": {
+      "sort": "int",
+      "unit": "unix_timestamp_seconds",
+      "meaning": "block.timestamp at the _withdraw call",
+      "checkpoint": "withdraw_entry",
+      "evidence_ids": [
+        "e_f072f2fde818_0008"
+      ],
+      "entity_ids": [
+        "gauge_v2"
+      ]
+    },
+    "maturity_check_present": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "GaugeV2._withdraw contains the block.timestamp >= maturityTime[msg.sender] maturity check",
+      "checkpoint": "code_static",
+      "evidence_ids": [
+        "e_f072f2fde818_0005"
+      ],
+      "entity_ids": [
+        "gauge_v2",
+        "maturity_lockup"
+      ]
+    },
+    "never_initialized": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "maturityTime mapping is never initialized or updated anywhere in GaugeV2",
+      "checkpoint": "contract_lifetime",
+      "evidence_ids": [
+        "e_f072f2fde818_0006"
+      ],
+      "entity_ids": [
+        "gauge_v2"
+      ]
+    },
+    "deposit_capable": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the staker can deposit tokens into GaugeV2 before the withdrawal",
+      "checkpoint": "deposit_entry",
+      "evidence_ids": [
+        "e_f072f2fde818_0013"
+      ],
+      "entity_ids": [
+        "staker",
+        "deposited_tokens",
+        "gauge_v2"
+      ]
+    },
+    "withdraw_completed": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the staker's _withdraw call completes and returns the deposited tokens",
+      "checkpoint": "withdraw_exit",
+      "evidence_ids": [
+        "e_f072f2fde818_0013"
+      ],
+      "entity_ids": [
+        "staker",
+        "deposited_tokens",
+        "gauge_v2"
+      ]
+    }
+  },
+  "claims": [
+    {
+      "id": "gauge_maturity_lockup_bypass",
+      "scope": "core",
+      "modality": "asserted",
+      "impact_ids": [
+        "i_instant_withdraw"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "GaugeV2._withdraw contains the maturity check on maturityTime[msg.sender]; maturityTime is never initialized or updated, so as an uninitialized uint256 mapping it equals 0 for the withdrawing staker; block.timestamp is greater than 0; and the staker can deposit tokens beforehand.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "maturity_check_present"
+              },
+              {
+                "var": "never_initialized"
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "maturity_time"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "block_timestamp"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "var": "deposit_capable"
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_f072f2fde818_0005",
+            "e_f072f2fde818_0006",
+            "e_f072f2fde818_0007",
+            "e_f072f2fde818_0008",
+            "e_f072f2fde818_0013"
+          ],
+          "derivation": "Conjunction of extracted preconditions: p_lockup_check (maturity_check_present), p_mapping_uninitialized (never_initialized), p_maturity_zero supported by p_default_zero (maturity_time == 0), p_timestamp_positive (block_timestamp > 0), p_deposit (deposit_capable).",
+          "source_ids": [
+            "p_lockup_check",
+            "p_mapping_uninitialized",
+            "p_default_zero",
+            "p_maturity_zero",
+            "p_timestamp_positive",
+            "p_deposit"
+          ]
+        },
+        "safety": {
+          "text": "Withdrawal completion is authorized only when an actual maturity lock-up is in force, i.e., maturityTime[msg.sender] is a nonzero future timestamp (maturity_time > 0); the maturity check must not allow completion without an established lock-up.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "var": "withdraw_completed"
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "maturity_time"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_f072f2fde818_0005",
+            "e_f072f2fde818_0009"
+          ],
+          "derivation": "si_enforce_lockup requires the maturity check to enforce the intended lock-up/vesting period; enforcing a lock-up presupposes a real nonzero maturity for the user, so withdraw_completed implies maturity_time > 0. The trivially satisfied block.timestamp >= maturityTime direction is not asserted as the whole wish.",
+          "source_ids": [
+            "si_enforce_lockup"
+          ]
+        },
+        "effects": {
+          "text": "The staker's _withdraw completes while maturityTime[msg.sender] equals 0, so no maturity lock-up is in force and the intended lock-up is bypassed.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "withdraw_completed"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "gt",
+                    "args": [
+                      {
+                        "var": "maturity_time"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_f072f2fde818_0013"
+          ],
+          "derivation": "i_instant_withdraw reports deposited tokens can be withdrawn immediately in the same transaction/block, bypassing the lock-up; this is withdraw_completed together with no lock-up in force, i.e. not(maturity_time > 0), which falsifies the safety property.",
+          "source_ids": [
+            "i_instant_withdraw"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_lockup_check",
+            "p_mapping_uninitialized",
+            "p_default_zero",
+            "p_maturity_zero",
+            "p_timestamp_positive",
+            "p_deposit"
+          ],
+          "args.0": [
+            "p_lockup_check"
+          ],
+          "args.1": [
+            "p_mapping_uninitialized"
+          ],
+          "args.2": [
+            "p_maturity_zero",
+            "p_default_zero"
+          ],
+          "args.3": [
+            "p_timestamp_positive"
+          ],
+          "args.4": [
+            "p_deposit"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_enforce_lockup"
+          ],
+          "args.0": [
+            "si_enforce_lockup"
+          ],
+          "args.1": [
+            "si_enforce_lockup"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_instant_withdraw"
+          ],
+          "args.0": [
+            "i_instant_withdraw"
+          ],
+          "args.1": [
+            "i_instant_withdraw"
+          ],
+          "args.1.args.0": [
+            "i_instant_withdraw"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_instant_withdraw",
+          "status": "formalized",
+          "reason": "Formalized as withdraw_completed AND not(maturity_time > 0): immediate withdrawal occurs while maturityTime[msg.sender] is 0, bypassing the lock-up."
+        }
+      ],
+      "assumptions": [
+        "a_intended_maturity: maturityTime was intended to be set to a nonzero future timestamp when a user stakes, but the implementation omitted this.",
+        "The withdrawing staker is the msg.sender evaluated by the maturity check in _withdraw."
+      ],
+      "unresolved": [
+        "Where and when maturityTime was supposed to be assigned is unspecified, so the intended lock-up duration cannot be quantified.",
+        "The staking/deposit function name and any authorization requirements for _withdraw are not given."
+      ]
+    }
+  ],
+  "limitations": [
+    "i_flash_staking (potential flash-staking reward attack) is a downstream/potential impact and is not formalized in this claim.",
+    "Impacts are asserted capabilities, not a verified on-chain incident.",
+    "No token or reward value at risk is quantified; economic impact is out of scope.",
+    "Reward accrual and claimability within the same block are not detailed.",
+    "The intended lock-up duration and the assignment site of maturityTime are unspecified."
+  ]
+}

@@ -1,0 +1,248 @@
+{
+  "schema_version": "stage2-semantic-bundle/1",
+  "core_formalization_status": "formalized_candidate",
+  "acceptance_status": "needs_review",
+  "report_warnings": [
+    "report impacts not assigned to a claim: i_integrators_must_use_exact, i_no_direct_fund_loss, i_ux_path_broken",
+    "report has declared ambiguities",
+    "formalization has declared limitations"
+  ],
+  "unassigned_impact_ids": [
+    "i_integrators_must_use_exact",
+    "i_no_direct_fund_loss",
+    "i_ux_path_broken"
+  ],
+  "claims": [
+    {
+      "id": "buffered_unstake_reverts_before_dispatch",
+      "formalization_status": "needs_review",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity."
+      },
+      "review_reasons": [
+        "claimed impact coverage is partial/unformalized",
+        "unresolved claim limitations require review"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The caller follows the buffered-fee pattern and forwards a msg.value strictly greater than the exact quoted nativeFee as the unstake msg.value.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "buffered_flow_used"
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "msg_value"
+                  },
+                  {
+                    "var": "native_fee"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "p_buffered_helper_used supplies buffered_flow_used; p_msg_value_exceeds_exact and p_buffer_greater_than_exact supply the strict msg_value > native_fee; as_quote_is_exact fixes native_fee as the endpoint-required amount.",
+          "source_ids": [
+            "p_buffered_helper_used",
+            "p_msg_value_exceeds_exact",
+            "p_buffer_greater_than_exact",
+            "as_quote_is_exact"
+          ],
+          "evidence": [
+            "2. Compute the LayerZero fee via `_quote(hubEid, payload, options, false)`, which returns a `MessagingFee` fee with `fee.nativeFee` set to the exact required amount.",
+            "To make integration safer, `UnstakeMessenger` also exposes buffered-fee helpers such as `quoteUnstakeWithBuffer()`. These helpers deliberately return a fee that is larger than the exact LayerZero quote (for example, exactFee * 110 / 100) so that integrators can:",
+            "2. Call `unstake{value: bufferedFee}(returnTripAllocation)` and rely on the refund address for any excess.",
+            "Because `UnstakeMessenger.unstake()` passes `fee.nativeFee` (the exact quoted amount) into `_lzSend()`, but the caller may send `msg.value > fee.nativeFee` when using the buffered helper, `_payNative()` observes the mismatch and reverts with `NotEnoughNative(msg.value)` before the message is dispatched.",
+            "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger` (calling the buffer quote helper and forwarding that value as msg.value), all cross-chain `unstake()` calls revert before any LayerZero message is sent. Users cannot complete cross-chain unstake operations via the buffered flow, and integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution. The issue does not directly cause fund loss, but it breaks a primary cross-chain unstake UX path and can lead to persistent user-facing failures until the integration is adjusted."
+          ]
+        },
+        "safety": {
+          "text": "Under the in-scope buffered overpayment premise, payment excess alone must not cause the specified NotEnoughNative fee-mismatch revert.",
+          "expression": {
+            "op": "not",
+            "args": [
+              {
+                "var": "paynative_reverted"
+              }
+            ]
+          },
+          "derivation": "Assistant-reviewed control: expresses the intended buffered-payment obligation using the same specific failure observation as V, scoped by P. No claim of full transaction success or exact refund.",
+          "source_ids": [
+            "si_buffered_design_intent"
+          ],
+          "evidence": [
+            "To make integration safer, `UnstakeMessenger` also exposes buffered-fee helpers such as `quoteUnstakeWithBuffer()`. These helpers deliberately return a fee that is larger than the exact LayerZero quote (for example, exactFee * 110 / 100) so that integrators can:",
+            "2. Call `unstake{value: bufferedFee}(returnTripAllocation)` and rely on the refund address for any excess."
+          ]
+        },
+        "effects": {
+          "text": "The buffered-flow unstake reverts: _payNative treats msg.value > fee.nativeFee as a mismatch and reverts with NotEnoughNative before any LayerZero message is dispatched, breaking the call and the exposed buffered pattern for users.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "paynative_reverted"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "message_dispatched"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "i_unstake_reverts asserts the NotEnoughNative revert before dispatch; i_buffer_pattern_unusable and i_users_cannot_unstake restate the resulting pattern/user failure. The revert witnesses the violation of excess_tolerated under P.",
+          "source_ids": [
+            "i_unstake_reverts",
+            "i_buffer_pattern_unusable",
+            "i_users_cannot_unstake"
+          ],
+          "evidence": [
+            "The `UnstakeMessenger.unstake()` function is designed to support a buffered-fee flow via helper quote functions, but the underlying LayerZero `OAppSender._payNative()` implementation enforces strict equality between `msg.value` and the quoted fee. When callers use the buffered-fee helper and send more than the exact quoted amount, all unstake calls revert with `NotEnoughNative`.",
+            "Because `UnstakeMessenger.unstake()` passes `fee.nativeFee` (the exact quoted amount) into `_lzSend()`, but the caller may send `msg.value > fee.nativeFee` when using the buffered helper, `_payNative()` observes the mismatch and reverts with `NotEnoughNative(msg.value)` before the message is dispatched.",
+            "- Revert when msg.value == bufferedFee returned by quoteUnstakeWithBuffer() (10% higher than exactFee), with selector OAppSender.NotEnoughNative(uint256).",
+            "- Revert even when msg.value == exactFee + 1 wei.",
+            "As a result, the “buffered fee” integration pattern exposed by the contract is unusable in practice.",
+            "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger` (calling the buffer quote helper and forwarding that value as msg.value), all cross-chain `unstake()` calls revert before any LayerZero message is sent. Users cannot complete cross-chain unstake operations via the buffered flow, and integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution. The issue does not directly cause fund loss, but it breaks a primary cross-chain unstake UX path and can lead to persistent user-facing failures until the integration is adjusted."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_buffered_helper_used",
+            "p_msg_value_exceeds_exact"
+          ],
+          "args.0": [
+            "p_buffered_helper_used"
+          ],
+          "args.1": [
+            "p_msg_value_exceeds_exact",
+            "p_buffer_greater_than_exact"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_buffered_design_intent"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_unstake_reverts",
+            "i_buffer_pattern_unusable",
+            "i_users_cannot_unstake"
+          ],
+          "args.1": [
+            "i_unstake_reverts"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_unstake_reverts",
+          "status": "formalized",
+          "reason": "Effects conjunction encodes the NotEnoughNative revert together with the absence of LayerZero dispatch."
+        },
+        {
+          "statement_id": "i_buffer_pattern_unusable",
+          "status": "partial",
+          "reason": "'Unusable in practice' is the same single-call revert restated for the integration pattern, not an independent resource/measurable."
+        },
+        {
+          "statement_id": "i_users_cannot_unstake",
+          "status": "partial",
+          "reason": "Captured only for the buffered flow; the report does not establish behavior of any other unstake path."
+        }
+      ],
+      "scope": "core: cross-chain unstake via the buffered-fee flow",
+      "modality": "asserted",
+      "assumptions": [
+        "as_quote_is_exact: the fee returned by _quote(hubEid, payload, options, false) is the exact native amount required by the LayerZero endpoint.",
+        "The caller forwards the buffered helper's returned value unmodified as msg.value.",
+        "msg_value and nativeFee are denominated in the same native-token smallest unit (wei).",
+        "The buffered flow with msg.value > nativeFee is the in-scope scenario; the exact-fee flow is treated as out of scope."
+      ],
+      "unresolved": [
+        "Whether excess msg.value could be refunded at any point before _payNative() executes is unspecified.",
+        "The exact helper set beyond quoteUnstakeWithBuffer()/quoteUnstakeWithReturnValue() is not enumerated.",
+        "The exactness identity as_quote_is_exact is an assumption, not an independently sourced endpoint requirement.",
+        "Whether the affected code is deployed on a live network or only exercised in tests is not established.",
+        "Assistant-derived control, not a new external model extraction; code binding and complete helper/payment/revert semantics remain absent."
+      ]
+    }
+  ],
+  "coverage_is_model_declared_not_semantically_verified": true,
+  "human_semantic_review_required": true,
+  "code_alignment_status": "not_attempted",
+  "execution_ready": false,
+  "consistency_verdict": "not_evaluated",
+  "observability_review": {
+    "schema_version": "observability-review/1",
+    "claims": [
+      {
+        "claim_id": "buffered_unstake_reverts_before_dispatch",
+        "safety_variables": [
+          "paynative_reverted"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      }
+    ],
+    "review_status": "no_structural_warning",
+    "observability_established": false,
+    "human_semantic_review_required": true,
+    "limitations": [
+      "I-only Boolean may be a legitimate observation; hints are not automatic errors",
+      "No code binding, predicate-name interpretation or report truth assessment",
+      "Both SAT is a review hint, not a universal UNSAT requirement"
+    ],
+    "model_calls": 0
+  },
+  "provenance": {
+    "code_provided_to_model": false,
+    "paired_case_checked": true,
+    "case_id": "Brix_Money_qy7NXr77sDh__PGwVR6CTD6U__3hfE23tsgzG",
+    "submission_uid": "3hfE23tsgzG",
+    "finding_uid": "PGwVR6CTD6U",
+    "target_test": "test_PoC_bufferedFee_reverts",
+    "code_sha256": "4d3337a6db349911e9ad0a4635abd16d7fddd7d751ac3d33b42f7ca3dc18614b",
+    "report_path": "/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/Brix_Money_qy7NXr77sDh__PGwVR6CTD6U__3hfE23tsgzG/report.json",
+    "report_sha256": "3eb27386ad3b2c6a99a7b3f4be61ca71233ab16ea80a138a80f6d6c38cddb59e",
+    "report_input_sha256": "5d2a1d54551d336aae12511eb950bbd160f9a7dc340db9bd0e411cc2eec72b97",
+    "candidate_origin": "assistant_review",
+    "elements_source": "tools/report_constraints_v2/results/semantic/brix_fee_ids_core_model_01/elements-ids.json",
+    "formalization_source": "tools/report_constraints_v2/samples/brix_observable_control_01/formalization-ids.json"
+  },
+  "external_model_invocations": 0
+}

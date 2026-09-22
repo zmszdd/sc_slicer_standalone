@@ -1,0 +1,35 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "WERC7575Vault redeem/withdraw (internal _withdraw) share redemption and asset withdrawal flow",
+    "environment": "WERC7575 token/vault system on-chain, active users holding self-allowance",
+    "evidence_ids": ["e_d82841592bc5_0002", "e_d82841592bc5_0003", "e_d82841592bc5_0005"]
+  },
+  "entities": [
+    {"id": "werc7575_vault", "name": "WERC7575Vault contract", "role": "contract", "evidence_ids": ["e_d82841592bc5_0002"]},
+    {"id": "share_token", "name": "_shareToken / WERC7575 share token", "role": "contract", "evidence_ids": ["e_d82841592bc5_0003"]},
+    {"id": "attacker", "name": "Any user / caller (receiver)", "role": "attacker", "evidence_ids": ["e_d82841592bc5_0005"]},
+    {"id": "owner", "name": "owner (victim) whose shares are spent", "role": "victim", "evidence_ids": ["e_d82841592bc5_0002", "e_d82841592bc5_0005"]},
+    {"id": "assets", "name": "Vault assets / funds", "role": "asset", "evidence_ids": ["e_d82841592bc5_0005"]}
+  ],
+  "statements": [
+    {"id": "pre_sender_not_owner", "kind": "precondition", "text": "The call is made with msg.sender different from owner.", "modality": "asserted", "entity_ids": ["attacker", "owner"], "evidence_ids": ["e_d82841592bc5_0002"]},
+    {"id": "pre_owner_active_self_allowance", "kind": "precondition", "text": "The victim owner is an active user and therefore holds self-allowance on the share token, so the self-allowance check passes.", "modality": "potential", "entity_ids": ["owner", "share_token"], "evidence_ids": ["e_d82841592bc5_0003", "e_d82841592bc5_0005"]},
+    {"id": "assumption_self_allowance_required", "kind": "assumption", "text": "In the WERC7575 system, active users are required to have self-allowance to use the token.", "modality": "asserted", "entity_ids": ["share_token"], "evidence_ids": ["e_d82841592bc5_0003"]},
+    {"id": "root_missing_caller_allowance_check", "kind": "root_cause", "text": "WERC7575Vault redeem and withdraw functions (via internal _withdraw) fail to validate the caller's authority to spend owner's shares when msg.sender != owner.", "modality": "asserted", "entity_ids": ["werc7575_vault", "owner", "attacker"], "evidence_ids": ["e_d82841592bc5_0002"]},
+    {"id": "root_spend_self_allowance_only", "kind": "root_cause", "text": "The implementation calls _shareToken.spendSelfAllowance(owner, shares), which only checks that owner approved themselves, and does not check whether msg.sender has an allowance from owner.", "modality": "asserted", "entity_ids": ["werc7575_vault", "share_token", "owner", "attacker"], "evidence_ids": ["e_d82841592bc5_0003"]},
+    {"id": "security_intent_authority_check", "kind": "security_intent", "text": "The vault should validate the caller's authority to spend owner's shares when msg.sender != owner, i.e. verify msg.sender has an allowance from owner.", "modality": "inferred", "entity_ids": ["werc7575_vault", "owner", "attacker"], "evidence_ids": ["e_d82841592bc5_0002", "e_d82841592bc5_0003"]},
+    {"id": "action_call_redeem_other_owner", "kind": "action", "text": "Any user calls redeem (or withdraw) specifying another user as owner and themselves as receiver.", "modality": "potential", "entity_ids": ["attacker", "owner", "werc7575_vault"], "evidence_ids": ["e_d82841592bc5_0002", "e_d82841592bc5_0005"]},
+    {"id": "impact_victim_shares_burned", "kind": "impact", "text": "The victim owner's shares are burned.", "modality": "potential", "entity_ids": ["owner", "share_token"], "evidence_ids": ["e_d82841592bc5_0005"]},
+    {"id": "impact_assets_sent_to_attacker", "kind": "impact", "text": "Assets are sent to the attacker specified as receiver.", "modality": "potential", "entity_ids": ["attacker", "assets", "werc7575_vault"], "evidence_ids": ["e_d82841592bc5_0005"]},
+    {"id": "impact_direct_theft", "kind": "impact", "text": "Direct theft of funds from any user.", "modality": "potential", "entity_ids": ["attacker", "owner", "assets"], "evidence_ids": ["e_d82841592bc5_0005"]}
+  ],
+  "attack_steps": ["action_call_redeem_other_owner"],
+  "ambiguities": [
+    "Exploitability depends on the victim being an 'active' user holding self-allowance; behavior for inactive owners is unstated.",
+    "Report alleges 'any user' and 'any user' theft but provides no PoC or observed execution; impact is potential, not demonstrated.",
+    "Whether both redeem and withdraw are equally affected, and whether the same holds for other callers such as approved spenders, is not detailed.",
+    "Whether spendSelfAllowance is intended to be the sole authorization path or is a misimplementation of an allowance check is unclear.",
+    "The exact relationship between self-allowance requirement and msg.sender allowance check is not fully specified."
+  ]
+}

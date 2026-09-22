@@ -1,0 +1,117 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "deposit_time": {"sort": "int", "unit": "timestamp", "meaning": "block.timestamp at the deposit checkpoint", "checkpoint": "deposit", "evidence_ids": ["e_b4e950acf2e3_0003", "e_b4e950acf2e3_0004"], "entity_ids": ["user", "gauge_v2"]},
+    "withdraw_time": {"sort": "int", "unit": "timestamp", "meaning": "block.timestamp at the withdrawal checkpoint", "checkpoint": "withdrawal", "evidence_ids": ["e_b4e950acf2e3_0004"], "entity_ids": ["user", "gauge_v2"]},
+    "lock_period": {"sort": "int", "unit": "seconds", "meaning": "configured lockPeriod of the maturity cooldown", "checkpoint": "configuration", "evidence_ids": ["e_b4e950acf2e3_0003"], "entity_ids": ["lock_period", "gauge_v2"]},
+    "maturity_time_caller": {"sort": "int", "unit": "timestamp", "meaning": "maturityTime[msg.sender] read by the withdrawal guard", "checkpoint": "withdrawal", "evidence_ids": ["e_b4e950acf2e3_0004"], "entity_ids": ["maturity_time", "gauge_v2"]},
+    "withdraw_succeeds": {"sort": "bool", "unit": null, "meaning": "the withdrawal call completes instead of reverting", "checkpoint": "withdrawal", "evidence_ids": ["e_b4e950acf2e3_0001", "e_b4e950acf2e3_0004"], "entity_ids": ["user", "gauge_v2"]},
+    "rewards_captured": {"sort": "bool", "unit": null, "meaning": "the user receives HYBR emissions/rewards", "checkpoint": "withdrawal", "evidence_ids": ["e_b4e950acf2e3_0001", "e_b4e950acf2e3_0007"], "entity_ids": ["user", "hybr_rewards"]}
+  },
+  "claims": [
+    {
+      "id": "maturity_cooldown_instant_exit",
+      "scope": "core",
+      "modality": "potential",
+      "impact_ids": ["imp_instant_exit"],
+      "properties": {
+        "preconditions": {
+          "text": "The withdrawal path enforces require(block.timestamp >= maturityTime[msg.sender]), so a successful withdrawal implies withdraw_time >= maturity_time_caller.",
+          "expression": {"op": "implies", "args": [{"var": "withdraw_succeeds"}, {"op": "ge", "args": [{"var": "withdraw_time"}, {"var": "maturity_time_caller"}]}]},
+          "evidence_ids": ["e_b4e950acf2e3_0004"],
+          "derivation": "pre_withdraw_check states the guard is block.timestamp >= maturityTime[msg.sender].",
+          "source_ids": ["pre_withdraw_check"]
+        },
+        "safety": {
+          "text": "A withdrawal must not succeed before the position matures, i.e. while withdraw_time < deposit_time + lock_period.",
+          "expression": {"op": "implies", "args": [{"op": "lt", "args": [{"var": "withdraw_time"}, {"op": "add", "args": [{"var": "deposit_time"}, {"var": "lock_period"}]}]}, {"op": "not", "args": [{"var": "withdraw_succeeds"}]}]},
+          "evidence_ids": ["e_b4e950acf2e3_0003"],
+          "derivation": "si_maturity_enforced requires the cooldown to block liquidity withdrawal until maturity.",
+          "source_ids": ["si_maturity_enforced"]
+        },
+        "effects": {
+          "text": "A user's withdrawal succeeds while withdraw_time < deposit_time + lock_period (instant enter/exit).",
+          "expression": {"op": "and", "args": [{"var": "withdraw_succeeds"}, {"op": "lt", "args": [{"var": "withdraw_time"}, {"op": "add", "args": [{"var": "deposit_time"}, {"var": "lock_period"}]}]}]},
+          "evidence_ids": ["e_b4e950acf2e3_0004"],
+          "derivation": "imp_instant_exit alleges entering and exiting instantly without respecting the lock.",
+          "source_ids": ["imp_instant_exit"]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {"": ["pre_withdraw_check"]},
+        "safety": {"": ["si_maturity_enforced"], "args.1": ["si_maturity_enforced"]},
+        "effects": {"": ["imp_instant_exit"]}
+      },
+      "effect_coverage": [
+        {"statement_id": "imp_instant_exit", "status": "formalized", "reason": "withdraw_succeeds before deposit_time+lock_period directly encodes the instant exit."}
+      ],
+      "assumptions": [
+        "maturityTime[user] is intended to equal the deposit block.timestamp + lockPeriod.",
+        "deposit_time and withdraw_time are block.timestamp values at the deposit and withdrawal checkpoints.",
+        "Intended maturity design follows the documented Locks & Voting Power and G-1/G-2 invariants (asm_design_doc)."
+      ],
+      "unresolved": [
+        "The deposit function that should write maturityTime is unnamed and not provided; the missing write is not natively observable.",
+        "lockPeriod value and required holding duration are unspecified.",
+        "No observed exploit or execution proof is provided."
+      ]
+    },
+    {
+      "id": "maturity_cooldown_reward_capture",
+      "scope": "core",
+      "modality": "potential",
+      "impact_ids": ["imp_emissions_capture"],
+      "properties": {
+        "preconditions": {
+          "text": "The withdrawal path enforces require(block.timestamp >= maturityTime[msg.sender]), so a successful withdrawal implies withdraw_time >= maturity_time_caller.",
+          "expression": {"op": "implies", "args": [{"var": "withdraw_succeeds"}, {"op": "ge", "args": [{"var": "withdraw_time"}, {"var": "maturity_time_caller"}]}]},
+          "evidence_ids": ["e_b4e950acf2e3_0004"],
+          "derivation": "pre_withdraw_check states the guard is block.timestamp >= maturityTime[msg.sender].",
+          "source_ids": ["pre_withdraw_check"]
+        },
+        "safety": {
+          "text": "Short-cycle reward extraction before maturity must not occur: while withdraw_time < deposit_time + lock_period, rewards must not be captured.",
+          "expression": {"op": "implies", "args": [{"op": "lt", "args": [{"var": "withdraw_time"}, {"op": "add", "args": [{"var": "deposit_time"}, {"var": "lock_period"}]}]}, {"op": "not", "args": [{"var": "rewards_captured"}]}]},
+          "evidence_ids": ["e_b4e950acf2e3_0003"],
+          "derivation": "si_protect_mercenary states the cooldown protects the protocol from short-cycle reward extraction.",
+          "source_ids": ["si_protect_mercenary"]
+        },
+        "effects": {
+          "text": "The user captures rewards while withdraw_time < deposit_time + lock_period.",
+          "expression": {"op": "and", "args": [{"var": "rewards_captured"}, {"op": "lt", "args": [{"var": "withdraw_time"}, {"op": "add", "args": [{"var": "deposit_time"}, {"var": "lock_period"}]}]}]},
+          "evidence_ids": ["e_b4e950acf2e3_0001", "e_b4e950acf2e3_0004"],
+          "derivation": "imp_emissions_capture alleges capturing emissions without respecting the intended lock.",
+          "source_ids": ["imp_emissions_capture"]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {"": ["pre_withdraw_check"]},
+        "safety": {"": ["si_protect_mercenary"], "args.1": ["si_protect_mercenary"]},
+        "effects": {"": ["imp_emissions_capture"]}
+      },
+      "effect_coverage": [
+        {"statement_id": "imp_emissions_capture", "status": "partial", "reason": "rewards_captured encodes the boolean capture, but magnitude/accounting and whether a separate claim call or extra time is needed are unspecified."}
+      ],
+      "assumptions": [
+        "Rewards can be captured within the same short deposit/withdraw cycle.",
+        "withdraw_time and deposit_time mark the cooldown window."
+      ],
+      "unresolved": [
+        "Whether earning rewards requires an additional call or extra time is unstated.",
+        "Magnitude and accounting scope of emissions captured are unspecified.",
+        "Reward accrual is not tied to a specific supplied value."
+      ]
+    }
+  ],
+  "limitations": [
+    "Deferred impact imp_yield_faucet: systemic characterization of the gauge as a faucet, not a bounded single-call fact.",
+    "Deferred impact imp_disproportionate_rewards: economic magnitude/share unspecified; not expressible with available observations.",
+    "Deferred impact imp_fee_alignment: protocol-level economic alignment; no bounded observable.",
+    "Deferred impact imp_lp_disincentive: population-wide/persistent effect; cannot be encoded as a complete single-call fact.",
+    "Deferred impact imp_trading_depth: long-run market-depth erosion; persistent, no bounded observation.",
+    "Deferred impact imp_bribe_economics: economic/bribe-design consequence; absence of sustained stake is out of scope.",
+    "Root causes rc_missing_write and rc_default_zero are explanatory only; not encoded in P/I/V per source rules.",
+    "No observed exploit, test output or transaction trace is supplied; all impacts are potential.",
+    "Coverage of the two encoded impacts is incomplete for the report's full impact set."
+  ]
+}

@@ -2,6 +2,26 @@
 
 SC_Slicer 是一个面向 Solidity 合约的目标导向代码切片工具。当前推荐使用 `run.sh` 入口运行，它会按指定的输入文件、目标合约、目标测试函数和目标变量生成切片合约，并可自动用 Foundry 复跑目标测试。
 
+## 统一入口
+
+仓库根目录的 `main.py` 是**阶段二**的唯一命令行入口（阶段一请直接用 `./run.sh`）：
+
+当前已验证的阶段二解释器是 `/root/.local/share/uv/tools/halmos/bin/python`；系统
+`/usr/bin/python` 未安装 Z3。若已在含 Z3 的虚拟环境中，下面的 `python` 可直接使用，
+否则请把它替换成上述完整路径。
+
+```bash
+cd /root/sc_slicer_standalone
+python main.py --help          # 列出全部命令
+python main.py doctor          # 环境与配置自检
+python main.py run --case-dir ...   # 阶段二：报告 → P/I/V 规则化
+python main.py verify <目录>   # 阶段二：零模型调用重放
+python main.py test            # 阶段二回归
+python main.py frozen          # 校验阶段一/v1 冻结资产未被改写
+```
+
+`main.py` 只做分发，不实现阶段逻辑；阶段实现仍在 `run.sh`、`src/` 和 `tools/report_constraints_v2/`。下面的 `./run.sh` 写法继续有效。详见 [tools/report_constraints_v2/STRUCTURE.md](tools/report_constraints_v2/STRUCTURE.md)。
+
 ## 快速运行
 
 在项目根目录执行：
@@ -254,3 +274,11 @@ last_command          记录实际执行的 forge test 命令
 ```bash
 ./run.sh --help
 ```
+
+## 报告约束实验 v1（第二阶段）
+
+早期“报告自然语言 → 安全性质及效果约束”v1 已停止开发并完整归档到
+`archives/report_constraints_v1_20260912.zip`；当前实现统一位于
+[tools/report_constraints_v2](tools/report_constraints_v2/README.md)。
+
+第二版的统一接口和只读切片绑定见 [tools/report_constraints_v2](tools/report_constraints_v2/README.md)。该版保留 v1 不变；真实样例因切片依赖缺失被阻断，尚未端到端打通。

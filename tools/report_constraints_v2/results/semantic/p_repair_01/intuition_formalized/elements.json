@@ -1,0 +1,170 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Full withdrawal of a user's deposited assets from OffsetProgressiveCurve",
+    "environment": "EVM/Solidity smart contract (arithmetic on blockchain state)",
+    "evidence": [
+      "In OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9.",
+      "When initialize stores the OFFSET18 parameter, it calculates the raw parameter OFFSET = PCMath.divDown(OFFSET18, 1e18). If OFFSET18 is less than 1e18, OFFSET strictly evaluates to 0. During deposit and withdrawal calculations, this truncated OFFSET influences internal rounding mechanics differently than ProgressiveCurve.",
+      "When a user attempts a full withdrawal:",
+      "The conversion rounds up the cost: inner = PCMath.mulDivUp(assets, SLOPE, 1e18) + PCMath.square(OFFSET). The offset squares to 0.",
+      "The comparison squaredShares = PCMath.square(totalShares + OFFSET) also strictly drops the OFFSET modifier.",
+      "This mathematical construction mirrors ProgressiveCurve, retaining the strict inequality squaredShares < inner.",
+      "Therefore, subtracting shares = squaredShares - inner produces a deterministic PANIC(0x11) arithmetic underflow.",
+      "Any OffsetProgressiveCurve instantiated with offset18 < 1e9 collapses in mathematically equivalent conditions to ProgressiveCurve. Users will be permanently blocked from fully closing their positions, causing trapped funds whenever liquidating assets."
+    ]
+  },
+  "entities": [
+    {
+      "id": "user",
+      "name": "User (depositor)",
+      "role": "victim",
+      "evidence": [
+        "In OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9.",
+        "When a user attempts a full withdrawal:",
+        "Any OffsetProgressiveCurve instantiated with offset18 < 1e9 collapses in mathematically equivalent conditions to ProgressiveCurve. Users will be permanently blocked from fully closing their positions, causing trapped funds whenever liquidating assets."
+      ]
+    },
+    {
+      "id": "offset_progressive_curve",
+      "name": "OffsetProgressiveCurve contract",
+      "role": "contract",
+      "evidence": [
+        "In OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9.",
+        "When initialize stores the OFFSET18 parameter, it calculates the raw parameter OFFSET = PCMath.divDown(OFFSET18, 1e18). If OFFSET18 is less than 1e18, OFFSET strictly evaluates to 0. During deposit and withdrawal calculations, this truncated OFFSET influences internal rounding mechanics differently than ProgressiveCurve.",
+        "Any OffsetProgressiveCurve instantiated with offset18 < 1e9 collapses in mathematically equivalent conditions to ProgressiveCurve. Users will be permanently blocked from fully closing their positions, causing trapped funds whenever liquidating assets."
+      ]
+    },
+    {
+      "id": "deposit",
+      "name": "User's deposit (assets)",
+      "role": "asset",
+      "evidence": [
+        "In OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9.",
+        "Any OffsetProgressiveCurve instantiated with offset18 < 1e9 collapses in mathematically equivalent conditions to ProgressiveCurve. Users will be permanently blocked from fully closing their positions, causing trapped funds whenever liquidating assets."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "curve_initialized_with_low_offset",
+      "kind": "precondition",
+      "text": "OffsetProgressiveCurve was initialized with an offset18 parameter smaller than 1e9.",
+      "modality": "asserted",
+      "entity_ids": [
+        "offset_progressive_curve"
+      ],
+      "evidence": [
+        "In OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9.",
+        "Any OffsetProgressiveCurve instantiated with offset18 < 1e9 collapses in mathematically equivalent conditions to ProgressiveCurve. Users will be permanently blocked from fully closing their positions, causing trapped funds whenever liquidating assets."
+      ]
+    },
+    {
+      "id": "offset_truncates_to_zero",
+      "kind": "precondition",
+      "text": "During initialize, OFFSET = PCMath.divDown(OFFSET18, 1e18) truncates to 0 because OFFSET18 < 1e18, so the stored OFFSET is 0 before the withdrawal.",
+      "modality": "asserted",
+      "entity_ids": [
+        "offset_progressive_curve"
+      ],
+      "evidence": [
+        "When initialize stores the OFFSET18 parameter, it calculates the raw parameter OFFSET = PCMath.divDown(OFFSET18, 1e18). If OFFSET18 is less than 1e18, OFFSET strictly evaluates to 0. During deposit and withdrawal calculations, this truncated OFFSET influences internal rounding mechanics differently than ProgressiveCurve."
+      ]
+    },
+    {
+      "id": "user_holds_deposit",
+      "kind": "precondition",
+      "text": "The user has a deposit (open position) in the curve whose full withdrawal is attempted.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "deposit",
+        "offset_progressive_curve"
+      ],
+      "evidence": [
+        "In OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9.",
+        "When a user attempts a full withdrawal:"
+      ]
+    },
+    {
+      "id": "attempt_full_withdrawal",
+      "kind": "action",
+      "text": "A user attempts a full withdrawal of their deposit.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "deposit",
+        "offset_progressive_curve"
+      ],
+      "evidence": [
+        "When a user attempts a full withdrawal:"
+      ]
+    },
+    {
+      "id": "offset_zero_underflow_cause",
+      "kind": "root_cause",
+      "text": "With OFFSET squaring to 0, the withdrawal math yields squaredShares = square(totalShares + OFFSET) strictly less than inner = mulDivUp(assets, SLOPE, 1e18) + square(OFFSET), so subtracting shares = squaredShares - inner underflows.",
+      "modality": "asserted",
+      "entity_ids": [
+        "offset_progressive_curve"
+      ],
+      "evidence": [
+        "The conversion rounds up the cost: inner = PCMath.mulDivUp(assets, SLOPE, 1e18) + PCMath.square(OFFSET). The offset squares to 0.",
+        "The comparison squaredShares = PCMath.square(totalShares + OFFSET) also strictly drops the OFFSET modifier.",
+        "This mathematical construction mirrors ProgressiveCurve, retaining the strict inequality squaredShares < inner.",
+        "Therefore, subtracting shares = squaredShares - inner produces a deterministic PANIC(0x11) arithmetic underflow."
+      ]
+    },
+    {
+      "id": "withdrawal_reverts_panic",
+      "kind": "impact",
+      "text": "The full withdrawal deterministically reverts with PANIC(0x11) arithmetic underflow.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "offset_progressive_curve"
+      ],
+      "evidence": [
+        "Therefore, subtracting shares = squaredShares - inner produces a deterministic PANIC(0x11) arithmetic underflow."
+      ]
+    },
+    {
+      "id": "funds_trapped",
+      "kind": "impact",
+      "text": "The user is permanently blocked from fully closing their position, trapping their funds when liquidating assets.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "deposit"
+      ],
+      "evidence": [
+        "Any OffsetProgressiveCurve instantiated with offset18 < 1e9 collapses in mathematically equivalent conditions to ProgressiveCurve. Users will be permanently blocked from fully closing their positions, causing trapped funds whenever liquidating assets."
+      ]
+    },
+    {
+      "id": "full_withdrawal_should_succeed",
+      "kind": "security_intent",
+      "text": "Users should be able to fully withdraw their deposited assets from OffsetProgressiveCurve without the withdrawal reverting and trapping funds (inferred from the claimed trapped-funds failure).",
+      "modality": "inferred",
+      "entity_ids": [
+        "user",
+        "offset_progressive_curve",
+        "deposit"
+      ],
+      "evidence": [
+        "In OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9.",
+        "Any OffsetProgressiveCurve instantiated with offset18 < 1e9 collapses in mathematically equivalent conditions to ProgressiveCurve. Users will be permanently blocked from fully closing their positions, causing trapped funds whenever liquidating assets."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "attempt_full_withdrawal"
+  ],
+  "ambiguities": [
+    "Reported bound is inconsistent: title/impact say offset18 < 1e9, but the truncation mechanism requires OFFSET18 < 1e18.",
+    "The user's exact deposited balance/share quantity is not specified; only that a full withdrawal of the deposit is attempted.",
+    "No attacker or authorization claim is made; the affected caller is merely a user with a deposit, and the impact is trapped funds rather than theft.",
+    "'Permanently blocked' is asserted; alternative exits (e.g., partial withdrawals or admin recovery) are not addressed.",
+    "Whether any full-withdrawal amount triggers the underflow, or only specific amounts, is not fully specified; the description suggests it applies generally."
+  ]
+}

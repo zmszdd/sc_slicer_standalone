@@ -1,0 +1,186 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "router_funds_present": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "router holds ETH or ERC20 balances at call time",
+      "checkpoint": "pre-call",
+      "entity_ids": [
+        "router",
+        "router_balance"
+      ],
+      "evidence": "1. The router holds tokens/ETH (e.g., from prior operations, accidental transfers, or leftovers)."
+    },
+    "injectandcall_public": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "injectAndCall is publicly callable without access-control or onlyDelegatecall guard",
+      "checkpoint": "pre-call",
+      "entity_ids": [
+        "router"
+      ],
+      "evidence": "injectAndCall is intended for delegated wallet context but is publicly callable without an onlyDelegatecall guard. It reads address(this) balances and uses them for a caller‑chosen target call, enabling anyone to drain any ETH or ERC20 tokens held by the router contract."
+    },
+    "target_caller_chosen": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "caller can supply a caller-chosen target address to injectAndCall",
+      "checkpoint": "pre-call",
+      "entity_ids": [
+        "attacker",
+        "drainer",
+        "router"
+      ],
+      "evidence": "When called directly, injectAndCall treats the router’s own balances as the “caller balance,” then forwards ETH or grants ERC20 approval and executes an arbitrary call to a caller‑controlled target. This lets any account drain funds that reside on the router address (leftovers, accidental transfers, or intermediate balances)."
+    },
+    "router_approves_target_balance": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "router ends up approving the attacker-selected target for its current balance",
+      "checkpoint": "post-call",
+      "entity_ids": [
+        "router",
+        "drainer",
+        "router_balance"
+      ],
+      "evidence": "- For ERC20: router approves drainer for full router balance and calls drainer; drainer transferFrom(router → attacker, fullBalance)."
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "injectAndCall balance injection and arbitrary external call on the router contract",
+      "modality": "potential",
+      "impact_ids": [
+        "impact_forced_approval"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The router contract holds ETH or ERC20 tokens (leftovers, accidental transfers, or intermediate balances).; injectAndCall is declared public and lacks any access-control or onlyDelegatecall guard, even though it assumes delegated wallet context.; The caller can supply a caller-chosen target and calldata to injectAndCall.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "router_funds_present"
+              },
+              {
+                "var": "injectandcall_public"
+              },
+              {
+                "var": "target_caller_chosen"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "router_holds_funds",
+            "injectandcall_public",
+            "attacker_controls_target"
+          ],
+          "evidence": [
+            "1. The router holds tokens/ETH (e.g., from prior operations, accidental transfers, or leftovers).",
+            "- Direct theft of any ERC20 tokens or ETH held by the router.",
+            "injectAndCall is intended for delegated wallet context but is publicly callable without an onlyDelegatecall guard. It reads address(this) balances and uses them for a caller‑chosen target call, enabling anyone to drain any ETH or ERC20 tokens held by the router contract.",
+            "The router exposes two balance‑injection flows: injectSweepAndCall (pulls from msg.sender) and injectAndCall (reads from address(this) for delegated wallet usage). The latter is declared public and lacks any access‑control or delegatecall guard, despite interface docs stating it’s for delegatecalls.",
+            "- injectAndCall is publicly callable and not restricted by onlyDelegatecall even though it assumes delegated wallet context and operates on address(this) balances.",
+            "When called directly, injectAndCall treats the router’s own balances as the “caller balance,” then forwards ETH or grants ERC20 approval and executes an arbitrary call to a caller‑controlled target. This lets any account drain funds that reside on the router address (leftovers, accidental transfers, or intermediate balances).",
+            "- The implementation allows arbitrary target and calldata after granting approval or forwarding value sourced from the contract’s own balances.",
+            "3. Attacker calls injectAndCall(tokenOrETH, drainer, callData, offset, placeholder):"
+          ]
+        },
+        "safety": {
+          "text": "injectAndCall, which operates on address(this) balances for delegated wallet context, should only execute in a delegated call context (guarded like onlyDelegatecall), so direct calls cannot spend the router's own balances.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "var": "router_funds_present"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "router_approves_target_balance"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_delegated_only"
+          ],
+          "evidence": [
+            "injectAndCall is intended for delegated wallet context but is publicly callable without an onlyDelegatecall guard. It reads address(this) balances and uses them for a caller‑chosen target call, enabling anyone to drain any ETH or ERC20 tokens held by the router contract.",
+            "The router exposes two balance‑injection flows: injectSweepAndCall (pulls from msg.sender) and injectAndCall (reads from address(this) for delegated wallet usage). The latter is declared public and lacks any access‑control or delegatecall guard, despite interface docs stating it’s for delegatecalls.",
+            "- Other sensitive functions (e.g., sweep) correctly require onlyDelegatecall, highlighting inconsistent access control.",
+            "- Interface docs label injectAndCall as “For delegatecalls from Sequence wallets,” but the implementation is callable by anyone."
+          ]
+        },
+        "effects": {
+          "text": "The router ends up approving the attacker-selected target for its current balance, enabling subsequent transferFrom of that balance to the attacker.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "router_funds_present"
+              },
+              {
+                "var": "router_approves_target_balance"
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "impact_forced_approval"
+          ],
+          "evidence": [
+            "- For ERC20: router approves drainer for full router balance and calls drainer; drainer transferFrom(router → attacker, fullBalance).",
+            "3) Any EOA later calls `injectAndCall(token, attackerTarget, ...)` to force-approve `attackerTarget` for the router’s current balance (d), and drain via `transferFrom(router, attacker, d)`."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "router_holds_funds",
+            "injectandcall_public",
+            "attacker_controls_target"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_delegated_only"
+          ],
+          "args.1": [
+            "intent_delegated_only"
+          ]
+        },
+        "effects": {
+          "": [
+            "impact_forced_approval"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_forced_approval",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The scenario is conditional: no concrete on-chain drain transaction is reported.",
+        "The exact signature/source of injectAndCall and whether offset/placeholder affect the balance amount are not specified."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Core V selects only impact_forced_approval; impact_unauthorized_drain is deferred as secondary consequence evidence.",
+    "Authorization-omission reasoning is not encoded as a separate authorization pattern because the delegated-only guard is a context condition rather than a permission predicate.",
+    "No concrete on-chain transaction binds the symbolic public-callable predicate.",
+    "Deferred report impact: impact_unauthorized_drain"
+  ]
+}

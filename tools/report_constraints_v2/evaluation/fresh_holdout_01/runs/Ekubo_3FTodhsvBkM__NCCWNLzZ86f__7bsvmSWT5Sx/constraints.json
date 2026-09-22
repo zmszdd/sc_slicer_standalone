@@ -1,0 +1,317 @@
+{
+  "schema_version": "stage2-semantic-bundle/1",
+  "core_formalization_status": "formalized_candidate",
+  "acceptance_status": "needs_review",
+  "report_warnings": [
+    "report impacts not assigned to a claim: i_unpaid_output",
+    "extracted preconditions not used by formal P: p_malicious_input, p_pool_liquidity, p_settlement_order",
+    "report has declared ambiguities",
+    "formalization has declared limitations"
+  ],
+  "unassigned_impact_ids": [
+    "i_unpaid_output"
+  ],
+  "claims": [
+    {
+      "id": "core_claim",
+      "formalization_status": "needs_review",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity.",
+        "direct_counterexample_status": "passed"
+      },
+      "review_reasons": [
+        "claim is qualified or inferred; not a verified realized effect"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "Router acquires a lock via Router.lock() before handling the swap, so an active lock exists while debts change.; updateDebt() allows any address to modify the current locker's debt during an active lock, using msg.sender as the token address with no access control.; When Core.swap executes, it records debt of +amountIn for the input token and -amountOut for the output token for the locked swap.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "lock_active"
+              },
+              {
+                "op": "ne",
+                "args": [
+                  {
+                    "var": "caller"
+                  },
+                  {
+                    "var": "authorized_settler"
+                  }
+                ]
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "debt_input_before"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_lock_acquired",
+            "p_no_auth",
+            "p_swap_debt"
+          ],
+          "evidence": [
+            "4. Router.lock() acquires a lock and calls Router.handleLockData()",
+            "FlashAccountant.updateDebt() allows any address to modify the current locker's debt during an active lock, using msg.sender as the token address with no access control. A malicious ERC20 token can reenter updateDebt() during transferFrom() to zero out its owed input debt, while Router withdraws output tokens before payment settlement. This enables complete pool reserve drainage as attackers receive output tokens without paying input tokens.",
+            "The function uses `msg.sender` as the token address with no validation. The only check is `_getLocker()`, which verifies an active lock exists but does not verify that `msg.sender` is authorized to modify debt for that token address. This allows any contract, including malicious ERC20 tokens, to arbitrarily modify debt during a lock.",
+            "When Core.swap executes at line 834, it calls `_updatePairDebtWithNative()` which sets:",
+            "- `debt[lockerId][inputToken] = +amountIn` (positive means locker owes this amount)",
+            "- `debt[lockerId][outputToken] = -amountOut` (negative means locker receives this amount)"
+          ]
+        },
+        "safety": {
+          "text": "Debt recorded for an active lock (positive input, negative output) should only be modifiable through the authorized settlement path so the lock can only exit once recorded debts are genuinely settled. (Inferred: the claimed failure implies that arbitrary mid-transfer debt modification must not permit an unpaid lock exit.)",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "debt_input_before"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "debt_input_after"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_settlement_integrity"
+          ],
+          "evidence": [
+            "FlashAccountant.updateDebt() allows any address to modify the current locker's debt during an active lock, using msg.sender as the token address with no access control. A malicious ERC20 token can reenter updateDebt() during transferFrom() to zero out its owed input debt, while Router withdraws output tokens before payment settlement. This enables complete pool reserve drainage as attackers receive output tokens without paying input tokens.",
+            "The lock succeeds, and the attacker keeps the output tokens without paying input tokens."
+          ]
+        },
+        "effects": {
+          "text": "The reentered updateDebt sets debt[lockerId][TokenM] from +100 to 0, zeroing the input debt owed by the locker.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "debt_input_before"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "debt_input_after"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_debt_zeroed"
+          ],
+          "evidence": [
+            "10. FlashAccountant.updateDebt() sets `debt[lockerId][TokenM] = +100 + (-100) = 0`",
+            "This sets `debt[lockerId][inputToken] = +amountIn + (-amountIn) = 0`, zeroing the input debt."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_lock_acquired",
+            "p_no_auth",
+            "p_swap_debt"
+          ],
+          "args.1": [
+            "p_lock_acquired",
+            "p_no_auth",
+            "p_swap_debt"
+          ],
+          "args.2": [
+            "p_lock_acquired",
+            "p_no_auth",
+            "p_swap_debt"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_settlement_integrity"
+          ],
+          "args.0": [
+            "si_settlement_integrity"
+          ],
+          "args.1": [
+            "si_settlement_integrity"
+          ],
+          "args.1.args.0": [
+            "si_settlement_integrity"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_debt_zeroed"
+          ],
+          "args.0": [
+            "i_debt_zeroed"
+          ],
+          "args.1": [
+            "i_debt_zeroed"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_debt_zeroed",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "scope": "Router.swap -> Core.swap records debt -> Router withdraws outputs then payFrom pulls inputs -> malicious token reenters updateDebt -> lock exit",
+      "modality": "potential",
+      "assumptions": [
+        "Router settlement order: output token is withdrawn to the recipient before payFrom() pulls the input token (p_settlement_order).",
+        "The attacker provisions a TokenM/TokenA pool with liquidity so the swap is routable and output is payable (p_pool_liquidity).",
+        "The malicious TokenM transferFrom is executed and is still in flight (reentrancy context active) when the hook invokes updateDebt (a_reenter).",
+        "The attack flow and token-hook wiring are a described exploit scenario; reaching the zeroed-debt state depends on the malicious hook invoking updateDebt during the transfer (asm_scenario)."
+      ],
+      "unresolved": []
+    }
+  ],
+  "coverage_is_model_declared_not_semantically_verified": true,
+  "human_semantic_review_required": true,
+  "code_alignment_status": "not_attempted",
+  "execution_ready": false,
+  "consistency_verdict": "not_evaluated",
+  "unassigned_precondition_ids": [
+    "p_malicious_input",
+    "p_pool_liquidity",
+    "p_settlement_order"
+  ],
+  "precondition_coverage_is_structural_not_semantic": true,
+  "strict_piv_gate": true,
+  "observability_review": {
+    "schema_version": "observability-review/1",
+    "claims": [
+      {
+        "claim_id": "core_claim",
+        "safety_variables": [
+          "debt_input_after",
+          "debt_input_before"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      }
+    ],
+    "review_status": "no_structural_warning",
+    "observability_established": false,
+    "human_semantic_review_required": true,
+    "limitations": [
+      "I-only Boolean may be a legitimate observation; hints are not automatic errors",
+      "No code binding, predicate-name interpretation or report truth assessment",
+      "Both SAT is a review hint, not a universal UNSAT requirement"
+    ],
+    "model_calls": 0
+  },
+  "provenance": {
+    "code_provided_to_model": false,
+    "contract_file_read": false,
+    "paired_case_checked": true,
+    "case_id": "Ekubo_3FTodhsvBkM__NCCWNLzZ86f__7bsvmSWT5Sx",
+    "submission_uid": "7bsvmSWT5Sx",
+    "finding_uid": "NCCWNLzZ86f",
+    "target_test": "testDebtForgeryConceptual",
+    "declared_code_sha256": "3f94967cc89d09b0a5f506b664456fe2a5a568260a176bba0f58763623281d4b",
+    "report_path": "/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/Ekubo_3FTodhsvBkM__NCCWNLzZ86f__7bsvmSWT5Sx/report.json",
+    "report_sha256": "0728f0b706e2f3d5371a8fd5cdc0792b2ba0e1db2598e3ca9ab2b7913304a6e8",
+    "report_input_sha256": "03efd81edd56de0bc4629d8b4e873042874e6b43cef6fdbb1f53bea03e80f61f",
+    "report_input_policy": {
+      "source_format": "report.json",
+      "selected_fields": [
+        "title",
+        "body.description_and_impact"
+      ],
+      "excluded_fields": [
+        "proof_of_concept",
+        "recommended_mitigation",
+        "source_record",
+        "pairing",
+        "contract_code"
+      ],
+      "policy_version": "report-json-input/3",
+      "title_deduplicated": false
+    },
+    "candidate_origin": "external_model",
+    "elements_source": null,
+    "formalization_source": null,
+    "requested_formalization_scope": "core",
+    "prompt_version": "semantic-v3.11",
+    "formal_retries_allowed": 0,
+    "model_catalog_view": "exact_id_text_without_offsets",
+    "neural_mode": "two_step",
+    "formalization_generation": "deterministic_from_plan",
+    "reference_answers_provided_to_model": false
+  },
+  "external_model_invocations": 2
+}

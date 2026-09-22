@@ -1,0 +1,60 @@
+Router lacks deadline parameter allowing stale transactions to execute unexpectedly
+
+## Summary
+The Ekubo Router contract does not include a deadline parameter in any of its swap functions, unlike industry-standard DEX routers (Uniswap V2/V3, Curve, etc.). This allows transactions to execute at any point in the future as long as slippage requirements are met, potentially resulting in unwanted trade execution when user intent has changed.
+
+## Root Cause
+The Router contract's swap functions lack a deadline parameter and corresponding `block.timestamp` check:
+
+**Links to affected code:**
+- https://github.com/code-423n4/2025-11-ekubo/blob/main/src/Router.sol#L266-L272
+- https://github.com/code-423n4/2025-11-ekubo/blob/main/src/Router.sol#L280-L289
+- https://github.com/code-423n4/2025-11-ekubo/blob/main/src/Router.sol#L300-L317
+- https://github.com/code-423n4/2025-11-ekubo/blob/main/src/Router.sol#L327-L338
+- https://github.com/code-423n4/2025-11-ekubo/blob/main/src/Router.sol#L347-L353
+- https://github.com/code-423n4/2025-11-ekubo/blob/main/src/Router.sol#L380-L388
+- https://github.com/code-423n4/2025-11-ekubo/blob/main/src/Router.sol#L394-L403
+
+## Vulnerability Details
+
+### The Issue
+All swap functions in Router.sol accept slippage protection (`calculatedAmountThreshold`) but none accept a deadline parameter. This means:
+
+1. A user submits a swap transaction at time T1
+2. The transaction sits in the mempool (due to low gas, network congestion, etc.)
+3. At time T2 (hours/days/weeks later), the user's intent may have changed
+4. The transaction can still execute as long as slippage requirements are met
+5. User receives tokens they no longer want/need
+
+### Comparison with Industry Standard
+
+**Uniswap V2 Router:**
+
+**Ekubo Router:**
+
+### Key Distinction: Slippage vs Deadline
+
+| Protection | What It Does | What It Prevents |
+|------------|--------------|------------------|
+| **Slippage** (`calculatedAmountThreshold`) | Ensures acceptable price | Bad trade execution (price impact) |
+| **Deadline** (missing) | Ensures timely execution | Unwanted trade execution (stale TX) |
+
+**Slippage and deadline serve different purposes:**
+- Slippage protects against **BAD PRICE** during execution
+- Deadline protects against **UNWANTED EXECUTION** after user intent changes
+
+## Impact
+
+### Scenario: User Intent Change
+1. **Monday**: Alice submits swap TX to get USDC for rent payment due Friday
+2. **Tuesday-Thursday**: TX sits in mempool due to low gas price
+3. **Friday**: Alice pays rent using other funds, no longer needs USDC
+4. **Saturday**: Alice forgets about pending TX
+5. **Sunday**: Gas prices drop, TX executes
+6. **Result**: Alice now has unwanted USDC instead of her original tokens
+
+### Impact Assessment
+- **No direct attacker profit**: An attacker cannot extract additional value due to missing deadline (slippage still protects price)
+- **User harm**: Users may execute trades they no longer want
+- **User responsibility**: Users CAN cancel pending transactions, but may forget
+- **Workaround exists**: Users can add deadline via multicall pattern (requires extra knowledge)

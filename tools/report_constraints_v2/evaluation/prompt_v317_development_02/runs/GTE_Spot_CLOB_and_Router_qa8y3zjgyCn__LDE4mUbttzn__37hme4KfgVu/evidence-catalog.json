@@ -1,0 +1,139 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "b31acd9958cfbcc66aed4d6703832cbadf29d6bbcbdc2b6c7483389cfd5459ee",
+  "fragments": [
+    {
+      "id": "e_b31acd9958cf_0001",
+      "text": "Fill-or-Kill (FOK) Orders Incorrectly Revert Due to Unfillable Lot Size Remainder (Dust)",
+      "start": 0,
+      "end": 88,
+      "line": 1
+    },
+    {
+      "id": "e_b31acd9958cf_0002",
+      "text": "## Summary",
+      "start": 90,
+      "end": 100,
+      "line": 3
+    },
+    {
+      "id": "e_b31acd9958cf_0003",
+      "text": "The Fill-or-Kill (FOK) order functionality in `CLOB.sol` is flawed. It causes transactions to revert if any \"dust\" amount remains after matching, even when this dust is untradeable due to the market's `lotSizeInBase` constraint. This contradicts the expected behavior of a FOK order, which should only fail if the *tradeable* portion cannot be filled completely.",
+      "start": 101,
+      "end": 463,
+      "line": 4
+    },
+    {
+      "id": "e_b31acd9958cf_0004",
+      "text": "## Finding Description",
+      "start": 465,
+      "end": 487,
+      "line": 6
+    },
+    {
+      "id": "e_b31acd9958cf_0005",
+      "text": "A FOK order requires the entire order to be filled immediately and in its entirety, or the transaction must be reverted. The `CLOB.sol` contract implements markets with a `lotSizeInBase`, which is the smallest indivisible unit of the base asset that can be traded.",
+      "start": 488,
+      "end": 752,
+      "line": 7
+    },
+    {
+      "id": "e_b31acd9958cf_0006",
+      "text": "When a taker order is matched against resting limit orders, the fill amount is rounded down to the nearest lot size. This can result in a small, remaining portion of the taker's order that is smaller than one `lotSizeInBase` (i.e., \"dust\"). This dust amount is fundamentally untradeable.",
+      "start": 754,
+      "end": 1041,
+      "line": 9
+    },
+    {
+      "id": "e_b31acd9958cf_0007",
+      "text": "The issue occurs in the `_processFillBidOrder` and `_processFillAskOrder` functions. After the matching engine runs, the contract performs the following check:",
+      "start": 1043,
+      "end": 1202,
+      "line": 11
+    },
+    {
+      "id": "e_b31acd9958cf_0008",
+      "text": "This logic is too simplistic. It reverts if any amount of the order remains (newOrder.amount > 0), failing to distinguish between a failure due to insufficient liquidity and a success where only untradeable dust is left.",
+      "start": 1203,
+      "end": 1423,
+      "line": 12
+    },
+    {
+      "id": "e_b31acd9958cf_0009",
+      "text": "Scenario:",
+      "start": 1425,
+      "end": 1434,
+      "line": 14
+    },
+    {
+      "id": "e_b31acd9958cf_0010",
+      "text": "1. A market is configured with `lotSizeInBase = 1 ether`.",
+      "start": 1435,
+      "end": 1492,
+      "line": 15
+    },
+    {
+      "id": "e_b31acd9958cf_0011",
+      "text": "2. A resting limit order exists to sell `100 ETH`.",
+      "start": 1493,
+      "end": 1543,
+      "line": 16
+    },
+    {
+      "id": "e_b31acd9958cf_0012",
+      "text": "3. A user submits a FOK order via `postFillOrder` to buy `100.5 ether`.",
+      "start": 1544,
+      "end": 1615,
+      "line": 17
+    },
+    {
+      "id": "e_b31acd9958cf_0013",
+      "text": "4. The matching engine fills `100 ether`. The remaining `newOrder.amount` is `0.5 ether`.",
+      "start": 1616,
+      "end": 1705,
+      "line": 18
+    },
+    {
+      "id": "e_b31acd9958cf_0014",
+      "text": "5. The check `newOrder.amount > 0` evaluates to true, and the transaction incorrectly reverts with `FOKOrderNotFilled()`, failing the user's otherwise successful trade.",
+      "start": 1706,
+      "end": 1874,
+      "line": 19
+    },
+    {
+      "id": "e_b31acd9958cf_0015",
+      "text": "The project's `README.md` even acknowledges that this behavior is not what is intended, confirming the validity of this issue:",
+      "start": 1876,
+      "end": 2002,
+      "line": 21
+    },
+    {
+      "id": "e_b31acd9958cf_0016",
+      "text": "## Impact Explanation",
+      "start": 2004,
+      "end": 2025,
+      "line": 23
+    },
+    {
+      "id": "e_b31acd9958cf_0017",
+      "text": "This is a significant correctness bug that severely degrades a core feature of the protocol. The FOK order type becomes unreliable and unusable in practice, as users' valid trades will frequently and unexpectedly fail due to common rounding artifacts. This breaks the functional promise of the FOK order type and harms the user experience, potentially driving users away. While it doesn't cause a direct loss of funds, it prevents the intended functionality of the exchange.",
+      "start": 2026,
+      "end": 2500,
+      "line": 24
+    },
+    {
+      "id": "e_b31acd9958cf_0018",
+      "text": "## Likelihood Explanation",
+      "start": 2502,
+      "end": 2527,
+      "line": 26
+    },
+    {
+      "id": "e_b31acd9958cf_0019",
+      "text": "In any active market, it is very common for a taker's desired trade size not to be an exact multiple of the available liquidity's lot sizes. Any user attempting a FOK order in such a common scenario will have their transaction reverted, making the occurrence of this bug highly likely in a live environment.",
+      "start": 2529,
+      "end": 2836,
+      "line": 27
+    }
+  ]
+}

@@ -1,0 +1,225 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "twap_equals_spot": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "In UniswapPriceOracle.validatePrice(), the computed timeWeightedAverage is mathematically equal to the current spot price tradePrice",
+      "checkpoint": "before buyback validation",
+      "entity_ids": [
+        "uniswap_price_oracle"
+      ],
+      "evidence": "The TWAP (Time-Weighted Average Price) calculation in `UniswapPriceOracle.validatePrice()` contains a mathematical identity error: the computed `timeWeightedAverage` is **mathematically always equal to** the current spot price `tradePrice`, causing the function to **always return true** (except when `block.timestamp == blockTimestampLast`)."
+    },
+    "amount_out_min_zero": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "BuyBackBurnerUniswap._performSwap() sets amountOutMin = 0 for the V2 DEX swap",
+      "checkpoint": "before swap execution",
+      "entity_ids": [
+        "buy_back_burner_uniswap"
+      ],
+      "evidence": "Additionally, `BuyBackBurnerUniswap._performSwap()` sets `amountOutMin = 0` for the V2 DEX swap, providing zero minimum output protection."
+    },
+    "buybacker_holds_secondtokens": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The BuyBackBurner contract holds secondTokens waiting to be bought back into OLAS and burned",
+      "checkpoint": "before buyback call",
+      "entity_ids": [
+        "buy_back_burner",
+        "buy_back_tokens"
+      ],
+      "evidence": "**Precondition**: The BuyBackBurner contract holds secondTokens (e.g., ETH/WETH) waiting to be bought back into OLAS and burned."
+    },
+    "buyback_permissionless": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "buyBack is permissionless so any caller can invoke it",
+      "checkpoint": "before buyback call",
+      "entity_ids": [
+        "buy_back_burner",
+        "attacker"
+      ],
+      "evidence": "- **Repeatable exploit**: `buyBack` is permissionless (anyone can call it), so the attacker can choose the optimal timing (e.g., when the BuyBackBurner has accumulated a large secondToken balance) to maximize profit."
+    },
+    "buyback_completes": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the buyback call completes without reverting and the swap is executed",
+      "checkpoint": "after BuyBackBurner.buyBack execution",
+      "entity_ids": [
+        "buy_back_burner"
+      ],
+      "evidence": "- `_performSwap(...)` -> swaps at `amountOutMin = 0` at the inflated price -> BuyBackBurner receives **far fewer OLAS**"
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "BuyBackBurner V2 buyback-and-burn flow using UniswapPriceOracle price validation and BuyBackBurnerUniswap swap",
+      "modality": "potential",
+      "impact_ids": [
+        "imp_swap_receives_fewer_olas"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The BuyBackBurner contract holds secondTokens (e.g., ETH/WETH) waiting to be bought back into OLAS and burned.; In UniswapPriceOracle.validatePrice(), the computed timeWeightedAverage is mathematically always equal to the current spot price tradePrice.; BuyBackBurnerUniswap._performSwap() sets amountOutMin = 0 for the V2 DEX swap.; buyBack is permissionless (anyone can call it), so the attacker can choose the optimal timing to maximize profit.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "buybacker_holds_secondtokens"
+              },
+              {
+                "var": "twap_equals_spot"
+              },
+              {
+                "var": "amount_out_min_zero"
+              },
+              {
+                "var": "buyback_permissionless"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_buybacker_holds_secondtokens",
+            "p_twap_identity_error",
+            "p_swap_amountoutmin_zero",
+            "asm_buyback_permissionless"
+          ],
+          "evidence": [
+            "**Precondition**: The BuyBackBurner contract holds secondTokens (e.g., ETH/WETH) waiting to be bought back into OLAS and burned.",
+            "The TWAP (Time-Weighted Average Price) calculation in `UniswapPriceOracle.validatePrice()` contains a mathematical identity error: the computed `timeWeightedAverage` is **mathematically always equal to** the current spot price `tradePrice`, causing the function to **always return true** (except when `block.timestamp == blockTimestampLast`).",
+            "Therefore `timeWeightedAverage` is identically equal to `tradePrice` (mathematical identity), and `derivation` is identically `0`.",
+            "Additionally, `BuyBackBurnerUniswap._performSwap()` sets `amountOutMin = 0` for the V2 DEX swap, providing zero minimum output protection.",
+            "- **Repeatable exploit**: `buyBack` is permissionless (anyone can call it), so the attacker can choose the optimal timing (e.g., when the BuyBackBurner has accumulated a large secondToken balance) to maximize profit."
+          ]
+        },
+        "safety": {
+          "text": "Inferred: validatePrice(maxSlippage) should reject a spot price that has been manipulated outside the allowed maxSlippage bound, so a buyback cannot complete using an inflated attacker-controlled price.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "twap_equals_spot"
+                  },
+                  {
+                    "var": "amount_out_min_zero"
+                  },
+                  {
+                    "var": "buybacker_holds_secondtokens"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "buyback_completes"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_twap_reject_manipulated_price"
+          ],
+          "evidence": [
+            "The TWAP (Time-Weighted Average Price) calculation in `UniswapPriceOracle.validatePrice()` contains a mathematical identity error: the computed `timeWeightedAverage` is **mathematically always equal to** the current spot price `tradePrice`, causing the function to **always return true** (except when `block.timestamp == blockTimestampLast`).",
+            "- `validatePrice(maxSlippage)` -> **always returns true** (due to the identity bug)",
+            "- After-swap check: `tradePrice` is within `previousPrice +/- maxSlippage%` -> **passes** (because `previousPrice` itself is the manipulated price)"
+          ]
+        },
+        "effects": {
+          "text": "In Block N, inside BuyBackBurner._buyOLAS, _performSwap swaps at amountOutMin = 0 at the inflated price, causing BuyBackBurner to receive far fewer OLAS than the fair market price.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "twap_equals_spot"
+                  },
+                  {
+                    "var": "amount_out_min_zero"
+                  },
+                  {
+                    "var": "buybacker_holds_secondtokens"
+                  }
+                ]
+              },
+              {
+                "var": "buyback_completes"
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "imp_swap_receives_fewer_olas"
+          ],
+          "evidence": [
+            "- `_performSwap(...)` -> swaps at `amountOutMin = 0` at the inflated price -> BuyBackBurner receives **far fewer OLAS**",
+            "- **Direct protocol fund loss**: The BuyBackBurner receives far fewer OLAS than the fair market price during V2 buybacks. The difference is extracted by the attacker."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_buybacker_holds_secondtokens",
+            "p_twap_identity_error",
+            "p_swap_amountoutmin_zero",
+            "asm_buyback_permissionless"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_twap_reject_manipulated_price"
+          ],
+          "args.0": [
+            "si_twap_reject_manipulated_price"
+          ],
+          "args.1": [
+            "si_twap_reject_manipulated_price"
+          ]
+        },
+        "effects": {
+          "": [
+            "imp_swap_receives_fewer_olas"
+          ],
+          "args.0": [
+            "imp_swap_receives_fewer_olas"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "imp_swap_receives_fewer_olas",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The buyback flow calls UniswapPriceOracle.validatePrice(maxSlippage) before performing the swap.",
+        "The Uniswap V2 pool is the venue used by BuyBackBurnerUniswap._performSwap().",
+        "Any caller may invoke buyBack to trigger the buyback-and-burn path.",
+        "The swap consumes secondTokens held by BuyBackBurner and returns OLAS to the contract."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "imp_after_swap_check_passes is a secondary consequence of the same TWAP identity flaw and is deferred from the core V.",
+    "Attacker capital and pre-existing OLAS/secondToken holdings before Block N-1 are outside this core binding.",
+    "Fee-on-transfer, gas, and bridge2Burner constraints on the attacker's profit are not modeled.",
+    "The concrete manipulated spot price and fair market price are not available, so the V is represented at the completion/forbidden-effect level rather than as a quantified slippage loss.",
+    "Deferred report impact: imp_after_swap_check_passes"
+  ]
+}

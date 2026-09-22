@@ -1,0 +1,160 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Kinetiq_k8aVPPVguSE",
+    "audit_uid": "k8aVPPVguSE",
+    "requested_submission_uid": "e5QT9kCTWHg",
+    "requested_finding_uid": "tk7CBdohRkT",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Kinetiq_k8aVPPVguSE/20260618_143339/findings.json",
+    "source_submission_uid": "e5QT9kCTWHg",
+    "source_finding_uid": "tk7CBdohRkT",
+    "original_report_path": "Kinetiq_k8aVPPVguSE\\medium_valid_e5QT9kCTWHg.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "e5QT9kCTWHg",
+  "finding_uid": "tk7CBdohRkT",
+  "finding_number": "28",
+  "title": "Missing `whenWithdrawalNotPaused` Modifier in `confirmWithdrawal` and `batchConfirmWithdrawals` Allows Withdrawals During Pause",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "th3_hybrid",
+  "body": "## Finding description and impact\n\n**Description:**\nThe `confirmWithdrawal` and `batchConfirmWithdrawals` functions in the `StakingManager` contract allow users to finalize queued HYPE token withdrawals after a mandatory delay. However, neither function includes the `whenWithdrawalNotPaused` modifier, which is intended to block withdrawals when the contract’s withdrawal functionality is paused. While both functions use the `whenNotPaused` modifier (for general contract pauses), the lack of `whenWithdrawalNotPaused` enables users to bypass withdrawal-specific restrictions.\nThis vulnerability undermines the protocol’s ability to enforce withdrawal pauses, which may be activated during emergencies (e.g., security incidents or liquidity issues).\n\n**Impact:** \nThe absence of the `whenWithdrawalNotPaused` modifier allows users to confirm and withdraw HYPE tokens even when withdrawals are paused, violating the protocol’s security controls. This could lead to:\n\nUnauthorized Fund Drains: Users withdrawing HYPE during a pause intended to protect the contract (e.g., during a suspected exploit).\n\n## Recommended mitigation steps\n\n**Recommended Mitigation:** Add the `whenWithdrawalNotPaused` modifier to both `confirmWithdrawal` and `batchConfirmWithdrawals` to enforce withdrawal pause restrictions.\n\n```diff\n- function confirmWithdrawal(uint256 withdrawalId) external nonReentrant whenNotPaused {\n+ function confirmWithdrawal(uint256 withdrawalId) external nonReentrant whenNotPaused whenWithdrawalNotPaused {\n```\n\n```diff\n- function batchConfirmWithdrawals(uint256[] calldata withdrawalIds) external nonReentrant whenNotPaused {\n+ function batchConfirmWithdrawals(uint256[] calldata withdrawalIds) external nonReentrant whenNotPaused whenWithdrawalNotPaused {\n```",
+  "proof_of_concept": "**Proof of Concept:**\nThe following scenario demonstrates the vulnerability:\n\n1. A user stakes 1 ETH in the `StakingManager` contract and queues a withdrawal request for the equivalent HYPE tokens.\n\n2. During the withdrawal delay (e.g., 7 days), the manager pauses withdrawals by calling `pauseWithdrawal()`.\n\n3. After the delay ends (e.g., 8 days), the user calls `confirmWithdrawal` or `batchConfirmWithdrawals`, successfully withdrawing HYPE despite the pause.\n\nTest Case: Add the following test to `StakingManager.t.sol` and run `forge test --mt test_ConfirmWithdrawalAfterWithdrawalPause -vvv` to verify the issue.\n\n```javascript\nfunction test_ConfirmWithdrawalAfterWithdrawalPause() public {\n        // Setup initial stake and withdrawal\n        uint256 stakeAmount = 1 ether;\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n        stakingManager.stake{value: stakeAmount}();\n\n        // Approve and queue withdrawal\n        vm.startPrank(user);\n        kHYPE.approve(address(stakingManager), stakeAmount);\n        // Store the withdrawalId (should be 0 for first withdrawal)\n        uint256 withdrawalId = 0;\n        stakingManager.queueWithdrawal(stakeAmount);\n        vm.stopPrank();\n\n        // Add ETH to the StakingManager contract to process the withdrawal\n        vm.deal(address(stakingManager), stakeAmount);\n\n        vm.prank(manager);\n        stakingManager.pauseWithdrawal();\n\n        // Move to after withdrawal delay\n        vm.warp(8 days);\n\n        // Get the actual withdrawal request details to use in our event expectation\n        StakingManager.WithdrawalRequest memory request = stakingManager.withdrawalRequests(user, withdrawalId);\n        uint256 hypeAmount = request.hypeAmount;\n\n        // Confirm withdrawal - use the actual hypeAmount from the request\n        vm.prank(user);\n        vm.expectEmit(true, true, true, true);\n        emit WithdrawalConfirmed(user, withdrawalId, hypeAmount);\n        stakingManager.confirmWithdrawal(withdrawalId);\n\n        // Calculate the expected fee (0.1% of stakeAmount)\n        uint256 feeRate = stakingManager.unstakeFeeRate();\n        uint256 expectedFee = (stakeAmount * feeRate) / stakingManager.BASIS_POINTS();\n        uint256 expectedClaimedAmount = stakeAmount - expectedFee;\n\n        assertEq(stakingManager.totalQueuedWithdrawals(), 0);\n        assertEq(stakingManager.totalClaimed(), expectedClaimedAmount, \"Total claimed should account for fee\");\n    }\n```\n\nThis test shows that `confirmWithdrawal` processes the withdrawal despite the pause, emitting the `WithdrawalConfirmed `event and updating balances.",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L302",
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L314"
+  ],
+  "source_record": {
+    "project_id": "k8aVPPVguSE",
+    "submission_index": "616",
+    "api_submission_id": "",
+    "uid": "e5QT9kCTWHg",
+    "number": "616",
+    "title": "Missing `whenWithdrawalNotPaused` Modifier in `confirmWithdrawal` and `batchConfirmWithdrawals` Allows Withdrawals During Pause",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "th3_hybrid",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L302",
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L314"
+    ],
+    "body": "## Finding description and impact\n\n**Description:**\nThe `confirmWithdrawal` and `batchConfirmWithdrawals` functions in the `StakingManager` contract allow users to finalize queued HYPE token withdrawals after a mandatory delay. However, neither function includes the `whenWithdrawalNotPaused` modifier, which is intended to block withdrawals when the contract’s withdrawal functionality is paused. While both functions use the `whenNotPaused` modifier (for general contract pauses), the lack of `whenWithdrawalNotPaused` enables users to bypass withdrawal-specific restrictions.\nThis vulnerability undermines the protocol’s ability to enforce withdrawal pauses, which may be activated during emergencies (e.g., security incidents or liquidity issues).\n\n**Impact:** \nThe absence of the `whenWithdrawalNotPaused` modifier allows users to confirm and withdraw HYPE tokens even when withdrawals are paused, violating the protocol’s security controls. This could lead to:\n\nUnauthorized Fund Drains: Users withdrawing HYPE during a pause intended to protect the contract (e.g., during a suspected exploit).\n\n## Recommended mitigation steps\n\n**Recommended Mitigation:** Add the `whenWithdrawalNotPaused` modifier to both `confirmWithdrawal` and `batchConfirmWithdrawals` to enforce withdrawal pause restrictions.\n\n```diff\n- function confirmWithdrawal(uint256 withdrawalId) external nonReentrant whenNotPaused {\n+ function confirmWithdrawal(uint256 withdrawalId) external nonReentrant whenNotPaused whenWithdrawalNotPaused {\n```\n\n```diff\n- function batchConfirmWithdrawals(uint256[] calldata withdrawalIds) external nonReentrant whenNotPaused {\n+ function batchConfirmWithdrawals(uint256[] calldata withdrawalIds) external nonReentrant whenNotPaused whenWithdrawalNotPaused {\n```",
+    "proof_of_concept": "**Proof of Concept:**\nThe following scenario demonstrates the vulnerability:\n\n1. A user stakes 1 ETH in the `StakingManager` contract and queues a withdrawal request for the equivalent HYPE tokens.\n\n2. During the withdrawal delay (e.g., 7 days), the manager pauses withdrawals by calling `pauseWithdrawal()`.\n\n3. After the delay ends (e.g., 8 days), the user calls `confirmWithdrawal` or `batchConfirmWithdrawals`, successfully withdrawing HYPE despite the pause.\n\nTest Case: Add the following test to `StakingManager.t.sol` and run `forge test --mt test_ConfirmWithdrawalAfterWithdrawalPause -vvv` to verify the issue.\n\n```javascript\nfunction test_ConfirmWithdrawalAfterWithdrawalPause() public {\n        // Setup initial stake and withdrawal\n        uint256 stakeAmount = 1 ether;\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n        stakingManager.stake{value: stakeAmount}();\n\n        // Approve and queue withdrawal\n        vm.startPrank(user);\n        kHYPE.approve(address(stakingManager), stakeAmount);\n        // Store the withdrawalId (should be 0 for first withdrawal)\n        uint256 withdrawalId = 0;\n        stakingManager.queueWithdrawal(stakeAmount);\n        vm.stopPrank();\n\n        // Add ETH to the StakingManager contract to process the withdrawal\n        vm.deal(address(stakingManager), stakeAmount);\n\n        vm.prank(manager);\n        stakingManager.pauseWithdrawal();\n\n        // Move to after withdrawal delay\n        vm.warp(8 days);\n\n        // Get the actual withdrawal request details to use in our event expectation\n        StakingManager.WithdrawalRequest memory request = stakingManager.withdrawalRequests(user, withdrawalId);\n        uint256 hypeAmount = request.hypeAmount;\n\n        // Confirm withdrawal - use the actual hypeAmount from the request\n        vm.prank(user);\n        vm.expectEmit(true, true, true, true);\n        emit WithdrawalConfirmed(user, withdrawalId, hypeAmount);\n        stakingManager.confirmWithdrawal(withdrawalId);\n\n        // Calculate the expected fee (0.1% of stakeAmount)\n        uint256 feeRate = stakingManager.unstakeFeeRate();\n        uint256 expectedFee = (stakeAmount * feeRate) / stakingManager.BASIS_POINTS();\n        uint256 expectedClaimedAmount = stakeAmount - expectedFee;\n\n        assertEq(stakingManager.totalQueuedWithdrawals(), 0);\n        assertEq(stakingManager.totalClaimed(), expectedClaimedAmount, \"Total claimed should account for fee\");\n    }\n```\n\nThis test shows that `confirmWithdrawal` processes the withdrawal despite the pause, emitting the `WithdrawalConfirmed `event and updating balances.",
+    "detail_url": "https://code4rena.com/api/v1/audits/k8aVPPVguSE/submissions/616",
+    "raw": {
+      "auditUid": "k8aVPPVguSE",
+      "createdAt": "2025-04-15T23:30:52.236Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "bQUPRKbvw28",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "tk7CBdohRkT"
+        },
+        {
+          "uid": "bKaU93MFCjd",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "tk7CBdohRkT"
+        },
+        {
+          "uid": "kMdocF6gfuW",
+          "userUid": "tZ7iSgbTXG2",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-04-18T02:25:38.720Z",
+          "type": "validity",
+          "value": "wontfix",
+          "submissionUid": null,
+          "findingUid": "tk7CBdohRkT"
+        },
+        {
+          "uid": "tR4VWvWaAba",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-22T12:52:18.423Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "e5QT9kCTWHg",
+          "findingUid": null
+        },
+        {
+          "uid": "6BL3jm5Zag2",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-26T08:28:24.703Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "tk7CBdohRkT"
+        },
+        {
+          "uid": "BW5BhfqEvnA",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-28T20:42:13.405Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "tk7CBdohRkT"
+        },
+        {
+          "uid": "NV3Hy6jwYzW",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-28T20:46:03.298Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "e5QT9kCTWHg",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "tk7CBdohRkT",
+        "number": 28,
+        "duplicates": 11
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-05-07T15:00:47.683Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Missing `whenWithdrawalNotPaused` Modifier in `confirmWithdrawal` and `batchConfirmWithdrawals` Allows Withdrawals During Pause",
+      "uid": "e5QT9kCTWHg",
+      "updatedAt": "2025-04-15T23:30:52.236Z",
+      "user": {
+        "uid": "jW3tcgRNGYT",
+        "handle": "th3_hybrid"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\n**Description:**\nThe `confirmWithdrawal` and `batchConfirmWithdrawals` functions in the `StakingManager` contract allow users to finalize queued HYPE token withdrawals after a mandatory delay. However, neither function includes the `whenWithdrawalNotPaused` modifier, which is intended to block withdrawals when the contract’s withdrawal functionality is paused. While both functions use the `whenNotPaused` modifier (for general contract pauses), the lack of `whenWithdrawalNotPaused` enables users to bypass withdrawal-specific restrictions.\nThis vulnerability undermines the protocol’s ability to enforce withdrawal pauses, which may be activated during emergencies (e.g., security incidents or liquidity issues).\n\n**Impact:** \nThe absence of the `whenWithdrawalNotPaused` modifier allows users to confirm and withdraw HYPE tokens even when withdrawals are paused, violating the protocol’s security controls. This could lead to:\n\nUnauthorized Fund Drains: Users withdrawing HYPE during a pause intended to protect the contract (e.g., during a suspected exploit).\n\n## Recommended mitigation steps\n\n**Recommended Mitigation:** Add the `whenWithdrawalNotPaused` modifier to both `confirmWithdrawal` and `batchConfirmWithdrawals` to enforce withdrawal pause restrictions.\n\n```diff\n- function confirmWithdrawal(uint256 withdrawalId) external nonReentrant whenNotPaused {\n+ function confirmWithdrawal(uint256 withdrawalId) external nonReentrant whenNotPaused whenWithdrawalNotPaused {\n```\n\n```diff\n- function batchConfirmWithdrawals(uint256[] calldata withdrawalIds) external nonReentrant whenNotPaused {\n+ function batchConfirmWithdrawals(uint256[] calldata withdrawalIds) external nonReentrant whenNotPaused whenWithdrawalNotPaused {\n```",
+      "proofOfConcept": "**Proof of Concept:**\nThe following scenario demonstrates the vulnerability:\n\n1. A user stakes 1 ETH in the `StakingManager` contract and queues a withdrawal request for the equivalent HYPE tokens.\n\n2. During the withdrawal delay (e.g., 7 days), the manager pauses withdrawals by calling `pauseWithdrawal()`.\n\n3. After the delay ends (e.g., 8 days), the user calls `confirmWithdrawal` or `batchConfirmWithdrawals`, successfully withdrawing HYPE despite the pause.\n\nTest Case: Add the following test to `StakingManager.t.sol` and run `forge test --mt test_ConfirmWithdrawalAfterWithdrawalPause -vvv` to verify the issue.\n\n```javascript\nfunction test_ConfirmWithdrawalAfterWithdrawalPause() public {\n        // Setup initial stake and withdrawal\n        uint256 stakeAmount = 1 ether;\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n        stakingManager.stake{value: stakeAmount}();\n\n        // Approve and queue withdrawal\n        vm.startPrank(user);\n        kHYPE.approve(address(stakingManager), stakeAmount);\n        // Store the withdrawalId (should be 0 for first withdrawal)\n        uint256 withdrawalId = 0;\n        stakingManager.queueWithdrawal(stakeAmount);\n        vm.stopPrank();\n\n        // Add ETH to the StakingManager contract to process the withdrawal\n        vm.deal(address(stakingManager), stakeAmount);\n\n        vm.prank(manager);\n        stakingManager.pauseWithdrawal();\n\n        // Move to after withdrawal delay\n        vm.warp(8 days);\n\n        // Get the actual withdrawal request details to use in our event expectation\n        StakingManager.WithdrawalRequest memory request = stakingManager.withdrawalRequests(user, withdrawalId);\n        uint256 hypeAmount = request.hypeAmount;\n\n        // Confirm withdrawal - use the actual hypeAmount from the request\n        vm.prank(user);\n        vm.expectEmit(true, true, true, true);\n        emit WithdrawalConfirmed(user, withdrawalId, hypeAmount);\n        stakingManager.confirmWithdrawal(withdrawalId);\n\n        // Calculate the expected fee (0.1% of stakeAmount)\n        uint256 feeRate = stakingManager.unstakeFeeRate();\n        uint256 expectedFee = (stakeAmount * feeRate) / stakingManager.BASIS_POINTS();\n        uint256 expectedClaimedAmount = stakeAmount - expectedFee;\n\n        assertEq(stakingManager.totalQueuedWithdrawals(), 0);\n        assertEq(stakingManager.totalClaimed(), expectedClaimedAmount, \"Total claimed should account for fee\");\n    }\n```\n\nThis test shows that `confirmWithdrawal` processes the withdrawal despite the pause, emitting the `WithdrawalConfirmed `event and updating balances.",
+      "linesOfCode": "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L302,https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L314",
+      "number": 616,
+      "aiExplanation": null,
+      "_index": 616
+    }
+  }
+}

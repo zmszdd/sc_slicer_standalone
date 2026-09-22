@@ -1,0 +1,109 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "CLOB limit order matching and settlement",
+    "environment": "GTE CLOB contracts, _processLimitBidOrder/_processLimitAskOrder",
+    "evidence": [
+      "Valid trades can revert due to incorrect bit-wise check",
+      "[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`.",
+      "Inside `CLOB.sol`, both `_processLimitBidOrder()` (line 503) and `_processLimitAskOrder()` (line 544) contain:",
+      "Instead, `baseTokenAmountReceived & quoteTokenAmountSent` performs a bit-level comparison. Two **non-zero** integers that share no common set bits (e.g., `1` and `2`) pass this test, so the compound condition becomes true whenever the amounts differ and have no overlapping bits. In practice:",
+      "3. `1 != 2` is true, `1 & 2 == 0` is also true ⇒ `ZeroCostTrade()` reverts, aborting the otherwise valid match.",
+      "Because base amounts are denominated in base tokens and quote amounts in quote tokens, equality is virtually impossible, so every trade relies on the bit-wise clause. Random bit patterns therefore decide whether normal trades succeed or fail, enabling denial-of-service on any pair of amounts with disjoint bits."
+    ]
+  },
+  "entities": [
+    {
+      "id": "clob_contract",
+      "name": "CLOB contract",
+      "role": "contract",
+      "evidence": [
+        "[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`."
+      ]
+    },
+    {
+      "id": "maker",
+      "name": "Maker (ASK order placer)",
+      "role": "victim",
+      "evidence": [
+        "1. Maker places a sell (ASK) limit order."
+      ]
+    },
+    {
+      "id": "taker",
+      "name": "Taker (BID order submitter)",
+      "role": "attacker",
+      "evidence": [
+        "2. Taker submits a matching buy (BID) with `amountInBase = 1` and `quoteAmount = 2`.",
+        "High – attacker can systematically revert genuine matches, effectively freezing order execution and denying service."
+      ]
+    },
+    {
+      "id": "ask_order",
+      "name": "Sell (ASK) limit order",
+      "role": "asset",
+      "evidence": [
+        "1. Maker places a sell (ASK) limit order."
+      ]
+    },
+    {
+      "id": "bid_order",
+      "name": "Buy (BID) matching order",
+      "role": "asset",
+      "evidence": [
+        "2. Taker submits a matching buy (BID) with `amountInBase = 1` and `quoteAmount = 2`."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_maker_ask",
+      "kind": "precondition",
+      "text": "A maker has placed a sell (ASK) limit order on a trading pair.",
+      "modality": "potential",
+      "entity_ids": [
+        "maker",
+        "ask_order"
+      ],
+      "evidence": [
+        "1. Maker places a sell (ASK) limit order."
+      ]
+    },
+    {
+      "id": "p_taker_bid_amounts",
+      "kind": "precondition",
+      "text": "A taker submits a matching buy (BID) with amountInBase = 1 and quoteAmount = 2.",
+      "modality": "potential",
+      "entity_ids": [
+        "taker",
+        "bid_order"
+      ],
+      "evidence": [
+        "2. Taker submits a matching buy (BID) with `amountInBase = 1` and `quoteAmount = 2`."
+      ]
+    },
+    {
+      "id": "p_disjoint_bits",
+      "kind": "precondition",
+      "text": "The base and quote amounts in the match are two non-zero integers that share no common set bits (e.g. 1 and 2).",
+      "modality": "potential",
+      "entity_ids": [
+        "bid_order"
+      ],
+      "evidence": [
+        "Instead, `baseTokenAmountReceived & quoteTokenAmountSent` performs a bit-level comparison. Two **non-zero** integers that share no common set bits (e.g., `1` and `2`) pass this test, so the compound condition becomes true whenever the amounts differ and have no overlapping bits. In practice:",
+        "Because base amounts are denominated in base tokens and quote amounts in quote tokens, equality is virtually impossible, so every trade relies on the bit-wise clause. Random bit patterns therefore decide whether normal trades succeed or fail, enabling denial-of-service on any pair of amounts with disjoint bits."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_submit_bid",
+    "a_process_limit_order"
+  ],
+  "statements_note": "placeholder removed",
+  "root_cause_placeholder": true,
+  "actions_placeholder": true,
+  "impacts_placeholder": true,
+  "intent_placeholder": true,
+  "ambiguities_placeholder": true
+}

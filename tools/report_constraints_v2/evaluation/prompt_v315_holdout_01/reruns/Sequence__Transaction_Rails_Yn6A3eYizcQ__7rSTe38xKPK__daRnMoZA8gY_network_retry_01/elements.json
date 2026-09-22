@@ -1,0 +1,248 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "injectAndCall on router allowing any external caller to move router-held ETH/ERC20 balances to an attacker-controlled target",
+    "environment": "router contract holding ETH/ERC20 balances; public injectAndCall intended for delegatecall use",
+    "evidence": [
+      "Public `injectAndCall` enables unauthorized draining of router-held ETH/ERC20 balances",
+      "The `injectAndCall` function is public and not restricted by `onlyDelegatecall`, despite being designed for delegatecall usage. It reads `callerBalance = _getSelfBalance(token)`, then:",
+      "Anyone can call `injectAndCall` directly and:",
+      "Thus, any ETH or ERC20s held by the router can be stolen by any external caller through `injectAndCall`, without authorization."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "external caller / attacker",
+      "role": "attacker",
+      "evidence": [
+        "Anyone can call `injectAndCall` directly and:",
+        "- For ETH: set `target = attackerEOA` (or any contract able to receive ETH) and drain all ETH held by the router.",
+        "- For ERC20: set `target = attackerContract` that, upon being called, executes `transferFrom(router, attacker, balance)` using the freshly granted allowance."
+      ]
+    },
+    {
+      "id": "router",
+      "name": "router contract",
+      "role": "victim",
+      "evidence": [
+        "Public `injectAndCall` enables unauthorized draining of router-held ETH/ERC20 balances",
+        "The `injectAndCall` function is public and not restricted by `onlyDelegatecall`, despite being designed for delegatecall usage. It reads `callerBalance = _getSelfBalance(token)`, then:",
+        "Thus, any ETH or ERC20s held by the router can be stolen by any external caller through `injectAndCall`, without authorization."
+      ]
+    },
+    {
+      "id": "target",
+      "name": "target (attacker EOA or malicious contract)",
+      "role": "other",
+      "evidence": [
+        "- For ETH: calls `target.call{value: callerBalance}(callData)`, sending the router’s entire ETH balance to `target`.",
+        "- For ETH: set `target = attackerEOA` (or any contract able to receive ETH) and drain all ETH held by the router.",
+        "- For ERC20: set `target = attackerContract` that, upon being called, executes `transferFrom(router, attacker, balance)` using the freshly granted allowance."
+      ]
+    },
+    {
+      "id": "eth_balance",
+      "name": "router-held ETH balance",
+      "role": "asset",
+      "evidence": [
+        "- For ETH: calls `target.call{value: callerBalance}(callData)`, sending the router’s entire ETH balance to `target`.",
+        "- For ETH: set `target = attackerEOA` (or any contract able to receive ETH) and drain all ETH held by the router."
+      ]
+    },
+    {
+      "id": "erc20_balance",
+      "name": "router-held ERC20 token balance",
+      "role": "asset",
+      "evidence": [
+        "- For ERC20: does `SafeERC20.forceApprove(token, target, callerBalance)` and then `target.call(callData)`, enabling `target` to `transferFrom(router, ...)` up to the router’s entire token balance.",
+        "- For ERC20: set `target = attackerContract` that, upon being called, executes `transferFrom(router, attacker, balance)` using the freshly granted allowance."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "router_holds_balances",
+      "kind": "precondition",
+      "text": "The router holds ETH and/or ERC20 balances.",
+      "modality": "asserted",
+      "entity_ids": [
+        "router",
+        "eth_balance",
+        "erc20_balance"
+      ],
+      "evidence": [
+        "Public `injectAndCall` enables unauthorized draining of router-held ETH/ERC20 balances",
+        "Thus, any ETH or ERC20s held by the router can be stolen by any external caller through `injectAndCall`, without authorization."
+      ]
+    },
+    {
+      "id": "inject_and_call_public",
+      "kind": "precondition",
+      "text": "`injectAndCall` is public and not restricted by `onlyDelegatecall`.",
+      "modality": "asserted",
+      "entity_ids": [
+        "router"
+      ],
+      "evidence": [
+        "The `injectAndCall` function is public and not restricted by `onlyDelegatecall`, despite being designed for delegatecall usage. It reads `callerBalance = _getSelfBalance(token)`, then:"
+      ]
+    },
+    {
+      "id": "anyone_can_call",
+      "kind": "precondition",
+      "text": "Anyone can call `injectAndCall` directly.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "router"
+      ],
+      "evidence": [
+        "Anyone can call `injectAndCall` directly and:",
+        "Thus, any ETH or ERC20s held by the router can be stolen by any external caller through `injectAndCall`, without authorization."
+      ]
+    },
+    {
+      "id": "caller_balance_read",
+      "kind": "action",
+      "text": "The caller invokes `injectAndCall`, which reads `callerBalance = _getSelfBalance(token)`.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "router"
+      ],
+      "evidence": [
+        "The `injectAndCall` function is public and not restricted by `onlyDelegatecall`, despite being designed for delegatecall usage. It reads `callerBalance = _getSelfBalance(token)`, then:"
+      ]
+    },
+    {
+      "id": "eth_forward",
+      "kind": "action",
+      "text": "For ETH, the call executes `target.call{value: callerBalance}(callData)`, sending the router's entire ETH balance to `target`, e.g. an attacker EOA able to receive ETH.",
+      "modality": "asserted",
+      "entity_ids": [
+        "router",
+        "target",
+        "eth_balance",
+        "attacker"
+      ],
+      "evidence": [
+        "- For ETH: calls `target.call{value: callerBalance}(callData)`, sending the router’s entire ETH balance to `target`.",
+        "- For ETH: set `target = attackerEOA` (or any contract able to receive ETH) and drain all ETH held by the router."
+      ]
+    },
+    {
+      "id": "erc20_approve_and_call",
+      "kind": "action",
+      "text": "For ERC20, the call does `SafeERC20.forceApprove(token, target, callerBalance)` and then `target.call(callData)`, enabling `target` to `transferFrom(router, attacker, balance)` up to the router's entire token balance.",
+      "modality": "asserted",
+      "entity_ids": [
+        "router",
+        "target",
+        "erc20_balance",
+        "attacker"
+      ],
+      "evidence": [
+        "- For ERC20: does `SafeERC20.forceApprove(token, target, callerBalance)` and then `target.call(callData)`, enabling `target` to `transferFrom(router, ...)` up to the router’s entire token balance.",
+        "- For ERC20: set `target = attackerContract` that, upon being called, executes `transferFrom(router, attacker, balance)` using the freshly granted allowance."
+      ]
+    },
+    {
+      "id": "missing_delegatecall_guard",
+      "kind": "root_cause",
+      "text": "`injectAndCall` is public and not restricted by `onlyDelegatecall`, despite being designed for delegatecall usage, so the balance-moving logic is reachable by direct external calls.",
+      "modality": "asserted",
+      "entity_ids": [
+        "router"
+      ],
+      "evidence": [
+        "The `injectAndCall` function is public and not restricted by `onlyDelegatecall`, despite being designed for delegatecall usage. It reads `callerBalance = _getSelfBalance(token)`, then:"
+      ]
+    },
+    {
+      "id": "eth_drained",
+      "kind": "impact",
+      "text": "The router's entire ETH balance is drained to a caller-controlled target.",
+      "modality": "potential",
+      "entity_ids": [
+        "router",
+        "eth_balance",
+        "target",
+        "attacker"
+      ],
+      "evidence": [
+        "- For ETH: calls `target.call{value: callerBalance}(callData)`, sending the router’s entire ETH balance to `target`.",
+        "- For ETH: set `target = attackerEOA` (or any contract able to receive ETH) and drain all ETH held by the router."
+      ]
+    },
+    {
+      "id": "erc20_drained",
+      "kind": "impact",
+      "text": "The router's entire ERC20 token balance can be transferred to the attacker via the freshly granted allowance.",
+      "modality": "potential",
+      "entity_ids": [
+        "router",
+        "erc20_balance",
+        "attacker",
+        "target"
+      ],
+      "evidence": [
+        "- For ERC20: does `SafeERC20.forceApprove(token, target, callerBalance)` and then `target.call(callData)`, enabling `target` to `transferFrom(router, ...)` up to the router’s entire token balance.",
+        "- For ERC20: set `target = attackerContract` that, upon being called, executes `transferFrom(router, attacker, balance)` using the freshly granted allowance."
+      ]
+    },
+    {
+      "id": "unauthorized_transfer",
+      "kind": "impact",
+      "text": "ETH or ERC20s held by the router are stolen by an external caller through `injectAndCall` without authorization.",
+      "modality": "asserted",
+      "entity_ids": [
+        "router",
+        "attacker",
+        "eth_balance",
+        "erc20_balance"
+      ],
+      "evidence": [
+        "Thus, any ETH or ERC20s held by the router can be stolen by any external caller through `injectAndCall`, without authorization."
+      ]
+    },
+    {
+      "id": "only_delegatecall_guard",
+      "kind": "security_intent",
+      "text": "Inferred: `injectAndCall`, being designed for delegatecall usage, should only be executable in the delegatecall context and must not let an external caller transfer router-held ETH/ERC20 balances to an arbitrary target.",
+      "modality": "inferred",
+      "entity_ids": [
+        "router"
+      ],
+      "evidence": [
+        "Public `injectAndCall` enables unauthorized draining of router-held ETH/ERC20 balances",
+        "The `injectAndCall` function is public and not restricted by `onlyDelegatecall`, despite being designed for delegatecall usage. It reads `callerBalance = _getSelfBalance(token)`, then:"
+      ]
+    },
+    {
+      "id": "attacker_targets",
+      "kind": "assumption",
+      "text": "A direct external caller can supply an arbitrary `target` (attacker EOA or malicious contract) and `callData` to `injectAndCall`.",
+      "modality": "inferred",
+      "entity_ids": [
+        "attacker",
+        "target"
+      ],
+      "evidence": [
+        "- For ETH: set `target = attackerEOA` (or any contract able to receive ETH) and drain all ETH held by the router.",
+        "- For ERC20: set `target = attackerContract` that, upon being called, executes `transferFrom(router, attacker, balance)` using the freshly granted allowance."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "caller_balance_read",
+    "eth_forward",
+    "erc20_approve_and_call"
+  ],
+  "ambiguities": [
+    "Whether the scenario is an observed incident or a possible capability; the report says 'can' and 'enables' rather than confirming an executed drain.",
+    "The concrete values of `callData`, `token`, and `target` used in any real call are not specified.",
+    "Whether the router actually held nonzero ETH/ERC20 balances at the relevant time is not stated.",
+    "The parameter list of `injectAndCall` (how callers supply `target` and `callData`) is not provided."
+  ]
+}

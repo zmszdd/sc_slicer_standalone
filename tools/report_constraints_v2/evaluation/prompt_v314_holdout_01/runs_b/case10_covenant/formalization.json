@@ -1,0 +1,250 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "batch_uses_multicall": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the batch relies on Covenant.multicall semantics for per-call msgValue forwarding",
+      "checkpoint": "before_batch_execution",
+      "entity_ids": [
+        "covenant_contract",
+        "outer_batch"
+      ],
+      "evidence": "The Covenant core batches operations via [`Covenant.multicall()`](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/Covenant.sol#L507-L524) and enforces ETH payment correctness at the batch level. Per [`ICovenant.multicall()`](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/interfaces/ICovenant.sol#L261), “Does not check msg.value received. Instead, it uses any msgValues encoded in data and sends those onwards,” with a final pre/post balance check."
+    },
+    "is_multicall_flag": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "value of the single global boolean Covenant._isMulticall controlling payment bypass inside a batch",
+      "checkpoint": "during_outer_batch",
+      "entity_ids": [
+        "covenant_contract",
+        "multicall_flag"
+      ],
+      "evidence": "Implementation uses a global boolean [`Covenant._isMulticall`](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/Covenant.sol#L516-L518) to skip per-call payment checks inside a batch. The inner logic is:"
+    },
+    "inner_multicall_frontloaded": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the outer batch is front-loaded with a nested multicall() call which may be empty",
+      "checkpoint": "before_batch_execution",
+      "entity_ids": [
+        "outer_batch",
+        "nested_multicall"
+      ],
+      "evidence": "- A batch that legitimately relies on multicall semantics for per-call `msgValue` forwarding is front-loaded with a nested `multicall()` (even empty). When the inner returns, `_isMulticall == false`, so the next operations hit `_checkPayment()` and revert with `Errors.E_IncorrectPayment`."
+    },
+    "uses_delegatecall_self": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "batch execution uses delegatecall on self keeping address(this) unchanged",
+      "checkpoint": "during_outer_batch",
+      "entity_ids": [
+        "covenant_contract",
+        "delegatecall_self"
+      ],
+      "evidence": "Batch execution uses delegatecall on self:"
+    },
+    "no_delegatecall_guard_pass": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "noDelegateCall guard does not revert because delegatecall on self does not change address(this)",
+      "checkpoint": "during_outer_batch",
+      "entity_ids": [
+        "covenant_contract",
+        "delegatecall_self"
+      ],
+      "evidence": "The `noDelegateCall` guard does not prevent this because it only checks that delegatecall does not change `address(this)`:"
+    },
+    "payment_check_reverts": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "subsequent batch operations fail the individual msg.value == msgValue check in _checkPayment() and revert with Errors.E_IncorrectPayment",
+      "checkpoint": "after_subsequent_ops_in_batch",
+      "entity_ids": [
+        "subsequent_operations",
+        "check_payment"
+      ],
+      "evidence": "Since nested calls run in the same context, an inner `multicall()` toggles the shared `_isMulticall` flag to `true` and then resets it to `false` before returning to the outer loop. This breaks the intended payment bypass for the remainder of the outer batch, making subsequent operations fail their individual `msg.value == msgValue` check in `_checkPayment()`."
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "Covenant.multicall batch execution with nested multicall toggling the shared _isMulticall payment-bypass flag",
+      "modality": "potential",
+      "impact_ids": [
+        "impact_reverts_on_payment_check"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "A batch relies on Covenant.multicall semantics for per-call msgValue forwarding.; The payment bypass inside a batch is controlled by a single global boolean Covenant._isMulticall.; The outer batch is front-loaded with a nested multicall() call, which may be empty.; Batch execution uses delegatecall on self, keeping address(this) unchanged.; The noDelegateCall guard does not revert because delegatecall on self does not change address(this).",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "batch_uses_multicall"
+              },
+              {
+                "var": "is_multicall_flag"
+              },
+              {
+                "var": "inner_multicall_frontloaded"
+              },
+              {
+                "var": "uses_delegatecall_self"
+              },
+              {
+                "var": "no_delegatecall_guard_pass"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "pre_batch_uses_multicall",
+            "pre_global_flag",
+            "pre_inner_multicall_frontloaded",
+            "pre_batch_uses_delegatecall_self",
+            "pre_no_delegatecall_guard_pass"
+          ],
+          "evidence": [
+            "The Covenant core batches operations via [`Covenant.multicall()`](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/Covenant.sol#L507-L524) and enforces ETH payment correctness at the batch level. Per [`ICovenant.multicall()`](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/interfaces/ICovenant.sol#L261), “Does not check msg.value received. Instead, it uses any msgValues encoded in data and sends those onwards,” with a final pre/post balance check.",
+            "- A batch that legitimately relies on multicall semantics for per-call `msgValue` forwarding is front-loaded with a nested `multicall()` (even empty). When the inner returns, `_isMulticall == false`, so the next operations hit `_checkPayment()` and revert with `Errors.E_IncorrectPayment`.",
+            "Implementation uses a global boolean [`Covenant._isMulticall`](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/Covenant.sol#L516-L518) to skip per-call payment checks inside a batch. The inner logic is:",
+            "- The payment-bypass is controlled by a single global flag `Covenant._isMulticall`.",
+            "Batch execution uses delegatecall on self:",
+            "https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/libraries/MultiCall.sol#L26-L32",
+            "In our case, `Address.functionDelegateCall(address(this), ...)` keeps `address(this)` unchanged, so `noDelegateCall` does not revert.",
+            "The `noDelegateCall` guard does not prevent this because it only checks that delegatecall does not change `address(this)`:"
+          ]
+        },
+        "safety": {
+          "text": "Within a single Covenant.multicall batch, the per-call payment check bypass should persist for the whole batch, so operations relying on batch-level msgValue semantics should not revert on individual msg.value == msgValue checks.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "batch_uses_multicall"
+                  },
+                  {
+                    "var": "is_multicall_flag"
+                  },
+                  {
+                    "var": "inner_multicall_frontloaded"
+                  },
+                  {
+                    "var": "uses_delegatecall_self"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "payment_check_reverts"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "int_batch_payment_bypass_persists"
+          ],
+          "evidence": [
+            "The Covenant core batches operations via [`Covenant.multicall()`](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/Covenant.sol#L507-L524) and enforces ETH payment correctness at the batch level. Per [`ICovenant.multicall()`](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/interfaces/ICovenant.sol#L261), “Does not check msg.value received. Instead, it uses any msgValues encoded in data and sends those onwards,” with a final pre/post balance check.",
+            "Implementation uses a global boolean [`Covenant._isMulticall`](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/Covenant.sol#L516-L518) to skip per-call payment checks inside a batch. The inner logic is:",
+            "- A batch that legitimately relies on multicall semantics for per-call `msgValue` forwarding is front-loaded with a nested `multicall()` (even empty). When the inner returns, `_isMulticall == false`, so the next operations hit `_checkPayment()` and revert with `Errors.E_IncorrectPayment`."
+          ]
+        },
+        "effects": {
+          "text": "Subsequent batch operations fail the individual msg.value == msgValue check in _checkPayment() and revert with Errors.E_IncorrectPayment.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "batch_uses_multicall"
+                  },
+                  {
+                    "var": "is_multicall_flag"
+                  },
+                  {
+                    "var": "inner_multicall_frontloaded"
+                  },
+                  {
+                    "var": "uses_delegatecall_self"
+                  }
+                ]
+              },
+              {
+                "var": "payment_check_reverts"
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "impact_reverts_on_payment_check"
+          ],
+          "evidence": [
+            "Since nested calls run in the same context, an inner `multicall()` toggles the shared `_isMulticall` flag to `true` and then resets it to `false` before returning to the outer loop. This breaks the intended payment bypass for the remainder of the outer batch, making subsequent operations fail their individual `msg.value == msgValue` check in `_checkPayment()`.",
+            "- A batch that legitimately relies on multicall semantics for per-call `msgValue` forwarding is front-loaded with a nested `multicall()` (even empty). When the inner returns, `_isMulticall == false`, so the next operations hit `_checkPayment()` and revert with `Errors.E_IncorrectPayment`."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "pre_batch_uses_multicall",
+            "pre_global_flag",
+            "pre_inner_multicall_frontloaded",
+            "pre_batch_uses_delegatecall_self",
+            "pre_no_delegatecall_guard_pass"
+          ]
+        },
+        "safety": {
+          "": [
+            "int_batch_payment_bypass_persists"
+          ],
+          "args.0": [
+            "int_batch_payment_bypass_persists"
+          ],
+          "args.1": [
+            "int_batch_payment_bypass_persists"
+          ]
+        },
+        "effects": {
+          "": [
+            "impact_reverts_on_payment_check"
+          ],
+          "args.0": [
+            "impact_reverts_on_payment_check"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_reverts_on_payment_check",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "A nested multicall() (possibly empty) can appear within an outer batch and execute via delegatecall on self.",
+        "Caller/authorization for invoking multicall() with a nested call is unspecified but a batch execution context exists."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Denial-of-service on governance/ops batches is a secondary consequence deferred from the core violation.",
+    "No block, timestamp, or prior-state checkpoint evidence is supplied for an actually attempted batch.",
+    "The scenario is conditional/potential with no real-transaction evidence of a front-loaded nested multicall.",
+    "Deferred report impact: impact_dos_valid_batches"
+  ]
+}

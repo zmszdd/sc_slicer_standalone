@@ -1,0 +1,308 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "token_supply": {
+      "sort": "int",
+      "unit": "token",
+      "meaning": "total supply quantity of the pool's high-supply token, stated to be below 2^127 - 1",
+      "checkpoint": "deployment",
+      "entity_ids": [
+        "high_supply_pool"
+      ],
+      "evidence": "While this is a large number, it is significantly smaller than the total supply of several major tokens that the protocol explicitly claims to support. The contest `README` states: **\"Tokens with a supply exceeding $2^{127} - 1$ are not supported.\"** This implies that tokens up to $2^{127}$ ($\\approx 1.7 \\times 10^{38}$) **are** supported."
+    },
+    "utilization_high": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "pool utilization is high",
+      "checkpoint": "accrual",
+      "entity_ids": [
+        "high_supply_pool"
+      ],
+      "evidence": "If a pool is deployed for a high-supply token (e.g., SHIB) and utilization is high, the accrued interest can legitimately exceed $2^{106}$."
+    },
+    "unrealized_interest_before": {
+      "sort": "int",
+      "unit": "token",
+      "meaning": "stored unrealizedInterest before the accrual, e.g. 2^106 - 1",
+      "checkpoint": "before_accrual",
+      "entity_ids": [
+        "unrealized_interest",
+        "high_supply_pool"
+      ],
+      "evidence": "1.  **State:** Pool has accrued substantial interest (e.g., $2^{106} - 1$)."
+    },
+    "total_assets_before": {
+      "sort": "int",
+      "unit": "token",
+      "meaning": "totalAssets() value before the interest accrual event",
+      "checkpoint": "before_accrual",
+      "entity_ids": [
+        "total_assets"
+      ],
+      "evidence": "This violates the fundamental invariant of an interest-bearing vault: `totalAssets` should never decrease solely due to the passage of time."
+    },
+    "total_assets_after": {
+      "sort": "int",
+      "unit": "token",
+      "meaning": "totalAssets() value after the interest accrual event",
+      "checkpoint": "after_accrual",
+      "entity_ids": [
+        "total_assets",
+        "market_state"
+      ],
+      "evidence": "This violates the fundamental invariant of an interest-bearing vault: `totalAssets` should never decrease solely due to the passage of time."
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "Interest accrual and MarketState storage in CollateralTracker, from accrueInterest through storeMarketState to totalAssets and share price",
+      "modality": "potential",
+      "impact_ids": [
+        "i_total_assets_drop"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "A pool is deployed for a high-supply token such as SHIB within the supported range (supply below 2^127 - 1) but whose quantities can exceed 2^106.; Pool utilization is high.; The pool has accrued substantial interest, e.g. 2^106 - 1.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "lt",
+                "args": [
+                  {
+                    "var": "token_supply"
+                  },
+                  {
+                    "const": 170141183460469231731687303715884105727
+                  }
+                ]
+              },
+              {
+                "var": "utilization_high"
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "unrealized_interest_before"
+                  },
+                  {
+                    "const": 81129638414606681695789005144063
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_high_supply_token",
+            "p_high_utilization",
+            "p_prior_interest_state"
+          ],
+          "evidence": [
+            "While this is a large number, it is significantly smaller than the total supply of several major tokens that the protocol explicitly claims to support. The contest `README` states: **\"Tokens with a supply exceeding $2^{127} - 1$ are not supported.\"** This implies that tokens up to $2^{127}$ ($\\approx 1.7 \\times 10^{38}$) **are** supported.",
+            "Tokens such as **SHIB** ($\\approx 5.89 \\times 10^{32}$) and **BTT** ($\\approx 9.9 \\times 10^{32}$) are well within the supported range ($10^{32} < 10^{38}$) but exceed the `MarketState` storage capacity ($10^{32} > 10^{31}$).",
+            "If a pool is deployed for a high-supply token (e.g., SHIB) and utilization is high, the accrued interest can legitimately exceed $2^{106}$.",
+            "1.  **State:** Pool has accrued substantial interest (e.g., $2^{106} - 1$)."
+          ]
+        },
+        "safety": {
+          "text": "totalAssets should never decrease solely due to the passage of time. (inferred: report's stated invariant for the interest-bearing vault, contradicted by the interest-drop scenario).",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "lt",
+                    "args": [
+                      {
+                        "var": "token_supply"
+                      },
+                      {
+                        "const": 170141183460469231731687303715884105727
+                      }
+                    ]
+                  },
+                  {
+                    "var": "utilization_high"
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "unrealized_interest_before"
+                      },
+                      {
+                        "const": 81129638414606681695789005144063
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "ge",
+                "args": [
+                  {
+                    "var": "total_assets_after"
+                  },
+                  {
+                    "var": "total_assets_before"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_total_assets_monotonic"
+          ],
+          "evidence": [
+            "This violates the fundamental invariant of an interest-bearing vault: `totalAssets` should never decrease solely due to the passage of time."
+          ]
+        },
+        "effects": {
+          "text": "totalAssets() = s_depositedAssets + s_assetsInAMM + s_marketState.unrealizedInterest() decreases instantly when the interest component drops to zero, crashing sharePrice = totalAssets / totalSupply.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "lt",
+                    "args": [
+                      {
+                        "var": "token_supply"
+                      },
+                      {
+                        "const": 170141183460469231731687303715884105727
+                      }
+                    ]
+                  },
+                  {
+                    "var": "utilization_high"
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "unrealized_interest_before"
+                      },
+                      {
+                        "const": 81129638414606681695789005144063
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "ge",
+                    "args": [
+                      {
+                        "var": "total_assets_after"
+                      },
+                      {
+                        "var": "total_assets_before"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_total_assets_drop"
+          ],
+          "evidence": [
+            "5.  **Asset Drop:** `totalAssets()` is calculated as `s_depositedAssets + s_assetsInAMM + s_marketState.unrealizedInterest()`. When the interest component drops to zero, `totalAssets()` decreases instantly.",
+            "1.  **Share Price Crash:** Since `sharePrice = totalAssets / totalSupply`, the sudden drop in assets causes the share price to crash."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_high_supply_token",
+            "p_high_utilization",
+            "p_prior_interest_state"
+          ],
+          "args.0": [
+            "p_high_supply_token",
+            "p_high_utilization",
+            "p_prior_interest_state"
+          ],
+          "args.2": [
+            "p_high_supply_token",
+            "p_high_utilization",
+            "p_prior_interest_state"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_total_assets_monotonic"
+          ],
+          "args.0": [
+            "si_total_assets_monotonic"
+          ],
+          "args.0.args.0": [
+            "si_total_assets_monotonic"
+          ],
+          "args.0.args.2": [
+            "si_total_assets_monotonic"
+          ],
+          "args.1": [
+            "si_total_assets_monotonic"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_total_assets_drop"
+          ],
+          "args.0": [
+            "i_total_assets_drop"
+          ],
+          "args.0.args.0": [
+            "i_total_assets_drop"
+          ],
+          "args.0.args.2": [
+            "i_total_assets_drop"
+          ],
+          "args.1": [
+            "i_total_assets_drop"
+          ],
+          "args.1.args.0": [
+            "i_total_assets_drop"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_total_assets_drop",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "accrueInterest is triggered and _unrealizedGlobalInterest computed as uint128 suffices to model the trigger; its exact internal step is not separately formalized.",
+        "The stored unrealizedInterest field is limited to 106 bits while the protocol assumes the value will never exceed 2^106 (asm_stored_field_only_106).",
+        "The attacker deposit and exact post-overflow share price are contextual only and not part of this monotonicity relation."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Impact i_interest_exceeds_106 (interest wrap-around near zero) is deferred; this plan formalizes only the totalAssets decrease.",
+    "No actual on-chain transaction triggering accrueInterest is stated; the mechanism is conditional.",
+    "Total supply / totalSupply symbol is not selected because the report does not ground its numeric definition here.",
+    "Root cause c_bit_truncation and action statements a_* are not used as conditions.",
+    "Deferred report impact: i_interest_exceeds_106"
+  ]
+}

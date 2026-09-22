@@ -1,0 +1,138 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "D7gUjobbu5z",
+    "requested_finding_uid": "7yYS2jorBMq",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "D7gUjobbu5z",
+    "source_finding_uid": "7yYS2jorBMq",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\high_valid_D7gUjobbu5z.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "D7gUjobbu5z",
+  "finding_uid": "7yYS2jorBMq",
+  "finding_number": "5",
+  "title": "Flawed rewards termination logic attempts premature ending or failure to end gracefully",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "ZeroEx",
+  "body": "## Finding description and impact\nThe Launchpad rewards system contains inverted termination logic that triggers opposite behaviors in each phase. Pre-bonding, it attempts to end rewards during temporary zero-share states (causing reverts or premature termination if pair exists). Post-bonding, it fails to end rewards gracefully when they should terminate, instead breaking core trading functionality.\n\nThe rewards system has backwards termination logic:\n\n```solidity\n// Pre-bonding: Ends too early on temporary states\nif (totalFeeShare == 0 && !unlocked) _endRewards(); // Permanent disable\n\n// Post-bonding: Should end gracefully but blocks operations instead\nif (rs.totalShares == 0) revert NoSharesToIncentivize(); // Breaks trading\n```\n\n**Pre-Bonding Failure - Premature Termination:**\nSystem incorrectly treats temporary zero-share states as completion:\n\n1. User buys tokens during bonding (gets shares)\n2. User sells back to launchpad temporarily \n3. `totalFeeShare` becomes 0 momentarily\n4. System calls `_endRewards()`, permanently disabling rewards\n5. **Most likely: Transaction reverts** because pair doesn't exist yet\n6. **Alternative: If pair somehow exists prematurely**, rewards are permanently disabled for future participants\n\n**Post-Bonding Failure - No Graceful Termination:**\nSystem should cleanly end rewards when no participants remain, but instead breaks trading:\n\n1. All participants naturally exit over time (expected behavior)\n2. `totalShares` reaches 0 - **rewards should terminate gracefully here**\n3. Instead of ending cleanly, system blocks `addRewards()` calls\n4. AMM trading fails because fee distribution reverts\n5. **Trading becomes permanently impossible** instead of rewards simply ending",
+  "proof_of_concept": "Add these two test cases to LaunchToken.t.sol\n\n```solidity\nfunction test_PrematureRewardsTerminationDuringBonding() public {\n    address user1 = makeAddr(\"user1\");\n    address user2 = makeAddr(\"user2\");\n    \n    // Setup: User1 buys tokens during bonding\n    vm.startPrank(launcher);\n    token.mint(1000 ether);\n    token.transfer(user1, 500 ether);\n    vm.stopPrank();\n    \n    // Verify we're in bonding phase and totalFeeShare increased\n    assertEq(token.unlocked(), false, \"Token should still be locked during bonding\");\n    assertEq(token.totalFeeShare(), 500 ether);\n    assertEq(token.bondingShare(user1), 500 ether);\n    \n    //Expect endRewards() to be called on the launchpad\n    vm.expectCall(\n        launcher, // launchpad address\n        abi.encodeWithSignature(\"endRewards()\")\n    );\n    \n    // User1 immediately sells all tokens back to launcher\n    vm.prank(user1);\n    token.transfer(launcher, 500 ether);\n    \n    // BUG: totalFeeShare becomes 0, triggering premature reward termination\n    assertEq(token.totalFeeShare(), 0, \"totalFeeShare should be 0 after user sells all\");\n    assertEq(token.unlocked(), false, \"Token should STILL be locked - bonding not complete!\");\n    \n    // This proves the bug: rewards is attempted to end prematurely while still in bonding phase\n}\n\nfunction test_RewardsSystemPermanentlyBrokenPostBonding() public {\n    address user1 = makeAddr(\"user1\");\n    address user2 = makeAddr(\"user2\");\n    \n    // Setup bonding phase: users acquire shares\n    vm.startPrank(launcher);\n    token.mint(1000 ether);\n    token.transfer(user1, 500 ether);\n    token.transfer(user2, 300 ether);\n    vm.stopPrank();\n    \n    // Verify users have bonding shares\n    assertEq(token.bondingShare(user1), 500 ether);\n    assertEq(token.bondingShare(user2), 300 ether);\n    assertEq(token.totalFeeShare(), 800 ether);\n    assertEq(token.unlocked(), false, \"Should be in bonding phase\");\n    \n    // Unlock tokens (end bonding phase)\n    vm.prank(launcher);\n    token.unlock();\n    assertEq(token.unlocked(), true, \"Should be post-bonding\");\n    \n    // User1 sells all tokens to user2\n    vm.prank(user1);\n    token.transfer(user2, 500 ether);\n    \n    // User1's shares reduced to 0\n    assertEq(token.bondingShare(user1), 0);\n    assertEq(token.totalFeeShare(), 300 ether); // Only user2 remains\n    \n    // CRITICAL ASSERTION: Expect NO call to endRewards when totalFeeShare becomes 0 post-bonding\n    // This should NOT expect any call - proving the bug\n    vm.recordLogs();\n    \n    // User2 exits completely (sells to external address)\n    vm.prank(user2);\n    token.transfer(makeAddr(\"external\"), 800 ether);\n    \n    // BUG: totalFeeShare becomes 0 but endRewards is NOT called post-bonding\n    assertEq(token.bondingShare(user2), 0);\n    assertEq(token.totalFeeShare(), 0);\n    assertEq(token.unlocked(), true, \"Post-bonding with zero shares\");\n    \n    // Verify NO endRewards call was made (the design flaw)\n    Vm.Log[] memory logs = vm.getRecordedLogs();\n    bool foundEndRewardsCall = false;\n    for (uint i = 0; i < logs.length; i++) {\n        // Check if any FeeShareConcluded event was emitted (indicates endRewards called)\n        if (logs[i].topics[0] == keccak256(\"FeeShareConcluded(uint256,uint256)\")) {\n            foundEndRewardsCall = true;\n            break;\n        }\n    }\n    assertEq(foundEndRewardsCall, false, \"endRewards should NOT be called post-bonding (this is the bug!)\");\n    \n    // This proves the design flaw: condition `totalFeeShare == 0 && !unlocked` \n    // prevents endRewards from being called when unlocked=true\n    // Rewards should gracefully terminate but don't, breaking downstream systems\n    \n    // Post-bonding: NO WAY TO INCREASE SHARES ANYMORE\n    // Even if new users acquire tokens, they get NO shares\n    vm.prank(makeAddr(\"external\"));\n    token.transfer(makeAddr(\"newUser\"), 100 ether);\n    \n    // New user has tokens but ZERO shares - no rewards eligibility\n    assertEq(token.balanceOf(makeAddr(\"newUser\")), 100 ether);\n    assertEq(token.bondingShare(makeAddr(\"newUser\")), 0); // No shares!\n    assertEq(token.totalFeeShare(), 0); // Still 0!\n    \n    // Rewards system is broken - should have ended gracefully but didn't\n    // This creates the downstream trading failures when AMM tries to distribute fees\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/LaunchToken.sol#L147"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "606",
+    "api_submission_id": "",
+    "uid": "D7gUjobbu5z",
+    "number": "606",
+    "title": "Flawed rewards termination logic attempts premature ending or failure to end gracefully",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "ZeroEx",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/LaunchToken.sol#L147"
+    ],
+    "body": "## Finding description and impact\nThe Launchpad rewards system contains inverted termination logic that triggers opposite behaviors in each phase. Pre-bonding, it attempts to end rewards during temporary zero-share states (causing reverts or premature termination if pair exists). Post-bonding, it fails to end rewards gracefully when they should terminate, instead breaking core trading functionality.\n\nThe rewards system has backwards termination logic:\n\n```solidity\n// Pre-bonding: Ends too early on temporary states\nif (totalFeeShare == 0 && !unlocked) _endRewards(); // Permanent disable\n\n// Post-bonding: Should end gracefully but blocks operations instead\nif (rs.totalShares == 0) revert NoSharesToIncentivize(); // Breaks trading\n```\n\n**Pre-Bonding Failure - Premature Termination:**\nSystem incorrectly treats temporary zero-share states as completion:\n\n1. User buys tokens during bonding (gets shares)\n2. User sells back to launchpad temporarily \n3. `totalFeeShare` becomes 0 momentarily\n4. System calls `_endRewards()`, permanently disabling rewards\n5. **Most likely: Transaction reverts** because pair doesn't exist yet\n6. **Alternative: If pair somehow exists prematurely**, rewards are permanently disabled for future participants\n\n**Post-Bonding Failure - No Graceful Termination:**\nSystem should cleanly end rewards when no participants remain, but instead breaks trading:\n\n1. All participants naturally exit over time (expected behavior)\n2. `totalShares` reaches 0 - **rewards should terminate gracefully here**\n3. Instead of ending cleanly, system blocks `addRewards()` calls\n4. AMM trading fails because fee distribution reverts\n5. **Trading becomes permanently impossible** instead of rewards simply ending",
+    "proof_of_concept": "Add these two test cases to LaunchToken.t.sol\n\n```solidity\nfunction test_PrematureRewardsTerminationDuringBonding() public {\n    address user1 = makeAddr(\"user1\");\n    address user2 = makeAddr(\"user2\");\n    \n    // Setup: User1 buys tokens during bonding\n    vm.startPrank(launcher);\n    token.mint(1000 ether);\n    token.transfer(user1, 500 ether);\n    vm.stopPrank();\n    \n    // Verify we're in bonding phase and totalFeeShare increased\n    assertEq(token.unlocked(), false, \"Token should still be locked during bonding\");\n    assertEq(token.totalFeeShare(), 500 ether);\n    assertEq(token.bondingShare(user1), 500 ether);\n    \n    //Expect endRewards() to be called on the launchpad\n    vm.expectCall(\n        launcher, // launchpad address\n        abi.encodeWithSignature(\"endRewards()\")\n    );\n    \n    // User1 immediately sells all tokens back to launcher\n    vm.prank(user1);\n    token.transfer(launcher, 500 ether);\n    \n    // BUG: totalFeeShare becomes 0, triggering premature reward termination\n    assertEq(token.totalFeeShare(), 0, \"totalFeeShare should be 0 after user sells all\");\n    assertEq(token.unlocked(), false, \"Token should STILL be locked - bonding not complete!\");\n    \n    // This proves the bug: rewards is attempted to end prematurely while still in bonding phase\n}\n\nfunction test_RewardsSystemPermanentlyBrokenPostBonding() public {\n    address user1 = makeAddr(\"user1\");\n    address user2 = makeAddr(\"user2\");\n    \n    // Setup bonding phase: users acquire shares\n    vm.startPrank(launcher);\n    token.mint(1000 ether);\n    token.transfer(user1, 500 ether);\n    token.transfer(user2, 300 ether);\n    vm.stopPrank();\n    \n    // Verify users have bonding shares\n    assertEq(token.bondingShare(user1), 500 ether);\n    assertEq(token.bondingShare(user2), 300 ether);\n    assertEq(token.totalFeeShare(), 800 ether);\n    assertEq(token.unlocked(), false, \"Should be in bonding phase\");\n    \n    // Unlock tokens (end bonding phase)\n    vm.prank(launcher);\n    token.unlock();\n    assertEq(token.unlocked(), true, \"Should be post-bonding\");\n    \n    // User1 sells all tokens to user2\n    vm.prank(user1);\n    token.transfer(user2, 500 ether);\n    \n    // User1's shares reduced to 0\n    assertEq(token.bondingShare(user1), 0);\n    assertEq(token.totalFeeShare(), 300 ether); // Only user2 remains\n    \n    // CRITICAL ASSERTION: Expect NO call to endRewards when totalFeeShare becomes 0 post-bonding\n    // This should NOT expect any call - proving the bug\n    vm.recordLogs();\n    \n    // User2 exits completely (sells to external address)\n    vm.prank(user2);\n    token.transfer(makeAddr(\"external\"), 800 ether);\n    \n    // BUG: totalFeeShare becomes 0 but endRewards is NOT called post-bonding\n    assertEq(token.bondingShare(user2), 0);\n    assertEq(token.totalFeeShare(), 0);\n    assertEq(token.unlocked(), true, \"Post-bonding with zero shares\");\n    \n    // Verify NO endRewards call was made (the design flaw)\n    Vm.Log[] memory logs = vm.getRecordedLogs();\n    bool foundEndRewardsCall = false;\n    for (uint i = 0; i < logs.length; i++) {\n        // Check if any FeeShareConcluded event was emitted (indicates endRewards called)\n        if (logs[i].topics[0] == keccak256(\"FeeShareConcluded(uint256,uint256)\")) {\n            foundEndRewardsCall = true;\n            break;\n        }\n    }\n    assertEq(foundEndRewardsCall, false, \"endRewards should NOT be called post-bonding (this is the bug!)\");\n    \n    // This proves the design flaw: condition `totalFeeShare == 0 && !unlocked` \n    // prevents endRewards from being called when unlocked=true\n    // Rewards should gracefully terminate but don't, breaking downstream systems\n    \n    // Post-bonding: NO WAY TO INCREASE SHARES ANYMORE\n    // Even if new users acquire tokens, they get NO shares\n    vm.prank(makeAddr(\"external\"));\n    token.transfer(makeAddr(\"newUser\"), 100 ether);\n    \n    // New user has tokens but ZERO shares - no rewards eligibility\n    assertEq(token.balanceOf(makeAddr(\"newUser\")), 100 ether);\n    assertEq(token.bondingShare(makeAddr(\"newUser\")), 0); // No shares!\n    assertEq(token.totalFeeShare(), 0); // Still 0!\n    \n    // Rewards system is broken - should have ended gracefully but didn't\n    // This creates the downstream trading failures when AMM tries to distribute fees\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/606",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-19T05:12:19.835Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "pWC7GGbCrsz",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:50:11.283Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "srPK3PSSyxo",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:50:12.556Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "rUJzcJhjcS9",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-22T17:31:12.905Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "D7gUjobbu5z",
+          "findingUid": null
+        },
+        {
+          "uid": "E8BRnzui3nm",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-06T20:50:08.519Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "5jsRHXHo7DE",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-02T14:59:08.424Z",
+          "type": "credit",
+          "value": "75%",
+          "submissionUid": "D7gUjobbu5z",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "7yYS2jorBMq",
+        "number": 5,
+        "duplicates": 72
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": "75%",
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-12-02T14:59:08.424Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Flawed rewards termination logic attempts premature ending or failure to end gracefully",
+      "uid": "D7gUjobbu5z",
+      "updatedAt": "2025-09-19T05:32:35.497Z",
+      "user": {
+        "uid": "6RkHvvTapMN",
+        "handle": "ZeroEx"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\nThe Launchpad rewards system contains inverted termination logic that triggers opposite behaviors in each phase. Pre-bonding, it attempts to end rewards during temporary zero-share states (causing reverts or premature termination if pair exists). Post-bonding, it fails to end rewards gracefully when they should terminate, instead breaking core trading functionality.\n\nThe rewards system has backwards termination logic:\n\n```solidity\n// Pre-bonding: Ends too early on temporary states\nif (totalFeeShare == 0 && !unlocked) _endRewards(); // Permanent disable\n\n// Post-bonding: Should end gracefully but blocks operations instead\nif (rs.totalShares == 0) revert NoSharesToIncentivize(); // Breaks trading\n```\n\n**Pre-Bonding Failure - Premature Termination:**\nSystem incorrectly treats temporary zero-share states as completion:\n\n1. User buys tokens during bonding (gets shares)\n2. User sells back to launchpad temporarily \n3. `totalFeeShare` becomes 0 momentarily\n4. System calls `_endRewards()`, permanently disabling rewards\n5. **Most likely: Transaction reverts** because pair doesn't exist yet\n6. **Alternative: If pair somehow exists prematurely**, rewards are permanently disabled for future participants\n\n**Post-Bonding Failure - No Graceful Termination:**\nSystem should cleanly end rewards when no participants remain, but instead breaks trading:\n\n1. All participants naturally exit over time (expected behavior)\n2. `totalShares` reaches 0 - **rewards should terminate gracefully here**\n3. Instead of ending cleanly, system blocks `addRewards()` calls\n4. AMM trading fails because fee distribution reverts\n5. **Trading becomes permanently impossible** instead of rewards simply ending",
+      "proofOfConcept": "Add these two test cases to LaunchToken.t.sol\n\n```solidity\nfunction test_PrematureRewardsTerminationDuringBonding() public {\n    address user1 = makeAddr(\"user1\");\n    address user2 = makeAddr(\"user2\");\n    \n    // Setup: User1 buys tokens during bonding\n    vm.startPrank(launcher);\n    token.mint(1000 ether);\n    token.transfer(user1, 500 ether);\n    vm.stopPrank();\n    \n    // Verify we're in bonding phase and totalFeeShare increased\n    assertEq(token.unlocked(), false, \"Token should still be locked during bonding\");\n    assertEq(token.totalFeeShare(), 500 ether);\n    assertEq(token.bondingShare(user1), 500 ether);\n    \n    //Expect endRewards() to be called on the launchpad\n    vm.expectCall(\n        launcher, // launchpad address\n        abi.encodeWithSignature(\"endRewards()\")\n    );\n    \n    // User1 immediately sells all tokens back to launcher\n    vm.prank(user1);\n    token.transfer(launcher, 500 ether);\n    \n    // BUG: totalFeeShare becomes 0, triggering premature reward termination\n    assertEq(token.totalFeeShare(), 0, \"totalFeeShare should be 0 after user sells all\");\n    assertEq(token.unlocked(), false, \"Token should STILL be locked - bonding not complete!\");\n    \n    // This proves the bug: rewards is attempted to end prematurely while still in bonding phase\n}\n\nfunction test_RewardsSystemPermanentlyBrokenPostBonding() public {\n    address user1 = makeAddr(\"user1\");\n    address user2 = makeAddr(\"user2\");\n    \n    // Setup bonding phase: users acquire shares\n    vm.startPrank(launcher);\n    token.mint(1000 ether);\n    token.transfer(user1, 500 ether);\n    token.transfer(user2, 300 ether);\n    vm.stopPrank();\n    \n    // Verify users have bonding shares\n    assertEq(token.bondingShare(user1), 500 ether);\n    assertEq(token.bondingShare(user2), 300 ether);\n    assertEq(token.totalFeeShare(), 800 ether);\n    assertEq(token.unlocked(), false, \"Should be in bonding phase\");\n    \n    // Unlock tokens (end bonding phase)\n    vm.prank(launcher);\n    token.unlock();\n    assertEq(token.unlocked(), true, \"Should be post-bonding\");\n    \n    // User1 sells all tokens to user2\n    vm.prank(user1);\n    token.transfer(user2, 500 ether);\n    \n    // User1's shares reduced to 0\n    assertEq(token.bondingShare(user1), 0);\n    assertEq(token.totalFeeShare(), 300 ether); // Only user2 remains\n    \n    // CRITICAL ASSERTION: Expect NO call to endRewards when totalFeeShare becomes 0 post-bonding\n    // This should NOT expect any call - proving the bug\n    vm.recordLogs();\n    \n    // User2 exits completely (sells to external address)\n    vm.prank(user2);\n    token.transfer(makeAddr(\"external\"), 800 ether);\n    \n    // BUG: totalFeeShare becomes 0 but endRewards is NOT called post-bonding\n    assertEq(token.bondingShare(user2), 0);\n    assertEq(token.totalFeeShare(), 0);\n    assertEq(token.unlocked(), true, \"Post-bonding with zero shares\");\n    \n    // Verify NO endRewards call was made (the design flaw)\n    Vm.Log[] memory logs = vm.getRecordedLogs();\n    bool foundEndRewardsCall = false;\n    for (uint i = 0; i < logs.length; i++) {\n        // Check if any FeeShareConcluded event was emitted (indicates endRewards called)\n        if (logs[i].topics[0] == keccak256(\"FeeShareConcluded(uint256,uint256)\")) {\n            foundEndRewardsCall = true;\n            break;\n        }\n    }\n    assertEq(foundEndRewardsCall, false, \"endRewards should NOT be called post-bonding (this is the bug!)\");\n    \n    // This proves the design flaw: condition `totalFeeShare == 0 && !unlocked` \n    // prevents endRewards from being called when unlocked=true\n    // Rewards should gracefully terminate but don't, breaking downstream systems\n    \n    // Post-bonding: NO WAY TO INCREASE SHARES ANYMORE\n    // Even if new users acquire tokens, they get NO shares\n    vm.prank(makeAddr(\"external\"));\n    token.transfer(makeAddr(\"newUser\"), 100 ether);\n    \n    // New user has tokens but ZERO shares - no rewards eligibility\n    assertEq(token.balanceOf(makeAddr(\"newUser\")), 100 ether);\n    assertEq(token.bondingShare(makeAddr(\"newUser\")), 0); // No shares!\n    assertEq(token.totalFeeShare(), 0); // Still 0!\n    \n    // Rewards system is broken - should have ended gracefully but didn't\n    // This creates the downstream trading failures when AMM tries to distribute fees\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/LaunchToken.sol#L147",
+      "number": 606,
+      "aiExplanation": null,
+      "_index": 606
+    }
+  }
+}

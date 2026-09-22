@@ -1,0 +1,192 @@
+{
+  "schema_version": "report-formal-plan/2",
+  "precondition_ids": [
+    "p_fok_placed",
+    "p_dust_unfilled",
+    "p_dust_only_remainder",
+    "p_order_otherwise_fillable"
+  ],
+  "intent_id": "si_dust_tolerant_fok",
+  "impact_ids": [
+    "v_order_reverts"
+  ],
+  "symbols": {
+    "fok_order_placed": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the user placed a Fill-or-Kill order on the CLOB contract intended to be filled in full",
+      "checkpoint": "at order submission / matching entry",
+      "entity_ids": [
+        "user",
+        "fok_order",
+        "clob_contract"
+      ],
+      "source_ids": [
+        "p_fok_placed"
+      ]
+    },
+    "dust_amount": {
+      "sort": "int",
+      "unit": null,
+      "meaning": "quantity of the order rounded off by the lot-size constraint (acceptable dust)",
+      "checkpoint": "after lot-size rounding at attempted matching",
+      "entity_ids": [
+        "fok_order",
+        "clob_contract"
+      ],
+      "source_ids": [
+        "p_dust_unfilled",
+        "p_dust_only_remainder",
+        "rc_revert_any_unfilled"
+      ]
+    },
+    "unfilled_amount": {
+      "sort": "int",
+      "unit": null,
+      "meaning": "total quantity of the order left unfilled after attempted matching",
+      "checkpoint": "after attempted matching",
+      "entity_ids": [
+        "fok_order",
+        "clob_contract"
+      ],
+      "source_ids": [
+        "p_dust_unfilled",
+        "rc_revert_any_unfilled"
+      ]
+    },
+    "order_otherwise_fillable": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the FOK order is otherwise a valid/fillable trade aside from the dust remainder",
+      "checkpoint": "at matching evaluation",
+      "entity_ids": [
+        "fok_order",
+        "clob_contract"
+      ],
+      "source_ids": [
+        "p_order_otherwise_fillable"
+      ]
+    },
+    "order_reverts": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "execution of the FOK order reverts instead of completing",
+      "checkpoint": "execution outcome of the matching attempt",
+      "entity_ids": [
+        "user",
+        "fok_order",
+        "clob_contract"
+      ],
+      "source_ids": [
+        "v_order_reverts",
+        "rc_revert_any_unfilled"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_fok_placed",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "fok_order_placed",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_dust_unfilled",
+      "predicate": {
+        "kind": "comparison",
+        "left": "dust_amount",
+        "operator": "gt",
+        "right": {
+          "const": 0
+        }
+      }
+    },
+    {
+      "source_id": "p_dust_only_remainder",
+      "predicate": {
+        "kind": "comparison",
+        "left": "unfilled_amount",
+        "operator": "eq",
+        "right": {
+          "symbol": "dust_amount"
+        }
+      }
+    },
+    {
+      "source_id": "p_order_otherwise_fillable",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "order_otherwise_fillable",
+        "value": true
+      }
+    }
+  ],
+  "pattern": {
+    "condition_forbids_effect": {
+      "condition": {
+        "term_ids": [
+          "p_fok_placed",
+          "p_dust_unfilled",
+          "p_dust_only_remainder",
+          "p_order_otherwise_fillable"
+        ]
+      },
+      "effect": {
+        "kind": "truth",
+        "symbol": "order_reverts",
+        "value": true
+      }
+    }
+  },
+  "assumptions": [
+    "The unfilled remainder that triggers the revert is attributable to lot-size rounding rather than insufficient market-side liquidity (as_dust_from_rounding).",
+    "The revert fires solely because of the unfilled-dust check in the implementation after lot-size rounding, not because of an independent validation failure.",
+    "Order placement is permissionless and no additional caller authorization gates the matching/revert path.",
+    "The order is within the CLOB's applicable lot/tick constraints, so lot-size rounding is the only source of the dust remainder."
+  ],
+  "unresolved": [
+    {
+      "category": "missing_report_definition",
+      "description": "The report does not define the exact dust threshold or lot-size rounding rule separating acceptable dust from a meaningful unfilled amount; the plan models dust as a symbolic quantity without fixing a numeric boundary.",
+      "source_ids": [
+        "p_dust_unfilled",
+        "p_dust_only_remainder",
+        "si_dust_tolerant_fok"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "missing_checkpoint",
+      "description": "The specific contract function or checkpoint where the revert fires is not identified; the transition is modeled generically from the matching attempt to its execution outcome.",
+      "source_ids": [
+        "rc_revert_any_unfilled",
+        "v_order_reverts"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "The report does not state whether order placement is permissionless or what caller authorization applies; no authorization term is included in the selected formula.",
+      "source_ids": [
+        "p_fok_placed"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "missing_unit",
+      "description": "Units (e.g., base-token decimals or lot units) for dust_amount and unfilled_amount are not defined; quantities are treated as unitless integers.",
+      "source_ids": [
+        "p_dust_unfilled"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "v_availability_loss (users cannot execute valid trades; reduced protocol availability) is a secondary consequence of the core revert and is deferred.",
+    "The root-cause mechanism rc_revert_any_unfilled (reverts on any unfilled amount) is carried as an assumption bridging causality rather than encoded as a precondition or effect predicate.",
+    "The exact dust threshold and rounding rule are not quantified, so the plan asserts structural equality (only dust remains unfilled) without a fixed boundary.",
+    "Authorization/permissionless semantics of order placement are not modeled in the selected core formula."
+  ]
+}

@@ -1,0 +1,37 @@
+Last-second lock sniping via epoch-end snapshot and duration-blind utilization ratio
+
+## Finding description and impact
+
+Two independent design decisions compound into a single exploitable condition, such as below -
+
+Mechanic A :  Epoch-End Point-in-Time Snapshot [Line 212](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L212)
+Reward share is calculated from veTRUST balance at the single final timestamp of an epoch. A lock created one second before the epoch ends produces a balance of `lockAmount × (unlockTime − epochEnd) / MAXTIME ≈ 99.999%` of full weight.
+
+ The attacker contributed for `1 / 1_209_600 = 0.000083%` of the epoch duration, yet their full stake registers in the reward snapshot.
+
+Mechanic B : Duration-blind utilization ratio [Line 513–518](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L513-L518)
+
+We can see that the personal utilization ratio is computed exclusively from MultiVault activity deltas between epochs. Lock duration within an epoch has zero weight in the ratio formula.
+
+Personal utilization ratio is computed exclusively from MultiVault activity deltas between consecutive epochs. Lock duration within an epoch has no representation in the formula. A user with zero MultiVault activity receives `personalUtilizationLowerBound` unconditionally, whether they locked for 1 second or 14 days. The contract cannot distinguish between the two at this decision point, so no duration-based penalty is ever applied to the late joiner.
+
+Attack execution flow as below step by step -
+
+Prerequisites: 
+ - Epoch length: 1,209,600 seconds (14 days)
+ - `personalUtilizationLowerBound`: 3,000 bp (30%)
+ - Attacker has zero position through epochs 0 to N-1
+
+1.  Attacker maintains zero position (Epochs 0 to N-1)
+
+2. Last-second lock creation (Epoch N, Final Second)
+Result: Lock is included in epoch N end snapshot with ~99.999% of theoretical full weight.
+
+3. Epoch N Ends; Snapshot Recorded
+
+4. Attacker claims rewards for Epoch N (During Epoch N+1)
+
+5. Permanent dilution of honest participants
+
+## Impact
+Any actor can lock a large stake in the final block of any epoch and receive proportional rewards for that epoch with zero prior participation and zero protocol activity requirement. The attack is costless beyond the lock deposit itself (which is returned at unlock), repeatable every epoch and scales linearly with stake size. Every honest participant in a sniped epoch has their rewards diluted proportionally to the attacker's injected balance.

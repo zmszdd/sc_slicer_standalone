@@ -1,0 +1,20 @@
+Valid trades can revert due to incorrect bit-wise check
+
+## Summary
+[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`.
+
+## Finding Description  
+Inside `CLOB.sol`, both `_processLimitBidOrder()` (line 503) and `_processLimitAskOrder()` (line 544) contain:
+
+
+The developer’s intention is to throw when either side of the trade is zero.  
+Instead, `baseTokenAmountReceived & quoteTokenAmountSent` performs a bit-level comparison. Two **non-zero** integers that share no common set bits (e.g., `1` and `2`) pass this test, so the compound condition becomes true whenever the amounts differ and have no overlapping bits. In practice:
+
+1. Maker places a sell (ASK) limit order.  
+2. Taker submits a matching buy (BID) with `amountInBase = 1` and `quoteAmount = 2`.  
+3. `1 != 2` is true, `1 & 2 == 0` is also true ⇒ `ZeroCostTrade()` reverts, aborting the otherwise valid match.
+
+Because base amounts are denominated in base tokens and quote amounts in quote tokens, equality is virtually impossible, so every trade relies on the bit-wise clause. Random bit patterns therefore decide whether normal trades succeed or fail, enabling denial-of-service on any pair of amounts with disjoint bits.
+
+## Impact Explanation  
+High – attacker can systematically revert genuine matches, effectively freezing order execution and denying service.

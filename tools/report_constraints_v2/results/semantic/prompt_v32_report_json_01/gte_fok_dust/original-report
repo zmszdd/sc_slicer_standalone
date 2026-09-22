@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Spot CLOB and Router_qa8y3zjgyCn",
+    "audit_uid": "qa8y3zjgyCn",
+    "requested_submission_uid": "bAYrWa5aQep",
+    "requested_finding_uid": "LDE4mUbttzn",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Spot_CLOB_and_Router_qa8y3zjgyCn/20260618_143057/findings.json",
+    "source_submission_uid": "bAYrWa5aQep",
+    "source_finding_uid": "LDE4mUbttzn",
+    "original_report_path": "GTE Spot CLOB and Router_qa8y3zjgyCn\\medium_valid_bAYrWa5aQep.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "bAYrWa5aQep",
+  "finding_uid": "LDE4mUbttzn",
+  "finding_number": "15",
+  "title": "FOK Orders Incorrectly Revert on Dust Amounts Violating Protocol Specification",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "0xterrah",
+  "body": "## Finding description and impact\n\nFill-or-Kill (FOK) orders incorrectly revert when any amount remains unfilled, including acceptable dust amounts. According to the protocol's documentation, FOK orders should not revert if only the amount rounded off due to lot size constraints is left unfilled.\n\nFrom the README:\n> \"FOK fill orders *should* not revert if only the amount rounded off is left unfilled, and the user is not charged for the dust.\"\n\nHowever, the current implementation reverts on any unfilled amount regardless of whether it's just dust from lot size rounding:\n\n```solidity\nif (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount > 0) revert FOKOrderNotFilled();\n```\n\nThis breaks core CLOB functionality by making legitimate FOK orders fail unnecessarily. Users cannot execute valid trades when small dust amounts remain unfilled due to lot size constraints, reducing protocol availability and contradicting the intended behavior.\n\n\n## Recommended mitigation steps\n\nModify the FOK validation to only revert when unfilled amount exceeds the lot size threshold:\n\n```solidity\nuint256 lotSize = ds.settings().lotSizeInBase;\nif (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount >= lotSize) {\n    revert FOKOrderNotFilled();\n}\n```\n\nThis change ensures FOK orders succeed when only dust (< lot size) remains unfilled, aligning with the protocol's documented behavior while maintaining the FOK guarantee for meaningful unfilled amounts.",
+  "proof_of_concept": "## Proof of Concept\n\nThe issue occurs in both `_processFillBidOrder` and `_processFillAskOrder` functions in CLOB.sol:\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PoCTestBase} from \"./PoCTestBase.t.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {Side} from \"contracts/clob/types/Order.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\n\ncontract PoC is PoCTestBase {\n    function test_submissionValidity() external {\n        address taker = users[0];\n        address maker = users[1];\n        \n        // Setup: lot size of 1 ether, maker has 2.3 ether, taker wants 2.8 ether\n        uint256 lotSize = 1 ether;\n        uint256 price = TICK_SIZE;\n        uint256 makerAmount = 2.3 ether; // Available liquidity (2 full lots + 0.3 ether dust)\n        uint256 takerAmount = 2.8 ether; // FOK order size\n        \n        // Setup maker sell order\n        setupOrder(Side.SELL, maker, makerAmount, price);\n        \n        // Set lot size\n        vm.prank(address(clobManager));\n        clob.setLotSizeInBase(lotSize);\n        \n        // Setup taker tokens (buying base tokens)\n        setupTokens(Side.BUY, taker, takerAmount, price, true);\n        \n        // Create FOK order\n        ICLOB.PostFillOrderArgs memory fillArgs = ICLOB.PostFillOrderArgs({\n            amount: takerAmount,\n            priceLimit: price,\n            side: Side.BUY,\n            amountIsBase: true,\n            fillOrderType: ICLOB.FillOrderType.FILL_OR_KILL\n        });\n        \n        // Current implementation incorrectly reverts on dust amounts\n        // This validates the report's claim that FOK orders fail when they shouldn't\n        vm.expectRevert(abi.encodeWithSelector(CLOB.FOKOrderNotFilled.selector));\n        vm.prank(taker);\n        clob.postFillOrder(taker, fillArgs);\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L440"
+  ],
+  "source_record": {
+    "project_id": "qa8y3zjgyCn",
+    "submission_index": "673",
+    "api_submission_id": "",
+    "uid": "bAYrWa5aQep",
+    "number": "673",
+    "title": "FOK Orders Incorrectly Revert on Dust Amounts Violating Protocol Specification",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "0xterrah",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L440"
+    ],
+    "body": "## Finding description and impact\n\nFill-or-Kill (FOK) orders incorrectly revert when any amount remains unfilled, including acceptable dust amounts. According to the protocol's documentation, FOK orders should not revert if only the amount rounded off due to lot size constraints is left unfilled.\n\nFrom the README:\n> \"FOK fill orders *should* not revert if only the amount rounded off is left unfilled, and the user is not charged for the dust.\"\n\nHowever, the current implementation reverts on any unfilled amount regardless of whether it's just dust from lot size rounding:\n\n```solidity\nif (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount > 0) revert FOKOrderNotFilled();\n```\n\nThis breaks core CLOB functionality by making legitimate FOK orders fail unnecessarily. Users cannot execute valid trades when small dust amounts remain unfilled due to lot size constraints, reducing protocol availability and contradicting the intended behavior.\n\n\n## Recommended mitigation steps\n\nModify the FOK validation to only revert when unfilled amount exceeds the lot size threshold:\n\n```solidity\nuint256 lotSize = ds.settings().lotSizeInBase;\nif (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount >= lotSize) {\n    revert FOKOrderNotFilled();\n}\n```\n\nThis change ensures FOK orders succeed when only dust (< lot size) remains unfilled, aligning with the protocol's documented behavior while maintaining the FOK guarantee for meaningful unfilled amounts.",
+    "proof_of_concept": "## Proof of Concept\n\nThe issue occurs in both `_processFillBidOrder` and `_processFillAskOrder` functions in CLOB.sol:\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PoCTestBase} from \"./PoCTestBase.t.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {Side} from \"contracts/clob/types/Order.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\n\ncontract PoC is PoCTestBase {\n    function test_submissionValidity() external {\n        address taker = users[0];\n        address maker = users[1];\n        \n        // Setup: lot size of 1 ether, maker has 2.3 ether, taker wants 2.8 ether\n        uint256 lotSize = 1 ether;\n        uint256 price = TICK_SIZE;\n        uint256 makerAmount = 2.3 ether; // Available liquidity (2 full lots + 0.3 ether dust)\n        uint256 takerAmount = 2.8 ether; // FOK order size\n        \n        // Setup maker sell order\n        setupOrder(Side.SELL, maker, makerAmount, price);\n        \n        // Set lot size\n        vm.prank(address(clobManager));\n        clob.setLotSizeInBase(lotSize);\n        \n        // Setup taker tokens (buying base tokens)\n        setupTokens(Side.BUY, taker, takerAmount, price, true);\n        \n        // Create FOK order\n        ICLOB.PostFillOrderArgs memory fillArgs = ICLOB.PostFillOrderArgs({\n            amount: takerAmount,\n            priceLimit: price,\n            side: Side.BUY,\n            amountIsBase: true,\n            fillOrderType: ICLOB.FillOrderType.FILL_OR_KILL\n        });\n        \n        // Current implementation incorrectly reverts on dust amounts\n        // This validates the report's claim that FOK orders fail when they shouldn't\n        vm.expectRevert(abi.encodeWithSelector(CLOB.FOKOrderNotFilled.selector));\n        vm.prank(taker);\n        clob.postFillOrder(taker, fillArgs);\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/qa8y3zjgyCn/submissions/673",
+    "raw": {
+      "auditUid": "qa8y3zjgyCn",
+      "createdAt": "2025-08-06T00:04:04.058Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "97SqpgAyp6T",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-25T12:15:37.059Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "LDE4mUbttzn"
+        },
+        {
+          "uid": "t5TjExe5bRs",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-25T12:15:38.547Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "LDE4mUbttzn"
+        },
+        {
+          "uid": "KKMrEVNxbwx",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-08-12T10:47:09.220Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "bAYrWa5aQep",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "LDE4mUbttzn",
+        "number": 15,
+        "duplicates": 31
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-08-12T10:54:32.142Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "FOK Orders Incorrectly Revert on Dust Amounts Violating Protocol Specification",
+      "uid": "bAYrWa5aQep",
+      "updatedAt": "2025-08-06T00:04:04.058Z",
+      "user": {
+        "uid": "KTiFJZrJJKV",
+        "handle": "0xterrah"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nFill-or-Kill (FOK) orders incorrectly revert when any amount remains unfilled, including acceptable dust amounts. According to the protocol's documentation, FOK orders should not revert if only the amount rounded off due to lot size constraints is left unfilled.\n\nFrom the README:\n> \"FOK fill orders *should* not revert if only the amount rounded off is left unfilled, and the user is not charged for the dust.\"\n\nHowever, the current implementation reverts on any unfilled amount regardless of whether it's just dust from lot size rounding:\n\n```solidity\nif (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount > 0) revert FOKOrderNotFilled();\n```\n\nThis breaks core CLOB functionality by making legitimate FOK orders fail unnecessarily. Users cannot execute valid trades when small dust amounts remain unfilled due to lot size constraints, reducing protocol availability and contradicting the intended behavior.\n\n\n## Recommended mitigation steps\n\nModify the FOK validation to only revert when unfilled amount exceeds the lot size threshold:\n\n```solidity\nuint256 lotSize = ds.settings().lotSizeInBase;\nif (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount >= lotSize) {\n    revert FOKOrderNotFilled();\n}\n```\n\nThis change ensures FOK orders succeed when only dust (< lot size) remains unfilled, aligning with the protocol's documented behavior while maintaining the FOK guarantee for meaningful unfilled amounts.",
+      "proofOfConcept": "## Proof of Concept\n\nThe issue occurs in both `_processFillBidOrder` and `_processFillAskOrder` functions in CLOB.sol:\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PoCTestBase} from \"./PoCTestBase.t.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {Side} from \"contracts/clob/types/Order.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\n\ncontract PoC is PoCTestBase {\n    function test_submissionValidity() external {\n        address taker = users[0];\n        address maker = users[1];\n        \n        // Setup: lot size of 1 ether, maker has 2.3 ether, taker wants 2.8 ether\n        uint256 lotSize = 1 ether;\n        uint256 price = TICK_SIZE;\n        uint256 makerAmount = 2.3 ether; // Available liquidity (2 full lots + 0.3 ether dust)\n        uint256 takerAmount = 2.8 ether; // FOK order size\n        \n        // Setup maker sell order\n        setupOrder(Side.SELL, maker, makerAmount, price);\n        \n        // Set lot size\n        vm.prank(address(clobManager));\n        clob.setLotSizeInBase(lotSize);\n        \n        // Setup taker tokens (buying base tokens)\n        setupTokens(Side.BUY, taker, takerAmount, price, true);\n        \n        // Create FOK order\n        ICLOB.PostFillOrderArgs memory fillArgs = ICLOB.PostFillOrderArgs({\n            amount: takerAmount,\n            priceLimit: price,\n            side: Side.BUY,\n            amountIsBase: true,\n            fillOrderType: ICLOB.FillOrderType.FILL_OR_KILL\n        });\n        \n        // Current implementation incorrectly reverts on dust amounts\n        // This validates the report's claim that FOK orders fail when they shouldn't\n        vm.expectRevert(abi.encodeWithSelector(CLOB.FOKOrderNotFilled.selector));\n        vm.prank(taker);\n        clob.postFillOrder(taker, fillArgs);\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L440",
+      "number": 673,
+      "aiExplanation": null,
+      "_index": 673
+    }
+  }
+}

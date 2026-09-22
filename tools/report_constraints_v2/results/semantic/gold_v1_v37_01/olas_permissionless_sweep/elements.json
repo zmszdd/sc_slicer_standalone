@@ -1,0 +1,237 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "buyback execution flow on BuyBackBurner (inventory sweep vs buyBack)",
+    "environment": "onchain EVM",
+    "evidence": [
+      "BuyBackBurner.transfer(token) is permissionless and can grief/DoS buybacks by sweeping inventory",
+      "`BuyBackBurner.transfer(address token)` can be called by anyone and transfers the entire balance of token held by the buyback contract:",
+      "Since `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`.",
+      "No access control on a privileged “sweep” function.",
+      "- Reliable griefing of buyback operations (keepers waste gas; buybacks delayed/blocked).",
+      "- Forces routing of non-OLAS inventory to treasury, potentially preventing intended “inventory → buy OLAS → bridge2Burner” cadence."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "Attacker",
+      "role": "attacker",
+      "evidence": [
+        "`BuyBackBurner.transfer(address token)` can be called by anyone and transfers the entire balance of token held by the buyback contract:",
+        "Since `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`."
+      ]
+    },
+    {
+      "id": "keeper",
+      "name": "Keeper",
+      "role": "victim",
+      "evidence": [
+        "Since `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`.",
+        "- Reliable griefing of buyback operations (keepers waste gas; buybacks delayed/blocked)."
+      ]
+    },
+    {
+      "id": "buyback_burner",
+      "name": "BuyBackBurner contract",
+      "role": "contract",
+      "evidence": [
+        "BuyBackBurner.transfer(token) is permissionless and can grief/DoS buybacks by sweeping inventory",
+        "`BuyBackBurner.transfer(address token)` can be called by anyone and transfers the entire balance of token held by the buyback contract:",
+        "Since `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`.",
+        "No access control on a privileged “sweep” function."
+      ]
+    },
+    {
+      "id": "token_inventory",
+      "name": "Held token inventory",
+      "role": "asset",
+      "evidence": [
+        "- if `token == olas` → sends all OLAS to `bridge2Burner`",
+        "- else → sends all of token to `treasury`",
+        "Since `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`."
+      ]
+    },
+    {
+      "id": "buyback_operation",
+      "name": "buyBack operation",
+      "role": "asset",
+      "evidence": [
+        "Since `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`.",
+        "- Reliable griefing of buyback operations (keepers waste gas; buybacks delayed/blocked)."
+      ]
+    },
+    {
+      "id": "treasury",
+      "name": "Treasury",
+      "role": "other",
+      "evidence": [
+        "- else → sends all of token to `treasury`",
+        "- Forces routing of non-OLAS inventory to treasury, potentially preventing intended “inventory → buy OLAS → bridge2Burner” cadence."
+      ]
+    },
+    {
+      "id": "bridge2_burner",
+      "name": "Bridge2Burner",
+      "role": "other",
+      "evidence": [
+        "- if `token == olas` → sends all OLAS to `bridge2Burner`",
+        "- Forces routing of non-OLAS inventory to treasury, potentially preventing intended “inventory → buy OLAS → bridge2Burner” cadence."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "pre_unauthorized_caller",
+      "kind": "precondition",
+      "text": "Anyone, without authorization, can call BuyBackBurner.transfer(token) because it is permissionless",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "buyback_burner"
+      ],
+      "evidence": [
+        "BuyBackBurner.transfer(token) is permissionless and can grief/DoS buybacks by sweeping inventory",
+        "`BuyBackBurner.transfer(address token)` can be called by anyone and transfers the entire balance of token held by the buyback contract:"
+      ]
+    },
+    {
+      "id": "pre_contract_holds_balance",
+      "kind": "precondition",
+      "text": "The buyback contract holds a token balance (secondToken or OLAS) at the time of the transfer",
+      "modality": "asserted",
+      "entity_ids": [
+        "buyback_burner",
+        "token_inventory"
+      ],
+      "evidence": [
+        "- if `token == olas` → sends all OLAS to `bridge2Burner`",
+        "- else → sends all of token to `treasury`",
+        "Since `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`."
+      ]
+    },
+    {
+      "id": "pre_buyback_requires_inventory",
+      "kind": "precondition",
+      "text": "buyBack(secondToken, ...) requires the contract to hold secondToken inventory and reverts with ZeroValue() on a zero balance",
+      "modality": "asserted",
+      "entity_ids": [
+        "buyback_burner",
+        "token_inventory",
+        "buyback_operation"
+      ],
+      "evidence": [
+        "Since `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`."
+      ]
+    },
+    {
+      "id": "pre_attack_order",
+      "kind": "precondition",
+      "text": "The attacker's transfer call is placed immediately before the keeper's buyBack call (front-run/race)",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "keeper",
+        "buyback_operation"
+      ],
+      "evidence": [
+        "Since `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`."
+      ]
+    },
+    {
+      "id": "action_sweep_transfer",
+      "kind": "action",
+      "text": "The attacker calls BuyBackBurner.transfer(token) to sweep the contract's entire token balance",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "buyback_burner",
+        "token_inventory"
+      ],
+      "evidence": [
+        "`BuyBackBurner.transfer(address token)` can be called by anyone and transfers the entire balance of token held by the buyback contract:",
+        "Since `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`."
+      ]
+    },
+    {
+      "id": "root_cause_no_access_control",
+      "kind": "root_cause",
+      "text": "The privileged sweep function transfer has no access control",
+      "modality": "asserted",
+      "entity_ids": [
+        "buyback_burner"
+      ],
+      "evidence": [
+        "No access control on a privileged “sweep” function.",
+        "BuyBackBurner.transfer(token) is permissionless and can grief/DoS buybacks by sweeping inventory"
+      ]
+    },
+    {
+      "id": "impact_sweep_completes",
+      "kind": "impact",
+      "text": "The unauthorized transfer completes, moving the contract's full token inventory to treasury (non-OLAS) or bridge2Burner (OLAS)",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "buyback_burner",
+        "token_inventory",
+        "treasury",
+        "bridge2_burner"
+      ],
+      "evidence": [
+        "- if `token == olas` → sends all OLAS to `bridge2Burner`",
+        "- else → sends all of token to `treasury`",
+        "- Forces routing of non-OLAS inventory to treasury, potentially preventing intended “inventory → buy OLAS → bridge2Burner” cadence."
+      ]
+    },
+    {
+      "id": "impact_buyback_reverts",
+      "kind": "impact",
+      "text": "The keeper's buyBack transaction reverts with ZeroValue(), griefing buybacks, wasting keeper gas, and blocking/delaying the operation",
+      "modality": "potential",
+      "entity_ids": [
+        "keeper",
+        "buyback_operation",
+        "buyback_burner"
+      ],
+      "evidence": [
+        "Since `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`.",
+        "- Reliable griefing of buyback operations (keepers waste gas; buybacks delayed/blocked)."
+      ]
+    },
+    {
+      "id": "intent_authorized_sweep",
+      "kind": "security_intent",
+      "text": "transfer, the privileged token-sweep operation, should be guarded so only an authorized caller can invoke it (inferred: report labels it a privileged sweep function but never states its required authorization)",
+      "modality": "inferred",
+      "entity_ids": [
+        "buyback_burner"
+      ],
+      "evidence": [
+        "No access control on a privileged “sweep” function."
+      ]
+    },
+    {
+      "id": "assumption_public_mempool",
+      "kind": "assumption",
+      "text": "Keepers submit buyBack to the public mempool, enabling the attacker to front-run the transaction ordering",
+      "modality": "potential",
+      "entity_ids": [
+        "keeper",
+        "attacker"
+      ],
+      "evidence": [
+        "Since `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "action_sweep_transfer"
+  ],
+  "ambiguities": [
+    "Whether the attacker can reliably front-run a keeper's buyback (private mempool or ordering assumptions are unverified).",
+    "Whether the buyback contract actually holds a nonzero token balance at attack time is not independently verified.",
+    "The report asserts capabilities ('can') rather than a confirmed exploit incident.",
+    "No named authorized caller or role for the privileged transfer is identified, so the intended authorization model is unspecified."
+  ]
+}

@@ -1,0 +1,130 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Spot CLOB and Router_qa8y3zjgyCn",
+    "audit_uid": "qa8y3zjgyCn",
+    "requested_submission_uid": "2JsmQXZWFmG",
+    "requested_finding_uid": "4mNBEGcS2Q4",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Spot_CLOB_and_Router_qa8y3zjgyCn/20260618_143057/findings.json",
+    "source_submission_uid": "2JsmQXZWFmG",
+    "source_finding_uid": "4mNBEGcS2Q4",
+    "original_report_path": "GTE Spot CLOB and Router_qa8y3zjgyCn\\medium_valid_2JsmQXZWFmG.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "2JsmQXZWFmG",
+  "finding_uid": "4mNBEGcS2Q4",
+  "finding_number": "13",
+  "title": "Incorrect Zero-Cost Trade Detection Leads to Denial of Service",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "sharonphiliplima",
+  "body": "## Finding description and impact\n\nThe CLOB.sol contract contains logic intended to prevent \"zero-cost\" trades, in which one party might receive assets without returning anything, often due to rounding or dust values.\n\nHowever, the current implementation uses a bitwise AND operation (&) to detect such cases:\n\nhttps://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L503-L505\nhttps://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L544-L546\n\n```\n// In _processLimitBidOrder \nif (\n    baseTokenAmountReceived != quoteTokenAmountSent &&\n    baseTokenAmountReceived & quoteTokenAmountSent == 0\n) {\n    revert ZeroCostTrade();\n}\n\n// In _processLimitAskOrder \nif (\n    baseTokenAmountSent != quoteTokenAmountReceived &&\n    baseTokenAmountSent & quoteTokenAmountReceived == 0\n) {\n    revert ZeroCostTrade();\n}\n```\nThis logic is flawed. The bitwise AND between two valid, non-zero values can be zero if they don’t share any set bits (e.g., powers of two like 8 and 16). This leads to false positives, causing legitimate trades to revert.\n\nFor example:\n8 & 16 == 0 despite both being valid, non-zero amounts.\n\nThis misbehavior introduces a Denial of Service (DoS) vector for certain trade sizes, potentially allowing malicious actors or unfortunate users to experience repeated failed transactions.\n\n\n## Recommended mitigation steps\n\nReplace the faulty bitwise check with a proper logical condition that explicitly checks for one-sided zero values:\n\n```\n// Fix in _processLimitBidOrder\nif (\n    (baseTokenAmountReceived > 0 && quoteTokenAmountSent == 0) ||\n    (baseTokenAmountReceived == 0 && quoteTokenAmountSent > 0)\n) {\n    revert ZeroCostTrade();\n}\n\n// Fix in _processLimitAskOrder\nif (\n    (baseTokenAmountSent > 0 && quoteTokenAmountReceived == 0) ||\n    (baseTokenAmountSent == 0 && quoteTokenAmountReceived > 0)\n) {\n    revert ZeroCostTrade();\n}\n\n```",
+  "proof_of_concept": "```\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.27;\n\nimport \"./PoCTestBase.t.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\nimport {Side} from \"contracts/clob/types/Order.sol\";\n\ncontract PoC is PoCTestBase {\n    function test_submissionValidity() public {\n        address maker = jb;\n        address taker = rite;\n\n        // Maker posts a SELL order\n        uint256 makerSellAmount = 1 ether;\n        uint256 tradePrice = 2 * 1e18;\n\n        vm.startPrank(maker);\n        weth.mint(maker, makerSellAmount);\n        weth.approve(address(accountManager), makerSellAmount);\n        accountManager.deposit(maker, address(weth), makerSellAmount);\n        ICLOB(wethCLOB).postLimitOrder(maker, ICLOB.PostLimitOrderArgs({\n            amountInBase: makerSellAmount,\n            price: tradePrice,\n            cancelTimestamp: 0,\n            side: Side.SELL,\n            clientOrderId: 0,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        }));\n        vm.stopPrank();\n\n        // Taker attempts to BUY with amounts that falsely trigger ZeroCostTrade\n        uint256 takerBuyAmountBase = 2 ** 53;\n        uint256 takerCostQuote = 2 ** 54;\n\n        assert((takerBuyAmountBase & takerCostQuote) == 0);\n\n        vm.startPrank(taker);\n        tokenA.mint(taker, takerCostQuote);\n        tokenA.approve(address(accountManager), takerCostQuote);\n        accountManager.deposit(taker, address(tokenA), takerCostQuote);\n\n        vm.expectRevert(CLOB.ZeroCostTrade.selector);\n        ICLOB(wethCLOB).postLimitOrder(taker, ICLOB.PostLimitOrderArgs({\n            amountInBase: takerBuyAmountBase,\n            price: tradePrice,\n            cancelTimestamp: 0,\n            side: Side.BUY,\n            clientOrderId: 0,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        }));\n        vm.stopPrank();\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L503-L505",
+    "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L544-L546"
+  ],
+  "source_record": {
+    "project_id": "qa8y3zjgyCn",
+    "submission_index": "606",
+    "api_submission_id": "",
+    "uid": "2JsmQXZWFmG",
+    "number": "606",
+    "title": "Incorrect Zero-Cost Trade Detection Leads to Denial of Service",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "sharonphiliplima",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L503-L505",
+      "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L544-L546"
+    ],
+    "body": "## Finding description and impact\n\nThe CLOB.sol contract contains logic intended to prevent \"zero-cost\" trades, in which one party might receive assets without returning anything, often due to rounding or dust values.\n\nHowever, the current implementation uses a bitwise AND operation (&) to detect such cases:\n\nhttps://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L503-L505\nhttps://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L544-L546\n\n```\n// In _processLimitBidOrder \nif (\n    baseTokenAmountReceived != quoteTokenAmountSent &&\n    baseTokenAmountReceived & quoteTokenAmountSent == 0\n) {\n    revert ZeroCostTrade();\n}\n\n// In _processLimitAskOrder \nif (\n    baseTokenAmountSent != quoteTokenAmountReceived &&\n    baseTokenAmountSent & quoteTokenAmountReceived == 0\n) {\n    revert ZeroCostTrade();\n}\n```\nThis logic is flawed. The bitwise AND between two valid, non-zero values can be zero if they don’t share any set bits (e.g., powers of two like 8 and 16). This leads to false positives, causing legitimate trades to revert.\n\nFor example:\n8 & 16 == 0 despite both being valid, non-zero amounts.\n\nThis misbehavior introduces a Denial of Service (DoS) vector for certain trade sizes, potentially allowing malicious actors or unfortunate users to experience repeated failed transactions.\n\n\n## Recommended mitigation steps\n\nReplace the faulty bitwise check with a proper logical condition that explicitly checks for one-sided zero values:\n\n```\n// Fix in _processLimitBidOrder\nif (\n    (baseTokenAmountReceived > 0 && quoteTokenAmountSent == 0) ||\n    (baseTokenAmountReceived == 0 && quoteTokenAmountSent > 0)\n) {\n    revert ZeroCostTrade();\n}\n\n// Fix in _processLimitAskOrder\nif (\n    (baseTokenAmountSent > 0 && quoteTokenAmountReceived == 0) ||\n    (baseTokenAmountSent == 0 && quoteTokenAmountReceived > 0)\n) {\n    revert ZeroCostTrade();\n}\n\n```",
+    "proof_of_concept": "```\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.27;\n\nimport \"./PoCTestBase.t.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\nimport {Side} from \"contracts/clob/types/Order.sol\";\n\ncontract PoC is PoCTestBase {\n    function test_submissionValidity() public {\n        address maker = jb;\n        address taker = rite;\n\n        // Maker posts a SELL order\n        uint256 makerSellAmount = 1 ether;\n        uint256 tradePrice = 2 * 1e18;\n\n        vm.startPrank(maker);\n        weth.mint(maker, makerSellAmount);\n        weth.approve(address(accountManager), makerSellAmount);\n        accountManager.deposit(maker, address(weth), makerSellAmount);\n        ICLOB(wethCLOB).postLimitOrder(maker, ICLOB.PostLimitOrderArgs({\n            amountInBase: makerSellAmount,\n            price: tradePrice,\n            cancelTimestamp: 0,\n            side: Side.SELL,\n            clientOrderId: 0,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        }));\n        vm.stopPrank();\n\n        // Taker attempts to BUY with amounts that falsely trigger ZeroCostTrade\n        uint256 takerBuyAmountBase = 2 ** 53;\n        uint256 takerCostQuote = 2 ** 54;\n\n        assert((takerBuyAmountBase & takerCostQuote) == 0);\n\n        vm.startPrank(taker);\n        tokenA.mint(taker, takerCostQuote);\n        tokenA.approve(address(accountManager), takerCostQuote);\n        accountManager.deposit(taker, address(tokenA), takerCostQuote);\n\n        vm.expectRevert(CLOB.ZeroCostTrade.selector);\n        ICLOB(wethCLOB).postLimitOrder(taker, ICLOB.PostLimitOrderArgs({\n            amountInBase: takerBuyAmountBase,\n            price: tradePrice,\n            cancelTimestamp: 0,\n            side: Side.BUY,\n            clientOrderId: 0,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        }));\n        vm.stopPrank();\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/qa8y3zjgyCn/submissions/606",
+    "raw": {
+      "auditUid": "qa8y3zjgyCn",
+      "createdAt": "2025-08-05T13:32:57.058Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "Tn3tyHMakAz",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-25T12:11:03.811Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "4mNBEGcS2Q4"
+        },
+        {
+          "uid": "u8xwEPEHPLh",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-08-07T12:02:18.192Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "4mNBEGcS2Q4"
+        },
+        {
+          "uid": "euvBobYm4QD",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-08-12T10:51:17.476Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "2JsmQXZWFmG",
+          "findingUid": null
+        },
+        {
+          "uid": "C9kKGhpsa5F",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-08-14T19:36:20.781Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "4mNBEGcS2Q4"
+        }
+      ],
+      "finding": {
+        "uid": "4mNBEGcS2Q4",
+        "number": 13,
+        "duplicates": 52
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-08-14T19:36:20.781Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Incorrect Zero-Cost Trade Detection Leads to Denial of Service",
+      "uid": "2JsmQXZWFmG",
+      "updatedAt": "2025-08-05T13:32:57.058Z",
+      "user": {
+        "uid": "w7zwnyzLzUH",
+        "handle": "sharonphiliplima"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe CLOB.sol contract contains logic intended to prevent \"zero-cost\" trades, in which one party might receive assets without returning anything, often due to rounding or dust values.\n\nHowever, the current implementation uses a bitwise AND operation (&) to detect such cases:\n\nhttps://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L503-L505\nhttps://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L544-L546\n\n```\n// In _processLimitBidOrder \nif (\n    baseTokenAmountReceived != quoteTokenAmountSent &&\n    baseTokenAmountReceived & quoteTokenAmountSent == 0\n) {\n    revert ZeroCostTrade();\n}\n\n// In _processLimitAskOrder \nif (\n    baseTokenAmountSent != quoteTokenAmountReceived &&\n    baseTokenAmountSent & quoteTokenAmountReceived == 0\n) {\n    revert ZeroCostTrade();\n}\n```\nThis logic is flawed. The bitwise AND between two valid, non-zero values can be zero if they don’t share any set bits (e.g., powers of two like 8 and 16). This leads to false positives, causing legitimate trades to revert.\n\nFor example:\n8 & 16 == 0 despite both being valid, non-zero amounts.\n\nThis misbehavior introduces a Denial of Service (DoS) vector for certain trade sizes, potentially allowing malicious actors or unfortunate users to experience repeated failed transactions.\n\n\n## Recommended mitigation steps\n\nReplace the faulty bitwise check with a proper logical condition that explicitly checks for one-sided zero values:\n\n```\n// Fix in _processLimitBidOrder\nif (\n    (baseTokenAmountReceived > 0 && quoteTokenAmountSent == 0) ||\n    (baseTokenAmountReceived == 0 && quoteTokenAmountSent > 0)\n) {\n    revert ZeroCostTrade();\n}\n\n// Fix in _processLimitAskOrder\nif (\n    (baseTokenAmountSent > 0 && quoteTokenAmountReceived == 0) ||\n    (baseTokenAmountSent == 0 && quoteTokenAmountReceived > 0)\n) {\n    revert ZeroCostTrade();\n}\n\n```",
+      "proofOfConcept": "```\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.27;\n\nimport \"./PoCTestBase.t.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\nimport {Side} from \"contracts/clob/types/Order.sol\";\n\ncontract PoC is PoCTestBase {\n    function test_submissionValidity() public {\n        address maker = jb;\n        address taker = rite;\n\n        // Maker posts a SELL order\n        uint256 makerSellAmount = 1 ether;\n        uint256 tradePrice = 2 * 1e18;\n\n        vm.startPrank(maker);\n        weth.mint(maker, makerSellAmount);\n        weth.approve(address(accountManager), makerSellAmount);\n        accountManager.deposit(maker, address(weth), makerSellAmount);\n        ICLOB(wethCLOB).postLimitOrder(maker, ICLOB.PostLimitOrderArgs({\n            amountInBase: makerSellAmount,\n            price: tradePrice,\n            cancelTimestamp: 0,\n            side: Side.SELL,\n            clientOrderId: 0,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        }));\n        vm.stopPrank();\n\n        // Taker attempts to BUY with amounts that falsely trigger ZeroCostTrade\n        uint256 takerBuyAmountBase = 2 ** 53;\n        uint256 takerCostQuote = 2 ** 54;\n\n        assert((takerBuyAmountBase & takerCostQuote) == 0);\n\n        vm.startPrank(taker);\n        tokenA.mint(taker, takerCostQuote);\n        tokenA.approve(address(accountManager), takerCostQuote);\n        accountManager.deposit(taker, address(tokenA), takerCostQuote);\n\n        vm.expectRevert(CLOB.ZeroCostTrade.selector);\n        ICLOB(wethCLOB).postLimitOrder(taker, ICLOB.PostLimitOrderArgs({\n            amountInBase: takerBuyAmountBase,\n            price: tradePrice,\n            cancelTimestamp: 0,\n            side: Side.BUY,\n            clientOrderId: 0,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        }));\n        vm.stopPrank();\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L503-L505,https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L544-L546",
+      "number": 606,
+      "aiExplanation": null,
+      "_index": 606
+    }
+  }
+}

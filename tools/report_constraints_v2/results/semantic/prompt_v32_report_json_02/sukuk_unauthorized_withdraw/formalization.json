@@ -1,0 +1,251 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "victim_deposited": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Victim has deposited funds into the vault",
+      "checkpoint": "before withdrawal call",
+      "entity_ids": [
+        "victim",
+        "werc7575_vault"
+      ],
+      "evidence": "- Victim has deposited funds into the vault"
+    },
+    "victim_self_allowance": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Victim holds validator-granted self-allowance",
+      "checkpoint": "before withdrawal call",
+      "entity_ids": [
+        "victim",
+        "validator"
+      ],
+      "evidence": "- Victim has self-allowance granted by validator (required for normal protocol operation)"
+    },
+    "attacker_approved": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Victim has approved the attacker as spender",
+      "checkpoint": "before withdrawal call",
+      "entity_ids": [
+        "victim",
+        "attacker"
+      ],
+      "evidence": "No approval from victim required. No user interaction needed. Attack cost is only gas fees."
+    },
+    "attacker_call": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Attacker calls withdraw()/redeem() passing the victim's address as the owner parameter",
+      "checkpoint": "at call entry",
+      "entity_ids": [
+        "attacker",
+        "werc7575_vault",
+        "victim"
+      ],
+      "evidence": "The `withdraw()` and `redeem()` functions in `WERC7575Vault.sol` accept an arbitrary `owner` parameter but only verify the owner's self-allowance via `spendSelfAllowance()`. They fail to check whether `msg.sender` is authorized by the owner, allowing any external account to steal funds from any user with active self-allowance."
+    },
+    "withdraw_completed": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "withdraw()/redeem() call completes against the victim's position",
+      "checkpoint": "after call returns",
+      "entity_ids": [
+        "werc7575_vault",
+        "victim",
+        "attacker"
+      ],
+      "evidence": "The `withdraw()` and `redeem()` functions in `WERC7575Vault.sol` accept an arbitrary `owner` parameter but only verify the owner's self-allowance via `spendSelfAllowance()`. They fail to check whether `msg.sender` is authorized by the owner, allowing any external account to steal funds from any user with active self-allowance."
+    },
+    "caller_authorized": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Caller authorization holds (msg.sender == owner or allowance[owner][msg.sender] >= shares)",
+      "checkpoint": "during call execution",
+      "entity_ids": [
+        "werc7575_vault"
+      ],
+      "evidence": "Per ERC-4626, when `msg.sender != owner`, the vault MUST verify caller authorization. This check is completely absent."
+    }
+  },
+  "claims": [
+    {
+      "id": "unauthorized_withdrawal_from_victim_position",
+      "scope": "core",
+      "modality": "asserted",
+      "impact_ids": [
+        "unauthorized_state_change"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "Victim has deposited funds, victim holds validator-granted self-allowance, victim has not approved the attacker, and attacker calls withdraw()/redeem() with the victim's address as owner.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "victim_deposited"
+              },
+              {
+                "var": "victim_self_allowance"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "attacker_approved"
+                  }
+                ]
+              },
+              {
+                "var": "attacker_call"
+              }
+            ]
+          },
+          "derivation": "Conjunction of asserted preconditions victim_deposited, victim_has_self_allowance, no_approval_to_attacker and the prior input observation attacker_calls_withdraw_redeem. Assumption assets_sent_to_attacker is excluded from P (post-effect transfer) and named in unresolved.",
+          "source_ids": [
+            "victim_deposited",
+            "victim_has_self_allowance",
+            "no_approval_to_attacker",
+            "attacker_calls_withdraw_redeem"
+          ],
+          "evidence": [
+            "- Victim has deposited funds into the vault",
+            "- Victim has self-allowance granted by validator (required for normal protocol operation)",
+            "No approval from victim required. No user interaction needed. Attack cost is only gas fees.",
+            "The `withdraw()` and `redeem()` functions in `WERC7575Vault.sol` accept an arbitrary `owner` parameter but only verify the owner's self-allowance via `spendSelfAllowance()`. They fail to check whether `msg.sender` is authorized by the owner, allowing any external account to steal funds from any user with active self-allowance.",
+            "The function accepts any `owner` address from any caller and only verifies that the `owner` has self-allowance (platform permission). There is no check that `msg.sender == owner` or that `allowance[owner][msg.sender] >= shares`."
+          ]
+        },
+        "safety": {
+          "text": "If the withdraw()/redeem() call completes against the victim's position, then caller authorization held.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "var": "withdraw_completed"
+              },
+              {
+                "var": "caller_authorized"
+              }
+            ]
+          },
+          "derivation": "Protected-effect construction (effect -> authorized) derived from security_intent statement caller_authorization_intent, which grounds the ERC-4626 requirement that caller authorization be verified when msg.sender != owner.",
+          "source_ids": [
+            "caller_authorization_intent"
+          ],
+          "evidence": [
+            "Per ERC-4626, when `msg.sender != owner`, the vault MUST verify caller authorization. This check is completely absent."
+          ]
+        },
+        "effects": {
+          "text": "The withdraw()/redeem() call completes against the victim's position and caller authorization did not hold.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "withdraw_completed"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "caller_authorized"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Direct impact statement unauthorized_state_change: the call completes against the victim's position while the victim's authorization is absent.",
+          "source_ids": [
+            "unauthorized_state_change"
+          ],
+          "evidence": [
+            "The `withdraw()` and `redeem()` functions in `WERC7575Vault.sol` accept an arbitrary `owner` parameter but only verify the owner's self-allowance via `spendSelfAllowance()`. They fail to check whether `msg.sender` is authorized by the owner, allowing any external account to steal funds from any user with active self-allowance.",
+            "The function accepts any `owner` address from any caller and only verifies that the `owner` has self-allowance (platform permission). There is no check that `msg.sender == owner` or that `allowance[owner][msg.sender] >= shares`."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "victim_deposited",
+            "victim_has_self_allowance",
+            "no_approval_to_attacker",
+            "attacker_calls_withdraw_redeem"
+          ],
+          "args.0": [
+            "victim_deposited"
+          ],
+          "args.1": [
+            "victim_has_self_allowance"
+          ],
+          "args.2": [
+            "no_approval_to_attacker"
+          ],
+          "args.2.args.0": [
+            "no_approval_to_attacker"
+          ],
+          "args.3": [
+            "attacker_calls_withdraw_redeem"
+          ]
+        },
+        "safety": {
+          "": [
+            "caller_authorization_intent"
+          ],
+          "args.0": [
+            "caller_authorization_intent"
+          ],
+          "args.1": [
+            "caller_authorization_intent"
+          ]
+        },
+        "effects": {
+          "": [
+            "unauthorized_state_change"
+          ],
+          "args.0": [
+            "unauthorized_state_change"
+          ],
+          "args.1": [
+            "unauthorized_state_change"
+          ],
+          "args.1.args.0": [
+            "unauthorized_state_change"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "unauthorized_state_change",
+          "status": "formalized",
+          "reason": "Effect modeled as withdraw_completed AND NOT caller_authorized from the asserted impact statement."
+        },
+        {
+          "statement_id": "drain_deposits",
+          "status": "unformalized",
+          "reason": "100% drain is an aggregate/percentage claim with no quantity observables and depends on the unspecified asset transfer destination; deferred to limitations."
+        }
+      ],
+      "assumptions": [
+        "Caller authorization is observed as a Boolean outcome of the cited ERC-4626 check; allowance/shares quantities are not modeled.",
+        "The validator-granted self-allowance is active; the module granting it is out of scope.",
+        "No approval from the victim to the attacker and no user interaction occur before the call."
+      ],
+      "unresolved": [
+        "assets_sent_to_attacker: the withdrawn-assets destination (owner vs caller) is unspecified; it cannot be a ground precondition without asserting the harmful transfer.",
+        "Whether msg.sender is the owner or an approved spender in the reported scenario is not stated.",
+        "Exact spendSelfAllowance() semantics are not detailed.",
+        "Deployment and reachability of WERC7575Vault at the reported time are not asserted."
+      ]
+    }
+  ],
+  "limitations": [
+    "Share/allowance quantities and vault balances are not represented; no quantitative bound for the 100% drain (e_f5f848436b92_0012) is asserted.",
+    "Downstream asset transfer to the attacker is deferred; the actual recipient of withdrawn assets is unspecified.",
+    "The ERC-4626 caller-authorization requirement is inferred, not directly observed at runtime.",
+    "Economic loss and any subsequent effects are not quantified.",
+    "Only the single core unauthorized-withdrawal scenario is formalized; other approval-based paths are out of scope."
+  ]
+}

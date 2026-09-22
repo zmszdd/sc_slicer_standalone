@@ -1,0 +1,401 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Cross-chain unstake via UnstakeMessenger.unstake() buffered-fee path on the spoke chain",
+    "environment": "LayerZero OAppSender messaging; spoke-to-hub cross-chain call",
+    "evidence": [
+      "The `UnstakeMessenger.unstake()` function is designed to support a buffered-fee flow via helper quote functions, but the underlying LayerZero `OAppSender._payNative()` implementation enforces strict equality between `msg.value` and the quoted fee. When callers use the buffered-fee helper and send more than the exact quoted amount, all unstake calls revert with `NotEnoughNative`.",
+      "The cross-chain unstake entrypoint on the spoke chain is `UnstakeMessenger.unstake(uint256 returnTripAllocation)`. Its high-level flow is:",
+      "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger` (calling the buffer quote helper and forwarding that value as msg.value), all cross-chain `unstake()` calls revert before any LayerZero message is sent. Users cannot complete cross-chain unstake operations via the buffered flow, and integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution. The issue does not directly cause fund loss, but it breaks a primary cross-chain unstake UX path and can lead to persistent user-facing failures until the integration is adjusted."
+    ]
+  },
+  "entities": [
+    {
+      "id": "unstake_messenger",
+      "name": "UnstakeMessenger",
+      "role": "contract",
+      "evidence": [
+        "The `UnstakeMessenger.unstake()` function is designed to support a buffered-fee flow via helper quote functions, but the underlying LayerZero `OAppSender._payNative()` implementation enforces strict equality between `msg.value` and the quoted fee. When callers use the buffered-fee helper and send more than the exact quoted amount, all unstake calls revert with `NotEnoughNative`.",
+        "The cross-chain unstake entrypoint on the spoke chain is `UnstakeMessenger.unstake(uint256 returnTripAllocation)`. Its high-level flow is:"
+      ]
+    },
+    {
+      "id": "unstake_fn",
+      "name": "UnstakeMessenger.unstake()",
+      "role": "contract",
+      "evidence": [
+        "The cross-chain unstake entrypoint on the spoke chain is `UnstakeMessenger.unstake(uint256 returnTripAllocation)`. Its high-level flow is:",
+        "Because `UnstakeMessenger.unstake()` passes `fee.nativeFee` (the exact quoted amount) into `_lzSend()`, but the caller may send `msg.value > fee.nativeFee` when using the buffered helper, `_payNative()` observes the mismatch and reverts with `NotEnoughNative(msg.value)` before the message is dispatched."
+      ]
+    },
+    {
+      "id": "integrator",
+      "name": "integrator/caller",
+      "role": "other",
+      "evidence": [
+        "To make integration safer, `UnstakeMessenger` also exposes buffered-fee helpers such as `quoteUnstakeWithBuffer()`. These helpers deliberately return a fee that is larger than the exact LayerZero quote (for example, exactFee * 110 / 100) so that integrators can:",
+        "2. Call `unstake{value: bufferedFee}(returnTripAllocation)` and rely on the refund address for any excess.",
+        "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger` (calling the buffer quote helper and forwarding that value as msg.value), all cross-chain `unstake()` calls revert before any LayerZero message is sent. Users cannot complete cross-chain unstake operations via the buffered flow, and integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution. The issue does not directly cause fund loss, but it breaks a primary cross-chain unstake UX path and can lead to persistent user-facing failures until the integration is adjusted."
+      ]
+    },
+    {
+      "id": "user",
+      "name": "user (msg.sender)",
+      "role": "victim",
+      "evidence": [
+        "1. Build an unstake payload that encodes `msg.sender` as the user.",
+        "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger` (calling the buffer quote helper and forwarding that value as msg.value), all cross-chain `unstake()` calls revert before any LayerZero message is sent. Users cannot complete cross-chain unstake operations via the buffered flow, and integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution. The issue does not directly cause fund loss, but it breaks a primary cross-chain unstake UX path and can lead to persistent user-facing failures until the integration is adjusted."
+      ]
+    },
+    {
+      "id": "oapp_sender",
+      "name": "LayerZero OAppSender",
+      "role": "contract",
+      "evidence": [
+        "The `UnstakeMessenger.unstake()` function is designed to support a buffered-fee flow via helper quote functions, but the underlying LayerZero `OAppSender._payNative()` implementation enforces strict equality between `msg.value` and the quoted fee. When callers use the buffered-fee helper and send more than the exact quoted amount, all unstake calls revert with `NotEnoughNative`.",
+        "However, the inherited LayerZero implementation for `_payNative()` (used inside _lzSend()) requires that `msg.value` equals the native fee exactly:"
+      ]
+    },
+    {
+      "id": "pay_native",
+      "name": "_payNative()",
+      "role": "contract",
+      "evidence": [
+        "However, the inherited LayerZero implementation for `_payNative()` (used inside _lzSend()) requires that `msg.value` equals the native fee exactly:",
+        "Because `UnstakeMessenger.unstake()` passes `fee.nativeFee` (the exact quoted amount) into `_lzSend()`, but the caller may send `msg.value > fee.nativeFee` when using the buffered helper, `_payNative()` observes the mismatch and reverts with `NotEnoughNative(msg.value)` before the message is dispatched."
+      ]
+    },
+    {
+      "id": "buffered_quote_helper",
+      "name": "quoteUnstakeWithBuffer()",
+      "role": "contract",
+      "evidence": [
+        "To make integration safer, `UnstakeMessenger` also exposes buffered-fee helpers such as `quoteUnstakeWithBuffer()`. These helpers deliberately return a fee that is larger than the exact LayerZero quote (for example, exactFee * 110 / 100) so that integrators can:",
+        "1. Call `quoteUnstakeWithBuffer()` to obtain a buffered fee."
+      ]
+    },
+    {
+      "id": "exact_quote_helper",
+      "name": "quoteUnstakeWithReturnValue()",
+      "role": "contract",
+      "evidence": [
+        "- Succeed when msg.value == exactFee returned by quoteUnstakeWithReturnValue()."
+      ]
+    },
+    {
+      "id": "native_fee",
+      "name": "nativeFee",
+      "role": "asset",
+      "evidence": [
+        "2. Compute the LayerZero fee via `_quote(hubEid, payload, options, false)`, which returns a `MessagingFee` fee with `fee.nativeFee` set to the exact required amount.",
+        "However, the inherited LayerZero implementation for `_payNative()` (used inside _lzSend()) requires that `msg.value` equals the native fee exactly:"
+      ]
+    },
+    {
+      "id": "lz_send",
+      "name": "_lzSend()",
+      "role": "contract",
+      "evidence": [
+        "4. Call `_lzSend(hubEid, payload, options, fee, payable(msg.sender))`, passing the exact fee struct to the LayerZero endpoint.",
+        "Because `UnstakeMessenger.unstake()` passes `fee.nativeFee` (the exact quoted amount) into `_lzSend()`, but the caller may send `msg.value > fee.nativeFee` when using the buffered helper, `_payNative()` observes the mismatch and reverts with `NotEnoughNative(msg.value)` before the message is dispatched."
+      ]
+    },
+    {
+      "id": "layerzero_endpoint",
+      "name": "LayerZero endpoint",
+      "role": "contract",
+      "evidence": [
+        "4. Call `_lzSend(hubEid, payload, options, fee, payable(msg.sender))`, passing the exact fee struct to the LayerZero endpoint.",
+        "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger` (calling the buffer quote helper and forwarding that value as msg.value), all cross-chain `unstake()` calls revert before any LayerZero message is sent. Users cannot complete cross-chain unstake operations via the buffered flow, and integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution. The issue does not directly cause fund loss, but it breaks a primary cross-chain unstake UX path and can lead to persistent user-facing failures until the integration is adjusted."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "st_entrypoint",
+      "kind": "precondition",
+      "text": "Cross-chain unstake entrypoint on the spoke chain is UnstakeMessenger.unstake(uint256 returnTripAllocation).",
+      "modality": "asserted",
+      "entity_ids": [
+        "unstake_messenger",
+        "unstake_fn"
+      ],
+      "evidence": [
+        "The cross-chain unstake entrypoint on the spoke chain is `UnstakeMessenger.unstake(uint256 returnTripAllocation)`. Its high-level flow is:"
+      ]
+    },
+    {
+      "id": "st_payload",
+      "kind": "action",
+      "text": "Builds an unstake payload encoding msg.sender as the user.",
+      "modality": "asserted",
+      "entity_ids": [
+        "unstake_fn",
+        "user"
+      ],
+      "evidence": [
+        "1. Build an unstake payload that encodes `msg.sender` as the user."
+      ]
+    },
+    {
+      "id": "st_quote",
+      "kind": "action",
+      "text": "Computes the LayerZero fee via _quote(hubEid, payload, options, false), returning exact fee.nativeFee.",
+      "modality": "asserted",
+      "entity_ids": [
+        "unstake_fn",
+        "native_fee"
+      ],
+      "evidence": [
+        "2. Compute the LayerZero fee via `_quote(hubEid, payload, options, false)`, which returns a `MessagingFee` fee with `fee.nativeFee` set to the exact required amount."
+      ]
+    },
+    {
+      "id": "st_underpay_check",
+      "kind": "action",
+      "text": "Enforces msg.value >= fee.nativeFee, reverting InsufficientFee(fee.nativeFee, msg.value) if underpaid.",
+      "modality": "asserted",
+      "entity_ids": [
+        "unstake_fn",
+        "native_fee",
+        "integrator"
+      ],
+      "evidence": [
+        "3. Enforce `msg.value >= fee.nativeFee`, reverting with `InsufficientFee(fee.nativeFee, msg.value)` if the caller underpays."
+      ]
+    },
+    {
+      "id": "st_lzsend",
+      "kind": "action",
+      "text": "Calls _lzSend(hubEid, payload, options, fee, payable(msg.sender)) passing the exact fee struct.",
+      "modality": "asserted",
+      "entity_ids": [
+        "unstake_fn",
+        "lz_send",
+        "layerzero_endpoint"
+      ],
+      "evidence": [
+        "4. Call `_lzSend(hubEid, payload, options, fee, payable(msg.sender))`, passing the exact fee struct to the LayerZero endpoint."
+      ]
+    },
+    {
+      "id": "st_buffer_helper",
+      "kind": "action",
+      "text": "Buffered-fee helpers such as quoteUnstakeWithBuffer() deliberately return a fee larger than the exact quote (e.g., exactFee * 110 / 100).",
+      "modality": "asserted",
+      "entity_ids": [
+        "buffered_quote_helper",
+        "native_fee"
+      ],
+      "evidence": [
+        "To make integration safer, `UnstakeMessenger` also exposes buffered-fee helpers such as `quoteUnstakeWithBuffer()`. These helpers deliberately return a fee that is larger than the exact LayerZero quote (for example, exactFee * 110 / 100) so that integrators can:"
+      ]
+    },
+    {
+      "id": "st_buffer_pattern",
+      "kind": "action",
+      "text": "Integrators call the buffer quote helper then unstake{value: bufferedFee}, relying on the refund address for excess.",
+      "modality": "asserted",
+      "entity_ids": [
+        "integrator",
+        "buffered_quote_helper",
+        "unstake_fn"
+      ],
+      "evidence": [
+        "1. Call `quoteUnstakeWithBuffer()` to obtain a buffered fee.",
+        "2. Call `unstake{value: bufferedFee}(returnTripAllocation)` and rely on the refund address for any excess."
+      ]
+    },
+    {
+      "id": "st_paynative_strict",
+      "kind": "root_cause",
+      "text": "Inherited LayerZero _payNative() used inside _lzSend() requires msg.value to equal the native fee exactly.",
+      "modality": "asserted",
+      "entity_ids": [
+        "pay_native",
+        "lz_send",
+        "oapp_sender"
+      ],
+      "evidence": [
+        "However, the inherited LayerZero implementation for `_payNative()` (used inside _lzSend()) requires that `msg.value` equals the native fee exactly:"
+      ]
+    },
+    {
+      "id": "st_mismatch_revert",
+      "kind": "root_cause",
+      "text": "unstake() passes exact fee.nativeFee to _lzSend() while the caller may send msg.value > fee.nativeFee, so _payNative() observes the mismatch and reverts NotEnoughNative(msg.value) before dispatch.",
+      "modality": "asserted",
+      "entity_ids": [
+        "unstake_fn",
+        "lz_send",
+        "pay_native",
+        "native_fee",
+        "integrator"
+      ],
+      "evidence": [
+        "Because `UnstakeMessenger.unstake()` passes `fee.nativeFee` (the exact quoted amount) into `_lzSend()`, but the caller may send `msg.value > fee.nativeFee` when using the buffered helper, `_payNative()` observes the mismatch and reverts with `NotEnoughNative(msg.value)` before the message is dispatched."
+      ]
+    },
+    {
+      "id": "st_buffer_unusable",
+      "kind": "impact",
+      "text": "The buffered-fee integration pattern exposed by the contract is unusable in practice.",
+      "modality": "asserted",
+      "entity_ids": [
+        "buffered_quote_helper",
+        "unstake_messenger"
+      ],
+      "evidence": [
+        "As a result, the “buffered fee” integration pattern exposed by the contract is unusable in practice."
+      ]
+    },
+    {
+      "id": "st_all_revert",
+      "kind": "impact",
+      "text": "All cross-chain unstake() calls via the buffered flow revert before any LayerZero message is sent.",
+      "modality": "asserted",
+      "entity_ids": [
+        "unstake_fn",
+        "integrator",
+        "layerzero_endpoint"
+      ],
+      "evidence": [
+        "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger` (calling the buffer quote helper and forwarding that value as msg.value), all cross-chain `unstake()` calls revert before any LayerZero message is sent. Users cannot complete cross-chain unstake operations via the buffered flow, and integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution. The issue does not directly cause fund loss, but it breaks a primary cross-chain unstake UX path and can lead to persistent user-facing failures until the integration is adjusted."
+      ]
+    },
+    {
+      "id": "st_users_blocked",
+      "kind": "impact",
+      "text": "Users cannot complete cross-chain unstake operations via the buffered flow.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "unstake_fn"
+      ],
+      "evidence": [
+        "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger` (calling the buffer quote helper and forwarding that value as msg.value), all cross-chain `unstake()` calls revert before any LayerZero message is sent. Users cannot complete cross-chain unstake operations via the buffered flow, and integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution. The issue does not directly cause fund loss, but it breaks a primary cross-chain unstake UX path and can lead to persistent user-facing failures until the integration is adjusted."
+      ]
+    },
+    {
+      "id": "st_exact_fragile",
+      "kind": "impact",
+      "text": "Integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution.",
+      "modality": "asserted",
+      "entity_ids": [
+        "integrator",
+        "exact_quote_helper"
+      ],
+      "evidence": [
+        "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger` (calling the buffer quote helper and forwarding that value as msg.value), all cross-chain `unstake()` calls revert before any LayerZero message is sent. Users cannot complete cross-chain unstake operations via the buffered flow, and integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution. The issue does not directly cause fund loss, but it breaks a primary cross-chain unstake UX path and can lead to persistent user-facing failures until the integration is adjusted."
+      ]
+    },
+    {
+      "id": "st_no_fund_loss",
+      "kind": "impact",
+      "text": "The issue does not directly cause fund loss.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user"
+      ],
+      "evidence": [
+        "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger` (calling the buffer quote helper and forwarding that value as msg.value), all cross-chain `unstake()` calls revert before any LayerZero message is sent. Users cannot complete cross-chain unstake operations via the buffered flow, and integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution. The issue does not directly cause fund loss, but it breaks a primary cross-chain unstake UX path and can lead to persistent user-facing failures until the integration is adjusted."
+      ]
+    },
+    {
+      "id": "st_persistent_failures",
+      "kind": "impact",
+      "text": "It can lead to persistent user-facing failures until the integration is adjusted.",
+      "modality": "potential",
+      "entity_ids": [
+        "user",
+        "integrator"
+      ],
+      "evidence": [
+        "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger` (calling the buffer quote helper and forwarding that value as msg.value), all cross-chain `unstake()` calls revert before any LayerZero message is sent. Users cannot complete cross-chain unstake operations via the buffered flow, and integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution. The issue does not directly cause fund loss, but it breaks a primary cross-chain unstake UX path and can lead to persistent user-facing failures until the integration is adjusted."
+      ]
+    },
+    {
+      "id": "st_intent_buffer_support",
+      "kind": "security_intent",
+      "text": "unstake() is designed/intended to support a buffered-fee flow via helper quote functions.",
+      "modality": "inferred",
+      "entity_ids": [
+        "unstake_fn",
+        "buffered_quote_helper"
+      ],
+      "evidence": [
+        "The `UnstakeMessenger.unstake()` function is designed to support a buffered-fee flow via helper quote functions, but the underlying LayerZero `OAppSender._payNative()` implementation enforces strict equality between `msg.value` and the quoted fee. When callers use the buffered-fee helper and send more than the exact quoted amount, all unstake calls revert with `NotEnoughNative`."
+      ]
+    },
+    {
+      "id": "st_intent_safer_integration",
+      "kind": "security_intent",
+      "text": "Buffered-fee helpers exist deliberately to make integration safer.",
+      "modality": "inferred",
+      "entity_ids": [
+        "buffered_quote_helper",
+        "integrator"
+      ],
+      "evidence": [
+        "To make integration safer, `UnstakeMessenger` also exposes buffered-fee helpers such as `quoteUnstakeWithBuffer()`. These helpers deliberately return a fee that is larger than the exact LayerZero quote (for example, exactFee * 110 / 100) so that integrators can:"
+      ]
+    },
+    {
+      "id": "st_test_exact_success",
+      "kind": "action",
+      "text": "Control: calls succeed when msg.value == exactFee returned by quoteUnstakeWithReturnValue().",
+      "modality": "asserted",
+      "entity_ids": [
+        "exact_quote_helper",
+        "native_fee"
+      ],
+      "evidence": [
+        "- Succeed when msg.value == exactFee returned by quoteUnstakeWithReturnValue()."
+      ]
+    },
+    {
+      "id": "st_test_buffer_revert",
+      "kind": "impact",
+      "text": "Calls revert when msg.value == bufferedFee returned by quoteUnstakeWithBuffer() (10% higher than exactFee), selector OAppSender.NotEnoughNative(uint256).",
+      "modality": "asserted",
+      "entity_ids": [
+        "buffered_quote_helper",
+        "pay_native"
+      ],
+      "evidence": [
+        "- Revert when msg.value == bufferedFee returned by quoteUnstakeWithBuffer() (10% higher than exactFee), with selector OAppSender.NotEnoughNative(uint256)."
+      ]
+    },
+    {
+      "id": "st_test_plus1",
+      "kind": "impact",
+      "text": "Calls revert even when msg.value == exactFee + 1 wei.",
+      "modality": "asserted",
+      "entity_ids": [
+        "native_fee",
+        "pay_native"
+      ],
+      "evidence": [
+        "- Revert even when msg.value == exactFee + 1 wei."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "st_buffer_helper",
+    "st_buffer_pattern",
+    "st_quote",
+    "st_underpay_check",
+    "st_lzsend",
+    "st_mismatch_revert"
+  ],
+  "ambiguities": [
+    "No malicious actor or exploit is alleged; this is a functional integration defect, so attacker/victim framing is unclear.",
+    "Whether the failure affects end users directly or only integrators following the buffered-fee helper is not specified.",
+    "The buffer multiplier is given only as an example (exactFee * 110 / 100); the full range/definition of buffered helpers is not given.",
+    "Whether the exact-fee path remains a supported and sufficient UX is not stated.",
+    "The likelihood/severity of exact-fee quoting fragility to gas-price/timing changes is not quantified.",
+    "Refund behavior of any excess msg.value is asserted for the intended pattern but never actually occurs due to the revert; the report does not clarify.",
+    "The report does not state whether _quote or _payNative incorporate msg.sender/refund-address context.",
+    "No scope of impacted deployments, chains, or versions is provided."
+  ]
+}

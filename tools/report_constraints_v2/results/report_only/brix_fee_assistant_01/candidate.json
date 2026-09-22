@@ -1,0 +1,135 @@
+{
+  "symbols": {
+    "paid_fee": {
+      "sort": "int",
+      "unit": "native_wei",
+      "meaning": "Caller-supplied native currency amount msg.value",
+      "checkpoint": "unstake input",
+      "evidence": "msg.value > fee.nativeFee"
+    },
+    "quoted_fee": {
+      "sort": "int",
+      "unit": "native_wei",
+      "meaning": "Exact LayerZero native fee quote used by this unstake call",
+      "checkpoint": "after quote, before send",
+      "evidence": "fee.nativeFee set to the exact required amount."
+    },
+    "fee_mismatch_reverted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "This unstake call reverted specifically due to native fee mismatch with NotEnoughNative",
+      "checkpoint": "transaction outcome",
+      "evidence": "reverts with NotEnoughNative(msg.value) before the message is dispatched."
+    },
+    "message_dispatched": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "A LayerZero message from this unstake call was dispatched, not merely constructed",
+      "checkpoint": "transaction outcome",
+      "evidence": "all cross-chain `unstake()` calls revert before any LayerZero message is sent."
+    }
+  },
+  "properties": {
+    "preconditions": {
+      "text": "The caller follows the stated buffered-fee flow and pays more than the exact nonnegative quote.",
+      "expression": {
+        "op": "and",
+        "args": [
+          {
+            "op": "gt",
+            "args": [
+              {
+                "var": "paid_fee"
+              },
+              {
+                "var": "quoted_fee"
+              }
+            ]
+          },
+          {
+            "op": "ge",
+            "args": [
+              {
+                "var": "quoted_fee"
+              },
+              {
+                "const": 0
+              }
+            ]
+          }
+        ]
+      },
+      "evidence": [
+        "msg.value > fee.nativeFee",
+        "fee.nativeFee set to the exact required amount."
+      ],
+      "derivation": "Strict overpayment is stated explicitly. Nonnegative fee is an explicit modeling assumption for native currency amounts, not an inferred Solidity type."
+    },
+    "safety": {
+      "text": "In the intended buffered-fee flow, supplying at least the required native fee must not by itself trigger a native fee mismatch revert.",
+      "expression": {
+        "op": "implies",
+        "args": [
+          {
+            "op": "ge",
+            "args": [
+              {
+                "var": "paid_fee"
+              },
+              {
+                "var": "quoted_fee"
+              }
+            ]
+          },
+          {
+            "op": "not",
+            "args": [
+              {
+                "var": "fee_mismatch_reverted"
+              }
+            ]
+          }
+        ]
+      },
+      "evidence": [
+        "These helpers deliberately return a fee that is larger than the exact LayerZero quote",
+        "Call `unstake{value: bufferedFee}(returnTripAllocation)` and rely on the refund address for any excess."
+      ],
+      "derivation": "Buffered quoting is presented as an intended supported integration. This implies overpayment should not be rejected for fee mismatch; it does not imply every transaction succeeds or prove refunds are correct."
+    },
+    "effects": {
+      "text": "For the stated overpayment scenario, the author claims a NotEnoughNative revert before any message dispatch.",
+      "expression": {
+        "op": "and",
+        "args": [
+          {
+            "var": "fee_mismatch_reverted"
+          },
+          {
+            "op": "not",
+            "args": [
+              {
+                "var": "message_dispatched"
+              }
+            ]
+          }
+        ]
+      },
+      "evidence": [
+        "reverts with NotEnoughNative(msg.value) before the message is dispatched."
+      ],
+      "derivation": "Conjunction of the reported failure cause and absent dispatch, scoped by the overpayment premise. No permanent lockup or financial loss is inferred."
+    }
+  },
+  "assumptions": [
+    "quoted_fee is nonnegative; this domain convention is asserted explicitly in preconditions.",
+    "Observations refer to the same unstake invocation and its actual execution-time native quote.",
+    "The selected invocation follows the described buffered native-fee flow; unrelated configuration or access failures are out of scope."
+  ],
+  "unresolved": [
+    "The intended safety requirement is inferred from the documented buffered-fee flow, not quoted as a universal invariant.",
+    "Stage three must bind the fee-mismatch revert to the specific error and preserve reverted transaction semantics.",
+    "No Solidity transition model, dependency version check, refund proof, or report/PoC consistency result has been produced.",
+    "This candidate was derived by the current assistant reviewing report prose, not by the external-model extraction command."
+  ]
+}

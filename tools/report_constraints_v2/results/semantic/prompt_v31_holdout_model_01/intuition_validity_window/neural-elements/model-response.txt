@@ -1,0 +1,136 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "ERC-4337 UserOperation signature validation and bundler submission",
+    "environment": "ERC-4337 smart account with EntryPoint",
+    "evidence_ids": ["e_e62f9a0169ed_0002", "e_e62f9a0169ed_0004"]
+  },
+  "entities": [
+    {
+      "id": "smart_account",
+      "name": "ERC-4337 smart account implementing _validateSignature()",
+      "role": "contract",
+      "evidence_ids": ["e_e62f9a0169ed_0002"]
+    },
+    {
+      "id": "bundler",
+      "name": "malicious bundler or relayer",
+      "role": "attacker",
+      "evidence_ids": ["e_e62f9a0169ed_0002", "e_e62f9a0169ed_0004"]
+    },
+    {
+      "id": "userop_signature",
+      "name": "userOp.signature with optional (validUntil, validAfter) suffix",
+      "role": "asset",
+      "evidence_ids": ["e_e62f9a0169ed_0002"]
+    },
+    {
+      "id": "entry_point",
+      "name": "ERC-4337 EntryPoint",
+      "role": "authority",
+      "evidence_ids": ["e_e62f9a0169ed_0002"]
+    },
+    {
+      "id": "signer",
+      "name": "signer or wallet user",
+      "role": "victim",
+      "evidence_ids": ["e_e62f9a0169ed_0002", "e_e62f9a0169ed_0004"]
+    },
+    {
+      "id": "validity_window",
+      "name": "(validUntil, validAfter) timing constraint",
+      "role": "asset",
+      "evidence_ids": ["e_e62f9a0169ed_0002", "e_e62f9a0169ed_0004"]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_signature_has_suffix",
+      "kind": "precondition",
+      "text": "The user operation's signature carries the optional (validUntil, validAfter) suffix.",
+      "modality": "inferred",
+      "entity_ids": ["userop_signature", "validity_window"],
+      "evidence_ids": ["e_e62f9a0169ed_0002"]
+    },
+    {
+      "id": "p_valid_ecdsa_over_hash",
+      "kind": "precondition",
+      "text": "The supplied 65-byte ECDSA signature is otherwise valid and recovers to the authorized signer over userOpHash.",
+      "modality": "inferred",
+      "entity_ids": ["userop_signature", "signer"],
+      "evidence_ids": ["e_e62f9a0169ed_0002"]
+    },
+    {
+      "id": "p_relayer_submits",
+      "kind": "precondition",
+      "text": "A relayer/bundler is able to submit and have the user operation executed by the EntryPoint.",
+      "modality": "inferred",
+      "entity_ids": ["bundler", "entry_point"],
+      "evidence_ids": ["e_e62f9a0169ed_0002", "e_e62f9a0169ed_0004"]
+    },
+    {
+      "id": "a_rewrite_window",
+      "kind": "action",
+      "text": "The relayer keeps the same 65-byte ECDSA signature and rewrites the trailing validity window bytes.",
+      "modality": "asserted",
+      "entity_ids": ["bundler", "userop_signature", "validity_window"],
+      "evidence_ids": ["e_e62f9a0169ed_0002"]
+    },
+    {
+      "id": "a_execute_outside_window",
+      "kind": "action",
+      "text": "The bundler executes the user operation earlier than validAfter or long after validUntil.",
+      "modality": "potential",
+      "entity_ids": ["bundler", "smart_account"],
+      "evidence_ids": ["e_e62f9a0169ed_0004"]
+    },
+    {
+      "id": "rc_hash_excludes_signature",
+      "kind": "root_cause",
+      "text": "_validateSignature() recovers the signer only over userOpHash, which under ERC-4337 excludes the signature bytes, so the stripped validity window is not bound by the signature.",
+      "modality": "asserted",
+      "entity_ids": ["smart_account", "entry_point", "validity_window"],
+      "evidence_ids": ["e_e62f9a0169ed_0002"]
+    },
+    {
+      "id": "i_window_bypassed",
+      "kind": "impact",
+      "text": "The signer's intended validAfter/validUntil timing constraint is bypassed.",
+      "modality": "potential",
+      "entity_ids": ["validity_window", "signer"],
+      "evidence_ids": ["e_e62f9a0169ed_0004"]
+    },
+    {
+      "id": "i_action_outside_window",
+      "kind": "impact",
+      "text": "Any wallet action encoded in that user operation can execute outside the user's approved window.",
+      "modality": "potential",
+      "entity_ids": ["smart_account", "signer"],
+      "evidence_ids": ["e_e62f9a0169ed_0004"]
+    },
+    {
+      "id": "si_bind_window_to_signature",
+      "kind": "security_intent",
+      "text": "_validateSignature() should bind the (validUntil, validAfter) window to the signer's signature so the operation executes only within the approved window and is rejected outside it.",
+      "modality": "inferred",
+      "entity_ids": ["smart_account", "signer", "validity_window"],
+      "evidence_ids": ["e_e62f9a0169ed_0002", "e_e62f9a0169ed_0004"]
+    },
+    {
+      "id": "as_suffix_enforced",
+      "kind": "assumption",
+      "text": "The account treats the (validUntil, validAfter) suffix as the signer's enforceable timing constraint.",
+      "modality": "inferred",
+      "entity_ids": ["smart_account", "validity_window"],
+      "evidence_ids": ["e_e62f9a0169ed_0002"]
+    }
+  ],
+  "attack_steps": ["a_rewrite_window", "a_execute_outside_window"],
+  "ambiguities": [
+    "Whether the validity suffix bytes are intended to be part of the signed payload in the actual account implementation.",
+    "Exact suffix format/encoding and whether the EntryPoint hash truly excludes it depend on the account implementation.",
+    "Whether any relayer can exploit this or only the original bundler.",
+    "Whether a specific wallet action was authorized for the stated window.",
+    "Downstream or economic consequences are not specified."
+  ]
+}

@@ -1,0 +1,31 @@
+You are a conservative INPUT-SUFFICIENCY gate for vulnerability reports.
+Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
+whether the supplied numbered report fragments contain enough information for a later
+model to derive a report-grounded P/I/V candidate.
+
+Required dimensions:
+1. affected_subject: identifiable affected component, function, state, asset, or actor.
+2. trigger_or_action: a concrete triggering condition, operation, call, or state transition.
+3. direct_effect: an immediate unauthorized behavior, state/value change, failed guarantee,
+   or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
+4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
+   numeric, temporal, conservation, or state-transition safety relationship can be derived.
+   The report need not explicitly say "invariant", but the relation must not be invented.
+
+Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
+Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
+dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
+list every dimension whose status is missing OR uncertain, in the required dimension
+order. decision is ready only when all four dimensions are present; otherwise decision
+is insufficient. Do not treat
+PoC availability, code availability, severity labels, or a proposed fix as substitutes.
+Return JSON only with exactly:
+{"schema_version":"report-readiness/1","decision":"ready|insufficient",
+ "dimensions":{
+  "affected_subject":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "trigger_or_action":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "direct_effect":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "safety_relation_basis":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"}},
+ "missing_dimensions":[],"summary":"short explanation"}
+REPORT FRAGMENTS:
+{"schema_version":"report-evidence/1","source_sha256":"197ad9f46421076e2f8af39a30ee14b1bfa6a74f48c0cb7618165eceaf12aaff","fragments":[{"id":"e_197ad9f46421_0001","text":"Silent Overflow of `unrealizedInterest` in `MarketState` Causes Irreversible Yield Loss for Supported High-Supply Tokens"},{"id":"e_197ad9f46421_0002","text":"## Finding description and impact"},{"id":"e_197ad9f46421_0003","text":"### Root Cause"},{"id":"e_197ad9f46421_0004","text":"The Panoptic protocol uses a packed struct `MarketState` to store global interest accounting variables in a single `uint256` slot to optimize gas. Specifically, the `unrealizedInterest` field—which tracks interest owed by borrowers to the pool—is allocated only **106 bits**."},{"id":"e_197ad9f46421_0005","text":"In `CollateralTracker.sol`, the `_accrueInterest` function calculates `_unrealizedGlobalInterest` as a `uint128`. However, when this value is passed to `storeMarketState`, the assembly `shl(150, ...)` instruction pushes any bits beyond the 106th bit off the stack (effectively modulo $2^{256}$ after the shift)."},{"id":"e_197ad9f46421_0006","text":"This logic relies on the assumption that `unrealizedInterest` will never exceed $2^{106}$. However, $2^{106} \\approx 8.11 \\times 10^{31}$."},{"id":"e_197ad9f46421_0007","text":"While this is a large number, it is significantly smaller than the total supply of several major tokens that the protocol explicitly claims to support. The contest `README` states: **\"Tokens with a supply exceeding $2^{127} - 1$ are not supported.\"** This implies that tokens up to $2^{127}$ ($\\approx 1.7 \\times 10^{38}$) **are** supported."},{"id":"e_197ad9f46421_0008","text":"Tokens such as **SHIB** ($\\approx 5.89 \\times 10^{32}$) and **BTT** ($\\approx 9.9 \\times 10^{32}$) are well within the supported range ($10^{32} < 10^{38}$) but exceed the `MarketState` storage capacity ($10^{32} > 10^{31}$)."},{"id":"e_197ad9f46421_0009","text":"### Mechanism of Failure"},{"id":"e_197ad9f46421_0010","text":"If a pool is deployed for a high-supply token (e.g., SHIB) and utilization is high, the accrued interest can legitimately exceed $2^{106}$."},{"id":"e_197ad9f46421_0011","text":"1.  **State:** Pool has accrued substantial interest (e.g., $2^{106} - 1$)."},{"id":"e_197ad9f46421_0012","text":"2.  **Action:** `accrueInterest()` is triggered."},{"id":"e_197ad9f46421_0013","text":"3.  **Overflow:** The new total interest exceeds $2^{106}$."},{"id":"e_197ad9f46421_0014","text":"4.  **Truncation:** `storeMarketState` silently discards the most significant bits. The stored interest wraps around to a near-zero value."},{"id":"e_197ad9f46421_0015","text":"5.  **Asset Drop:** `totalAssets()` is calculated as `s_depositedAssets + s_assetsInAMM + s_marketState.unrealizedInterest()`. When the interest component drops to zero, `totalAssets()` decreases instantly."},{"id":"e_197ad9f46421_0016","text":"### Impact"},{"id":"e_197ad9f46421_0017","text":"This results in a catastrophic and irreversible loss of yield for all Passive Liquidity Providers (PLPs)."},{"id":"e_197ad9f46421_0018","text":"1.  **Share Price Crash:** Since `sharePrice = totalAssets / totalSupply`, the sudden drop in assets causes the share price to crash."},{"id":"e_197ad9f46421_0019","text":"2.  **Value Extraction:** An attacker monitoring the pool can deposit a large amount of assets immediately after the overflow. Because the share price is artificially low (due to the \"forgotten\" interest), they receive an inflated number of shares. As borrowers repay loans or interest re-accrues, the value is transferred to the attacker at the expense of existing LPs."},{"id":"e_197ad9f46421_0020","text":"This violates the fundamental invariant of an interest-bearing vault: `totalAssets` should never decrease solely due to the passage of time."}]}

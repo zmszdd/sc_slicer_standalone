@@ -1,0 +1,221 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "second_token_balance": {
+      "sort": "int",
+      "unit": "secondToken",
+      "meaning": "Contract's secondToken balance available to a buyback or sweep.",
+      "checkpoint": "before transfer(secondToken) call",
+      "evidence_ids": [
+        "e_f890a400483d_0005"
+      ],
+      "entity_ids": [
+        "buyback_burner",
+        "second_token"
+      ]
+    },
+    "caller_authorized": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Whether the caller of transfer(secondToken) is an authorized caller.",
+      "checkpoint": "at transfer(secondToken) call",
+      "evidence_ids": [
+        "e_f890a400483d_0002"
+      ],
+      "entity_ids": [
+        "attacker",
+        "transfer_fn"
+      ]
+    },
+    "keeper_reliant": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Keeper's buyBack(secondToken, ...) depends on the contract holding secondToken inventory.",
+      "checkpoint": "before sweep, prior state",
+      "evidence_ids": [
+        "e_f890a400483d_0005"
+      ],
+      "entity_ids": [
+        "keeper",
+        "second_token"
+      ]
+    },
+    "second_token_swept": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The contract's secondToken inventory was swept out (routed to treasury).",
+      "checkpoint": "after transfer(secondToken) call",
+      "evidence_ids": [
+        "e_f890a400483d_0004",
+        "e_f890a400483d_0011"
+      ],
+      "entity_ids": [
+        "second_token",
+        "treasury",
+        "buyback_burner"
+      ]
+    },
+    "buyback_reverts": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Keeper's buyBack(secondToken, ...) transaction reverts with ZeroValue().",
+      "checkpoint": "during keeper buyBack after sweep",
+      "evidence_ids": [
+        "e_f890a400483d_0005"
+      ],
+      "entity_ids": [
+        "keeper",
+        "buyback_burner"
+      ]
+    }
+  },
+  "claims": [
+    {
+      "id": "unauthorized_sweep_blocks_buyback",
+      "scope": "core",
+      "modality": "asserted",
+      "impact_ids": [
+        "i_revert",
+        "i_griefing"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "transfer(secondToken) is callable by any caller with no access control, the contract holds a nonzero secondToken balance, and the keeper's buyBack requires that same inventory.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "second_token_balance"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "caller_authorized"
+                  }
+                ]
+              },
+              {
+                "var": "keeper_reliant"
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_f890a400483d_0002",
+            "e_f890a400483d_0005"
+          ],
+          "derivation": "pre_any_caller gives an unauthorized caller as feasible input; pre_inventory gives balance>0; assumption_shared_inventory gives keeper dependency.",
+          "source_ids": [
+            "pre_any_caller",
+            "pre_inventory",
+            "assumption_shared_inventory"
+          ]
+        },
+        "safety": {
+          "text": "If the secondToken inventory is swept, the caller must be authorized.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "var": "second_token_swept"
+              },
+              {
+                "var": "caller_authorized"
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_f890a400483d_0002",
+            "e_f890a400483d_0005",
+            "e_f890a400483d_0007"
+          ],
+          "derivation": "intent_restrict_sweep: sweep of the relied-upon inventory should be restricted to an authorized caller; guarded by the actual sweep state so a rejected attempt is not a violation.",
+          "source_ids": [
+            "intent_restrict_sweep"
+          ]
+        },
+        "effects": {
+          "text": "The secondToken inventory is swept to treasury and the keeper's buyBack reverts with ZeroValue().",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "buyback_reverts"
+              },
+              {
+                "var": "second_token_swept"
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_f890a400483d_0005",
+            "e_f890a400483d_0010",
+            "e_f890a400483d_0011"
+          ],
+          "derivation": "i_revert: buyback reverts; i_griefing: non-OLAS inventory routed to treasury.",
+          "source_ids": [
+            "i_revert",
+            "i_griefing"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": "pre_inventory",
+          "args.0": "pre_inventory",
+          "args.1": "pre_any_caller",
+          "args.2": "assumption_shared_inventory"
+        },
+        "safety": {
+          "": "intent_restrict_sweep",
+          "args.0": "intent_restrict_sweep",
+          "args.1": "intent_restrict_sweep"
+        },
+        "effects": {
+          "": "i_revert",
+          "args.0": "i_revert",
+          "args.1": "i_griefing"
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_revert",
+          "status": "formalized",
+          "reason": "buyback_reverts captures the ZeroValue() revert."
+        },
+        {
+          "statement_id": "i_griefing",
+          "status": "partial",
+          "reason": "Treasury routing formalized as second_token_swept; keeper gas waste and delayed/blocked cadence are aggregate/economic and deferred."
+        }
+      ],
+      "assumptions": [
+        "assumption_shared_inventory: the inventory swept by transfer(secondToken) is the same inventory keeper's buyBack requires.",
+        "caller_authorized is observable at the transfer(secondToken) call and is false for the feasible caller of pre_any_caller.",
+        "second_token_balance, keeper_reliant and caller_authorized are observed at the same pre-sweep checkpoint."
+      ],
+      "unresolved": [
+        "Attacker economic gain versus pure griefing is not stated.",
+        "Exact front-run/race mechanism and required ordering are unspecified; the 'immediately before' temporal relation is not encodable in the AST.",
+        "Whether the OLAS-path transfer (token==olas to bridge2Burner) shares the same access-control issue is not analyzed.",
+        "No amounts, token values or realized losses are given, so severity cannot be quantified."
+      ]
+    }
+  ],
+  "limitations": [
+    "Racing/temporal precedence (sweep immediately before buyback) is not expressible; modeled as shared preconditions plus effects.",
+    "Aggregate griefing effects (keeper gas waste, delayed/blocked buybacks) are deferred from formalization.",
+    "Economic cadence inventory -> buy OLAS -> bridge2Burner is not formalized.",
+    "second_token_balance unit is token count; address identity (treasury vs bridge2Burner) is not verified in the AST.",
+    "i_griefing is potential; only i_revert is asserted, so no realized-loss claim is made.",
+    "OLAS/bridge2Burner-path access control is left out of scope."
+  ]
+}

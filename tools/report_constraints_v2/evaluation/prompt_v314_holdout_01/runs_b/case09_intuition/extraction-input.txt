@@ -1,0 +1,55 @@
+Missing epoch snapshots allow same-block deposits to inflate rewards and cause protocol insolvency
+
+## Finding description 
+
+When calculating a user's reward share, `TrustBonding.sol` retrieves the balances and computes the fraction:
+
+
+The vulnerability exists because neither the numerator (`userBalance`) nor the denominator (`totalBalance`) is snapshotted or frozen when the epoch ends. Instead of locking in the final epoch state, both of these view functions continuously perform live historical binary searches against the underlying `VotingEscrow` contract.
+
+### Checkpoint Collision
+
+Because `TrustBonding` relies on these live historical queries, it is fully exposed to how `VotingEscrow` timestamps its checkpoints.
+
+If a user calls `deposit_for` in the exact block that an epoch ends, the underlying `VotingEscrow` contract writes a new checkpoint stamped with that exact epoch-end timestamp. When `TrustBonding` subsequently queries the historical supply and user balance for that epoch's end, it receives the new, post-deposit inflated balances rather than the correct pre-deposit balances.
+
+### Feasibility on Base L2
+
+To execute this, an attacker only needs a block to land exactly on the epoch boundary. On Base L2, this is mathematically guaranteed without any miner manipulation:
+
+* The protocol's `START_TIMESTAMP` is `1_762_268_400` (an even number).
+* The `EPOCH_LENGTH` is `1_209_600` seconds (an even number).
+* Therefore, every single epoch boundary falls on an even Unix second.
+* Base L2 produces blocks every 2 seconds (always even timestamps).
+
+Every epoch boundary is guaranteed to perfectly align with a Base block.
+
+### Mathematical Proof
+
+Assume total supply is $S$, epoch emissions are $E$, and 3 users hold equal shares ($S/3$).
+Before the attack, each user's share is calculated as:
+
+$$\frac{S/3}{S} \times E = \frac{E}{3}$$
+
+In the epoch boundary block:
+
+1. Honest users claim early in the block. `TrustBonding` uses the correct $S$. They each receive $\frac{E}{3}$.
+2. The attacker calls `deposit_for` by $\delta$ tokens in the same block. The boundary timestamp checkpoint is updated.
+3. The attacker calls `claimRewards()`. `TrustBonding` now queries the historical supply and receives the inflated denominator ($S + \delta$). The attacker's personal balance is also inflated to ($\frac{S}{3} + \delta$).
+4. The attacker's claim is calculated as:
+
+$$\text{attacker\_claim} = \frac{S/3 + \delta}{S + \delta} \times E$$
+
+Because $\frac{S/3 + \delta}{S + \delta} > \frac{1}{3}$ for any $\delta > 0$, the attacker takes a disproportionately larger share than they actually earned during the epoch.
+
+The sum of the payouts distributed by `TrustBonding` becomes:
+
+$$\text{Total Payout} = \frac{E}{3} + \frac{E}{3} + \left( \frac{S/3 + \delta}{S + \delta} \times E \right) > E$$
+
+The fractions exceed 100%, mathematically breaking the hard cap of the epoch ($E$).
+
+### Impact (Insolvency and Direct Theft)
+
+By inflating their own reward fraction mid-block, an attacker causes the sum of all distributed reward shares to exceed 100% of the epoch's emission cap. This directly drains the `SatelliteEmissionsController` reserves.
+
+Consequently, the protocol becomes insolvent before all legitimate users can claim their share. Honest users who claim later in the window will encounter an `InsufficientBalance` revert. Because the protocol enforces a strict one-epoch claim window, these late claimers suffer a permanent, 100% loss of their legitimately earned yield with no recovery path. The attacker effectively steals the yield directly from these honest participants.

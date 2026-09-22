@@ -1,0 +1,138 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "Bf8XubUDHuN",
+    "requested_finding_uid": "7yYS2jorBMq",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "Bf8XubUDHuN",
+    "source_finding_uid": "7yYS2jorBMq",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\high_valid_Bf8XubUDHuN.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "Bf8XubUDHuN",
+  "finding_uid": "7yYS2jorBMq",
+  "finding_number": "5",
+  "title": "Inverted Access Control in endRewardsAccrual() Allows Unauthorized Function Execution",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "mustapha",
+  "body": "## Finding description and impact\nThe endRewardsAccrual()  function in GTELaunchpadV2Pair.sol contains a critical access control vulnerability due to an inverted condition check that completely undermines the intended permission system. The function use ```if (msg.sender != launchpadFeeDistributor) revert(\"GTEUniV2: FORBIDDEN\")```\nwhich incorrectly allows the legitimate distributor address to execute the function while potentially permitting unauthorized addresses to bypass access controls. This inversion creates a dangerous security flaw where the access logic operates in direct opposition to its intended design, enabling unexpected function execution paths. The impact includes potential unauthorized deactivation of rewards accrual, disruption of protocol reward distribution mechanisms, and establishes a concerning pattern of access control failure that could be exploited in other parts of the contract system. While current implementation details may prevent full exploitation, the fundamental logic error poses significant risk to protocol integrity and requires immediate remediation.\n## Recommended mitigation steps\n\nDescribe the best method(s) to mitigate the finding.\n\nThe vulnerability can be fixed by correcting the inverted condition in the access control check. Change the current logic from if (msg.sender != launchpadFeeDistributor) revert(\"GTEUniV2: FORBIDDEN\") to require(msg.sender == launchpadFeeDistributor, \"GTEUniV2: FORBIDDEN\") to properly enforce that only the designated distributor address can execute the endRewardsAccrual function. Additionally, implement comprehensive unit tests that verify both authorized access succeeds and unauthorized access fails, conduct a full review of all access control patterns throughout the codebase to identify similar inversion vulnerabilities, and consider implementing standardized access control modifiers using established libraries like OpenZeppelin's Ownable or AccessControl to prevent similar logic errors in future development. The fix should be deployed immediately to restore proper access control enforcement and maintain protocol security integrity.",
+  "proof_of_concept": "go to the test folder of the project, create a test file AccessControlTest.t.sol paste the below code\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.27;\n\nimport \"forge-std/Test.sol\";\nimport \"../../contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\";\n\ncontract TestERC20 {\n    string public name;\n    string public symbol;\n    uint8 public decimals = 18;\n    uint256 public totalSupply;\n    mapping(address => uint256) public balanceOf;\n    mapping(address => mapping(address => uint256)) public allowance;\n\n    constructor(string memory _name, string memory _symbol) {\n        name = _name;\n        symbol = _symbol;\n    }\n\n    function mint(address to, uint256 value) public {\n        totalSupply += value;\n        balanceOf[to] += value;\n    }\n\n    function transfer(address to, uint256 value) public returns (bool) {\n        require(balanceOf[msg.sender] >= value);\n        balanceOf[msg.sender] -= value;\n        balanceOf[to] += value;\n        return true;\n    }\n\n    function approve(address spender, uint256 value) public returns (bool) {\n        allowance[msg.sender][spender] = value;\n        return true;\n    }\n}\n\ncontract MockFactory {\n    address public feeTo = address(0);\n    \n    function createPair(address tokenA, address tokenB, address distributor) external returns (address) {\n        GTELaunchpadV2Pair newPair = new GTELaunchpadV2Pair();\n        newPair.initialize(tokenA, tokenB, address(0), distributor);\n        return address(newPair);\n    }\n}\n\ncontract AccessControlTest is Test {\n    GTELaunchpadV2Pair public pair;\n    TestERC20 public token0;\n    TestERC20 public token1;\n    address public distributor = address(0x123);\n\n    function setUp() public {\n        MockFactory factory = new MockFactory();\n        token0 = new TestERC20(\"TokenA\", \"TA\");\n        token1 = new TestERC20(\"TokenB\", \"TB\");\n        \n        // Initialize tokens with some balance\n        token0.mint(address(this), 1000 * 10**18);\n        token1.mint(address(this), 1000 * 10**18);\n        \n        pair = GTELaunchpadV2Pair(\n            factory.createPair(address(token0), address(token1), distributor)\n        );\n    }\n\n    function testEndRewardsAccrualAccessControl() public {\n        // Test that the distributor address gets rejected (current bug)\n        vm.prank(distributor);\n        vm.expectRevert(\"GTEUniV2: FORBIDDEN\");\n        pair.endRewardsAccrual();\n\n        // Test that a random address can call it (current bug - should fail but doesn't)\n        vm.prank(address(0x999)); // Random address\n        \n        // This will fail due to balanceOf calls in _update, but the access control check passed\n        try pair.endRewardsAccrual() {\n            // If we get here, the access control check passed (which is the bug)\n            console.log(\"Unauthorized access allowed - VULNERABILITY CONFIRMED\");\n        } catch {\n            // This is expected due to other reverts, but the key is that access control didn't stop it\n            console.log(\"Function failed for other reasons, but access control was bypassed\");\n        }\n    }\n\n    function testAccessControlLogic() public {\n        // Directly test the logic flaw\n        address randomAddress = address(0x999);\n        \n        // Simulate the current flawed logic\n        bool currentBehavior = (randomAddress != distributor); // This returns true\n        bool desiredBehavior = (randomAddress == distributor); // This returns false\n        \n        console.log(\"Current flawed logic allows random address:\", currentBehavior);\n        console.log(\"Correct logic would reject random address:\", !desiredBehavior);\n        \n        // This demonstrates the inversion bug\n        assertTrue(currentBehavior, \"Current bug: random addresses pass the check\");\n        assertFalse(desiredBehavior, \"Desired behavior: random addresses should fail\");\n    }\n\n    function testVulnerabilityProof() public {\n    // Verify initial state\n    assertEq(pair.rewardsPoolActive(), 1, \"Rewards pool should be active initially\");\n    \n    // Call with distributor address - THIS SHOULD FAIL BUT DOESN'T\n    vm.prank(distributor);\n    pair.endRewardsAccrual();\n    \n    // PROOF: Function executed and deactivated rewards pool\n    assertEq(pair.rewardsPoolActive(), 0, \"Rewards pool was deactivated by distributor - VULNERABILITY CONFIRMED\");\n    \n    console.log(\"VULNERABILITY PROVED: Distributor address successfully called endRewardsAccrual()\");\n    console.log(\"This should have been rejected but wasn't due to inverted condition\");\n}\n}\n```\nrun ```forge test --mp AccessControlTest.t.sol -vvvv```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol#L98"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "473",
+    "api_submission_id": "",
+    "uid": "Bf8XubUDHuN",
+    "number": "473",
+    "title": "Inverted Access Control in endRewardsAccrual() Allows Unauthorized Function Execution",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "mustapha",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol#L98"
+    ],
+    "body": "## Finding description and impact\nThe endRewardsAccrual()  function in GTELaunchpadV2Pair.sol contains a critical access control vulnerability due to an inverted condition check that completely undermines the intended permission system. The function use ```if (msg.sender != launchpadFeeDistributor) revert(\"GTEUniV2: FORBIDDEN\")```\nwhich incorrectly allows the legitimate distributor address to execute the function while potentially permitting unauthorized addresses to bypass access controls. This inversion creates a dangerous security flaw where the access logic operates in direct opposition to its intended design, enabling unexpected function execution paths. The impact includes potential unauthorized deactivation of rewards accrual, disruption of protocol reward distribution mechanisms, and establishes a concerning pattern of access control failure that could be exploited in other parts of the contract system. While current implementation details may prevent full exploitation, the fundamental logic error poses significant risk to protocol integrity and requires immediate remediation.\n## Recommended mitigation steps\n\nDescribe the best method(s) to mitigate the finding.\n\nThe vulnerability can be fixed by correcting the inverted condition in the access control check. Change the current logic from if (msg.sender != launchpadFeeDistributor) revert(\"GTEUniV2: FORBIDDEN\") to require(msg.sender == launchpadFeeDistributor, \"GTEUniV2: FORBIDDEN\") to properly enforce that only the designated distributor address can execute the endRewardsAccrual function. Additionally, implement comprehensive unit tests that verify both authorized access succeeds and unauthorized access fails, conduct a full review of all access control patterns throughout the codebase to identify similar inversion vulnerabilities, and consider implementing standardized access control modifiers using established libraries like OpenZeppelin's Ownable or AccessControl to prevent similar logic errors in future development. The fix should be deployed immediately to restore proper access control enforcement and maintain protocol security integrity.",
+    "proof_of_concept": "go to the test folder of the project, create a test file AccessControlTest.t.sol paste the below code\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.27;\n\nimport \"forge-std/Test.sol\";\nimport \"../../contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\";\n\ncontract TestERC20 {\n    string public name;\n    string public symbol;\n    uint8 public decimals = 18;\n    uint256 public totalSupply;\n    mapping(address => uint256) public balanceOf;\n    mapping(address => mapping(address => uint256)) public allowance;\n\n    constructor(string memory _name, string memory _symbol) {\n        name = _name;\n        symbol = _symbol;\n    }\n\n    function mint(address to, uint256 value) public {\n        totalSupply += value;\n        balanceOf[to] += value;\n    }\n\n    function transfer(address to, uint256 value) public returns (bool) {\n        require(balanceOf[msg.sender] >= value);\n        balanceOf[msg.sender] -= value;\n        balanceOf[to] += value;\n        return true;\n    }\n\n    function approve(address spender, uint256 value) public returns (bool) {\n        allowance[msg.sender][spender] = value;\n        return true;\n    }\n}\n\ncontract MockFactory {\n    address public feeTo = address(0);\n    \n    function createPair(address tokenA, address tokenB, address distributor) external returns (address) {\n        GTELaunchpadV2Pair newPair = new GTELaunchpadV2Pair();\n        newPair.initialize(tokenA, tokenB, address(0), distributor);\n        return address(newPair);\n    }\n}\n\ncontract AccessControlTest is Test {\n    GTELaunchpadV2Pair public pair;\n    TestERC20 public token0;\n    TestERC20 public token1;\n    address public distributor = address(0x123);\n\n    function setUp() public {\n        MockFactory factory = new MockFactory();\n        token0 = new TestERC20(\"TokenA\", \"TA\");\n        token1 = new TestERC20(\"TokenB\", \"TB\");\n        \n        // Initialize tokens with some balance\n        token0.mint(address(this), 1000 * 10**18);\n        token1.mint(address(this), 1000 * 10**18);\n        \n        pair = GTELaunchpadV2Pair(\n            factory.createPair(address(token0), address(token1), distributor)\n        );\n    }\n\n    function testEndRewardsAccrualAccessControl() public {\n        // Test that the distributor address gets rejected (current bug)\n        vm.prank(distributor);\n        vm.expectRevert(\"GTEUniV2: FORBIDDEN\");\n        pair.endRewardsAccrual();\n\n        // Test that a random address can call it (current bug - should fail but doesn't)\n        vm.prank(address(0x999)); // Random address\n        \n        // This will fail due to balanceOf calls in _update, but the access control check passed\n        try pair.endRewardsAccrual() {\n            // If we get here, the access control check passed (which is the bug)\n            console.log(\"Unauthorized access allowed - VULNERABILITY CONFIRMED\");\n        } catch {\n            // This is expected due to other reverts, but the key is that access control didn't stop it\n            console.log(\"Function failed for other reasons, but access control was bypassed\");\n        }\n    }\n\n    function testAccessControlLogic() public {\n        // Directly test the logic flaw\n        address randomAddress = address(0x999);\n        \n        // Simulate the current flawed logic\n        bool currentBehavior = (randomAddress != distributor); // This returns true\n        bool desiredBehavior = (randomAddress == distributor); // This returns false\n        \n        console.log(\"Current flawed logic allows random address:\", currentBehavior);\n        console.log(\"Correct logic would reject random address:\", !desiredBehavior);\n        \n        // This demonstrates the inversion bug\n        assertTrue(currentBehavior, \"Current bug: random addresses pass the check\");\n        assertFalse(desiredBehavior, \"Desired behavior: random addresses should fail\");\n    }\n\n    function testVulnerabilityProof() public {\n    // Verify initial state\n    assertEq(pair.rewardsPoolActive(), 1, \"Rewards pool should be active initially\");\n    \n    // Call with distributor address - THIS SHOULD FAIL BUT DOESN'T\n    vm.prank(distributor);\n    pair.endRewardsAccrual();\n    \n    // PROOF: Function executed and deactivated rewards pool\n    assertEq(pair.rewardsPoolActive(), 0, \"Rewards pool was deactivated by distributor - VULNERABILITY CONFIRMED\");\n    \n    console.log(\"VULNERABILITY PROVED: Distributor address successfully called endRewardsAccrual()\");\n    console.log(\"This should have been rejected but wasn't due to inverted condition\");\n}\n}\n```\nrun ```forge test --mp AccessControlTest.t.sol -vvvv```",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/473",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-15T22:57:42.455Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "pWC7GGbCrsz",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:50:11.283Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "srPK3PSSyxo",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:50:12.556Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "xKNmthatiBf",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-22T15:26:56.574Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "Bf8XubUDHuN",
+          "findingUid": null
+        },
+        {
+          "uid": "E8BRnzui3nm",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-06T20:50:08.519Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "FSq58HmznNV",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-02T14:58:51.277Z",
+          "type": "credit",
+          "value": "75%",
+          "submissionUid": "Bf8XubUDHuN",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "7yYS2jorBMq",
+        "number": 5,
+        "duplicates": 72
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": "75%",
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-12-02T14:58:51.277Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Inverted Access Control in endRewardsAccrual() Allows Unauthorized Function Execution",
+      "uid": "Bf8XubUDHuN",
+      "updatedAt": "2025-09-15T22:57:42.455Z",
+      "user": {
+        "uid": "i6zVVTr5i5a",
+        "handle": "mustapha"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\nThe endRewardsAccrual()  function in GTELaunchpadV2Pair.sol contains a critical access control vulnerability due to an inverted condition check that completely undermines the intended permission system. The function use ```if (msg.sender != launchpadFeeDistributor) revert(\"GTEUniV2: FORBIDDEN\")```\nwhich incorrectly allows the legitimate distributor address to execute the function while potentially permitting unauthorized addresses to bypass access controls. This inversion creates a dangerous security flaw where the access logic operates in direct opposition to its intended design, enabling unexpected function execution paths. The impact includes potential unauthorized deactivation of rewards accrual, disruption of protocol reward distribution mechanisms, and establishes a concerning pattern of access control failure that could be exploited in other parts of the contract system. While current implementation details may prevent full exploitation, the fundamental logic error poses significant risk to protocol integrity and requires immediate remediation.\n## Recommended mitigation steps\n\nDescribe the best method(s) to mitigate the finding.\n\nThe vulnerability can be fixed by correcting the inverted condition in the access control check. Change the current logic from if (msg.sender != launchpadFeeDistributor) revert(\"GTEUniV2: FORBIDDEN\") to require(msg.sender == launchpadFeeDistributor, \"GTEUniV2: FORBIDDEN\") to properly enforce that only the designated distributor address can execute the endRewardsAccrual function. Additionally, implement comprehensive unit tests that verify both authorized access succeeds and unauthorized access fails, conduct a full review of all access control patterns throughout the codebase to identify similar inversion vulnerabilities, and consider implementing standardized access control modifiers using established libraries like OpenZeppelin's Ownable or AccessControl to prevent similar logic errors in future development. The fix should be deployed immediately to restore proper access control enforcement and maintain protocol security integrity.",
+      "proofOfConcept": "go to the test folder of the project, create a test file AccessControlTest.t.sol paste the below code\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.27;\n\nimport \"forge-std/Test.sol\";\nimport \"../../contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\";\n\ncontract TestERC20 {\n    string public name;\n    string public symbol;\n    uint8 public decimals = 18;\n    uint256 public totalSupply;\n    mapping(address => uint256) public balanceOf;\n    mapping(address => mapping(address => uint256)) public allowance;\n\n    constructor(string memory _name, string memory _symbol) {\n        name = _name;\n        symbol = _symbol;\n    }\n\n    function mint(address to, uint256 value) public {\n        totalSupply += value;\n        balanceOf[to] += value;\n    }\n\n    function transfer(address to, uint256 value) public returns (bool) {\n        require(balanceOf[msg.sender] >= value);\n        balanceOf[msg.sender] -= value;\n        balanceOf[to] += value;\n        return true;\n    }\n\n    function approve(address spender, uint256 value) public returns (bool) {\n        allowance[msg.sender][spender] = value;\n        return true;\n    }\n}\n\ncontract MockFactory {\n    address public feeTo = address(0);\n    \n    function createPair(address tokenA, address tokenB, address distributor) external returns (address) {\n        GTELaunchpadV2Pair newPair = new GTELaunchpadV2Pair();\n        newPair.initialize(tokenA, tokenB, address(0), distributor);\n        return address(newPair);\n    }\n}\n\ncontract AccessControlTest is Test {\n    GTELaunchpadV2Pair public pair;\n    TestERC20 public token0;\n    TestERC20 public token1;\n    address public distributor = address(0x123);\n\n    function setUp() public {\n        MockFactory factory = new MockFactory();\n        token0 = new TestERC20(\"TokenA\", \"TA\");\n        token1 = new TestERC20(\"TokenB\", \"TB\");\n        \n        // Initialize tokens with some balance\n        token0.mint(address(this), 1000 * 10**18);\n        token1.mint(address(this), 1000 * 10**18);\n        \n        pair = GTELaunchpadV2Pair(\n            factory.createPair(address(token0), address(token1), distributor)\n        );\n    }\n\n    function testEndRewardsAccrualAccessControl() public {\n        // Test that the distributor address gets rejected (current bug)\n        vm.prank(distributor);\n        vm.expectRevert(\"GTEUniV2: FORBIDDEN\");\n        pair.endRewardsAccrual();\n\n        // Test that a random address can call it (current bug - should fail but doesn't)\n        vm.prank(address(0x999)); // Random address\n        \n        // This will fail due to balanceOf calls in _update, but the access control check passed\n        try pair.endRewardsAccrual() {\n            // If we get here, the access control check passed (which is the bug)\n            console.log(\"Unauthorized access allowed - VULNERABILITY CONFIRMED\");\n        } catch {\n            // This is expected due to other reverts, but the key is that access control didn't stop it\n            console.log(\"Function failed for other reasons, but access control was bypassed\");\n        }\n    }\n\n    function testAccessControlLogic() public {\n        // Directly test the logic flaw\n        address randomAddress = address(0x999);\n        \n        // Simulate the current flawed logic\n        bool currentBehavior = (randomAddress != distributor); // This returns true\n        bool desiredBehavior = (randomAddress == distributor); // This returns false\n        \n        console.log(\"Current flawed logic allows random address:\", currentBehavior);\n        console.log(\"Correct logic would reject random address:\", !desiredBehavior);\n        \n        // This demonstrates the inversion bug\n        assertTrue(currentBehavior, \"Current bug: random addresses pass the check\");\n        assertFalse(desiredBehavior, \"Desired behavior: random addresses should fail\");\n    }\n\n    function testVulnerabilityProof() public {\n    // Verify initial state\n    assertEq(pair.rewardsPoolActive(), 1, \"Rewards pool should be active initially\");\n    \n    // Call with distributor address - THIS SHOULD FAIL BUT DOESN'T\n    vm.prank(distributor);\n    pair.endRewardsAccrual();\n    \n    // PROOF: Function executed and deactivated rewards pool\n    assertEq(pair.rewardsPoolActive(), 0, \"Rewards pool was deactivated by distributor - VULNERABILITY CONFIRMED\");\n    \n    console.log(\"VULNERABILITY PROVED: Distributor address successfully called endRewardsAccrual()\");\n    console.log(\"This should have been rejected but wasn't due to inverted condition\");\n}\n}\n```\nrun ```forge test --mp AccessControlTest.t.sol -vvvv```",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol#L98",
+      "number": 473,
+      "aiExplanation": null,
+      "_index": 473
+    }
+  }
+}

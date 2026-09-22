@@ -1,0 +1,92 @@
+{
+  "schema_version": "report-formal-plan/2",
+  "precondition_ids": ["p_epoch_model", "p_creator_nonnultiple_duration"],
+  "intent_id": "si_enforce_duration_multiple",
+  "impact_ids": ["i_partial_epoch_campaign"],
+  "symbols": {
+    "campaign_duration_seconds": {
+      "sort": "int",
+      "unit": "seconds",
+      "meaning": "Campaign duration supplied by the creator at campaign creation (report example: 5400 seconds = 1.5 hours).",
+      "checkpoint": "DistributionCreator._createCampaign / overrideCampaign duration validation at campaign creation",
+      "entity_ids": ["campaign_creator", "campaign"],
+      "source_ids": ["p_creator_nonnultiple_duration"]
+    },
+    "epoch_duration_seconds": {
+      "sort": "int",
+      "unit": "seconds",
+      "meaning": "EPOCH_DURATION, the discrete 1-hour epoch length Merkl uses for reward calculation and distribution.",
+      "checkpoint": "Merkl epoch-based reward accounting model",
+      "entity_ids": ["distribution_creator_contract", "campaign"],
+      "source_ids": ["p_epoch_model"]
+    },
+    "partial_epoch_campaign": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The created campaign spans a whole number of epochs plus a leftover partial epoch (report example: one full epoch and one half-epoch).",
+      "checkpoint": "Resulting campaign produced by DistributionCreator",
+      "entity_ids": ["campaign"],
+      "source_ids": ["i_partial_epoch_campaign"]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_epoch_model",
+      "predicate": {
+        "kind": "comparison",
+        "left": "epoch_duration_seconds",
+        "operator": "eq",
+        "right": {"const": 3600}
+      }
+    },
+    {
+      "source_id": "p_creator_nonnultiple_duration",
+      "predicate": {
+        "kind": "divisible_by",
+        "dividend": "campaign_duration_seconds",
+        "divisor": 3600,
+        "value": false
+      }
+    }
+  ],
+  "pattern": {
+    "pattern": "condition_forbids_effect",
+    "condition": {
+      "kind": "divisible_by",
+      "dividend": "campaign_duration_seconds",
+      "divisor": 3600,
+      "value": false
+    },
+    "effect": {
+      "kind": "truth",
+      "symbol": "partial_epoch_campaign",
+      "value": true
+    }
+  },
+  "assumptions": [
+    "The off-chain indexing engine strictly expects aligned epochs, so a misaligned campaign may be rejected entirely or have its trailing partial epoch dropped (i_offchain_reject_or_drop deferred).",
+    "The 5400-second example is assumed to reach the campaign-creation duration check, whether performed in _createCampaign or overrideCampaign.",
+    "The campaign creator is treated as an authorized caller of createCampaign; no unauthorized-caller scenario is asserted.",
+    "EPOCH_DURATION is one hour, i.e. 3600 seconds, an unambiguous time-unit conversion of the stated discrete 1-hour epochs."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "The report's 5400-second example does not state whether it is executed through DistributionCreator._createCampaign or overrideCampaign, so the exact enforcement checkpoint for the example is ambiguous.",
+      "source_ids": ["p_creator_nonnultiple_duration"],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_actor",
+      "description": "The report does not state who may call createCampaign or whether the creator is an authorized caller; caller authorization is outside the selected P/I/V.",
+      "source_ids": ["p_creator_nonnultiple_duration"],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The off-chain impacts of i_offchain_reject_or_drop (engine rejection locking user funds, or dropping the final partial epoch causing reward loss) are conditional ('may') and deferred as secondary consequences.",
+    "Only i_partial_epoch_campaign is bound to the core V; fund-locking and reward-loss magnitudes are not formalized.",
+    "Caller-authorization ambiguity and the exact _createCampaign versus overrideCampaign path are out of scope of the core property.",
+    "All integers remain symbolic; no concrete duration beyond the report example and no concrete address constants are fixed."
+  ]
+}

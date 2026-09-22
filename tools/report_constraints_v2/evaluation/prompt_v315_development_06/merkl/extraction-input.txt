@@ -1,0 +1,25 @@
+ClaimRecipientUpdated event swaps token and recipient topics
+
+## Finding Description and Impact
+
+`Distributor._setClaimRecipient` stores `claimRecipient[user][token] = recipient` but emits `ClaimRecipientUpdated(user, recipient, token)` while the event is declared as `(user, token, recipient)`. As a result, the log’s indexed `token` topic actually holds the recipient address and the `recipient` topic holds the token address. Off-chain indexers that rebuild `claimRecipient` from events will construct the inverse mapping and surface incorrect recipient/token pairs.
+
+The mismatch is visible in the event declaration at [`contracts/Distributor.sol:119-120`](https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/Distributor.sol#L119-L120) and the emit site at [`contracts/Distributor.sol:540-546`](https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/Distributor.sol#L540-L546):
+
+
+
+
+Because many analytics pipelines and payout automation jobs consume events instead of on-chain storage, they will misroute or misreport claim recipients for a given token, leading to phantom, duplicated, or misdirected off-chain payouts and discrepancies between UI displays and true on-chain state.
+
+### Affected code
+- [`contracts/Distributor.sol:119-120`](https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/Distributor.sol#L119-L120) event parameter order `(user, token, recipient)`
+- [`contracts/Distributor.sol:540-546`](https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/Distributor.sol#L540-L546) emit passes `(user, recipient, token)`, swapping topics
+
+---
+## Impact
+
+- Off-chain indexers reconstruct `claimRecipient` incorrectly, pairing tokens with the wrong recipients.
+- Any reporting, accounting, or automated payout system that trusts the event will misroute funds or surface incorrect recipient metadata.
+- Event/state divergence makes on-chain truth and off-chain observability inconsistent, potentially causing user-facing discrepancies and operational errors.
+
+---

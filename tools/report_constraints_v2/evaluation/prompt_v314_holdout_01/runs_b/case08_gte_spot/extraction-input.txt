@@ -1,0 +1,15 @@
+prevOrderId Not Persisted in _updateLimitPostOrder, Breaking FIFO Order Linking, effectively making Head Order unfillable
+
+## Description
+In `BookLib::_updateLimitPostOrder`, when appending a new order to an existing limit, the code correctly updates the previous tail’s `nextOrderId` and sets `order.prevOrderId = tailOrder.id` on the in-memory Order struct but ir  never writes that updated `order` back into storage. Because order lives only in memory at that point, its prevOrderId is never persisted. As a result, every newly added order ends up with a zero prevOrderId , breaking the doubly-linked list succession.
+
+## Impact
+With this bug, a limit list is correctly linked in the `next` direction but completely broken in the `prev` one. When a middle order of this list is removed (canceled/amended/filled) the code that modifies the list is `_updateLimitRemoveOrder` which does:
+
+with the broken prev reference, we enter the first else branch meaning that the headOrder is overwritten with `order.next`. An example scenario (also given in the PoC) is:
+
+- order3 (tail) <-> order2 <-> order1 (head)
+
+- remove(order2)
+
+- order3 (tail) (head)   | we completely lose track of order1, which becomes unfillable.

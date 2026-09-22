@@ -1,0 +1,293 @@
+{
+  "schema_version": "stage2-semantic-bundle/1",
+  "core_formalization_status": "formalized_candidate",
+  "acceptance_status": "needs_review",
+  "report_warnings": [
+    "report impacts not assigned to a claim: i_flash_staking",
+    "report has declared ambiguities",
+    "formalization has declared limitations"
+  ],
+  "unassigned_impact_ids": [
+    "i_flash_staking"
+  ],
+  "claims": [
+    {
+      "id": "gauge_maturity_lockup_bypass",
+      "formalization_status": "needs_review",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity.",
+        "direct_counterexample_status": "passed"
+      },
+      "review_reasons": [
+        "unresolved claim limitations require review"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "GaugeV2._withdraw contains the maturity check on maturityTime[msg.sender]; maturityTime is never initialized or updated, so as an uninitialized uint256 mapping it equals 0 for the withdrawing staker; block.timestamp is greater than 0; and the staker can deposit tokens beforehand.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "maturity_check_present"
+              },
+              {
+                "var": "never_initialized"
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "maturity_time"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "block_timestamp"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "var": "deposit_capable"
+              }
+            ]
+          },
+          "derivation": "Conjunction of extracted preconditions: p_lockup_check (maturity_check_present), p_mapping_uninitialized (never_initialized), p_maturity_zero supported by p_default_zero (maturity_time == 0), p_timestamp_positive (block_timestamp > 0), p_deposit (deposit_capable).",
+          "source_ids": [
+            "p_lockup_check",
+            "p_mapping_uninitialized",
+            "p_default_zero",
+            "p_maturity_zero",
+            "p_timestamp_positive",
+            "p_deposit"
+          ],
+          "evidence": [
+            "The `GaugeV2` contract implements a maturity check in the `_withdraw` function to enforce a time-based lock-up period before users can withdraw their deposited tokens:",
+            "However, the critical flaw is that the `maturityTime` mapping is **never initialized or updated** anywhere in the contract. In Solidity, uninitialized `uint256` mappings default to `0` for all keys. This means:",
+            "- `maturityTime[user]` always equals `0` (Unix epoch: January 1, 1970)",
+            "- `block.timestamp` in any real-world scenario is always greater than `0`",
+            "1. **Complete Bypass of Lock-up Mechanism**: Users can deposit and immediately withdraw their tokens in the same transaction or block, rendering the intended maturity/vesting period completely useless."
+          ]
+        },
+        "safety": {
+          "text": "Withdrawal completion is authorized only when an actual maturity lock-up is in force, i.e., maturityTime[msg.sender] is a nonzero future timestamp (maturity_time > 0); the maturity check must not allow completion without an established lock-up.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "var": "withdraw_completed"
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "maturity_time"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "si_enforce_lockup requires the maturity check to enforce the intended lock-up/vesting period; enforcing a lock-up presupposes a real nonzero maturity for the user, so withdraw_completed implies maturity_time > 0. The trivially satisfied block.timestamp >= maturityTime direction is not asserted as the whole wish.",
+          "source_ids": [
+            "si_enforce_lockup"
+          ],
+          "evidence": [
+            "The `GaugeV2` contract implements a maturity check in the `_withdraw` function to enforce a time-based lock-up period before users can withdraw their deposited tokens:",
+            "- The condition `block.timestamp >= maturityTime[msg.sender]` **always evaluates to `true`**"
+          ]
+        },
+        "effects": {
+          "text": "The staker's _withdraw completes while maturityTime[msg.sender] equals 0, so no maturity lock-up is in force and the intended lock-up is bypassed.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "withdraw_completed"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "gt",
+                    "args": [
+                      {
+                        "var": "maturity_time"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "i_instant_withdraw reports deposited tokens can be withdrawn immediately in the same transaction/block, bypassing the lock-up; this is withdraw_completed together with no lock-up in force, i.e. not(maturity_time > 0), which falsifies the safety property.",
+          "source_ids": [
+            "i_instant_withdraw"
+          ],
+          "evidence": [
+            "1. **Complete Bypass of Lock-up Mechanism**: Users can deposit and immediately withdraw their tokens in the same transaction or block, rendering the intended maturity/vesting period completely useless."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_lockup_check",
+            "p_mapping_uninitialized",
+            "p_default_zero",
+            "p_maturity_zero",
+            "p_timestamp_positive",
+            "p_deposit"
+          ],
+          "args.0": [
+            "p_lockup_check"
+          ],
+          "args.1": [
+            "p_mapping_uninitialized"
+          ],
+          "args.2": [
+            "p_maturity_zero",
+            "p_default_zero"
+          ],
+          "args.3": [
+            "p_timestamp_positive"
+          ],
+          "args.4": [
+            "p_deposit"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_enforce_lockup"
+          ],
+          "args.0": [
+            "si_enforce_lockup"
+          ],
+          "args.1": [
+            "si_enforce_lockup"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_instant_withdraw"
+          ],
+          "args.0": [
+            "i_instant_withdraw"
+          ],
+          "args.1": [
+            "i_instant_withdraw"
+          ],
+          "args.1.args.0": [
+            "i_instant_withdraw"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_instant_withdraw",
+          "status": "formalized",
+          "reason": "Formalized as withdraw_completed AND not(maturity_time > 0): immediate withdrawal occurs while maturityTime[msg.sender] is 0, bypassing the lock-up."
+        }
+      ],
+      "scope": "core",
+      "modality": "asserted",
+      "assumptions": [
+        "a_intended_maturity: maturityTime was intended to be set to a nonzero future timestamp when a user stakes, but the implementation omitted this.",
+        "The withdrawing staker is the msg.sender evaluated by the maturity check in _withdraw."
+      ],
+      "unresolved": [
+        "Where and when maturityTime was supposed to be assigned is unspecified, so the intended lock-up duration cannot be quantified.",
+        "The staking/deposit function name and any authorization requirements for _withdraw are not given."
+      ]
+    }
+  ],
+  "coverage_is_model_declared_not_semantically_verified": true,
+  "human_semantic_review_required": true,
+  "code_alignment_status": "not_attempted",
+  "execution_ready": false,
+  "consistency_verdict": "not_evaluated",
+  "unassigned_precondition_ids": [],
+  "precondition_coverage_is_structural_not_semantic": true,
+  "strict_piv_gate": true,
+  "observability_review": {
+    "schema_version": "observability-review/1",
+    "claims": [
+      {
+        "claim_id": "gauge_maturity_lockup_bypass",
+        "safety_variables": [
+          "maturity_time",
+          "withdraw_completed"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      }
+    ],
+    "review_status": "no_structural_warning",
+    "observability_established": false,
+    "human_semantic_review_required": true,
+    "limitations": [
+      "I-only Boolean may be a legitimate observation; hints are not automatic errors",
+      "No code binding, predicate-name interpretation or report truth assessment",
+      "Both SAT is a review hint, not a universal UNSAT requirement"
+    ],
+    "model_calls": 0
+  },
+  "provenance": {
+    "code_provided_to_model": false,
+    "paired_case_checked": true,
+    "case_id": "Hybra_Finance_xo4hapwL2Jy__LJk286Uvei7__9q8uSDBzSuq",
+    "submission_uid": "9q8uSDBzSuq",
+    "finding_uid": "LJk286Uvei7",
+    "target_test": "test_UninitializedMaturityTimeAllowsEarlyWithdraw",
+    "code_sha256": "54890a0c1848d9f41c0b32b9d3617e8662b69319e3d198e70a31b05e859d8cc6",
+    "report_path": "/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/Hybra_Finance_xo4hapwL2Jy__LJk286Uvei7__9q8uSDBzSuq/report.json",
+    "report_sha256": "de97d936edcf925ad96f58440e7c81bd1c43aac14162aec4e679aa503cdec063",
+    "report_input_sha256": "f072f2fde8183706028a40dd9325fa4fd5a45fe96dbadd712a5526b3e2270f56",
+    "candidate_origin": "external_model",
+    "elements_source": null,
+    "formalization_source": null,
+    "requested_formalization_scope": "core",
+    "prompt_version": "semantic-v3.2",
+    "model_catalog_view": "exact_id_text_without_offsets",
+    "reference_answers_provided_to_model": false
+  },
+  "external_model_invocations": 2
+}

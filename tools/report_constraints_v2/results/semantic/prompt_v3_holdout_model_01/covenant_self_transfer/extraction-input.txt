@@ -1,0 +1,13 @@
+## Finding description and impact
+
+`Covenant` keeps its own ledger of how many BASE tokens the market holds in `marketState.baseSupply`. When BASE is sent out (via `redeem` or `swap` with `assetOut == BASE`), the code first decrements `baseSupply` by the amount and then transfers the tokens to `to`. There’s no special-case for self-transfers (`to == address(this)`).
+
+If a user sets `to = Covenant` itself, the ERC-20 transfer is effectively a no-op (tokens go from Covenant to Covenant), but `baseSupply` still gets reduced. That creates a mismatch:
+
+
+Validation in `ValidationLogic.checkSwapOutputs` caps BASE outflows by comparing `(requested + fees)` against `baseSupply` (not the actual token balance). After you “deflate” `baseSupply` with a self-transfer, exact-out BASE requests that should succeed will now revert with `Errors.E_InsufficientAmount`. In practice, anyone holding zTokens can do a `DEBT -> BASE` swap to `to = Covenant` and brick subsequent withdrawals (and any other flows that rely on `baseSupply`) until the mismatch is repaired by other activity.
+
+to execute the attack, 
+* No special roles or governance needed.
+* Works with standard tokens.
+* Can be repeated to drive `baseSupply` arbitrarily low (up to the attacker’s zToken budget), turning a nuisance into a sustained DoS.

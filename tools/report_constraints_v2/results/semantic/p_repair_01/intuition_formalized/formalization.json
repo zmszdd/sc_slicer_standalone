@@ -1,0 +1,193 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "curve_initialized_with_low_offset": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "OffsetProgressiveCurve was initialized with an offset18 parameter below the report's low-offset threshold, leaving the stored OFFSET collapsed.",
+      "checkpoint": "post-initialize, pre-withdrawal state",
+      "entity_ids": [
+        "offset_progressive_curve"
+      ],
+      "evidence": "In OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9."
+    },
+    "offset18": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "offset18 initialization parameter passed to initialize before the withdrawal.",
+      "checkpoint": "initialize input, pre-withdrawal state",
+      "entity_ids": [
+        "offset_progressive_curve"
+      ],
+      "evidence": "In OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9."
+    },
+    "user_has_deposit": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The user holds an open deposit position in the curve whose full withdrawal is attempted.",
+      "checkpoint": "before the full-withdrawal attempt",
+      "entity_ids": [
+        "user",
+        "deposit",
+        "offset_progressive_curve"
+      ],
+      "evidence": "In OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9."
+    },
+    "withdrawal_reverts": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The full-withdrawal execution reverts with PANIC(0x11) arithmetic underflow.",
+      "checkpoint": "during/after withdrawal execution",
+      "entity_ids": [
+        "user",
+        "offset_progressive_curve"
+      ],
+      "evidence": "Therefore, subtracting shares = squaredShares - inner produces a deterministic PANIC(0x11) arithmetic underflow."
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "Full withdrawal of a user's deposited assets from OffsetProgressiveCurve",
+      "modality": "asserted",
+      "impact_ids": [
+        "withdrawal_reverts_panic"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "OffsetProgressiveCurve was initialized with an offset18 parameter smaller than 1e9.; During initialize, OFFSET = PCMath.divDown(OFFSET18, 1e18) truncates to 0 because OFFSET18 < 1e18, so the stored OFFSET is 0 before the withdrawal.; The user has a deposit (open position) in the curve whose full withdrawal is attempted.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "curve_initialized_with_low_offset"
+              },
+              {
+                "op": "lt",
+                "args": [
+                  {
+                    "var": "offset18"
+                  },
+                  {
+                    "const": 1000000000000000000
+                  }
+                ]
+              },
+              {
+                "var": "user_has_deposit"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "curve_initialized_with_low_offset",
+            "offset_truncates_to_zero",
+            "user_holds_deposit"
+          ],
+          "evidence": [
+            "In OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9.",
+            "Any OffsetProgressiveCurve instantiated with offset18 < 1e9 collapses in mathematically equivalent conditions to ProgressiveCurve. Users will be permanently blocked from fully closing their positions, causing trapped funds whenever liquidating assets.",
+            "When initialize stores the OFFSET18 parameter, it calculates the raw parameter OFFSET = PCMath.divDown(OFFSET18, 1e18). If OFFSET18 is less than 1e18, OFFSET strictly evaluates to 0. During deposit and withdrawal calculations, this truncated OFFSET influences internal rounding mechanics differently than ProgressiveCurve.",
+            "When a user attempts a full withdrawal:"
+          ]
+        },
+        "safety": {
+          "text": "Users should be able to fully withdraw their deposited assets from OffsetProgressiveCurve without the withdrawal reverting and trapping funds (inferred from the claimed trapped-funds failure).",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "var": "curve_initialized_with_low_offset"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "withdrawal_reverts"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "full_withdrawal_should_succeed"
+          ],
+          "evidence": [
+            "In OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9.",
+            "Any OffsetProgressiveCurve instantiated with offset18 < 1e9 collapses in mathematically equivalent conditions to ProgressiveCurve. Users will be permanently blocked from fully closing their positions, causing trapped funds whenever liquidating assets."
+          ]
+        },
+        "effects": {
+          "text": "The full withdrawal deterministically reverts with PANIC(0x11) arithmetic underflow.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "curve_initialized_with_low_offset"
+              },
+              {
+                "var": "withdrawal_reverts"
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "withdrawal_reverts_panic"
+          ],
+          "evidence": [
+            "Therefore, subtracting shares = squaredShares - inner produces a deterministic PANIC(0x11) arithmetic underflow."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "curve_initialized_with_low_offset",
+            "offset_truncates_to_zero",
+            "user_holds_deposit"
+          ],
+          "args.1": [
+            "curve_initialized_with_low_offset",
+            "offset_truncates_to_zero",
+            "user_holds_deposit"
+          ]
+        },
+        "safety": {
+          "": [
+            "full_withdrawal_should_succeed"
+          ],
+          "args.1": [
+            "full_withdrawal_should_succeed"
+          ]
+        },
+        "effects": {
+          "": [
+            "withdrawal_reverts_panic"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "withdrawal_reverts_panic",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "No state transition between initialize and the full withdrawal changes the stored OFFSET or other curve parameters.",
+        "The user's deposit is positive, so the attempted full withdrawal exercises the withdrawal conversion path.",
+        "SLOPE and the 1e18 scaling are fixed contract constants, not free variables.",
+        "Only the direct arithmetic-underflow revert is modeled; external calls and operator error are out of scope."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "funds_trapped (permanent blockage / trapped funds) is a secondary consequence of the revert and is deferred, not part of the core V.",
+    "The offset18 threshold inconsistency (1e9 vs 1e18) is retained as a non-blocking clarification.",
+    "Exact deposit assets/shares are handled symbolically; no concrete amount is asserted.",
+    "No authorization or attacker model applies, so effect_requires_any_authorization is not used.",
+    "Deferred report impact: funds_trapped"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "validatePrice() price/TWAP safety gate invoked before value-moving actions",
+    "environment": "Uniswap V2 spot price oracle",
+    "evidence_ids": ["e_bddd6674d1ae_0001", "e_bddd6674d1ae_0002", "e_bddd6674d1ae_0003"]
+  },
+  "entities": [
+    {"id": "validate_price", "name": "validatePrice()", "role": "other", "evidence_ids": ["e_bddd6674d1ae_0002"]},
+    {"id": "slippage", "name": "slippage parameter", "role": "other", "evidence_ids": ["e_bddd6674d1ae_0002"]},
+    {"id": "elapsed_time", "name": "elapsedTime", "role": "other", "evidence_ids": ["e_bddd6674d1ae_0002"]},
+    {"id": "attacker", "name": "attacker", "role": "attacker", "evidence_ids": ["e_bddd6674d1ae_0003"]},
+    {"id": "uniswap_v2_pool", "name": "Uniswap V2 spot price", "role": "asset", "evidence_ids": ["e_bddd6674d1ae_0003"]},
+    {"id": "value_moving_action", "name": "value-moving action (swap, liquidity removal, burn)", "role": "other", "evidence_ids": ["e_bddd6674d1ae_0003"]}
+  ],
+  "statements": [
+    {"id": "p_elapsed_gt_zero", "kind": "precondition", "text": "elapsedTime is greater than 0.", "modality": "asserted", "entity_ids": ["elapsed_time"], "evidence_ids": ["e_bddd6674d1ae_0002"]},
+    {"id": "p_value_moving_relies", "kind": "precondition", "text": "A value-moving action relies on validatePrice() as a safety gate.", "modality": "potential", "entity_ids": ["value_moving_action", "validate_price"], "evidence_ids": ["e_bddd6674d1ae_0003"]},
+    {"id": "p_attacker_capability", "kind": "precondition", "text": "Attacker can manipulate the Uniswap V2 spot price for a single block via flash liquidity.", "modality": "asserted", "entity_ids": ["attacker", "uniswap_v2_pool"], "evidence_ids": ["e_bddd6674d1ae_0003"]},
+    {"id": "a_manipulate_spot", "kind": "action", "text": "Attacker manipulates the Uniswap V2 spot price for one block.", "modality": "asserted", "entity_ids": ["attacker", "uniswap_v2_pool"], "evidence_ids": ["e_bddd6674d1ae_0003"]},
+    {"id": "a_invoke_value_moving", "kind": "action", "text": "Attacker executes the value-moving action that invokes validatePrice().", "modality": "potential", "entity_ids": ["attacker", "value_moving_action", "validate_price"], "evidence_ids": ["e_bddd6674d1ae_0003"]},
+    {"id": "a_pass_check", "kind": "action", "text": "The validatePrice() check passes, allowing the action to proceed.", "modality": "asserted", "entity_ids": ["validate_price", "slippage"], "evidence_ids": ["e_bddd6674d1ae_0002"]},
+    {"id": "rc_twap_cancel", "kind": "root_cause", "text": "validatePrice() reconstructs a TWAP using the current spot price and the same cumulative value, algebraically cancelling to the spot price.", "modality": "asserted", "entity_ids": ["validate_price", "uniswap_v2_pool"], "evidence_ids": ["e_bddd6674d1ae_0002"]},
+    {"id": "i_derivation_zero", "kind": "impact", "text": "timeWeightedAverage equals tradePrice so derivation is always 0 and the check passes even with slippage = 0, disabling slippage protection.", "modality": "asserted", "entity_ids": ["validate_price", "slippage"], "evidence_ids": ["e_bddd6674d1ae_0002"]},
+    {"id": "i_value_loss", "kind": "impact", "text": "Manipulated spot price passes the check, leading to bad execution and potential value loss.", "modality": "potential", "entity_ids": ["attacker", "uniswap_v2_pool", "value_moving_action"], "evidence_ids": ["e_bddd6674d1ae_0003"]},
+    {"id": "si_reject_deviation", "kind": "security_intent", "text": "validatePrice() should reject a value-moving action when tradePrice deviates from the true time-weighted average beyond the configured slippage.", "modality": "inferred", "entity_ids": ["validate_price", "slippage"], "evidence_ids": ["e_bddd6674d1ae_0002"]},
+    {"id": "asm_oracle_gate", "kind": "assumption", "text": "validatePrice() is intended to enforce slippage protection against a TWAP oracle.", "modality": "inferred", "entity_ids": ["validate_price", "slippage"], "evidence_ids": ["e_bddd6674d1ae_0002"]}
+  ],
+  "attack_steps": ["a_manipulate_spot", "a_invoke_value_moving", "a_pass_check"],
+  "ambiguities": [
+    "No specific contract or function containing validatePrice() is named.",
+    "It is not confirmed which value-moving action (swap, liquidity removal, or burn) actually relies on validatePrice().",
+    "The configured slippage value and whether slippage=0 is permitted are unspecified.",
+    "The manipulation vector (flash liquidity) and its magnitude/timing are not detailed.",
+    "Downstream economic loss amount and the exact nature of 'bad execution' are unquantified."
+  ]
+}

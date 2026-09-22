@@ -1,0 +1,271 @@
+{
+  "report_fragments": [
+    {
+      "id": "e_26876a1c2dba_0001",
+      "text": "Incorrect share-minting order in deposit() causes under-minting and loss of funds for new depositors"
+    },
+    {
+      "id": "e_26876a1c2dba_0002",
+      "text": "#### Root cause"
+    },
+    {
+      "id": "e_26876a1c2dba_0003",
+      "text": "In `deposit()`, the contract **locks** the deposited HYBR into the veNFT **before** computing how many gHYBR shares to mint. That makes `totalAssets()` larger by `amount` (or nearly so) when `calculateShares(amount)` is called, which **inflates the denominator** and **mints fewer shares** than fair value for the depositor."
+    },
+    {
+      "id": "e_26876a1c2dba_0004",
+      "text": "Problematic sequence (snippets with error markers):"
+    },
+    {
+      "id": "e_26876a1c2dba_0005",
+      "text": "`calculateShares` pulls the denominator from `totalAssets()`:"
+    },
+    {
+      "id": "e_26876a1c2dba_0006",
+      "text": "And `totalAssets()` returns the veNFT’s locked amount:"
+    },
+    {
+      "id": "e_26876a1c2dba_0007",
+      "text": "---"
+    },
+    {
+      "id": "e_26876a1c2dba_0008",
+      "text": "### **Impact**"
+    },
+    {
+      "id": "e_26876a1c2dba_0009",
+      "text": "Whenever `veTokenId != 0`, every new depositor receives **fewer gHYBR shares than fair value**, because their deposit increases `totalAssets()` **before** the share calculation."
+    },
+    {
+      "id": "e_26876a1c2dba_0010",
+      "text": "This creates a **systematic and deterministic value leak**:"
+    },
+    {
+      "id": "e_26876a1c2dba_0011",
+      "text": "* **Depositors lose claim value:** Each deposit mints fewer shares than the previewed amount (via `calculateShares()`), so new participants receive a smaller proportional stake in the vault."
+    },
+    {
+      "id": "e_26876a1c2dba_0012",
+      "text": "* **Existing holders are over-rewarded:** The shortfall in minted shares artificially increases the share value of incumbents, effectively redistributing future rewards to them."
+    },
+    {
+      "id": "e_26876a1c2dba_0013",
+      "text": "> **Note:** The very first depositor (`_totalSupply == 0`) receives the correct 1:1 mint."
+    },
+    {
+      "id": "e_26876a1c2dba_0014",
+      "text": "> Every subsequent depositor is under-minted proportionally to vault growth."
+    },
+    {
+      "id": "e_26876a1c2dba_0015",
+      "text": "---"
+    },
+    {
+      "id": "e_26876a1c2dba_0016",
+      "text": "### **Example — Predictable Share Mismatch**"
+    },
+    {
+      "id": "e_26876a1c2dba_0017",
+      "text": "| Metric        | Before Bob’s Deposit | After Bob’s Deposit      |"
+    },
+    {
+      "id": "e_26876a1c2dba_0018",
+      "text": "| ------------- | -------------------- | ------------------------ |"
+    },
+    {
+      "id": "e_26876a1c2dba_0019",
+      "text": "| `totalAssets` | 100                  | 200 (includes Bob’s 100) |"
+    },
+    {
+      "id": "e_26876a1c2dba_0020",
+      "text": "| `totalSupply` | 100                  | —                        |"
+    },
+    {
+      "id": "e_26876a1c2dba_0021",
+      "text": "| `deposit`     | 100                  | —                        |"
+    },
+    {
+      "id": "e_26876a1c2dba_0022",
+      "text": "**Expected (if `calculateShares` called before deposit):**"
+    },
+    {
+      "id": "e_26876a1c2dba_0023",
+      "text": "`shares = 100 * 100 / 100 = 100`"
+    },
+    {
+      "id": "e_26876a1c2dba_0024",
+      "text": "**Actual (with bug, since `totalAssets` already includes deposit):**"
+    },
+    {
+      "id": "e_26876a1c2dba_0025",
+      "text": "`shares = 100 * 100 / 200 = 50`"
+    },
+    {
+      "id": "e_26876a1c2dba_0026",
+      "text": "**Result:**"
+    },
+    {
+      "id": "e_26876a1c2dba_0027",
+      "text": "Bob receives **50 gHYBR** instead of **100**, losing half of his rightful share."
+    },
+    {
+      "id": "e_26876a1c2dba_0028",
+      "text": "The missing value silently accrues to existing holders, doubling their per-share entitlement."
+    },
+    {
+      "id": "e_26876a1c2dba_0029",
+      "text": "This is a **deterministic mismatch** between the preview (`calculateShares`) and actual mint outcome — no race, randomness, or off-chain dependency. Any depositor after the first one will face a consistent under-mint proportional to total vault size."
+    }
+  ],
+  "symbols": {
+    "ve_token_id_nonzero": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "vault has a nonzero veTokenId so totalAssets() reflects the veNFT locked amount",
+      "checkpoint": "before deposit()",
+      "entity_ids": [
+        "vault"
+      ],
+      "evidence": "Whenever `veTokenId != 0`, every new depositor receives **fewer gHYBR shares than fair value**, because their deposit increases `totalAssets()` **before** the share calculation."
+    },
+    "prior_total_supply_positive": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "_totalSupply is greater than zero, i.e. not the first deposit",
+      "checkpoint": "before deposit()",
+      "entity_ids": [
+        "vault",
+        "existing_holders"
+      ],
+      "evidence": "> **Note:** The very first depositor (`_totalSupply == 0`) receives the correct 1:1 mint."
+    },
+    "deposit_amount_positive": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "depositor calls deposit() with a positive HYBR amount",
+      "checkpoint": "deposit() call",
+      "entity_ids": [
+        "depositor",
+        "hybr",
+        "vault"
+      ],
+      "evidence": "| `totalAssets` | 100                  | 200 (includes Bob’s 100) |"
+    },
+    "lock_before_calc": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "deposit() locks the HYBR into the veNFT before calculateShares(amount) is called",
+      "checkpoint": "inside deposit()",
+      "entity_ids": [
+        "vault"
+      ],
+      "evidence": "In `deposit()`, the contract **locks** the deposited HYBR into the veNFT **before** computing how many gHYBR shares to mint. That makes `totalAssets()` larger by `amount` (or nearly so) when `calculateShares(amount)` is called, which **inflates the denominator** and **mints fewer shares** than fair value for the depositor."
+    },
+    "shares_underminted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "depositor receives fewer gHYBR shares than fair proportional value",
+      "checkpoint": "after deposit() mint",
+      "entity_ids": [
+        "depositor",
+        "ghybr",
+        "vault"
+      ],
+      "evidence": "Whenever `veTokenId != 0`, every new depositor receives **fewer gHYBR shares than fair value**, because their deposit increases `totalAssets()` **before** the share calculation."
+    }
+  },
+  "claims": [
+    {
+      "claim_id": "core_claim",
+      "P": {
+        "text": "The vault has a nonzero veTokenId, so totalAssets() reflects the veNFT's locked amount.; There are existing depositors, i.e. _totalSupply is greater than zero (not the very first deposit).; A new depositor calls deposit() with a positive HYBR amount.; In deposit(), the contract locks the deposited HYBR into the veNFT before calculateShares(amount) is called.",
+        "expression": {
+          "op": "and",
+          "args": [
+            {
+              "var": "ve_token_id_nonzero"
+            },
+            {
+              "var": "prior_total_supply_positive"
+            },
+            {
+              "var": "deposit_amount_positive"
+            },
+            {
+              "var": "lock_before_calc"
+            }
+          ]
+        },
+        "derivation": "Program conjunction of selected report preconditions.",
+        "source_ids": [
+          "pre_ve_token_active",
+          "pre_prior_supply",
+          "pre_deposit_amount",
+          "pre_lock_before_calc"
+        ],
+        "evidence": [
+          "Whenever `veTokenId != 0`, every new depositor receives **fewer gHYBR shares than fair value**, because their deposit increases `totalAssets()` **before** the share calculation.",
+          "And `totalAssets()` returns the veNFT’s locked amount:",
+          "> **Note:** The very first depositor (`_totalSupply == 0`) receives the correct 1:1 mint.",
+          "> Every subsequent depositor is under-minted proportionally to vault growth.",
+          "| `totalAssets` | 100                  | 200 (includes Bob’s 100) |",
+          "| `deposit`     | 100                  | —                        |",
+          "In `deposit()`, the contract **locks** the deposited HYBR into the veNFT **before** computing how many gHYBR shares to mint. That makes `totalAssets()` larger by `amount` (or nearly so) when `calculateShares(amount)` is called, which **inflates the denominator** and **mints fewer shares** than fair value for the depositor."
+        ]
+      },
+      "I": {
+        "text": "In deposit(), the shares minted to a depositor should be computed on totalAssets() measured before that deposit's HYBR is locked, so a nonzero veTokenId and existing supply do not reduce the depositor's shares below the fair proportional amount.",
+        "expression": {
+          "op": "implies",
+          "args": [
+            {
+              "var": "lock_before_calc"
+            },
+            {
+              "op": "not",
+              "args": [
+                {
+                  "var": "shares_underminted"
+                }
+              ]
+            }
+          ]
+        },
+        "derivation": "Program synthesis from the selected intent and logical pattern.",
+        "source_ids": [
+          "intent_deposit_mint_order"
+        ],
+        "evidence": [
+          "In `deposit()`, the contract **locks** the deposited HYBR into the veNFT **before** computing how many gHYBR shares to mint. That makes `totalAssets()` larger by `amount` (or nearly so) when `calculateShares(amount)` is called, which **inflates the denominator** and **mints fewer shares** than fair value for the depositor.",
+          "**Expected (if `calculateShares` called before deposit):**",
+          "`shares = 100 * 100 / 100 = 100`",
+          "> **Note:** The very first depositor (`_totalSupply == 0`) receives the correct 1:1 mint."
+        ]
+      },
+      "V": {
+        "text": "A new depositor receives fewer gHYBR shares than fair value, e.g. 50 gHYBR instead of 100.",
+        "expression": {
+          "op": "and",
+          "args": [
+            {
+              "var": "lock_before_calc"
+            },
+            {
+              "var": "shares_underminted"
+            }
+          ]
+        },
+        "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+        "source_ids": [
+          "impact_undermint"
+        ],
+        "evidence": [
+          "Whenever `veTokenId != 0`, every new depositor receives **fewer gHYBR shares than fair value**, because their deposit increases `totalAssets()` **before** the share calculation.",
+          "Bob receives **50 gHYBR** instead of **100**, losing half of his rightful share."
+        ]
+      },
+      "modality": "potential",
+      "unresolved": []
+    }
+  ]
+}

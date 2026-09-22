@@ -1,0 +1,13 @@
+Public `injectAndCall` enables unauthorized draining of router-held ETH/ERC20 balances
+
+## Finding description and impact
+
+The `injectAndCall` function is public and not restricted by `onlyDelegatecall`, despite being designed for delegatecall usage. It reads `callerBalance = _getSelfBalance(token)`, then:
+- For ETH: calls `target.call{value: callerBalance}(callData)`, sending the router’s entire ETH balance to `target`.
+- For ERC20: does `SafeERC20.forceApprove(token, target, callerBalance)` and then `target.call(callData)`, enabling `target` to `transferFrom(router, ...)` up to the router’s entire token balance.
+
+Anyone can call `injectAndCall` directly and:
+- For ETH: set `target = attackerEOA` (or any contract able to receive ETH) and drain all ETH held by the router.
+- For ERC20: set `target = attackerContract` that, upon being called, executes `transferFrom(router, attacker, balance)` using the freshly granted allowance.
+
+Thus, any ETH or ERC20s held by the router can be stolen by any external caller through `injectAndCall`, without authorization.

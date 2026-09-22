@@ -1,0 +1,154 @@
+{
+  "schema_version": "report-formal-plan/2",
+  "precondition_ids": [
+    "curve_initialized_with_low_offset",
+    "user_holds_deposit",
+    "full_deposit_exit_assumed"
+  ],
+  "intent_id": "full_withdrawal_should_succeed",
+  "impact_ids": [
+    "withdrawal_reverts_panic"
+  ],
+  "symbols": {
+    "offset18": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "Curve initialization offset parameter (offset18) used for the stored OFFSET conversion",
+      "checkpoint": "initialize (before withdrawal)",
+      "entity_ids": [
+        "offset_progressive_curve"
+      ],
+      "source_ids": [
+        "curve_initialized_with_low_offset"
+      ]
+    },
+    "user_has_deposit": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "User holds an open deposit in the curve",
+      "checkpoint": "before_withdrawal",
+      "entity_ids": [
+        "user",
+        "deposit",
+        "offset_progressive_curve"
+      ],
+      "source_ids": [
+        "user_holds_deposit"
+      ]
+    },
+    "full_withdrawal_attempted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "A full withdrawal of the user's deposit is attempted",
+      "checkpoint": "withdrawal_entry",
+      "entity_ids": [
+        "user",
+        "deposit",
+        "offset_progressive_curve"
+      ],
+      "source_ids": [
+        "user_holds_deposit",
+        "full_deposit_exit_assumed"
+      ]
+    },
+    "full_withdrawal_covers_entire_deposit": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The attempted withdrawal covers the user's entire deposited position so the reported redemption path applies",
+      "checkpoint": "withdrawal_entry",
+      "entity_ids": [
+        "user",
+        "deposit"
+      ],
+      "source_ids": [
+        "full_deposit_exit_assumed"
+      ]
+    },
+    "withdrawal_reverts": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The full withdrawal deterministically reverts with PANIC(0x11) arithmetic underflow (execution outcome)",
+      "checkpoint": "withdrawal_execution_outcome",
+      "entity_ids": [
+        "user",
+        "offset_progressive_curve"
+      ],
+      "source_ids": [
+        "withdrawal_reverts_panic"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "curve_initialized_with_low_offset",
+      "predicate": {
+        "kind": "comparison",
+        "left": "offset18",
+        "operator": "lt",
+        "right": {
+          "const": 1000000000
+        }
+      }
+    },
+    {
+      "source_id": "user_holds_deposit",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "user_has_deposit",
+        "value": true
+      }
+    },
+    {
+      "source_id": "full_deposit_exit_assumed",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "full_withdrawal_covers_entire_deposit",
+        "value": true
+      }
+    }
+  ],
+  "pattern": {
+    "kind": "condition_forbids_effect",
+    "condition": {
+      "kind": "truth",
+      "symbol": "full_withdrawal_attempted",
+      "value": true
+    },
+    "effect": {
+      "kind": "truth",
+      "symbol": "withdrawal_reverts",
+      "value": true
+    }
+  },
+  "assumptions": [
+    "The antecedent is the conjunction of the low-offset initialization, the user's open deposit, and the full-withdrawal coverage; the pattern condition is the full-withdrawal attempt.",
+    "The report's stated bound (offset18 < 1e9) is taken as the public condition; the truncation mechanism's stricter requirement (OFFSET18 < 1e18) is the implementation route that the stated bound also satisfies, converging on a stored OFFSET of 0.",
+    "The underflowing revert is asserted deterministically and generally for the full-withdrawal path under a low-offset curve, so no concrete deposit or share quantity is required.",
+    "The actor is the depositing user exercising a normal full withdrawal; no attacker or authorization claim is part of this property."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "The report gives inconsistent low-offset bounds: the title/impact state offset18 < 1e9 while the truncation mechanism requires OFFSET18 < 1e18; the plan uses the stated < 1e9 and both readings imply the same stored OFFSET of 0.",
+      "source_ids": [
+        "curve_initialized_with_low_offset",
+        "offset_truncates_to_zero"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "It is not fully specified whether every full-withdrawal amount underflows or only specific amounts; the report asserts the revert occurs deterministically, so the revert predicate is taken to hold for the full-withdrawal path generally.",
+      "source_ids": [
+        "withdrawal_reverts_panic"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "funds_trapped (permanent blocking and trapped funds) is a downstream consequence of the revert core V and is deferred rather than selected as a direct impact.",
+    "The internal arithmetic (offset squaring to 0; squaredShares < inner causing PANIC(0x11)) is implementation root cause, not part of the semantic property.",
+    "Alternative exits such as partial withdrawals or admin recovery are not modeled; 'permanently blocked' is taken from the report assertion.",
+    "The security intent is a normative requirement used only to justify the forbidden-effect reading; it is not an observable precondition."
+  ]
+}

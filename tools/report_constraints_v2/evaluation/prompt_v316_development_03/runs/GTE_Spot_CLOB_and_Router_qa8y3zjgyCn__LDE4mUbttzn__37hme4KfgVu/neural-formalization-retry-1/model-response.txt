@@ -1,0 +1,135 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": ["p_lot_size_one_ether", "p_resting_sell_100", "p_fok_buy_100_5"],
+  "intent_id": "si_fok_only_fail_unfillable",
+  "impact_ids": ["i_revert_not_filled"],
+  "symbols": {
+    "lot_size_in_base": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "market lotSizeInBase, the minimum tradeable base-asset lot size",
+      "checkpoint": "precondition",
+      "entity_ids": ["market"],
+      "source_ids": ["p_lot_size_one_ether"]
+    },
+    "resting_sell_amount": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "base-asset amount the resting limit sell order offers",
+      "checkpoint": "precondition",
+      "entity_ids": ["resting_limit_order", "base_asset"],
+      "source_ids": ["p_resting_sell_100"]
+    },
+    "fok_buy_amount": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "base-asset amount the FOK buy order requests via postFillOrder",
+      "checkpoint": "precondition",
+      "entity_ids": ["taker_user", "clob_contract"],
+      "source_ids": ["p_fok_buy_100_5"]
+    },
+    "filled_amount": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "base-asset amount actually matched and filled by the matching engine",
+      "checkpoint": "transition",
+      "entity_ids": ["clob_contract", "resting_limit_order"],
+      "source_ids": ["p_fok_buy_100_5"]
+    },
+    "new_order_amount": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "remaining unfilled newOrder.amount after matching, before the completeness check",
+      "checkpoint": "transition",
+      "entity_ids": ["clob_contract", "resting_limit_order"],
+      "source_ids": ["p_fok_buy_100_5", "a_matching_fills_100"]
+    },
+    "fok_not_filled_revert": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "whether the transaction reverts with FOKOrderNotFilled()",
+      "checkpoint": "postcondition",
+      "entity_ids": ["clob_contract", "taker_user"],
+      "source_ids": ["i_revert_not_filled"]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_lot_size_one_ether",
+      "predicate": {
+        "kind": "comparison",
+        "left": "lot_size_in_base",
+        "operator": "eq",
+        "right": {"const": 1}
+      }
+    },
+    {
+      "source_id": "p_resting_sell_100",
+      "predicate": {
+        "kind": "comparison",
+        "left": "resting_sell_amount",
+        "operator": "ge",
+        "right": {"const": 100}
+      }
+    },
+    {
+      "source_id": "p_fok_buy_100_5",
+      "predicate": {
+        "kind": "comparison",
+        "left": "fok_buy_amount",
+        "operator": "le",
+        "right": {"const": 101}
+      }
+    }
+  ],
+  "derived_definitions": [
+    {
+      "symbol": "new_order_amount",
+      "expression": {"op": "sub", "args": [{"symbol": "fok_buy_amount"}, {"symbol": "filled_amount"}]},
+      "source_ids": ["p_fok_buy_100_5"]
+    }
+  ],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "comparison",
+          "left": "filled_amount",
+          "operator": "ge",
+          "right": {"const": 100}
+        },
+        {
+          "kind": "comparison",
+          "left": "new_order_amount",
+          "operator": "lt",
+          "right": {"symbol": "lot_size_in_base"}
+        }
+      ]
+    },
+    "relation": {
+      "kind": "truth",
+      "symbol": "fok_not_filled_revert",
+      "value": false
+    }
+  },
+  "assumptions": [
+    "A remainder below lotSizeInBase is treated as untradeable dust per the report's dust assumption.",
+    "The fill of 100 ether by the matching engine is a valid, fully matched tradeable portion for the resting sell order."
+  ],
+  "unresolved": [
+    {
+      "category": "missing_report_definition",
+      "description": "The supplied fragments do not include the exact source lines of the newOrder.amount > 0 check, so no direct checkpoint for the check's return value is available; the analysis relies on the reported impact statement for the revert outcome.",
+      "source_ids": ["a_check_amount_gt_zero", "i_revert_not_filled"],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Only the revert impact i_revert_not_filled is formalized; the order-type unreliability impact i_fok_unreliable is deferred to a future claim.",
+    "Authorization/whitelist status of the taker is not part of this P/I/V and was not selected.",
+    "Concrete numeric binding of filled_amount and new_order_amount to chain state is deferred."
+  ]
+}

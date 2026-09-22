@@ -1,0 +1,178 @@
+{
+  "schema_version": "report-formal-plan/2",
+  "precondition_ids": [
+    "p_high_supply_token",
+    "p_high_utilization",
+    "p_prior_interest_state"
+  ],
+  "intent_id": "si_total_assets_monotonic",
+  "impact_ids": [
+    "i_total_assets_drop"
+  ],
+  "symbols": {
+    "prior_interest": {
+      "sort": "int",
+      "unit": "interest units",
+      "meaning": "the substantial interest amount already accrued on the pool before the triggering accrueInterest() call, reported as e.g. 2^106 - 1",
+      "checkpoint": "before accrueInterest",
+      "entity_ids": [
+        "unrealized_interest",
+        "high_supply_pool"
+      ],
+      "source_ids": [
+        "p_prior_interest_state"
+      ]
+    },
+    "utilization_high": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the pool's utilization is high as stated in the report",
+      "checkpoint": "before accrueInterest",
+      "entity_ids": [
+        "high_supply_pool"
+      ],
+      "source_ids": [
+        "p_high_utilization"
+      ]
+    },
+    "token_supply_within_supported_range": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the token's supply is within the supported range (supply below 2^127 - 1) but quantities can exceed 2^106, as stated for high-supply tokens such as SHIB",
+      "checkpoint": "before accrueInterest",
+      "entity_ids": [
+        "high_supply_pool"
+      ],
+      "source_ids": [
+        "p_high_supply_token"
+      ]
+    },
+    "total_assets_after": {
+      "sort": "int",
+      "unit": "asset units",
+      "meaning": "totalAssets() after the triggering accrueInterest() and storeMarketState() execution",
+      "checkpoint": "after accrueInterest / storeMarketState",
+      "entity_ids": [
+        "total_assets",
+        "market_state"
+      ],
+      "source_ids": [
+        "i_total_assets_drop"
+      ]
+    },
+    "total_assets_before": {
+      "sort": "int",
+      "unit": "asset units",
+      "meaning": "totalAssets() immediately before the triggering accrueInterest() call",
+      "checkpoint": "before accrueInterest",
+      "entity_ids": [
+        "total_assets"
+      ],
+      "source_ids": [
+        "si_total_assets_monotonic"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_high_supply_token",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "token_supply_within_supported_range",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_high_utilization",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "utilization_high",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_prior_interest_state",
+      "predicate": {
+        "kind": "comparison",
+        "left": "prior_interest",
+        "operator": "gt",
+        "right": {
+          "const": 0
+        }
+      }
+    }
+  ],
+  "pattern": {
+    "kind": "condition_forbids_effect",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "token_supply_within_supported_range",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "utilization_high",
+          "value": true
+        },
+        {
+          "kind": "comparison",
+          "left": "prior_interest",
+          "operator": "gt",
+          "right": {
+            "const": 0
+          }
+        }
+      ]
+    },
+    "effect": {
+      "kind": "comparison",
+      "left": "total_assets_after",
+      "operator": "lt",
+      "right": {
+        "symbol": "total_assets_before"
+      }
+    }
+  },
+  "assumptions": [
+    "The triggering accrueInterest()/storeMarketState() execution and subsequent totalAssets() read are treated as the single core state transition; the report describes them as potential actions.",
+    "The stored unrealizedInterest field is limited to 106 bits (asm_stored_field_only_106) while the protocol assumes the value will never exceed 2^106.",
+    "The impact i_interest_exceeds_106 (new total interest exceeds 2^106 and stored interest wraps to near zero) is a causally prior event; only the direct totalAssets decrease is selected as the core impact.",
+    "The attacker's later large deposit is not part of the core violation; it is a secondary consequence placed in limitations."
+  ],
+  "unresolved": [
+    {
+      "category": "unsupported_relation",
+      "description": "The report gives the prior interest example as 2^106 - 1 but does not state a fixed numeric threshold or event that makes the new interest exceed 2^106; the connection is asserted only through the 106-bit field truncation. No report-supported positive divisor is available for a divisible_by predicate.",
+      "source_ids": [
+        "p_prior_interest_state",
+        "i_interest_exceeds_106"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "The report does not specify how 'high' utilization is quantified or at what utilization the pool reaches the 2^106 interest condition.",
+      "source_ids": [
+        "p_high_utilization"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_actor",
+      "description": "The report mentions an attacker monitoring the pool and depositing immediately after the overflow, but no on-chain transaction or actor is established for the core time-passage decrease.",
+      "source_ids": [
+        "a_attacker_deposit"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "i_interest_exceeds_106 (stored interest wraps to near zero) is treated as a causally prior event and is not itself the selected core impact.",
+    "The attacker's profitable deposit after share price becomes artificially low is deferred as a secondary consequence.",
+    "The intent that totalAssets should never decrease solely due to time passage is an inferred invariant (si_total_assets_monotonic) and is not a code-enforced guarantee elsewhere in the fragments.",
+    "Only the direct totalAssets decrease is formalized; sharePrice = totalAssets / totalSupply crashing is a downstream consequence."
+  ]
+}

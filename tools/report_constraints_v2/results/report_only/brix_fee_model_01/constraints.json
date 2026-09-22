@@ -1,0 +1,251 @@
+{
+  "schema_version": "report-semantics/1",
+  "provenance": {
+    "case_id": "Brix_Money_qy7NXr77sDh__PGwVR6CTD6U__3hfE23tsgzG",
+    "submission_uid": "3hfE23tsgzG",
+    "finding_uid": "PGwVR6CTD6U",
+    "case_dir": "/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/Brix_Money_qy7NXr77sDh__PGwVR6CTD6U__3hfE23tsgzG",
+    "report_sha256": "3eb27386ad3b2c6a99a7b3f4be61ca71233ab16ea80a138a80f6d6c38cddb59e",
+    "code_sha256": "4d3337a6db349911e9ad0a4635abd16d7fddd7d751ac3d33b42f7ca3dc18614b",
+    "report_input_sha256": "5d2a1d54551d336aae12511eb950bbd160f9a7dc340db9bd0e411cc2eec72b97",
+    "target_test": "test_PoC_bufferedFee_reverts",
+    "code_provided_to_model": false,
+    "replay_source": null,
+    "candidate_origin": "external_model"
+  },
+  "symbols": {
+    "exact_fee": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "exact LayerZero native fee (fee.nativeFee) returned by _quote() for the unstake payload",
+      "checkpoint": "input",
+      "evidence": "returns a `MessagingFee` fee with `fee.nativeFee` set to the exact required amount"
+    },
+    "buffered_fee": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "fee returned by quoteUnstakeWithBuffer(), deliberately larger than exact_fee (example: 110% of exact fee)",
+      "checkpoint": "input",
+      "evidence": "These helpers deliberately return a fee that is larger than the exact LayerZero quote (for example, exactFee * 110 / 100)"
+    },
+    "msg_value": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "msg.value forwarded by the integrator to UnstakeMessenger.unstake()",
+      "checkpoint": "input",
+      "evidence": "Call `unstake{value: bufferedFee}(returnTripAllocation)` and rely on the refund address for any excess."
+    },
+    "message_sent": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "true if the cross-chain unstake message was dispatched to the LayerZero endpoint after _lzSend(); false if the call reverted first",
+      "checkpoint": "after _lzSend call in UnstakeMessenger.unstake()",
+      "evidence": "reverts with `NotEnoughNative(msg.value)` before the message is dispatched"
+    },
+    "reverted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "true if UnstakeMessenger.unstake() reverted with OAppSender.NotEnoughNative before any message was sent",
+      "checkpoint": "after _lzSend call in UnstakeMessenger.unstake()",
+      "evidence": "all cross-chain `unstake()` calls revert before any LayerZero message is sent"
+    },
+    "excess_equals": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "true if msg_value equals buffered_fee (the buffered-fee pattern as published)",
+      "checkpoint": "input",
+      "evidence": "Call `unstake{value: bufferedFee}(returnTripAllocation)` and rely on the refund address for any excess."
+    }
+  },
+  "properties": {
+    "preconditions": {
+      "text": "The caller follows the buffered-fee path: msg_value equals buffered_fee, and buffered_fee is strictly greater than exact_fee; the intended postcondition is then that the message is dispatched and any excess over exact_fee is returned to the integrator as a refund.",
+      "expression": {
+        "op": "and",
+        "args": [
+          {
+            "op": "eq",
+            "args": [
+              {
+                "var": "msg_value"
+              },
+              {
+                "var": "buffered_fee"
+              }
+            ]
+          },
+          {
+            "op": "gt",
+            "args": [
+              {
+                "var": "buffered_fee"
+              },
+              {
+                "var": "exact_fee"
+              }
+            ]
+          }
+        ]
+      },
+      "evidence": [
+        "These helpers deliberately return a fee that is larger than the exact LayerZero quote (for example, exactFee * 110 / 100)",
+        "Call `unstake{value: bufferedFee}(returnTripAllocation)` and rely on the refund address for any excess."
+      ],
+      "derivation": "The intended integration path is described as calling the buffer helper and forwarding that value as msg.value; excess over the exact fee is expected to be refunded. The buffered helper is documented to return a fee larger than the exact quote, hence the strict-greater-than condition. The intended dispatch outcome is implicit in the phrase 'so that integrators can [...] call unstake{value: bufferedFee}' supported by the refund mechanism."
+    },
+    "safety": {
+      "text": "If the caller sends exactly the buffered fee (which exceeds the exact fee), the message intended to be dispatched by unstake() is not sent: the call reverts with OAppSender.NotEnoughNative before dispatch, so the posted precondition fails to yield the intended outcome. Expresses the failure of the implied safety objective for the buffered flow only, not for exact-fee quoting nor all transaction failures.",
+      "expression": {
+        "op": "implies",
+        "args": [
+          {
+            "op": "and",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "msg_value"
+                  },
+                  {
+                    "var": "buffered_fee"
+                  }
+                ]
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "buffered_fee"
+                  },
+                  {
+                    "var": "exact_fee"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "op": "not",
+            "args": [
+              {
+                "var": "message_sent"
+              }
+            ]
+          }
+        ]
+      },
+      "evidence": [
+        "the inherited LayerZero implementation for `_payNative()` (used inside _lzSend()) requires that `msg.value` equals the native fee exactly",
+        "`_payNative()` observes the mismatch and reverts with `NotEnoughNative(msg.value)` before the message is dispatched.",
+        "all cross-chain `unstake()` calls revert before any LayerZero message is sent"
+      ],
+      "derivation": "The report asserts the actual behavior and the intended behavior diverge. The 'intended' outcome is inferred: the buffered pattern exists so integrators can pass bufferedFee without reverting, implying the only sensible intended safety property is that this flow dispatches the message and refunds excess. Since the report asserts reversion in that exact flow, the property that captures the discrepancy is the implication with a negated message_sent consequent. Derivation quotes assert (a) strict equality enforcement, (b) reversion on mismatch, and (c) reversion for the buffered path, which directly contradict the safety objective. The final scope rests on the report's assertion and the assumption that not reverting and dispatching is the intended behavior; the report itself is treated as untrusted data, not as ground truth."
+    },
+    "effects": {
+      "text": "Resulting behavior observed at the checkpoint when the caller supplies msg_value = buffered_fee: the call reverts (reverted = true) and no message is dispatched (message_sent = false); no refund is produced because the revert precedes payment handling.",
+      "expression": {
+        "op": "and",
+        "args": [
+          {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "msg_value"
+                      },
+                      {
+                        "var": "buffered_fee"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "gt",
+                    "args": [
+                      {
+                        "var": "buffered_fee"
+                      },
+                      {
+                        "var": "exact_fee"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "reverted"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "message_sent"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "op": "eq",
+            "args": [
+              {
+                "var": "reverted"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "message_sent"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "evidence": [
+        "Revert when msg.value == bufferedFee returned by quoteUnstakeWithBuffer() (10% higher than exactFee), with selector OAppSender.NotEnoughNative(uint256).",
+        "all cross-chain `unstake()` calls revert before any LayerZero message is sent"
+      ],
+      "derivation": "The evidence asserts the outcome of the buffered flow: a revert with the NotEnoughNative selector and, in the impact section, that the revert occurs before any LayerZero message is sent. The effect expression records the state at the content-aware checkpoint; the conjunction with the equality between reverted and the negation of message_sent encodes the observed outcome the report describes."
+    }
+  },
+  "assumptions": [
+    "The report, being untrusted, is used only as a hypothesis; property assertions describe states the report claims to observe, not verified facts.",
+    "The property is the negation of the described bug (message is not sent on the buffered path) as an intent/failure assertion, not a verified guarantee.",
+    "This safety property applies only to the buffered-fee flow (msg_value = buffered_fee > exact_fee); it makes no claim about exact-fee quoting, other value mismatches, or other transaction failures.",
+    "Exact equality msg_value = buffered_fee is taken from the documented pattern 'unstake{value: bufferedFee}' and the test 'msg.value == bufferedFee'; no other value relationship is asserted.",
+    "Message dispatch and refund of excess are treated as the intended outcomes based on the description's 'so that integrators can' wording; this inference is noted and not asserted as true."
+  ],
+  "unresolved": [
+    "The report does not prove that a correct implementation would dispatch the message when msg.value >= fee.nativeFee; that intent is inferred from the documentation of the helpers.",
+    "Arithmetic amounts (e.g., exactFee * 110 / 100) cannot be expressed with the allowed operators (no multiplication/division), so exact_fee/buffered_fee are treated as arbitrary bounded ints and the 10% relation is dropped.",
+    "The claim that 'all' unstake calls revert is reported for integrators using the buffered pattern; it is not generalized here to all possible callers or value configurations.",
+    "The refund behavior (identity of refund address, value refunded) is mentioned in the description but not evidenced by an observation, so it is not formalized.",
+    "Functional failures such as reverting with InsufficientFee on underpayment are not covered here; only the buffered-fee equality failure is formalized.",
+    "Whether message_sent actually implies receipt on the destination hub chain is outside the report's evidence and is not modeled."
+  ],
+  "validation": {
+    "formalization_status": "formalized_candidate",
+    "checks": {
+      "precondition_feasibility": "sat",
+      "safety_feasibility": "sat",
+      "effects_feasibility": "sat",
+      "safety_negation_feasibility": "sat"
+    },
+    "warnings": [],
+    "human_semantic_review_required": true,
+    "code_alignment_status": "not_attempted",
+    "consistency_verdict": "not_evaluated"
+  }
+}

@@ -1,0 +1,29 @@
+Silent Overflow of `unrealizedInterest` in `MarketState` Causes Irreversible Yield Loss for Supported High-Supply Tokens
+
+## Finding description and impact
+
+### Root Cause
+The Panoptic protocol uses a packed struct `MarketState` to store global interest accounting variables in a single `uint256` slot to optimize gas. Specifically, the `unrealizedInterest` field—which tracks interest owed by borrowers to the pool—is allocated only **106 bits**.
+
+
+In `CollateralTracker.sol`, the `_accrueInterest` function calculates `_unrealizedGlobalInterest` as a `uint128`. However, when this value is passed to `storeMarketState`, the assembly `shl(150, ...)` instruction pushes any bits beyond the 106th bit off the stack (effectively modulo $2^{256}$ after the shift).
+
+This logic relies on the assumption that `unrealizedInterest` will never exceed $2^{106}$. However, $2^{106} \approx 8.11 \times 10^{31}$.
+While this is a large number, it is significantly smaller than the total supply of several major tokens that the protocol explicitly claims to support. The contest `README` states: **"Tokens with a supply exceeding $2^{127} - 1$ are not supported."** This implies that tokens up to $2^{127}$ ($\approx 1.7 \times 10^{38}$) **are** supported.
+
+Tokens such as **SHIB** ($\approx 5.89 \times 10^{32}$) and **BTT** ($\approx 9.9 \times 10^{32}$) are well within the supported range ($10^{32} < 10^{38}$) but exceed the `MarketState` storage capacity ($10^{32} > 10^{31}$).
+
+### Mechanism of Failure
+If a pool is deployed for a high-supply token (e.g., SHIB) and utilization is high, the accrued interest can legitimately exceed $2^{106}$.
+1.  **State:** Pool has accrued substantial interest (e.g., $2^{106} - 1$).
+2.  **Action:** `accrueInterest()` is triggered.
+3.  **Overflow:** The new total interest exceeds $2^{106}$.
+4.  **Truncation:** `storeMarketState` silently discards the most significant bits. The stored interest wraps around to a near-zero value.
+5.  **Asset Drop:** `totalAssets()` is calculated as `s_depositedAssets + s_assetsInAMM + s_marketState.unrealizedInterest()`. When the interest component drops to zero, `totalAssets()` decreases instantly.
+
+### Impact
+This results in a catastrophic and irreversible loss of yield for all Passive Liquidity Providers (PLPs).
+1.  **Share Price Crash:** Since `sharePrice = totalAssets / totalSupply`, the sudden drop in assets causes the share price to crash.
+2.  **Value Extraction:** An attacker monitoring the pool can deposit a large amount of assets immediately after the overflow. Because the share price is artificially low (due to the "forgotten" interest), they receive an inflated number of shares. As borrowers repay loans or interest re-accrues, the value is transferred to the attacker at the expense of existing LPs.
+
+This violates the fundamental invariant of an interest-bearing vault: `totalAssets` should never decrease solely due to the passage of time.

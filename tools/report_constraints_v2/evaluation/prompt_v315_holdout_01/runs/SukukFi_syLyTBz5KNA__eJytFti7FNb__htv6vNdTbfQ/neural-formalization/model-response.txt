@@ -1,0 +1,88 @@
+{
+  "schema_version": "report-formal-plan/3",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": ["vault_registered", "check_nonzero_balances"],
+  "intent_id": "intent",
+  "impact_ids": ["unregister_reverts"],
+  "symbols": {
+    "vault_registered": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the target vault is present in the WERC7575ShareToken vault registry and unregisterVault() can be invoked for it",
+      "checkpoint": "before unregisterVault() is called",
+      "entity_ids": ["vault", "share_token"],
+      "source_ids": ["vault_registered"]
+    },
+    "vault_balance": {
+      "sort": "int",
+      "unit": "vault underlying asset base units",
+      "meaning": "ERC20(asset).balanceOf(vaultAddress), the underlying asset balance held by the vault",
+      "checkpoint": "before unregisterVault() is called",
+      "entity_ids": ["vault", "asset"],
+      "source_ids": ["check_nonzero_balances"]
+    },
+    "unregister_blocked": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "governance's unregisterVault() call for the registered vault reverts and vault removal is blocked",
+      "checkpoint": "after governance calls unregisterVault()",
+      "entity_ids": ["share_token", "vault", "governance"],
+      "source_ids": ["intent", "unregister_reverts"]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "vault_registered",
+      "predicate": {"kind": "truth", "symbol": "vault_registered", "value": true}
+    },
+    {
+      "source_id": "check_nonzero_balances",
+      "predicate": {
+        "kind": "comparison",
+        "left": "vault_balance",
+        "operator": "eq",
+        "right": {"const": 0}
+      }
+    }
+  ],
+  "pattern": {
+    "kind": "condition_forbids_effect",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {"kind": "truth", "symbol": "vault_registered", "value": true},
+        {
+          "kind": "comparison",
+          "left": "vault_balance",
+          "operator": "eq",
+          "right": {"const": 0}
+        }
+      ]
+    },
+    "effect": {"kind": "truth", "symbol": "unregister_blocked", "value": true}
+  },
+  "assumptions": [
+    "The vault registry and unregisterVault() guard in the deployed WERC7575ShareToken.sol match the report description.",
+    "The security intent's 'not a user liability' means vault_balance equals zero at the checkpoint, not an additional economic-liability classification."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "The report says unregisterVault() requires totalAssets() and ERC20 balanceOf(vaultAddress) to be zero before removal, but the selected predicate only binds the ERC20 balance and assumes totalAssets() is zero or identical for the core relation.",
+      "source_ids": ["check_nonzero_balances"],
+      "blocks_formalization": false
+    },
+    {
+      "category": "missing_report_definition",
+      "description": "The report states a dust donation can make balanceOf(vaultAddress) non-zero but does not define a complete independent before-condition for the security intent beyond the zero-balance guard.",
+      "source_ids": ["donation_makes_balance_nonzero", "intent"],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Only one direct relation is formalized: zero observable vault asset balance forbidding unregister_blocked. The lifecycle_blocked impact is deferred.",
+    "The donation action and no-sweep-mechanism possibility are not part of the selected P; they are deferred as contextual causes.",
+    "The unregisterVault() caller/authorization is not represented because the selected intent and direct impact do not require it.",
+    "The report does not establish a real prior transaction in which governance invoked unregisterVault(); the scenario may be conditional."
+  ]
+}

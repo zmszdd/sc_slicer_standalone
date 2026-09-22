@@ -1,0 +1,162 @@
+{
+  "schema_version": "report-formal-plan/3",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "p_lot_size_one_ether",
+    "p_resting_sell_100",
+    "p_fok_buy_100_5"
+  ],
+  "intent_id": "si_fok_only_fail_unfillable",
+  "impact_ids": [
+    "i_revert_not_filled"
+  ],
+  "symbols": {
+    "lot_size_in_base": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "market lotSizeInBase, the minimum tradeable base-asset lot; configured to 1 ether",
+      "checkpoint": "before order matching",
+      "entity_ids": [
+        "market"
+      ],
+      "source_ids": [
+        "p_lot_size_one_ether"
+      ]
+    },
+    "resting_sell_amount": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "base-asset amount the resting limit sell order offers, 100 ether",
+      "checkpoint": "before matching",
+      "entity_ids": [
+        "resting_limit_order",
+        "base_asset"
+      ],
+      "source_ids": [
+        "p_resting_sell_100"
+      ]
+    },
+    "fok_buy_amount": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "base-asset amount the FOK taker order requests, 100.5 ether",
+      "checkpoint": "at postFillOrder submission",
+      "entity_ids": [
+        "taker_user",
+        "clob_contract"
+      ],
+      "source_ids": [
+        "p_fok_buy_100_5"
+      ]
+    },
+    "amount_remaining_after_matching": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "newOrder.amount left after the matching engine filled the tradeable portion; 0.5 ether in the reported scenario",
+      "checkpoint": "after matching fills, before completeness check",
+      "entity_ids": [
+        "clob_contract"
+      ],
+      "source_ids": [
+        "a_matching_fills_100"
+      ]
+    },
+    "transaction_reverted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "whether the postFillOrder transaction reverts with FOKOrderNotFilled()",
+      "checkpoint": "transaction outcome",
+      "entity_ids": [
+        "clob_contract",
+        "taker_user"
+      ],
+      "source_ids": [
+        "i_revert_not_filled"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_lot_size_one_ether",
+      "predicate": {
+        "kind": "comparison",
+        "left": "lot_size_in_base",
+        "operator": "eq",
+        "right": {
+          "const": 1000000000000000000
+        }
+      }
+    },
+    {
+      "source_id": "p_resting_sell_100",
+      "predicate": {
+        "kind": "comparison",
+        "left": "resting_sell_amount",
+        "operator": "eq",
+        "right": {
+          "const": 100000000000000000000
+        }
+      }
+    },
+    {
+      "source_id": "p_fok_buy_100_5",
+      "predicate": {
+        "kind": "comparison",
+        "left": "fok_buy_amount",
+        "operator": "eq",
+        "right": {
+          "const": 100500000000000000000
+        }
+      }
+    }
+  ],
+  "pattern": {
+    "kind": "condition_forbids_effect",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "comparison",
+          "left": "amount_remaining_after_matching",
+          "operator": "lt",
+          "right": {
+            "symbol": "lot_size_in_base"
+          }
+        },
+        {
+          "kind": "comparison",
+          "left": "amount_remaining_after_matching",
+          "operator": "gt",
+          "right": {
+            "const": 0
+          }
+        }
+      ]
+    },
+    "effect": {
+      "kind": "truth",
+      "symbol": "transaction_reverted",
+      "value": true
+    }
+  },
+  "assumptions": [
+    "A remaining portion smaller than one lotSizeInBase is fundamentally untradeable and therefore no longer part of the fillable tradeable amount."
+  ],
+  "unresolved": [
+    {
+      "category": "missing_report_definition",
+      "description": "Report does not define the exact predicate that distinguishes an unfilled tradeable remainder from an untradeable dust remainder; the plan uses amount_remaining_after_matching < lotSizeInBase as the report-grounded dust condition from root-cause and intent wording.",
+      "source_ids": [
+        "rc_dust_indistinguishable",
+        "si_fok_only_fail_unfillable",
+        "i_revert_not_filled"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Only the direct revert impact i_revert_not_filled is formalized; i_fok_unreliable is deferred as a downstream reliability consequence of the same defect.",
+    "The report does not state whether the scenario transaction was executed on-chain; no runtime binding or concrete execution is claimed.",
+    "No transaction reverting result is claimed as a valid operation; this plan only formalizes that a sub-lotSizeInBase dust remainder must not by itself cause the revert."
+  ]
+}

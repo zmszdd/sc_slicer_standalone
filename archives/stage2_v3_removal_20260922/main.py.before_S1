@@ -1,0 +1,381 @@
+#!/usr/bin/env python3
+"""SC_Slicer 阶段二唯一命令行入口（报告自然语言 → P/I/V 不变量规则化）。
+
+用法
+----
+    python main.py <command> [参数...]          阶段二 / 工程命令（推荐写法）
+    python main.py stage2 <command> [参数...]   同上，显式前缀写法
+
+阶段一（代码切片）不在本入口内，请直接用 `./run.sh`。阶段三尚未实现。
+
+模型
+----
+阶段二全流程默认使用官方 DeepSeek（`--provider deepseek`、模型 `deepseek-flash`）。
+`run` 和 `batch` 会自动注入这两个默认值；显式传入 `--provider` / `--model` 可覆盖
+（测试用的离线传输就是通过这种方式显式指定的）。
+
+设计约束
+--------
+* 本文件只做分发，不实现任何阶段逻辑，也不改写任何脚本行为。
+* 各脚本仍可被直接执行：冻结评测报告、HANDOFF 和 docs/ 中的历史命令必须保持可重放。
+* 不读取、不打印、不写入任何 API Key；doctor 只检查配置文件是否存在。
+* 不创建、不覆盖既有实验产物目录。
+* 命令与脚本的对应关系集中在下面的表里，新增脚本只需改表，不要新增入口文件。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import runpy
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+STAGE2_DIR = ROOT / 'tools' / 'report_constraints_v2'
+STAGE2_ENV = ROOT / 'config' / 'stage2_deepseek.local.env'
+
+# 冻结资产：阶段一和 v1 一旦定稿不得原地改写，否则历史实验无法重放。
+# 原清单在目录迁移中被删除，且没有任何文件引用它；此处恢复并把校验变成
+# 可执行命令（python main.py frozen）。
+# 注意：`.slicer_cache.json` 是可变的运行缓存，不属于冻结资产，故意不纳入。
+FROZEN_MANIFEST = ROOT / 'PROTECTED_HASHES.json'
+FROZEN_SCOPES = (
+    'src/**/*.rs',                           # 阶段一 Rust 源码
+    'run.sh',                                # 阶段一入口
+    'archives/report_constraints_v1_*.zip',  # v1 归档
+)
+
+# 工程命令：不调用模型，不需要 DeepSeek 配置。两种写法等价。
+META_COMMANDS = (
+    ('test', '运行阶段二本地回归（可追加 unittest 参数）'),
+    ('versions', '列出已冻结的 Prompt 版本与功能开关'),
+    ('doctor', '环境与配置自检（只检查私密配置是否存在，不读取内容）'),
+    ('status', '阶段二当前进度摘要与权威文档位置'),
+    ('frozen', '校验冻结资产哈希清单（--write 可重新生成）'),
+)
+
+# 阶段二命令：command -> (脚本, 一句话说明)。脚本保持原样，入口只负责分发。
+STAGE2_COMMANDS = {
+    'run': ('semantic_pipeline.py',
+            '单案例端到端：输入筛选 → 两步模型 → 确定性规则化 → Z3 → 产物'),
+    'batch': ('run_semantic_batch.py',
+              '批量运行多个真实报告：--reports-root 自动发现，--resume 续跑'),
+    'verify': ('verify_semantic.py',
+               '零模型调用重放候选，校验证据/公式/SMT/接口哈希'),
+    'screen': ('preview.py',
+               '本地检查案例目录与输入文件是否齐备（不是语义筛选门）'),
+    'preview-report': ('preview.py',
+                       '预览第一步将发送给模型的报告文本'),
+    'preview-plan': ('preview.py',
+                     '预览第二步将发送给模型的结构化输入'),
+    'preview-prompt': ('preview.py',
+                       '查看集中式 P/I/V 定义或最终实际 Prompt（不调用模型）'),
+    'audit-preconditions': ('preconditions.py',
+                            '可选：P 证据支持与前提/动作/结果时序审查'),
+    'repair-preconditions': ('preconditions.py',
+                             '受约束的 P 局部修复（只改被标记的 P 项）'),
+    'observability': ('review.py',
+                      '可观察变量审查提示'),
+    'salvage-replay': ('mechanical_salvage.py',
+                       '重放机械修复结果（需显式启用）'),
+}
+
+PRIMARY_STAGE2_COMMANDS = (
+    'run', 'batch', 'verify', 'screen',
+    'preview-report', 'preview-plan', 'preview-prompt',
+)
+ADVANCED_STAGE2_COMMANDS = (
+    'audit-preconditions', 'repair-preconditions', 'observability', 'salvage-replay',
+)
+
+# 阶段二全流程默认走官方 DeepSeek。只在调用者完全没有指定 provider/model 时注入，
+# 因此测试与历史命令显式传入的离线传输不受影响。
+STAGE2_DEEPSEEK_DEFAULTS = {
+    'run': ('--provider', 'deepseek'),
+    'batch': ('--provider', 'deepseek', '--model', 'deepseek-flash'),
+}
+
+# 多个命令可指向同一个脚本，用前导参数区分（见 _dispatch）。
+STAGE2_ARG_PREFIX = {
+    'screen': ('screen',),
+    'preview-report': ('report',),
+    'preview-plan': ('plan',),
+    'preview-prompt': ('prompt',),
+    'audit-preconditions': ('audit',),
+    'repair-preconditions': ('repair',),
+}
+
+# 不是入口、只作为库被调用的模块。列在这里是为了让分工显式可查。
+LIBRARY_MODULES = {
+    'semantic_core.py': 'P/I/V schema、类型、编译与基础校验',
+    'plan_synthesizer.py': '形式计划校验与确定性 P/I/V 公式合成',
+    'symbolic_queries.py': 'SMT/Z3 查询与 witness 校验',
+    'evidence_catalog.py': '原文片段编号、证据 ID 回填',
+    'report_readiness.py': '提取前信息充分性门',
+    'fidelity.py': '数值与零地址保真守卫',
+}
+
+
+def _table(rows, indent='    '):
+    if not rows:
+        return ''
+    width = max(len(name) for name, *_ in rows)
+    return '\n'.join(f'{indent}{name.ljust(width)}  {description}'
+                     for name, description, *_ in rows)
+
+
+def _usage() -> str:
+    primary_rows = [(name, STAGE2_COMMANDS[name][1])
+                    for name in PRIMARY_STAGE2_COMMANDS]
+    advanced_rows = [(name, STAGE2_COMMANDS[name][1])
+                     for name in ADVANCED_STAGE2_COMMANDS]
+    return (
+        'SC_Slicer 唯一入口\n'
+        '\n'
+        '用法:\n'
+        '    python main.py <command> [参数...]        # 阶段二 / 工程命令\n'
+        '    python main.py stage2 <command> [参数...] # 同上，显式前缀写法\n'
+        '\n'
+        '阶段二全流程默认使用 DeepSeek（deepseek-flash）；阶段一请直接用 ./run.sh。\n'
+        '\n'
+        '工程命令（不调用模型）:\n'
+        f'{_table(META_COMMANDS)}\n'
+        '\n'
+        '阶段二日常命令:\n'
+        f'{_table(primary_rows)}\n'
+        '\n'
+        '高级诊断/修复命令（不属于默认流程）:\n'
+        f'{_table(advanced_rows)}\n'
+        '\n'
+        '每个命令的参数原样转发给对应脚本；用 `python main.py <command> --help` 查看该命令自己的选项。\n'
+        '相对路径按你调用 main.py 时的当前目录解析。\n'
+        '阶段二目录: ' + str(STAGE2_DIR) + '\n')
+
+
+def _registry():
+    """Import prompts.registry without leaving the stage-2 directory on sys.path."""
+    stage2 = str(STAGE2_DIR)
+    inserted = stage2 not in sys.path
+    if inserted:
+        sys.path.insert(0, stage2)
+    try:
+        from prompts import registry  # type: ignore[import-not-found]
+    finally:
+        if inserted:
+            sys.path.remove(stage2)
+    return registry
+
+
+def _delegate(script: str, argv):
+    """Run a stage-2 script as __main__, preserving its exit code exactly."""
+    path = STAGE2_DIR / script
+    if not path.is_file():
+        print(f'missing stage-2 script: {path}', file=sys.stderr)
+        return 2
+    previous_argv = sys.argv
+    previous_path = list(sys.path)
+    sys.argv = [str(path)] + list(argv)
+    sys.path.insert(0, str(STAGE2_DIR))
+    try:
+        runpy.run_path(str(path), run_name='__main__')
+    except SystemExit as exc:
+        code = exc.code
+        if code is None:
+            return 0
+        if isinstance(code, int):
+            return code
+        print(str(code), file=sys.stderr)
+        return 1
+    finally:
+        sys.argv = previous_argv
+        sys.path[:] = previous_path
+    return 0
+
+
+def _run_tests(argv):
+    command = [sys.executable, '-m', 'unittest', 'discover',
+               '-s', str(STAGE2_DIR / 'tests'),
+               '-t', str(STAGE2_DIR), '-p', 'test_*.py', '-q']
+    return subprocess.call(command + list(argv), cwd=str(ROOT))
+
+
+def _versions(argv=()):
+    if argv:
+        print('versions takes no arguments', file=sys.stderr)
+        return 2
+    registry = _registry()
+    print(f'默认版本        : {registry.DEFAULT_VERSION}')
+    print(f'推荐稳定版      : {getattr(registry, "RECOMMENDED_VERSION", "(未登记)")}')
+    print(f'实验版本        : {getattr(registry, "EXPERIMENTAL_VERSION", "(未登记)")}')
+    print(f'已冻结版本({len(registry.VERSIONS)}): ' + ', '.join(registry.VERSIONS))
+    print()
+    print('功能开关（版本集合）:')
+    for name in sorted(vars(registry)):
+        value = getattr(registry, name)
+        if name.endswith('_VERSIONS') and isinstance(value, frozenset):
+            members = ', '.join(sorted(value)) if value else '(空)'
+            print(f'  {name} = {members}')
+    return 0
+
+
+def _doctor(argv=()):
+    if argv:
+        print('doctor takes no arguments', file=sys.stderr)
+        return 2
+    checks = []
+
+    def add(name, ok, detail):
+        checks.append((name, bool(ok), detail))
+
+    add('python >= 3.10', sys.version_info[:2] >= (3, 10), sys.version.split()[0])
+    add('阶段二目录存在', STAGE2_DIR.is_dir(), str(STAGE2_DIR))
+    try:
+        import z3  # type: ignore[import-not-found]
+        add('z3 可用', True, z3.get_version_string())
+    except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
+        add('z3 可用', False, type(exc).__name__)
+    for script, _ in STAGE2_COMMANDS.values():
+        if not (STAGE2_DIR / script).is_file():
+            add(f'缺少脚本 {script}', False, '命令表指向不存在的文件')
+    missing = [name for name in LIBRARY_MODULES if not (STAGE2_DIR / name).is_file()]
+    add('库模块齐备', not missing, ', '.join(missing) or 'ok')
+    tests_dir = STAGE2_DIR / 'tests'
+    tests = sorted(tests_dir.glob('test_*.py')) if tests_dir.is_dir() else []
+    add('测试文件存在', bool(tests), f'{len(tests)} 个文件')
+    # 只检查存在性与权限，绝不读取内容。
+    if STAGE2_ENV.is_file():
+        mode = oct(STAGE2_ENV.stat().st_mode & 0o777)
+        add('DeepSeek 私密配置存在', True, f'权限 {mode}（仅检查存在性，未读取内容）')
+    else:
+        add('DeepSeek 私密配置存在', False,
+            f'未找到 {STAGE2_ENV}；真实模型调用需要它（示例见 '
+            'config/stage2_deepseek.local.env.example）')
+
+    for name, ok, detail in checks:
+        print(f'[{"PASS" if ok else "FAIL"}] {name}: {detail}')
+    failed = [name for name, ok, _ in checks if not ok]
+    if failed:
+        print(f'\n{len(failed)} 项未通过: ' + ', '.join(failed))
+        return 1
+    print('\n全部检查通过。')
+    return 0
+
+
+def _status(argv=()):
+    if argv:
+        print('status takes no arguments', file=sys.stderr)
+        return 2
+    registry = _registry()
+    print(f'阶段二   : {STAGE2_DIR}')
+    print(f'           推荐稳定版 {getattr(registry, "RECOMMENDED_VERSION", "(未登记)")}，'
+          f'实验版本 {getattr(registry, "EXPERIMENTAL_VERSION", "(未登记)")}')
+    print('阶段一   : 不在本入口内，请直接用 ./run.sh')
+    print('阶段三   : 尚未实现，consistency_verdict 恒为 not_evaluated')
+    print()
+    print('权威状态文档（本命令不复制其内容，避免文档漂移）:')
+    print('  HANDOFF.md')
+    print('  tools/report_constraints_v2/README.md')
+    print('  tools/report_constraints_v2/docs/STAGE2_CURRENT_STATUS.md')
+    print('  tools/report_constraints_v2/STRUCTURE.md')
+    return 0
+
+
+def _frozen_paths():
+    paths = set()
+    for scope in FROZEN_SCOPES:
+        for candidate in ROOT.glob(scope):
+            if not candidate.is_file() or '__pycache__' in candidate.parts:
+                continue
+            paths.add(candidate.relative_to(ROOT).as_posix())
+    return sorted(paths)
+
+
+def _frozen(argv=()):
+    write = False
+    for argument in argv:
+        if argument == '--write':
+            write = True
+        else:
+            print(f'frozen: unknown argument {argument}', file=sys.stderr)
+            return 2
+    current = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+               for name in _frozen_paths()}
+    if write:
+        FROZEN_MANIFEST.write_text(
+            json.dumps(current, indent=2, sort_keys=True) + '\n',
+            encoding='utf-8')
+        print(f'wrote {FROZEN_MANIFEST} ({len(current)} files)')
+        return 0
+    if not FROZEN_MANIFEST.is_file():
+        print(f'missing manifest {FROZEN_MANIFEST}: run python main.py frozen --write',
+              file=sys.stderr)
+        return 1
+    recorded = json.loads(FROZEN_MANIFEST.read_text(encoding='utf-8'))
+    changed = sorted(p for p in set(recorded) & set(current) if recorded[p] != current[p])
+    missing = sorted(set(recorded) - set(current))
+    added = sorted(set(current) - set(recorded))
+    for path in changed:
+        print(f'[CHANGED] {path}')
+    for path in missing:
+        print(f'[MISSING] {path}')
+    for path in added:
+        print(f'[NEW]     {path}')
+    if changed or missing or added:
+        print(f'\n冻结资产清单共 {len(recorded)} 项：'
+              f'{len(changed)} 改动 / {len(missing)} 缺失 / {len(added)} 新增。')
+        print('冻结资产不得原地改写；确认是预期变更后再运行: python main.py frozen --write')
+        return 1
+    print(f'全部 {len(current)} 项冻结资产与 {FROZEN_MANIFEST.name} 一致。')
+    return 0
+
+
+META_HANDLERS = {
+    'test': _run_tests,
+    'versions': _versions,
+    'doctor': _doctor,
+    'status': _status,
+    'frozen': _frozen,
+}
+
+
+def _with_deepseek_defaults(command, argv):
+    """Prepend the DeepSeek defaults unless the caller set provider/model itself."""
+    defaults = STAGE2_DEEPSEEK_DEFAULTS.get(command)
+    if not defaults:
+        return list(argv)
+    if set(defaults[::2]) & set(argv):
+        return list(argv)
+    return [*defaults, *argv]
+
+
+def _dispatch(argv, prefix=''):
+    """Resolve and run one command; ``prefix`` is only for error messages."""
+    if not argv:
+        print(_usage())
+        return 0
+    command, rest = argv[0], argv[1:]
+    if command in ('-h', '--help', 'help'):
+        print(_usage())
+        return 0
+    if command in META_HANDLERS:
+        return META_HANDLERS[command](rest)
+    if command in STAGE2_COMMANDS:
+        prefix_args = STAGE2_ARG_PREFIX.get(command, ())
+        return _delegate(STAGE2_COMMANDS[command][0],
+                         [*prefix_args, *_with_deepseek_defaults(command, rest)])
+    print(f'unknown {prefix}command: {command}', file=sys.stderr)
+    print(_usage(), file=sys.stderr)
+    return 2
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == 'stage2':
+        return _dispatch(argv[1:], prefix='stage2 ')
+    return _dispatch(argv)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

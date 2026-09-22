@@ -1,0 +1,194 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "CLOB limit order matching in _processLimitBidOrder and _processLimitAskOrder",
+    "environment": "GTE CLOB smart contract (Solidity, contracts/clob/CLOB.sol)",
+    "evidence": [
+      "[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`.",
+      "Inside `CLOB.sol`, both `_processLimitBidOrder()` (line 503) and `_processLimitAskOrder()` (line 544) contain:",
+      "3. `1 != 2` is true, `1 & 2 == 0` is also true ⇒ `ZeroCostTrade()` reverts, aborting the otherwise valid match.",
+      "Because base amounts are denominated in base tokens and quote amounts in quote tokens, equality is virtually impossible, so every trade relies on the bit-wise clause. Random bit patterns therefore decide whether normal trades succeed or fail, enabling denial-of-service on any pair of amounts with disjoint bits."
+    ]
+  },
+  "entities": [
+    {
+      "id": "clob_contract",
+      "name": "CLOB.sol limit order processing contract",
+      "role": "contract",
+      "evidence": [
+        "[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`.",
+        "Inside `CLOB.sol`, both `_processLimitBidOrder()` (line 503) and `_processLimitAskOrder()` (line 544) contain:"
+      ]
+    },
+    {
+      "id": "maker",
+      "name": "Maker placing an ASK limit order",
+      "role": "victim",
+      "evidence": [
+        "1. Maker places a sell (ASK) limit order."
+      ]
+    },
+    {
+      "id": "taker",
+      "name": "Taker submitting a matching BID",
+      "role": "attacker",
+      "evidence": [
+        "2. Taker submits a matching buy (BID) with `amountInBase = 1` and `quoteAmount = 2`.",
+        "High – attacker can systematically revert genuine matches, effectively freezing order execution and denying service."
+      ]
+    },
+    {
+      "id": "zero_cost_trade_error",
+      "name": "ZeroCostTrade revert",
+      "role": "other",
+      "evidence": [
+        "[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`.",
+        "3. `1 != 2` is true, `1 & 2 == 0` is also true ⇒ `ZeroCostTrade()` reverts, aborting the otherwise valid match."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "maker_places_ask",
+      "kind": "precondition",
+      "text": "A maker places a sell (ASK) limit order.",
+      "modality": "potential",
+      "entity_ids": [
+        "maker"
+      ],
+      "evidence": [
+        "1. Maker places a sell (ASK) limit order."
+      ]
+    },
+    {
+      "id": "taker_submits_bid",
+      "kind": "precondition",
+      "text": "A taker submits a matching buy (BID) with amountInBase = 1 and quoteAmount = 2.",
+      "modality": "potential",
+      "entity_ids": [
+        "taker"
+      ],
+      "evidence": [
+        "2. Taker submits a matching buy (BID) with `amountInBase = 1` and `quoteAmount = 2`."
+      ]
+    },
+    {
+      "id": "amounts_nonzero_disjoint",
+      "kind": "precondition",
+      "text": "The two trade amounts are non-zero integers that share no common set bits (e.g., 1 and 2).",
+      "modality": "potential",
+      "entity_ids": [
+        "maker",
+        "taker"
+      ],
+      "evidence": [
+        "Instead, `baseTokenAmountReceived & quoteTokenAmountSent` performs a bit-level comparison. Two **non-zero** integers that share no common set bits (e.g., `1` and `2`) pass this test, so the compound condition becomes true whenever the amounts differ and have no overlapping bits. In practice:"
+      ]
+    },
+    {
+      "id": "amounts_differ",
+      "kind": "precondition",
+      "text": "The base and quote amounts are unequal (1 != 2).",
+      "modality": "potential",
+      "entity_ids": [
+        "maker",
+        "taker"
+      ],
+      "evidence": [
+        "3. `1 != 2` is true, `1 & 2 == 0` is also true ⇒ `ZeroCostTrade()` reverts, aborting the otherwise valid match."
+      ]
+    },
+    {
+      "id": "process_orders_execute",
+      "kind": "action",
+      "text": "_processLimitBidOrder() and _processLimitAskOrder() process the matching order and evaluate the zero-amount check.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract"
+      ],
+      "evidence": [
+        "[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`.",
+        "Inside `CLOB.sol`, both `_processLimitBidOrder()` (line 503) and `_processLimitAskOrder()` (line 544) contain:"
+      ]
+    },
+    {
+      "id": "bitwise_and_clause",
+      "kind": "root_cause",
+      "text": "The zero-amount detection uses a bit-wise AND (baseTokenAmountReceived & quoteTokenAmountSent) instead of a logical check, so the compound condition is true whenever the amounts differ and have no overlapping bits.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract"
+      ],
+      "evidence": [
+        "[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`.",
+        "Instead, `baseTokenAmountReceived & quoteTokenAmountSent` performs a bit-level comparison. Two **non-zero** integers that share no common set bits (e.g., `1` and `2`) pass this test, so the compound condition becomes true whenever the amounts differ and have no overlapping bits. In practice:"
+      ]
+    },
+    {
+      "id": "zero_cost_revert",
+      "kind": "impact",
+      "text": "The otherwise valid match reverts with ZeroCostTrade.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract",
+        "zero_cost_trade_error",
+        "maker",
+        "taker"
+      ],
+      "evidence": [
+        "3. `1 != 2` is true, `1 & 2 == 0` is also true ⇒ `ZeroCostTrade()` reverts, aborting the otherwise valid match."
+      ]
+    },
+    {
+      "id": "legit_trades_revert",
+      "kind": "impact",
+      "text": "Legitimate trades revert with ZeroCostTrade.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract",
+        "zero_cost_trade_error"
+      ],
+      "evidence": [
+        "Valid trades can revert due to incorrect bit-wise check",
+        "[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`."
+      ]
+    },
+    {
+      "id": "no_revert_when_nonzero",
+      "kind": "security_intent",
+      "text": "_processLimitBidOrder() and _processLimitAskOrder() should only revert with ZeroCostTrade when either side of the trade is actually zero, not for non-zero amounts.",
+      "modality": "inferred",
+      "entity_ids": [
+        "clob_contract"
+      ],
+      "evidence": [
+        "[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`.",
+        "The developer’s intention is to throw when either side of the trade is zero."
+      ]
+    },
+    {
+      "id": "amounts_equality_rare",
+      "kind": "assumption",
+      "text": "Because base amounts are denominated in base tokens and quote amounts in quote tokens, equality of the two is virtually impossible, so every trade depends on the bit-wise clause.",
+      "modality": "inferred",
+      "entity_ids": [
+        "clob_contract"
+      ],
+      "evidence": [
+        "Because base amounts are denominated in base tokens and quote amounts in quote tokens, equality is virtually impossible, so every trade relies on the bit-wise clause. Random bit patterns therefore decide whether normal trades succeed or fail, enabling denial-of-service on any pair of amounts with disjoint bits."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "process_orders_execute",
+    "bitwise_and_clause",
+    "zero_cost_revert"
+  ],
+  "ambiguities": [
+    "Report does not establish that the taker is unauthorized or that anyone can call the order-processing function; no permission or caller constraint is stated.",
+    "Report does not confirm the 1/2 amounts scenario was observed on-chain; it is presented as an example ('In practice').",
+    "Report does not specify whether order book state is consistent before the call (e.g., prior partial fills or existing matched liquidity).",
+    "Report does not state whether the revert is the only outcome or whether retries with different amounts succeed.",
+    "Report's DoS claim ('attacker can systematically revert genuine matches') is asserted in the Impact section without a demonstrated repeatable attack transaction."
+  ]
+}

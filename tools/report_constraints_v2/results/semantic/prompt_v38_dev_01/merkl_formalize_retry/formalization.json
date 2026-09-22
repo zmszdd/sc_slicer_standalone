@@ -1,0 +1,203 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "duration_seconds": {
+      "sort": "int",
+      "unit": "seconds",
+      "meaning": "Campaign duration supplied by the creator, in seconds.",
+      "checkpoint": "createCampaign duration parameter at campaign creation",
+      "entity_ids": [
+        "campaign_creator",
+        "campaign"
+      ],
+      "evidence": "- Partial Epochs: If a creator sets a duration of 5400 seconds (1.5 hours), the campaign covers one full epoch and one half-epoch."
+    },
+    "epoch_duration_seconds": {
+      "sort": "int",
+      "unit": "seconds",
+      "meaning": "Merkl protocol epoch duration (EPOCH_DURATION), one hour equal to 3600 seconds.",
+      "checkpoint": "reward calculation epoch boundary",
+      "entity_ids": [
+        "distribution_creator_contract",
+        "campaign"
+      ],
+      "evidence": "- Data Consistency & Reward Calculation Errors: The Merkl protocol relies on discrete 1-hour epochs (EPOCH_DURATION) for reward calculation and distribution."
+    },
+    "campaign_covers_partial_epoch": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The created campaign's duration covers a partial (non-whole) epoch.",
+      "checkpoint": "campaign duration coverage after creation",
+      "entity_ids": [
+        "campaign"
+      ],
+      "evidence": "- Partial Epochs: If a creator sets a duration of 5400 seconds (1.5 hours), the campaign covers one full epoch and one half-epoch."
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "campaign creation with duration validation and epoch-based reward distribution",
+      "modality": "asserted",
+      "impact_ids": [
+        "i_partial_epoch_campaign"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "A creator supplies a campaign duration of 5400 seconds (1.5 hours), which is not a multiple of EPOCH_DURATION.",
+          "expression": {
+            "op": "ne",
+            "args": [
+              {
+                "op": "mod",
+                "args": [
+                  {
+                    "var": "duration_seconds"
+                  },
+                  {
+                    "const": 3600
+                  }
+                ]
+              },
+              {
+                "const": 0
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_creator_nonnultiple_duration"
+          ],
+          "evidence": [
+            "- Partial Epochs: If a creator sets a duration of 5400 seconds (1.5 hours), the campaign covers one full epoch and one half-epoch."
+          ]
+        },
+        "safety": {
+          "text": "Campaign creation should enforce at its checkpoint that the supplied duration is a multiple of EPOCH_DURATION, as explicitly required by the CampaignParameter documentation.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "ne",
+                "args": [
+                  {
+                    "op": "mod",
+                    "args": [
+                      {
+                        "var": "duration_seconds"
+                      },
+                      {
+                        "const": 3600
+                      }
+                    ]
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "campaign_covers_partial_epoch"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_enforce_duration_multiple"
+          ],
+          "evidence": [
+            "The `CampaignParameter` struct documentation in `CampaignParameters.sol` explicitly states strict requirements for the duration parameter:",
+            "However, the `DistributionCreator.sol` contract (specifically `_createCampaign` and `overrideCampaign`) only enforces the minimum duration, but fails to enforce the \"multiple of EPOCH_DURATION\" requirement."
+          ]
+        },
+        "effects": {
+          "text": "The resulting campaign covers one full epoch and one half-epoch (a partial epoch).",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "ne",
+                "args": [
+                  {
+                    "op": "mod",
+                    "args": [
+                      {
+                        "var": "duration_seconds"
+                      },
+                      {
+                        "const": 3600
+                      }
+                    ]
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "var": "campaign_covers_partial_epoch"
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_partial_epoch_campaign"
+          ],
+          "evidence": [
+            "- Partial Epochs: If a creator sets a duration of 5400 seconds (1.5 hours), the campaign covers one full epoch and one half-epoch."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_creator_nonnultiple_duration"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_enforce_duration_multiple"
+          ],
+          "args.0": [
+            "si_enforce_duration_multiple"
+          ],
+          "args.1": [
+            "si_enforce_duration_multiple"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_partial_epoch_campaign"
+          ],
+          "args.0": [
+            "i_partial_epoch_campaign"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_partial_epoch_campaign",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "EPOCH_DURATION is 3600 seconds (1 hour); Merkl relies on discrete 1-hour epochs for reward calculation (p_epoch_model).",
+        "The off-chain indexing engine strictly expects aligned epochs (as_offchain_expected_alignment).",
+        "The creator can invoke createCampaign/_createCampaign with the supplied duration (a_invoke_create_campaign)."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Secondary impact i_offchain_reject_or_drop (off-chain rejection locking user funds or dropping the final partial epoch) is conditional ('may') and is deferred, not formalized.",
+    "Root cause rc_missing_multiple_check is context for the intent and is not used as a P term.",
+    "Only the report-stated 3600-second epoch divisor is used; no concrete model values are assumed for the symbolic integers.",
+    "Deferred report impact: i_offchain_reject_or_drop"
+  ]
+}

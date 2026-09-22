@@ -1,0 +1,158 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "current_chain_id": {
+      "sort": "int",
+      "unit": "chain_id",
+      "meaning": "current block.chainid of the executing (forked) chain",
+      "checkpoint": "current execution",
+      "evidence_ids": ["e_024cff5522e5_0004"],
+      "entity_ids": ["chain"]
+    },
+    "cached_chain_id": {
+      "sort": "int",
+      "unit": "chain_id",
+      "meaning": "chain ID embedded in the EIP-712 DOMAIN_SEPARATOR stored immutably at deployment",
+      "checkpoint": "deployment / stored state",
+      "evidence_ids": ["e_024cff5522e5_0002", "e_024cff5522e5_0003"],
+      "entity_ids": ["domain_separator"]
+    },
+    "validated_chain_id": {
+      "sort": "int",
+      "unit": "chain_id",
+      "meaning": "chain ID in the domain separator the contract uses during signature verification",
+      "checkpoint": "verification",
+      "evidence_ids": ["e_024cff5522e5_0004"],
+      "entity_ids": ["trails_intent_entrypoint", "domain_separator"]
+    },
+    "signature_from_current_chain": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the off-chain intent signature was generated for the current (new) chain",
+      "checkpoint": "input",
+      "evidence_ids": ["e_024cff5522e5_0005", "e_024cff5522e5_0006"],
+      "entity_ids": ["off_chain_signer"]
+    },
+    "signature_valid": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "EIP-712 signature verification succeeds in the contract",
+      "checkpoint": "post-verification",
+      "evidence_ids": ["e_024cff5522e5_0005", "e_024cff5522e5_0006"],
+      "entity_ids": ["trails_intent_entrypoint", "domain_separator"]
+    },
+    "intent_flow_enabled": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "signature-based flows depositToIntent / depositToIntentWithPermit can proceed",
+      "checkpoint": "post-verification flow outcome",
+      "evidence_ids": ["e_024cff5522e5_0005", "e_024cff5522e5_0006"],
+      "entity_ids": ["trails_intent_entrypoint"]
+    }
+  },
+  "claims": [
+    {
+      "id": "stale_domain_separator_after_fork",
+      "scope": "core",
+      "modality": "potential",
+      "impact_ids": ["signatures_invalid_on_new_chain", "flows_dos"],
+      "properties": {
+        "preconditions": {
+          "text": "The DOMAIN_SEPARATOR is built once at deployment from the then-current block.chainid and stored immutably, and after a fork the live chain ID differs from the cached one (current_chain_id != cached_chain_id).",
+          "expression": {
+            "op": "ne",
+            "args": [
+              {"var": "current_chain_id"},
+              {"var": "cached_chain_id"}
+            ]
+          },
+          "evidence_ids": ["e_024cff5522e5_0002", "e_024cff5522e5_0003", "e_024cff5522e5_0004"],
+          "derivation": "separator_computed_with_chainid fixes cached_chain_id at the deployment chain ID; chain_id_changed makes the live chain ID differ from it after the fork.",
+          "source_ids": ["separator_computed_with_chainid", "chain_id_changed"]
+        },
+        "safety": {
+          "text": "After a fork or chain ID change, the contract should validate against the current chain ID and accept an intent signature generated on the new chain.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {"var": "signature_from_current_chain"},
+              {
+                "op": "and",
+                "args": [
+                  {"op": "eq", "args": [{"var": "validated_chain_id"}, {"var": "current_chain_id"}]},
+                  {"var": "signature_valid"}
+                ]
+              }
+            ]
+          },
+          "evidence_ids": ["e_024cff5522e5_0004"],
+          "derivation": "validate_against_current_chainid requires validation against the current chain ID so new-chain signatures are accepted.",
+          "source_ids": ["validate_against_current_chainid"]
+        },
+        "effects": {
+          "text": "A signature generated on the new chain fails verification (signature_valid = false) and the signature-based flows depositToIntent / depositToIntentWithPermit cannot proceed (intent_flow_enabled = false).",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {"var": "signature_from_current_chain"},
+                  {"op": "not", "args": [{"var": "signature_valid"}]}
+                ]
+              },
+              {"op": "not", "args": [{"var": "intent_flow_enabled"}]}
+            ]
+          },
+          "evidence_ids": ["e_024cff5522e5_0005", "e_024cff5522e5_0006"],
+          "derivation": "signatures_invalid_on_new_chain: new-chain signature does not match the cached separator; flows_dos: signature-based flows are broken, denying intent verification.",
+          "source_ids": ["signatures_invalid_on_new_chain", "flows_dos"]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": ["separator_computed_with_chainid", "chain_id_changed"]
+        },
+        "safety": {
+          "": ["validate_against_current_chainid"],
+          "args.1": ["validate_against_current_chainid"],
+          "args.1.args.0": ["validate_against_current_chainid"]
+        },
+        "effects": {
+          "": ["signatures_invalid_on_new_chain", "flows_dos"],
+          "args.0": ["signatures_invalid_on_new_chain"],
+          "args.0.args.1": ["signatures_invalid_on_new_chain"],
+          "args.1": ["flows_dos"]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "signatures_invalid_on_new_chain",
+          "status": "partial",
+          "reason": "models one new-chain signature failing verification; the aggregate 'all off-chain signatures' is not expressible without quantifiers."
+        },
+        {
+          "statement_id": "flows_dos",
+          "status": "partial",
+          "reason": "models the flows as disabled; the asserted permanence of the denial-of-service is temporal and not expressible."
+        }
+      ],
+      "assumptions": [
+        "The contract verifies intent signatures against its stored DOMAIN_SEPARATOR and does not recompute it after deployment.",
+        "The fork / chain ID change occurs after deployment and the contract is not redeployed.",
+        "Off-chain signers build the EIP-712 domain using the chain ID of the chain they intend to transact on."
+      ],
+      "unresolved": [
+        "No attacker or trigger for the fork / chain ID change is identified; the scenario is hypothetical.",
+        "Report does not state whether signatures generated before the fork remain valid on the new chain.",
+        "No update or recovery mechanism for the cached DOMAIN_SEPARATOR is mentioned."
+      ]
+    }
+  ],
+  "limitations": [
+    "Aggregate claim 'all off-chain signatures become invalid' is not formalized (no quantifiers); only a single new-chain signature is modeled.",
+    "Permanence of the DoS is asserted only for the forked chain; persistent and temporal claims are out of scope.",
+    "Population-wide and economic impacts of broken intent flows are not formalized.",
+    "The causal mechanism linking the cached separator to the verification result (root_cause / action statements) is not a permitted P source, so preconditions assert only the chain-ID mismatch."
+  ]
+}

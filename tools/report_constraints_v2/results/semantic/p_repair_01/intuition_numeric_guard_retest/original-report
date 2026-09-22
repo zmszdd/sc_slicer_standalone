@@ -1,0 +1,108 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Intuition_2VUsxVJwReb",
+    "audit_uid": "2VUsxVJwReb",
+    "requested_submission_uid": "xkugQQdQXGR",
+    "requested_finding_uid": "vtU4cDUiiDR",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Intuition_2VUsxVJwReb/20260618_132553/findings.json",
+    "source_submission_uid": "xkugQQdQXGR",
+    "source_finding_uid": "vtU4cDUiiDR",
+    "original_report_path": "Intuition_2VUsxVJwReb\\low_valid_xkugQQdQXGR.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "xkugQQdQXGR",
+  "finding_uid": "vtU4cDUiiDR",
+  "finding_number": "18",
+  "title": "OffsetProgressiveCurve Panics at Full Withdrawal When offset18 < 1e9",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "kmkm",
+  "body": "## Finding description and impact\n\n##Description\n\nIn OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9.\n\n\n\nWhen initialize stores the OFFSET18 parameter, it calculates the raw parameter OFFSET = PCMath.divDown(OFFSET18, 1e18). If OFFSET18 is less than 1e18, OFFSET strictly evaluates to 0. During deposit and withdrawal calculations, this truncated OFFSET influences internal rounding mechanics differently than ProgressiveCurve.\n\n\n\nWhen a user attempts a full withdrawal:\n\nThe conversion rounds up the cost: inner = PCMath.mulDivUp(assets, SLOPE, 1e18) + PCMath.square(OFFSET). The offset squares to 0.\n\n\nThe comparison squaredShares = PCMath.square(totalShares + OFFSET) also strictly drops the OFFSET modifier.\n\n\nThis mathematical construction mirrors ProgressiveCurve, retaining the strict inequality squaredShares < inner.\n\n\nTherefore, subtracting shares = squaredShares - inner produces a deterministic PANIC(0x11) arithmetic underflow.\n\n\n\n\n\n##Impact\n\nAny OffsetProgressiveCurve instantiated with offset18 < 1e9 collapses in mathematically equivalent conditions to ProgressiveCurve. Users will be permanently blocked from fully closing their positions, causing trapped funds whenever liquidating assets.\n\n\n\n\n\n\n\n\n\n\n## Recommended mitigation steps\n\nRequire offset18 >= 1e9 inside the initialize function to prevent truncation degenerating the curve.\nDirectly handle edge-cases within previewWithdraw where the shares reduction algorithm triggers a negative overflow.",
+  "proof_of_concept": "// SPDX-License-Identifier: MIT\npragma solidity 0.8.29;\n\nimport { Test, console2 } from \"forge-std/src/Test.sol\";\nimport { OffsetProgressiveCurve } from \"src/protocol/curves/OffsetProgressiveCurve.sol\";\nimport { TransparentUpgradeableProxy } from \"@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol\";\nimport { ProgressiveCurveMathLib as PCMath } from \"src/libraries/ProgressiveCurveMathLib.sol\";\nimport { UD60x18, wrap, unwrap, add, sub } from \"@prb/math/src/UD60x18.sol\";\n\ncontract PoC is Test {\n    OffsetProgressiveCurve curve;\n\n    function setUp() public {\n        OffsetProgressiveCurve impl = new OffsetProgressiveCurve();\n        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(\n            address(impl),\n            address(this),\n            abi.encodeWithSelector(impl.initialize.selector, \"OPC-02 Test\", 2e18, 1e6)\n        );\n        curve = OffsetProgressiveCurve(address(proxy));\n    }\n\n    function test_fullWithdrawalReverts() public {\n\n        uint256 depositAmount = 5e18; \n        uint256 totalSharesBefore = 0;\n        uint256 totalAssetsBefore = 0;\n        \n        uint256 sharesOut = curve.previewDeposit(\n            depositAmount,\n            totalAssetsBefore, totalSharesBefore\n        );\n        \n        // Manual simulation of OffsetProgressiveCurve.sol previewWithdraw logic\n        UD60x18 s = add(wrap(sharesOut), curve.OFFSET());\n        UD60x18 HALF_SLOPE = curve.HALF_SLOPE();\n        \n        UD60x18 sSquared = PCMath.square(s);\n        UD60x18 deduct = PCMath.divUp(wrap(depositAmount), HALF_SLOPE);\n        \n        if (unwrap(sSquared) < unwrap(deduct)) {\n            // Revert expected because square(totalShares + OFFSET) < deduct\n        }\n        \n        vm.expectRevert(); \n        curve.previewWithdraw(\n            depositAmount,  \n            depositAmount,  \n            sharesOut       \n        );\n    }\n}",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/OffsetProgressiveCurve.sol#L68"
+  ],
+  "source_record": {
+    "project_id": "2VUsxVJwReb",
+    "submission_index": "362",
+    "api_submission_id": "",
+    "uid": "xkugQQdQXGR",
+    "number": "362",
+    "title": "OffsetProgressiveCurve Panics at Full Withdrawal When offset18 < 1e9",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "",
+    "handle": "kmkm",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/OffsetProgressiveCurve.sol#L68"
+    ],
+    "body": "## Finding description and impact\n\n##Description\n\nIn OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9.\n\n\n\nWhen initialize stores the OFFSET18 parameter, it calculates the raw parameter OFFSET = PCMath.divDown(OFFSET18, 1e18). If OFFSET18 is less than 1e18, OFFSET strictly evaluates to 0. During deposit and withdrawal calculations, this truncated OFFSET influences internal rounding mechanics differently than ProgressiveCurve.\n\n\n\nWhen a user attempts a full withdrawal:\n\nThe conversion rounds up the cost: inner = PCMath.mulDivUp(assets, SLOPE, 1e18) + PCMath.square(OFFSET). The offset squares to 0.\n\n\nThe comparison squaredShares = PCMath.square(totalShares + OFFSET) also strictly drops the OFFSET modifier.\n\n\nThis mathematical construction mirrors ProgressiveCurve, retaining the strict inequality squaredShares < inner.\n\n\nTherefore, subtracting shares = squaredShares - inner produces a deterministic PANIC(0x11) arithmetic underflow.\n\n\n\n\n\n##Impact\n\nAny OffsetProgressiveCurve instantiated with offset18 < 1e9 collapses in mathematically equivalent conditions to ProgressiveCurve. Users will be permanently blocked from fully closing their positions, causing trapped funds whenever liquidating assets.\n\n\n\n\n\n\n\n\n\n\n## Recommended mitigation steps\n\nRequire offset18 >= 1e9 inside the initialize function to prevent truncation degenerating the curve.\nDirectly handle edge-cases within previewWithdraw where the shares reduction algorithm triggers a negative overflow.",
+    "proof_of_concept": "// SPDX-License-Identifier: MIT\npragma solidity 0.8.29;\n\nimport { Test, console2 } from \"forge-std/src/Test.sol\";\nimport { OffsetProgressiveCurve } from \"src/protocol/curves/OffsetProgressiveCurve.sol\";\nimport { TransparentUpgradeableProxy } from \"@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol\";\nimport { ProgressiveCurveMathLib as PCMath } from \"src/libraries/ProgressiveCurveMathLib.sol\";\nimport { UD60x18, wrap, unwrap, add, sub } from \"@prb/math/src/UD60x18.sol\";\n\ncontract PoC is Test {\n    OffsetProgressiveCurve curve;\n\n    function setUp() public {\n        OffsetProgressiveCurve impl = new OffsetProgressiveCurve();\n        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(\n            address(impl),\n            address(this),\n            abi.encodeWithSelector(impl.initialize.selector, \"OPC-02 Test\", 2e18, 1e6)\n        );\n        curve = OffsetProgressiveCurve(address(proxy));\n    }\n\n    function test_fullWithdrawalReverts() public {\n\n        uint256 depositAmount = 5e18; \n        uint256 totalSharesBefore = 0;\n        uint256 totalAssetsBefore = 0;\n        \n        uint256 sharesOut = curve.previewDeposit(\n            depositAmount,\n            totalAssetsBefore, totalSharesBefore\n        );\n        \n        // Manual simulation of OffsetProgressiveCurve.sol previewWithdraw logic\n        UD60x18 s = add(wrap(sharesOut), curve.OFFSET());\n        UD60x18 HALF_SLOPE = curve.HALF_SLOPE();\n        \n        UD60x18 sSquared = PCMath.square(s);\n        UD60x18 deduct = PCMath.divUp(wrap(depositAmount), HALF_SLOPE);\n        \n        if (unwrap(sSquared) < unwrap(deduct)) {\n            // Revert expected because square(totalShares + OFFSET) < deduct\n        }\n        \n        vm.expectRevert(); \n        curve.previewWithdraw(\n            depositAmount,  \n            depositAmount,  \n            sharesOut       \n        );\n    }\n}",
+    "detail_url": "https://code4rena.com/api/v1/audits/2VUsxVJwReb/submissions/362",
+    "raw": {
+      "auditUid": "2VUsxVJwReb",
+      "createdAt": "2026-03-07T10:42:51.140Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "4vhwpZJ68HS",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-21T21:25:00.382Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "vtU4cDUiiDR"
+        },
+        {
+          "uid": "aauKqCsFTNp",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-21T21:25:01.372Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "vtU4cDUiiDR"
+        }
+      ],
+      "finding": {
+        "uid": "vtU4cDUiiDR",
+        "number": 18,
+        "duplicates": 40
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2026-04-28T14:24:44.015Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "OffsetProgressiveCurve Panics at Full Withdrawal When offset18 < 1e9",
+      "uid": "xkugQQdQXGR",
+      "updatedAt": "2026-03-07T10:42:51.140Z",
+      "user": {
+        "uid": "owm76kLZoqc",
+        "handle": "kmkm"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\n##Description\n\nIn OffsetProgressiveCurve.sol, an arithmetic underflow ensures users cannot withdraw their full deposit if the curve was initialized with an offset18 parameter smaller than 1e9.\n\n\n\nWhen initialize stores the OFFSET18 parameter, it calculates the raw parameter OFFSET = PCMath.divDown(OFFSET18, 1e18). If OFFSET18 is less than 1e18, OFFSET strictly evaluates to 0. During deposit and withdrawal calculations, this truncated OFFSET influences internal rounding mechanics differently than ProgressiveCurve.\n\n\n\nWhen a user attempts a full withdrawal:\n\nThe conversion rounds up the cost: inner = PCMath.mulDivUp(assets, SLOPE, 1e18) + PCMath.square(OFFSET). The offset squares to 0.\n\n\nThe comparison squaredShares = PCMath.square(totalShares + OFFSET) also strictly drops the OFFSET modifier.\n\n\nThis mathematical construction mirrors ProgressiveCurve, retaining the strict inequality squaredShares < inner.\n\n\nTherefore, subtracting shares = squaredShares - inner produces a deterministic PANIC(0x11) arithmetic underflow.\n\n\n\n\n\n##Impact\n\nAny OffsetProgressiveCurve instantiated with offset18 < 1e9 collapses in mathematically equivalent conditions to ProgressiveCurve. Users will be permanently blocked from fully closing their positions, causing trapped funds whenever liquidating assets.\n\n\n\n\n\n\n\n\n\n\n## Recommended mitigation steps\n\nRequire offset18 >= 1e9 inside the initialize function to prevent truncation degenerating the curve.\nDirectly handle edge-cases within previewWithdraw where the shares reduction algorithm triggers a negative overflow.",
+      "proofOfConcept": "// SPDX-License-Identifier: MIT\npragma solidity 0.8.29;\n\nimport { Test, console2 } from \"forge-std/src/Test.sol\";\nimport { OffsetProgressiveCurve } from \"src/protocol/curves/OffsetProgressiveCurve.sol\";\nimport { TransparentUpgradeableProxy } from \"@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol\";\nimport { ProgressiveCurveMathLib as PCMath } from \"src/libraries/ProgressiveCurveMathLib.sol\";\nimport { UD60x18, wrap, unwrap, add, sub } from \"@prb/math/src/UD60x18.sol\";\n\ncontract PoC is Test {\n    OffsetProgressiveCurve curve;\n\n    function setUp() public {\n        OffsetProgressiveCurve impl = new OffsetProgressiveCurve();\n        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(\n            address(impl),\n            address(this),\n            abi.encodeWithSelector(impl.initialize.selector, \"OPC-02 Test\", 2e18, 1e6)\n        );\n        curve = OffsetProgressiveCurve(address(proxy));\n    }\n\n    function test_fullWithdrawalReverts() public {\n\n        uint256 depositAmount = 5e18; \n        uint256 totalSharesBefore = 0;\n        uint256 totalAssetsBefore = 0;\n        \n        uint256 sharesOut = curve.previewDeposit(\n            depositAmount,\n            totalAssetsBefore, totalSharesBefore\n        );\n        \n        // Manual simulation of OffsetProgressiveCurve.sol previewWithdraw logic\n        UD60x18 s = add(wrap(sharesOut), curve.OFFSET());\n        UD60x18 HALF_SLOPE = curve.HALF_SLOPE();\n        \n        UD60x18 sSquared = PCMath.square(s);\n        UD60x18 deduct = PCMath.divUp(wrap(depositAmount), HALF_SLOPE);\n        \n        if (unwrap(sSquared) < unwrap(deduct)) {\n            // Revert expected because square(totalShares + OFFSET) < deduct\n        }\n        \n        vm.expectRevert(); \n        curve.previewWithdraw(\n            depositAmount,  \n            depositAmount,  \n            sharesOut       \n        );\n    }\n}",
+      "linesOfCode": "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/OffsetProgressiveCurve.sol#L68",
+      "number": 362,
+      "aiExplanation": null,
+      "_index": 362
+    }
+  }
+}

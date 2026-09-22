@@ -1,0 +1,43 @@
+sUSDM.decimals() returns 6 instead of ERC-4626 compliant 12, causing 10^6 overestimation for integrating protocols
+
+### Summary
+
+`sUSDM` is an ERC-4626 vault wrapping USDM (6 decimals). It overrides `_decimalsOffset()` to return 6, which causes OpenZeppelin's `ERC4626Upgradeable` to mint shares in 12-decimal precision (virtual shares = `10^6`). However, `sUSDM` also overrides `decimals()` to return a hardcoded `6` instead of the ERC-4626 standard value of `underlyingDecimals + _decimalsOffset() = 12`.
+
+This creates a mismatch: **the internal share accounting operates at 12-decimal precision, but `decimals()` tells external consumers that shares are 6-decimal**. Any protocol integrating sUSDM (lending markets, DEX aggregators, oracles) that uses `decimals()` to interpret `balanceOf()` values will overestimate holdings by a factor of **10^6 (one million)**.
+
+Note: `decimals()` is not merely a display hint. EIP-4626 inherits EIP-20's requirement that `decimals()` "MUST return the number of decimals the token uses" — i.e., the actual scaling factor needed to convert between raw amounts and human-readable units. OpenZeppelin's ERC-4626 implementation enforces this by computing `decimals() = underlyingDecimals + _decimalsOffset()`, tying the return value directly to the share conversion math. sUSDM's override severs this link.
+
+### Root Cause
+
+In OpenZeppelin's `ERC4626Upgradeable.sol` (line 132-135):
+
+
+The OZ implementation returns `underlyingDecimals + _decimalsOffset()`. With USDM (6 decimals) and `_decimalsOffset() = 6`, this should be **12**.
+
+However, `sUSDM` (line 110-112) overrides this:
+
+
+`_decimalsOffset()` (line 106-108) also returns 6:
+
+
+The offset of 6 is an intentional design choice — it adds `10^6` virtual shares to the conversion formula, providing inflation attack protection. The OZ base uses `_decimalsOffset()` in both `_convertToShares` and `_convertToAssets`, so internal share math produces 12-digit values. The bug is that `decimals()` reports 6 instead of reflecting this 12-digit precision, breaking the invariant that `decimals()` matches the actual scaling of `balanceOf()` values.
+
+### Impact
+
+Any external protocol or system that uses the standard ERC-20 pattern to interpret sUSDM balances:
+
+
+will compute values **10^6 times too large**.
+
+Concrete impact scenarios:
+
+1. **Lending protocols**: A user deposits 100 USDM into sUSDM, receiving ~100e12 raw shares. A lending protocol reads `balanceOf = 100e12` and `decimals() = 6`, computing `100e12 / 1e6 = 100,000,000` tokens as collateral value. The correct value is `100e12 / 1e12 = 100` tokens. The user can borrow **1,000,000x** more than they should.
+
+2. **DEX pricing**: AMMs or aggregators pricing sUSDM will miscalculate token amounts by 10^6, leading to massively incorrect swap rates.
+
+3. **Portfolio trackers / wallets**: Users see 1,000,000x inflated balances.
+
+4. **Oracle feeds**: Any oracle composing sUSDM price from on-chain data using `decimals()` will produce prices off by 10^6.
+
+sUSDM is explicitly designed for DeFi composability — the contract is described as a "wstETH-style appreciation model" ERC-4626 vault, intended to be held, transferred, and used as collateral across the ecosystem. Any integration that follows the ERC-20/ERC-4626 standard to interpret sUSDM balances will be affected. The protocol's own test suite (`test/sUSDMPoc.t.sol`) defines `ONE_SUSDM = 1e12`, confirming that 12-decimal precision is the intended behavior — but `decimals()` contradicts this.

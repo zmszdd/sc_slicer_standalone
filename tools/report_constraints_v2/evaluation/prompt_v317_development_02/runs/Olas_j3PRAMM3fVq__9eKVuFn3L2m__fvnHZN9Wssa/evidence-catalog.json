@@ -1,0 +1,97 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "66cfe83d3c1b2083f36f561a34b9e90bf1373851ef1cdff4f0fca0ee184dd88b",
+  "fragments": [
+    {
+      "id": "e_66cfe83d3c1b_0001",
+      "text": "UniswapPriceOracle.validatePrice() TWAP always equals spot price due to algebraic self-cancellation, rendering all V2 slippage protection non-functional",
+      "start": 0,
+      "end": 152,
+      "line": 1
+    },
+    {
+      "id": "e_66cfe83d3c1b_0002",
+      "text": "## Finding description and impact",
+      "start": 154,
+      "end": 187,
+      "line": 3
+    },
+    {
+      "id": "e_66cfe83d3c1b_0003",
+      "text": "UniswapPriceOracle.validatePrice() is intended to compare the current pool spot price against a Uniswap V2 TWAP to detect pool manipulation. If deviation exceeds a caller-supplied slippage tolerance, it should return false. However, the TWAP calculation contains an algebraic error that causes it to always equal the current spot price, meaning the function unconditionally returns true.",
+      "start": 189,
+      "end": 576,
+      "line": 5
+    },
+    {
+      "id": "e_66cfe83d3c1b_0004",
+      "text": "The function reads cumulativePriceLast (call it C) from the Uniswap V2 pair, then computes:",
+      "start": 578,
+      "end": 669,
+      "line": 7
+    },
+    {
+      "id": "e_66cfe83d3c1b_0005",
+      "text": "https://github.com/valory-xyz/autonolas-tokenomics/blob/bbec5ac12721a62672fb7a5ffba5c40f5a46d8cb/contracts/oracles/UniswapPriceOracle.sol#L77-L82",
+      "start": 672,
+      "end": 817,
+      "line": 10
+    },
+    {
+      "id": "e_66cfe83d3c1b_0006",
+      "text": "The stored cumulative history C cancels out. timeWeightedAverage always equals tradePrice (the spot price), so derivation is always 0, and the function always returns true.",
+      "start": 819,
+      "end": 991,
+      "line": 12
+    },
+    {
+      "id": "e_66cfe83d3c1b_0007",
+      "text": "A correct TWAP requires two cumulative-price snapshots separated in time. This oracle reads one snapshot from the pair but never stores a prior snapshot of its own — it fabricates the second data point from the current spot price, collapsing the calculation into a tautology.",
+      "start": 993,
+      "end": 1268,
+      "line": 14
+    },
+    {
+      "id": "e_66cfe83d3c1b_0008",
+      "text": "## Impact on downstream callers:",
+      "start": 1270,
+      "end": 1302,
+      "line": 16
+    },
+    {
+      "id": "e_66cfe83d3c1b_0009",
+      "text": "BuyBackBurner._buyOLAS() (line 185) — the pre-swap require(IOracle(poolOracle).validatePrice(maxSlippage), ...) always passes, allowing V2 swaps to execute at arbitrarily manipulated prices.",
+      "start": 1304,
+      "end": 1494,
+      "line": 18
+    },
+    {
+      "id": "e_66cfe83d3c1b_0010",
+      "text": "LiquidityManagerETH._checkTokensAndRemoveLiquidityV2() (line 170) — the oracle guard never reverts, and the subsequent removeLiquidity call uses amountAMin = 1, amountBMin = 1, providing zero effective protection.",
+      "start": 1496,
+      "end": 1709,
+      "line": 20
+    },
+    {
+      "id": "e_66cfe83d3c1b_0011",
+      "text": "LiquidityManagerOptimism._checkTokensAndRemoveLiquidityV2() (line 232) — same issue; the Balancer exitPool call uses minAmountsOut = [1, 1].",
+      "start": 1711,
+      "end": 1851,
+      "line": 22
+    },
+    {
+      "id": "e_66cfe83d3c1b_0012",
+      "text": "An attacker can flashloan assets to manipulate pool reserves, trigger any of these operations, and profit from the skewed prices — the oracle gate that was supposed to prevent this passes unconditionally.",
+      "start": 1853,
+      "end": 2057,
+      "line": 24
+    },
+    {
+      "id": "e_66cfe83d3c1b_0013",
+      "text": "Numerical example: If an attacker manipulates a WETH-OLAS pool from a spot price of 100 OLAS/WETH to 25 OLAS/WETH (a 75% manipulation), the oracle computes:",
+      "start": 2059,
+      "end": 2215,
+      "line": 26
+    }
+  ]
+}

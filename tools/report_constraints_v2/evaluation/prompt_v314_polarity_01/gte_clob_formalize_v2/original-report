@@ -1,0 +1,130 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Spot CLOB and Router_qa8y3zjgyCn",
+    "audit_uid": "qa8y3zjgyCn",
+    "requested_submission_uid": "6BVtiNy49JH",
+    "requested_finding_uid": "4mNBEGcS2Q4",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Spot_CLOB_and_Router_qa8y3zjgyCn/20260618_143057/findings.json",
+    "source_submission_uid": "6BVtiNy49JH",
+    "source_finding_uid": "4mNBEGcS2Q4",
+    "original_report_path": "GTE Spot CLOB and Router_qa8y3zjgyCn\\medium_valid_6BVtiNy49JH.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "6BVtiNy49JH",
+  "finding_uid": "4mNBEGcS2Q4",
+  "finding_number": "13",
+  "title": "Valid trades can revert due to incorrect bit-wise check",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "Neeloy",
+  "body": "## Summary\n[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`.\n\n## Finding Description  \nInside `CLOB.sol`, both `_processLimitBidOrder()` (line 503) and `_processLimitAskOrder()` (line 544) contain:\n\n```solidity\nif (baseTokenAmountReceived != quoteTokenAmountSent && baseTokenAmountReceived & quoteTokenAmountSent == 0) {\n    revert ZeroCostTrade();\n}\n```\n\nThe developer’s intention is to throw when either side of the trade is zero.  \nInstead, `baseTokenAmountReceived & quoteTokenAmountSent` performs a bit-level comparison. Two **non-zero** integers that share no common set bits (e.g., `1` and `2`) pass this test, so the compound condition becomes true whenever the amounts differ and have no overlapping bits. In practice:\n\n1. Maker places a sell (ASK) limit order.  \n2. Taker submits a matching buy (BID) with `amountInBase = 1` and `quoteAmount = 2`.  \n3. `1 != 2` is true, `1 & 2 == 0` is also true ⇒ `ZeroCostTrade()` reverts, aborting the otherwise valid match.\n\nBecause base amounts are denominated in base tokens and quote amounts in quote tokens, equality is virtually impossible, so every trade relies on the bit-wise clause. Random bit patterns therefore decide whether normal trades succeed or fail, enabling denial-of-service on any pair of amounts with disjoint bits.\n\n## Impact Explanation  \nHigh – attacker can systematically revert genuine matches, effectively freezing order execution and denying service.\n\n\n## Recommendation  \nReplace the bit-wise comparison with an explicit zero test",
+  "proof_of_concept": "Add the test file into `test/clob/unit/clob`\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\n// The base test utilities already deploy the full CLOB stack and give us helper\n// functions + pre-funded users.\nimport {CLOBTestBase} from \"test/clob/utils/CLOBTestBase.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\nimport {Side} from \"contracts/clob/types/Order.sol\";\n\n/// @title PoC for ZeroCostTrade bitwise-AND bug\n/// @notice Demonstrates that a perfectly valid trade reverts with ZeroCostTrade\n///         because `baseTokenAmountReceived & quoteTokenAmountSent == 0` can be\n///         true for **non-zero** values when they share no common set bits.\ncontract CLOBZeroCostTradeTest is CLOBTestBase {\n    /// @notice Finds the smallest price (multiple of `TICK_SIZE`) that makes\n    ///         `amountInBase & quoteAmount == 0` while both are non-zero.\n    function _findProblematicPrice(uint256 amountInBase) internal pure returns (uint256 price) {\n        uint256 tick = TICK_SIZE; // 1e14 wei (0.0001 ether)\n        // Scan a generous range of ticks to deterministically find a pair\n        // whose bit patterns do not overlap. 100k iterations is cheap in a\n        // test context (well under the block gas limit) and guarantees success\n        // for normal token sizes.\n        for (uint256 i = 1; i < 100_000; ++i) {\n            price = tick * i;\n            uint256 quote = (amountInBase * price) / BASE_TOKEN_SIZE;\n            if (quote == 0) continue; // need non-zero quote\n            if ((amountInBase & quote) == 0) {\n                return price;\n            }\n        }\n        revert(\"price search failed - enlarge search range\");\n    }\n\n    /// @dev Reproduces the revert due to the incorrect bitwise AND logic.\n    function testZeroCostTradeReverts() public {\n        // Choose the minimum order size to keep numbers small & deterministic\n        uint256 amountInBase = MIN_LIMIT_ORDER_AMOUNT_IN_BASE; // 0.005 ether\n        uint256 price = _findProblematicPrice(amountInBase);\n\n        // Sanity check the helper really found a suitable price\n        uint256 quoteAmount = (amountInBase * price) / BASE_TOKEN_SIZE;\n        assertTrue(amountInBase != quoteAmount, \"amounts should differ\");\n        assertTrue((amountInBase & quoteAmount) == 0, \"bitwise AND must be zero\");\n\n        // 1. Maker posts an ASK (sell) order that will later be matched.\n        address maker = users[0];\n        setupTokens(Side.SELL, maker, amountInBase, price, true);\n\n        ICLOB.PostLimitOrderArgs memory askArgs = ICLOB.PostLimitOrderArgs({\n            amountInBase: amountInBase,\n            clientOrderId: 0,\n            price: price,\n            cancelTimestamp: NEVER,\n            side: Side.SELL,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        });\n\n        vm.prank(maker);\n        clob.postLimitOrder(maker, askArgs);\n\n        // 2. Taker attempts to BUY the same amount – this should revert *only*\n        //    because of the buggy `ZeroCostTrade` check.\n        address taker = users[1];\n        setupTokens(Side.BUY, taker, amountInBase, price, true);\n\n        ICLOB.PostLimitOrderArgs memory bidArgs = ICLOB.PostLimitOrderArgs({\n            amountInBase: amountInBase,\n            clientOrderId: 0,\n            price: price, // match maker's price so it is immediately filled\n            cancelTimestamp: NEVER,\n            side: Side.BUY,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        });\n\n        vm.expectRevert(CLOB.ZeroCostTrade.selector);\n        vm.prank(taker);\n        clob.postLimitOrder(taker, bidArgs);\n    }\n}\n\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531",
+    "https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571"
+  ],
+  "source_record": {
+    "project_id": "qa8y3zjgyCn",
+    "submission_index": "376",
+    "api_submission_id": "",
+    "uid": "6BVtiNy49JH",
+    "number": "376",
+    "title": "Valid trades can revert due to incorrect bit-wise check",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "Neeloy",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531",
+      "https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571"
+    ],
+    "body": "## Summary\n[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`.\n\n## Finding Description  \nInside `CLOB.sol`, both `_processLimitBidOrder()` (line 503) and `_processLimitAskOrder()` (line 544) contain:\n\n```solidity\nif (baseTokenAmountReceived != quoteTokenAmountSent && baseTokenAmountReceived & quoteTokenAmountSent == 0) {\n    revert ZeroCostTrade();\n}\n```\n\nThe developer’s intention is to throw when either side of the trade is zero.  \nInstead, `baseTokenAmountReceived & quoteTokenAmountSent` performs a bit-level comparison. Two **non-zero** integers that share no common set bits (e.g., `1` and `2`) pass this test, so the compound condition becomes true whenever the amounts differ and have no overlapping bits. In practice:\n\n1. Maker places a sell (ASK) limit order.  \n2. Taker submits a matching buy (BID) with `amountInBase = 1` and `quoteAmount = 2`.  \n3. `1 != 2` is true, `1 & 2 == 0` is also true ⇒ `ZeroCostTrade()` reverts, aborting the otherwise valid match.\n\nBecause base amounts are denominated in base tokens and quote amounts in quote tokens, equality is virtually impossible, so every trade relies on the bit-wise clause. Random bit patterns therefore decide whether normal trades succeed or fail, enabling denial-of-service on any pair of amounts with disjoint bits.\n\n## Impact Explanation  \nHigh – attacker can systematically revert genuine matches, effectively freezing order execution and denying service.\n\n\n## Recommendation  \nReplace the bit-wise comparison with an explicit zero test",
+    "proof_of_concept": "Add the test file into `test/clob/unit/clob`\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\n// The base test utilities already deploy the full CLOB stack and give us helper\n// functions + pre-funded users.\nimport {CLOBTestBase} from \"test/clob/utils/CLOBTestBase.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\nimport {Side} from \"contracts/clob/types/Order.sol\";\n\n/// @title PoC for ZeroCostTrade bitwise-AND bug\n/// @notice Demonstrates that a perfectly valid trade reverts with ZeroCostTrade\n///         because `baseTokenAmountReceived & quoteTokenAmountSent == 0` can be\n///         true for **non-zero** values when they share no common set bits.\ncontract CLOBZeroCostTradeTest is CLOBTestBase {\n    /// @notice Finds the smallest price (multiple of `TICK_SIZE`) that makes\n    ///         `amountInBase & quoteAmount == 0` while both are non-zero.\n    function _findProblematicPrice(uint256 amountInBase) internal pure returns (uint256 price) {\n        uint256 tick = TICK_SIZE; // 1e14 wei (0.0001 ether)\n        // Scan a generous range of ticks to deterministically find a pair\n        // whose bit patterns do not overlap. 100k iterations is cheap in a\n        // test context (well under the block gas limit) and guarantees success\n        // for normal token sizes.\n        for (uint256 i = 1; i < 100_000; ++i) {\n            price = tick * i;\n            uint256 quote = (amountInBase * price) / BASE_TOKEN_SIZE;\n            if (quote == 0) continue; // need non-zero quote\n            if ((amountInBase & quote) == 0) {\n                return price;\n            }\n        }\n        revert(\"price search failed - enlarge search range\");\n    }\n\n    /// @dev Reproduces the revert due to the incorrect bitwise AND logic.\n    function testZeroCostTradeReverts() public {\n        // Choose the minimum order size to keep numbers small & deterministic\n        uint256 amountInBase = MIN_LIMIT_ORDER_AMOUNT_IN_BASE; // 0.005 ether\n        uint256 price = _findProblematicPrice(amountInBase);\n\n        // Sanity check the helper really found a suitable price\n        uint256 quoteAmount = (amountInBase * price) / BASE_TOKEN_SIZE;\n        assertTrue(amountInBase != quoteAmount, \"amounts should differ\");\n        assertTrue((amountInBase & quoteAmount) == 0, \"bitwise AND must be zero\");\n\n        // 1. Maker posts an ASK (sell) order that will later be matched.\n        address maker = users[0];\n        setupTokens(Side.SELL, maker, amountInBase, price, true);\n\n        ICLOB.PostLimitOrderArgs memory askArgs = ICLOB.PostLimitOrderArgs({\n            amountInBase: amountInBase,\n            clientOrderId: 0,\n            price: price,\n            cancelTimestamp: NEVER,\n            side: Side.SELL,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        });\n\n        vm.prank(maker);\n        clob.postLimitOrder(maker, askArgs);\n\n        // 2. Taker attempts to BUY the same amount – this should revert *only*\n        //    because of the buggy `ZeroCostTrade` check.\n        address taker = users[1];\n        setupTokens(Side.BUY, taker, amountInBase, price, true);\n\n        ICLOB.PostLimitOrderArgs memory bidArgs = ICLOB.PostLimitOrderArgs({\n            amountInBase: amountInBase,\n            clientOrderId: 0,\n            price: price, // match maker's price so it is immediately filled\n            cancelTimestamp: NEVER,\n            side: Side.BUY,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        });\n\n        vm.expectRevert(CLOB.ZeroCostTrade.selector);\n        vm.prank(taker);\n        clob.postLimitOrder(taker, bidArgs);\n    }\n}\n\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/qa8y3zjgyCn/submissions/376",
+    "raw": {
+      "auditUid": "qa8y3zjgyCn",
+      "createdAt": "2025-08-02T19:37:29.527Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "Tn3tyHMakAz",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-25T12:11:03.811Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "4mNBEGcS2Q4"
+        },
+        {
+          "uid": "u8xwEPEHPLh",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-08-07T12:02:18.192Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "4mNBEGcS2Q4"
+        },
+        {
+          "uid": "2ucsDxEtdDP",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-08-11T12:03:11.483Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "6BVtiNy49JH",
+          "findingUid": null
+        },
+        {
+          "uid": "C9kKGhpsa5F",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-08-14T19:36:20.781Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "4mNBEGcS2Q4"
+        }
+      ],
+      "finding": {
+        "uid": "4mNBEGcS2Q4",
+        "number": 13,
+        "duplicates": 52
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-08-14T19:36:20.781Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Valid trades can revert due to incorrect bit-wise check",
+      "uid": "6BVtiNy49JH",
+      "updatedAt": "2025-08-02T19:37:29.527Z",
+      "user": {
+        "uid": "guNS7K5jtHy",
+        "handle": "Neeloy"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Summary\n[`_processLimitBidOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531) and [`_processLimitAskOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571) use a bit-wise AND (`&`) instead of a logical check to detect zero-amount trades, causing legitimate trades to revert with `ZeroCostTrade`.\n\n## Finding Description  \nInside `CLOB.sol`, both `_processLimitBidOrder()` (line 503) and `_processLimitAskOrder()` (line 544) contain:\n\n```solidity\nif (baseTokenAmountReceived != quoteTokenAmountSent && baseTokenAmountReceived & quoteTokenAmountSent == 0) {\n    revert ZeroCostTrade();\n}\n```\n\nThe developer’s intention is to throw when either side of the trade is zero.  \nInstead, `baseTokenAmountReceived & quoteTokenAmountSent` performs a bit-level comparison. Two **non-zero** integers that share no common set bits (e.g., `1` and `2`) pass this test, so the compound condition becomes true whenever the amounts differ and have no overlapping bits. In practice:\n\n1. Maker places a sell (ASK) limit order.  \n2. Taker submits a matching buy (BID) with `amountInBase = 1` and `quoteAmount = 2`.  \n3. `1 != 2` is true, `1 & 2 == 0` is also true ⇒ `ZeroCostTrade()` reverts, aborting the otherwise valid match.\n\nBecause base amounts are denominated in base tokens and quote amounts in quote tokens, equality is virtually impossible, so every trade relies on the bit-wise clause. Random bit patterns therefore decide whether normal trades succeed or fail, enabling denial-of-service on any pair of amounts with disjoint bits.\n\n## Impact Explanation  \nHigh – attacker can systematically revert genuine matches, effectively freezing order execution and denying service.\n\n\n## Recommendation  \nReplace the bit-wise comparison with an explicit zero test",
+      "proofOfConcept": "Add the test file into `test/clob/unit/clob`\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\n// The base test utilities already deploy the full CLOB stack and give us helper\n// functions + pre-funded users.\nimport {CLOBTestBase} from \"test/clob/utils/CLOBTestBase.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\nimport {Side} from \"contracts/clob/types/Order.sol\";\n\n/// @title PoC for ZeroCostTrade bitwise-AND bug\n/// @notice Demonstrates that a perfectly valid trade reverts with ZeroCostTrade\n///         because `baseTokenAmountReceived & quoteTokenAmountSent == 0` can be\n///         true for **non-zero** values when they share no common set bits.\ncontract CLOBZeroCostTradeTest is CLOBTestBase {\n    /// @notice Finds the smallest price (multiple of `TICK_SIZE`) that makes\n    ///         `amountInBase & quoteAmount == 0` while both are non-zero.\n    function _findProblematicPrice(uint256 amountInBase) internal pure returns (uint256 price) {\n        uint256 tick = TICK_SIZE; // 1e14 wei (0.0001 ether)\n        // Scan a generous range of ticks to deterministically find a pair\n        // whose bit patterns do not overlap. 100k iterations is cheap in a\n        // test context (well under the block gas limit) and guarantees success\n        // for normal token sizes.\n        for (uint256 i = 1; i < 100_000; ++i) {\n            price = tick * i;\n            uint256 quote = (amountInBase * price) / BASE_TOKEN_SIZE;\n            if (quote == 0) continue; // need non-zero quote\n            if ((amountInBase & quote) == 0) {\n                return price;\n            }\n        }\n        revert(\"price search failed - enlarge search range\");\n    }\n\n    /// @dev Reproduces the revert due to the incorrect bitwise AND logic.\n    function testZeroCostTradeReverts() public {\n        // Choose the minimum order size to keep numbers small & deterministic\n        uint256 amountInBase = MIN_LIMIT_ORDER_AMOUNT_IN_BASE; // 0.005 ether\n        uint256 price = _findProblematicPrice(amountInBase);\n\n        // Sanity check the helper really found a suitable price\n        uint256 quoteAmount = (amountInBase * price) / BASE_TOKEN_SIZE;\n        assertTrue(amountInBase != quoteAmount, \"amounts should differ\");\n        assertTrue((amountInBase & quoteAmount) == 0, \"bitwise AND must be zero\");\n\n        // 1. Maker posts an ASK (sell) order that will later be matched.\n        address maker = users[0];\n        setupTokens(Side.SELL, maker, amountInBase, price, true);\n\n        ICLOB.PostLimitOrderArgs memory askArgs = ICLOB.PostLimitOrderArgs({\n            amountInBase: amountInBase,\n            clientOrderId: 0,\n            price: price,\n            cancelTimestamp: NEVER,\n            side: Side.SELL,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        });\n\n        vm.prank(maker);\n        clob.postLimitOrder(maker, askArgs);\n\n        // 2. Taker attempts to BUY the same amount – this should revert *only*\n        //    because of the buggy `ZeroCostTrade` check.\n        address taker = users[1];\n        setupTokens(Side.BUY, taker, amountInBase, price, true);\n\n        ICLOB.PostLimitOrderArgs memory bidArgs = ICLOB.PostLimitOrderArgs({\n            amountInBase: amountInBase,\n            clientOrderId: 0,\n            price: price, // match maker's price so it is immediately filled\n            cancelTimestamp: NEVER,\n            side: Side.BUY,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        });\n\n        vm.expectRevert(CLOB.ZeroCostTrade.selector);\n        vm.prank(taker);\n        clob.postLimitOrder(taker, bidArgs);\n    }\n}\n\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L492-L531,https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L533-L571",
+      "number": 376,
+      "aiExplanation": null,
+      "_index": 376
+    }
+  }
+}

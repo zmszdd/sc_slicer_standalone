@@ -1,0 +1,186 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "dust_only_unfilled": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The FOK order leaves only the amount rounded off due to lot size constraints unfilled.",
+      "checkpoint": "FOK order fill attempt",
+      "entity_ids": [
+        "fok_order"
+      ],
+      "evidence": "Fill-or-Kill (FOK) orders incorrectly revert when any amount remains unfilled, including acceptable dust amounts. According to the protocol's documentation, FOK orders should not revert if only the amount rounded off due to lot size constraints is left unfilled."
+    },
+    "not_charged_dust": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The user is not charged for the unfilled lot-size rounding dust amount.",
+      "checkpoint": "FOK order fill attempt",
+      "entity_ids": [
+        "user"
+      ],
+      "evidence": "> \"FOK fill orders *should* not revert if only the amount rounded off is left unfilled, and the user is not charged for the dust.\""
+    },
+    "reverted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The FOK fill operation reverted (did not complete successfully).",
+      "checkpoint": "FOK order fill attempt",
+      "entity_ids": [
+        "fok_order",
+        "protocol_implementation"
+      ],
+      "evidence": "This breaks core CLOB functionality by making legitimate FOK orders fail unnecessarily. Users cannot execute valid trades when small dust amounts remain unfilled due to lot size constraints, reducing protocol availability and contradicting the intended behavior."
+    }
+  },
+  "claims": [
+    {
+      "id": "fok_dust_only_revert",
+      "scope": "core",
+      "modality": "asserted",
+      "impact_ids": [
+        "fok_fill_reverted"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The FOK order leaves only lot-size rounding dust unfilled and the user is not charged for that dust.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "dust_only_unfilled"
+              },
+              {
+                "var": "not_charged_dust"
+              }
+            ]
+          },
+          "derivation": "Conjoins the precondition that only lot-size rounding dust remains unfilled with the assumption that the user is not charged for that dust, per protocol documentation.",
+          "source_ids": [
+            "pre_unfilled_dust",
+            "pre_dust_allowed",
+            "assump_no_charge"
+          ],
+          "evidence": [
+            "Fill-or-Kill (FOK) orders incorrectly revert when any amount remains unfilled, including acceptable dust amounts. According to the protocol's documentation, FOK orders should not revert if only the amount rounded off due to lot size constraints is left unfilled.",
+            "> \"FOK fill orders *should* not revert if only the amount rounded off is left unfilled, and the user is not charged for the dust.\""
+          ]
+        },
+        "safety": {
+          "text": "The FOK fill completes without reverting when only lot-size rounding dust remains unfilled.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "var": "dust_only_unfilled"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "reverted"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Renders the security intent that the FOK fill should complete successfully rather than revert when only dust remains unfilled, as a conditional non-revert.",
+          "source_ids": [
+            "intent_dust_revert_protection"
+          ],
+          "evidence": [
+            "> \"FOK fill orders *should* not revert if only the amount rounded off is left unfilled, and the user is not charged for the dust.\""
+          ]
+        },
+        "effects": {
+          "text": "The FOK order reverted although only lot-size rounding dust remained unfilled.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "dust_only_unfilled"
+              },
+              {
+                "var": "reverted"
+              }
+            ]
+          },
+          "derivation": "Direct impact observation: legitimate FOK orders revert and valid trades fail while only dust remains unfilled.",
+          "source_ids": [
+            "imp_fok_fail",
+            "imp_availability_reduced"
+          ],
+          "evidence": [
+            "This breaks core CLOB functionality by making legitimate FOK orders fail unnecessarily. Users cannot execute valid trades when small dust amounts remain unfilled due to lot size constraints, reducing protocol availability and contradicting the intended behavior."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "pre_dust_allowed"
+          ],
+          "args.0": [
+            "pre_unfilled_dust",
+            "pre_dust_allowed"
+          ],
+          "args.1": [
+            "pre_dust_allowed",
+            "assump_no_charge"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_dust_revert_protection"
+          ],
+          "args.0": [
+            "intent_dust_revert_protection"
+          ],
+          "args.1": [
+            "intent_dust_revert_protection"
+          ],
+          "args.1.args.0": [
+            "intent_dust_revert_protection"
+          ]
+        },
+        "effects": {
+          "": [
+            "imp_fok_fail"
+          ],
+          "args.0": [
+            "imp_fok_fail",
+            "imp_availability_reduced"
+          ],
+          "args.1": [
+            "imp_fok_fail"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "imp_fok_fail",
+          "impact_id": "fok_fill_reverted",
+          "status": "formalized",
+          "reason": "The direct effect that the legitimate FOK order reverts is represented by the 'reverted' variable."
+        },
+        {
+          "statement_id": "imp_availability_reduced",
+          "impact_id": null,
+          "status": "unformalized",
+          "reason": "Reduced protocol availability is an aggregate downstream consequence of the revert and is deferred to limitations."
+        }
+      ],
+      "assumptions": [
+        "The user is not charged for the unfilled dust amount.",
+        "Protocol documentation accurately describes intended FOK order behavior."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Reduced protocol availability is an aggregate downstream consequence and is not asserted as a direct impact.",
+    "The user-not-charged condition rests on an inferred assumption from documentation, not an observed on-chain behavior.",
+    "The successful-completion intent is inferred from protocol documentation rather than directly observed.",
+    "No quantitative bound is specified for the dust amount; the formalization is entirely qualitative (revert vs. complete)."
+  ]
+}

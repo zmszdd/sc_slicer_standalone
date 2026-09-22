@@ -1,0 +1,167 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "Reading L1 borrow/lend user state to derive account backing used by Monetrix accounting",
+    "environment": "Hyperliquid EVM precompile 0x0000000000000000000000000000000000000811 with PrecompileReader and MonetrixAccountant code",
+    "evidence_ids": [
+      "e_02e378fe520a_0001",
+      "e_02e378fe520a_0002",
+      "e_02e378fe520a_0003",
+      "e_02e378fe520a_0004",
+      "e_02e378fe520a_0005",
+      "e_02e378fe520a_0006"
+    ]
+  },
+  "entities": [
+    {
+      "id": "borrow_lend_user_state_precompile",
+      "name": "BORROW_LEND_USER_STATE precompile at 0x...0811",
+      "role": "contract",
+      "evidence_ids": ["e_02e378fe520a_0001", "e_02e378fe520a_0002"]
+    },
+    {
+      "id": "precompile_reader",
+      "name": "PrecompileReader.suppliedBalance",
+      "role": "contract",
+      "evidence_ids": ["e_02e378fe520a_0003"]
+    },
+    {
+      "id": "supplied_usdc_evm",
+      "name": "suppliedUsdcEvm consumer",
+      "role": "other",
+      "evidence_ids": ["e_02e378fe520a_0004"]
+    },
+    {
+      "id": "supplied_notional_usdc_from_perp",
+      "name": "suppliedNotionalUsdcFromPerp consumer",
+      "role": "other",
+      "evidence_ids": ["e_02e378fe520a_0004"]
+    },
+    {
+      "id": "monetrix_accountant",
+      "name": "MonetrixAccountant._readL1Backing",
+      "role": "contract",
+      "evidence_ids": ["e_02e378fe520a_0004"]
+    },
+    {
+      "id": "total_backing_signed",
+      "name": "totalBackingSigned()",
+      "role": "other",
+      "evidence_ids": ["e_02e378fe520a_0005"]
+    },
+    {
+      "id": "borrow_value",
+      "name": "borrow.value field",
+      "role": "asset",
+      "evidence_ids": ["e_02e378fe520a_0002", "e_02e378fe520a_0005"]
+    },
+    {
+      "id": "account",
+      "name": "account with a PM borrow",
+      "role": "victim",
+      "evidence_ids": ["e_02e378fe520a_0005"]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_precompile_layout",
+      "kind": "precondition",
+      "text": "Precompile 0x...0811 is BORROW_LEND_USER_STATE returning BorrowLendUserTokenState as 128 bytes (borrow.basis, borrow.value, supply.basis, supply.value).",
+      "modality": "asserted",
+      "entity_ids": ["borrow_lend_user_state_precompile"],
+      "evidence_ids": ["e_02e378fe520a_0001", "e_02e378fe520a_0002"]
+    },
+    {
+      "id": "p_reader_path",
+      "kind": "precondition",
+      "text": "PrecompileReader.suppliedBalance is the read path consumed by suppliedUsdcEvm and suppliedNotionalUsdcFromPerp to obtain backing.",
+      "modality": "asserted",
+      "entity_ids": ["precompile_reader", "supplied_usdc_evm", "supplied_notional_usdc_from_perp"],
+      "evidence_ids": ["e_02e378fe520a_0003", "e_02e378fe520a_0004"]
+    },
+    {
+      "id": "p_account_borrow",
+      "kind": "precondition",
+      "text": "The queried account has taken a PM borrow, i.e. a nonzero borrow.value.",
+      "modality": "asserted",
+      "entity_ids": ["account", "borrow_value"],
+      "evidence_ids": ["e_02e378fe520a_0005"]
+    },
+    {
+      "id": "a_supplied_balance_slot",
+      "kind": "action",
+      "text": "PrecompileReader.suppliedBalance picks slot 4 (supply.value) but never reads slot 2 (borrow.value).",
+      "modality": "asserted",
+      "entity_ids": ["precompile_reader", "borrow_value"],
+      "evidence_ids": ["e_02e378fe520a_0003"]
+    },
+    {
+      "id": "a_consumers_pure_backing",
+      "kind": "action",
+      "text": "suppliedUsdcEvm and suppliedNotionalUsdcFromPerp treat the returned value as pure backing.",
+      "modality": "asserted",
+      "entity_ids": ["supplied_usdc_evm", "supplied_notional_usdc_from_perp"],
+      "evidence_ids": ["e_02e378fe520a_0004"]
+    },
+    {
+      "id": "a_accountant_backing",
+      "kind": "action",
+      "text": "MonetrixAccountant._readL1Backing computes totalBackingSigned() from the supplied value alone.",
+      "modality": "asserted",
+      "entity_ids": ["monetrix_accountant", "total_backing_signed"],
+      "evidence_ids": ["e_02e378fe520a_0004"]
+    },
+    {
+      "id": "rc_ignored_borrow",
+      "kind": "root_cause",
+      "text": "The reader omits borrow.value, so the returned amount is supply only rather than a signed net.",
+      "modality": "asserted",
+      "entity_ids": ["precompile_reader", "borrow_value"],
+      "evidence_ids": ["e_02e378fe520a_0003", "e_02e378fe520a_0005"]
+    },
+    {
+      "id": "imp_overstated",
+      "kind": "impact",
+      "text": "totalBackingSigned() is overstated by exactly borrow.value for any account with a PM borrow.",
+      "modality": "asserted",
+      "entity_ids": ["total_backing_signed", "account", "borrow_value"],
+      "evidence_ids": ["e_02e378fe520a_0005"]
+    },
+    {
+      "id": "imp_denomination",
+      "kind": "impact",
+      "text": "The overstatement is denominated in USDC for USDC borrows and in USDC-notional via perp oracle price for asset borrows.",
+      "modality": "asserted",
+      "entity_ids": ["borrow_value"],
+      "evidence_ids": ["e_02e378fe520a_0005"]
+    },
+    {
+      "id": "si_net_backing",
+      "kind": "security_intent",
+      "text": "Backing reads feeding totalBackingSigned() should reflect a signed net including borrow.value, so a PM borrow does not overstate backing.",
+      "modality": "inferred",
+      "entity_ids": ["precompile_reader", "total_backing_signed", "borrow_value"],
+      "evidence_ids": ["e_02e378fe520a_0004", "e_02e378fe520a_0005", "e_02e378fe520a_0006"]
+    },
+    {
+      "id": "asm_layout",
+      "kind": "assumption",
+      "text": "The precompile ABI layout and slot positions, including borrow.value at slot 2, are as described.",
+      "modality": "inferred",
+      "entity_ids": ["borrow_lend_user_state_precompile", "borrow_value"],
+      "evidence_ids": ["e_02e378fe520a_0001", "e_02e378fe520a_0002"]
+    }
+  ],
+  "attack_steps": [
+    "a_supplied_balance_slot",
+    "a_consumers_pure_backing",
+    "a_accountant_backing"
+  ],
+  "ambiguities": [
+    "Accuracy of the stated precompile ABI and slot layout is not verified.",
+    "No attacker, transaction path or exploitability is described; the report is a code-correctness claim.",
+    "e_0004 is truncated, so the exact _readL1Backing arithmetic is not fully shown.",
+    "Downstream economic consequences of overstated backing are not stated.",
+    "Whether supply.value and borrow.value share units/decimals for netting is not stated."
+  ]
+}

@@ -1,0 +1,230 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "c495bf2bb7f569937643101cc18beb669fbf9fd5b5beba37dc08933fea491814",
+  "fragments": [
+    {
+      "id": "e_c495bf2bb7f5_0001",
+      "text": "Protocol Invariant Violation - Premature Removal from `activeDepositRequesters` Bypasses Safety Check, Enabling Unsafe Vault Unregistration with Outstanding Liabilities",
+      "start": 0,
+      "end": 168,
+      "line": 1
+    },
+    {
+      "id": "e_c495bf2bb7f5_0002",
+      "text": "### Finding Description and Impact",
+      "start": 170,
+      "end": 204,
+      "line": 3
+    },
+    {
+      "id": "e_c495bf2bb7f5_0003",
+      "text": "#### Root Cause",
+      "start": 206,
+      "end": 221,
+      "line": 5
+    },
+    {
+      "id": "e_c495bf2bb7f5_0004",
+      "text": "The vulnerability lies within the logic used to manage the `activeDepositRequesters` EnumerableSet. Specifically, the `cancelDepositRequest` function unconditionally removes the user from this set when a pending request is cleared.",
+      "start": 223,
+      "end": 454,
+      "line": 7
+    },
+    {
+      "id": "e_c495bf2bb7f5_0005",
+      "text": "This removal logic fails to account for the state where a user may still have a **claimable deposit liability** (funds that were processed by the Investment Manager but not yet claimed by the user's final `deposit()` call).",
+      "start": 456,
+      "end": 679,
+      "line": 9
+    },
+    {
+      "id": "e_c495bf2bb7f5_0006",
+      "text": "The flawed logic flow is confirmed by the proof-of-concept test:",
+      "start": 681,
+      "end": 745,
+      "line": 11
+    },
+    {
+      "id": "e_c495bf2bb7f5_0007",
+      "text": "1.  **Initial State:** A user has `claimableDepositAssets > 0` (Liability 1). `activeDepositRequesters` correctly includes the user.",
+      "start": 747,
+      "end": 879,
+      "line": 13
+    },
+    {
+      "id": "e_c495bf2bb7f5_0008",
+      "text": "2.  **Action:** The user initiates and then cancels a **second** pending request (Liability 2).",
+      "start": 885,
+      "end": 980,
+      "line": 15
+    },
+    {
+      "id": "e_c495bf2bb7f5_0009",
+      "text": "3.  **Error (The Bug):** The `cancelDepositRequest` function resolves Liability 2 and **prematurely removes the user** from `activeDepositRequesters`.",
+      "start": 986,
+      "end": 1136,
+      "line": 17
+    },
+    {
+      "id": "e_c495bf2bb7f5_0010",
+      "text": "4.  **Result:** The user still holds Liability 1 (`claimableDepositAssets > 0`), but the primary safety counter, `activeDepositRequestersCount`, is forced to **0**.",
+      "start": 1142,
+      "end": 1306,
+      "line": 19
+    },
+    {
+      "id": "e_c495bf2bb7f5_0011",
+      "text": "#### Impact: Protocol Invariant Violation",
+      "start": 1313,
+      "end": 1354,
+      "line": 22
+    },
+    {
+      "id": "e_c495bf2bb7f5_0012",
+      "text": "The corrupted state directly compromises the `unregisterVault` safety mechanism. This function relies on an accurate `metrics.activeDepositRequestersCount == 0` check to guarantee that no user liabilities remain before the vault is removed from the system.",
+      "start": 1356,
+      "end": 1612,
+      "line": 24
+    },
+    {
+      "id": "e_c495bf2bb7f5_0013",
+      "text": "1.  **Safety Bypass:** Because the counter is falsely reported as 0, the `unregisterVault` function's check is bypassed.",
+      "start": 1614,
+      "end": 1734,
+      "line": 26
+    },
+    {
+      "id": "e_c495bf2bb7f5_0014",
+      "text": "2.  **Unsafe State:** The Owner successfully calls `unregisterVault`, deregistering the vault while the user's 1000 tokens/shares are still owed (tracked only internally in `claimableDepositAssets`).",
+      "start": 1740,
+      "end": 1939,
+      "line": 28
+    },
+    {
+      "id": "e_c495bf2bb7f5_0015",
+      "text": "3.  **Risk Escalation:** Although the proof-of-concept shows that the user can still claim their funds _after_ unregistration by calling `deposit()` (an unexpected mitigation), the protocol's state is critically inconsistent. The high-severity risk is now elevated to:",
+      "start": 1945,
+      "end": 2213,
+      "line": 30
+    },
+    {
+      "id": "e_c495bf2bb7f5_0016",
+      "text": "-   **Malicious Upgrade:** An unregistered vault is susceptible to being replaced with a malicious or broken implementation, immediately freezing or draining the internal liability funds.",
+      "start": 2223,
+      "end": 2410,
+      "line": 32
+    },
+    {
+      "id": "e_c495bf2bb7f5_0017",
+      "text": "-   **Administrative Error:** The core registration mechanism is bypassed, leading to inconsistent state management that could cause cascading failures or fund loss during future administrative actions.",
+      "start": 2424,
+      "end": 2626,
+      "line": 34
+    },
+    {
+      "id": "e_c495bf2bb7f5_0018",
+      "text": "### Vulnerability Confirmation and Analysis of getVaultMetrics()",
+      "start": 2637,
+      "end": 2701,
+      "line": 37
+    },
+    {
+      "id": "e_c495bf2bb7f5_0019",
+      "text": "The core bug is confirmed: The reliance on the count (`activeDepositRequestersCount`) as a proxy for outstanding deposit liability is invalid when the set removal logic is flawed.",
+      "start": 2703,
+      "end": 2882,
+      "line": 39
+    },
+    {
+      "id": "e_c495bf2bb7f5_0020",
+      "text": "|Metric|State (Should Be)|State (Actual due to Bug)|Invariant Violation|",
+      "start": 2884,
+      "end": 2956,
+      "line": 41
+    },
+    {
+      "id": "e_c495bf2bb7f5_0021",
+      "text": "|:--------|:--------|:--------|:-------|",
+      "start": 2957,
+      "end": 2997,
+      "line": 42
+    },
+    {
+      "id": "e_c495bf2bb7f5_0022",
+      "text": "|**User Liability** (`claimableDepositAssets[user]`)|$> 0$|$> 0$|Liability exists|",
+      "start": 2998,
+      "end": 3080,
+      "line": 43
+    },
+    {
+      "id": "e_c495bf2bb7f5_0023",
+      "text": "|**Safety Counter** (`activeDepositRequestersCount`)|$1$|$0$|**Safety Check Bypassed**|",
+      "start": 3081,
+      "end": 3168,
+      "line": 44
+    },
+    {
+      "id": "e_c495bf2bb7f5_0024",
+      "text": "This asymmetry and reliance on a corrupted count confirm that the primary safety gate for deposit liabilities is ineffective.",
+      "start": 3172,
+      "end": 3297,
+      "line": 48
+    },
+    {
+      "id": "e_c495bf2bb7f5_0025",
+      "text": "### Finding Confirmation",
+      "start": 3299,
+      "end": 3323,
+      "line": 50
+    },
+    {
+      "id": "e_c495bf2bb7f5_0026",
+      "text": "**Validity Explanation** This finding represents a critical logic error in internal state management, specifically a corrupted accounting counter. It is a fundamental flaw in the handling of user liabilities during state transitions.",
+      "start": 3325,
+      "end": 3558,
+      "line": 52
+    },
+    {
+      "id": "e_c495bf2bb7f5_0027",
+      "text": "**Severity Classification:** This finding is classified as **HIGH** severity because it violates a core protocol safety invariant, establishing a path for **future fund loss** via administrative action or malicious upgrade. This satisfies the criteria for High Severity: an issue that leads to a loss of user funds, even if that loss requires a subsequent administrative step.",
+      "start": 3560,
+      "end": 3936,
+      "line": 54
+    },
+    {
+      "id": "e_c495bf2bb7f5_0028",
+      "text": "### C4 Review Reference",
+      "start": 3938,
+      "end": 3961,
+      "line": 56
+    },
+    {
+      "id": "e_c495bf2bb7f5_0029",
+      "text": "The finding aligns with the following category in the sponsor's reference table:",
+      "start": 3962,
+      "end": 4042,
+      "line": 57
+    },
+    {
+      "id": "e_c495bf2bb7f5_0030",
+      "text": "| Warden Claim | Incorrect Severity | **Correct Severity** | Reference Section | C4 Justification |",
+      "start": 4043,
+      "end": 4142,
+      "line": 58
+    },
+    {
+      "id": "e_c495bf2bb7f5_0031",
+      "text": "|:-------|:------------|:---------|:---------|:---------|",
+      "start": 4143,
+      "end": 4200,
+      "line": 59
+    },
+    {
+      "id": "e_c495bf2bb7f5_0032",
+      "text": "|**Reserved assets calculated wrong** |N/A|**High**  |What IS In Scope  |Actual accounting bug |",
+      "start": 4201,
+      "end": 4297,
+      "line": 60
+    }
+  ]
+}

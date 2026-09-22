@@ -1,0 +1,27 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Buffered native-fee cross-chain unstake, one caller invocation",
+    "environment": "Spoke-chain UnstakeMessenger sending a LayerZero message toward the hub; other failure causes excluded",
+    "evidence": ["The cross-chain unstake entrypoint on the spoke chain", "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger`"]
+  },
+  "entities": [
+    {"id": "caller", "name": "Integrator/caller following the buffered-fee helper", "role": "victim", "evidence": ["When integrators follow the buffered-fee pattern"]},
+    {"id": "messenger", "name": "UnstakeMessenger", "role": "contract", "evidence": ["`UnstakeMessenger.unstake()`"]},
+    {"id": "native_fee", "name": "Native currency fee", "role": "asset", "evidence": ["the exact required amount"]}
+  ],
+  "statements": [
+    {"id": "pre_overpay", "kind": "precondition", "text": "Caller forwards more native currency than the exact execution-time quote.", "modality": "asserted", "entity_ids": ["caller", "native_fee"], "evidence": ["msg.value > fee.nativeFee"]},
+    {"id": "assume_nonnegative", "kind": "assumption", "text": "Model native fee amounts as nonnegative mathematical integers; this is a domain convention, not an explicit report type declaration.", "modality": "inferred", "entity_ids": ["native_fee"], "evidence": ["`fee.nativeFee` set to the exact required amount."]},
+    {"id": "action_quote", "kind": "action", "text": "Caller obtains the buffered quote.", "modality": "asserted", "entity_ids": ["caller", "messenger"], "evidence": ["Call `quoteUnstakeWithBuffer()` to obtain a buffered fee."]},
+    {"id": "action_unstake", "kind": "action", "text": "Caller sends that buffered quote as msg.value when invoking unstake.", "modality": "asserted", "entity_ids": ["caller", "messenger", "native_fee"], "evidence": ["Call `unstake{value: bufferedFee}(returnTripAllocation)` and rely on the refund address for any excess."]},
+    {"id": "cause_equality", "kind": "root_cause", "text": "The author alleges a mismatch between supported buffered payment and inherited exact-payment enforcement.", "modality": "asserted", "entity_ids": ["messenger", "native_fee"], "evidence": ["the inherited LayerZero implementation for `_payNative()` (used inside _lzSend()) requires that `msg.value` equals the native fee exactly"]},
+    {"id": "intent_accept_buffer", "kind": "security_intent", "text": "Infer that the intended buffered payment flow should not fail solely because payment exceeds the required native fee; this is not a guarantee of success for unrelated conditions.", "modality": "inferred", "entity_ids": ["caller", "messenger", "native_fee"], "evidence": ["These helpers deliberately return a fee that is larger than the exact LayerZero quote", "Call `unstake{value: bufferedFee}(returnTripAllocation)` and rely on the refund address for any excess."]},
+    {"id": "impact_revert", "kind": "impact", "text": "The author claims a NotEnoughNative fee-mismatch revert for the described overpayment.", "modality": "asserted", "entity_ids": ["caller", "messenger"], "evidence": ["reverts with `NotEnoughNative(msg.value)` before the message is dispatched."]},
+    {"id": "impact_no_dispatch", "kind": "impact", "text": "No LayerZero message is dispatched by this reverted invocation.", "modality": "asserted", "entity_ids": ["messenger"], "evidence": ["reverts with `NotEnoughNative(msg.value)` before the message is dispatched."]},
+    {"id": "impact_ux", "kind": "impact", "text": "The author generalizes the buffered integration pattern as unusable in practice.", "modality": "asserted", "entity_ids": ["caller", "messenger"], "evidence": ["As a result, the “buffered fee” integration pattern exposed by the contract is unusable in practice."]},
+    {"id": "impact_no_direct_loss", "kind": "impact", "text": "The report limits impact by stating no direct fund loss.", "modality": "asserted", "entity_ids": ["caller", "native_fee"], "evidence": ["The issue does not directly cause fund loss"]}
+  ],
+  "attack_steps": ["action_quote", "action_unstake"],
+  "ambiguities": ["Direct fund loss lacks a precise balance metric; do not infer permanent lockup or a numerical loss.", "One-call fee failure does not by itself establish the report's universally unusable integration pattern."]
+}

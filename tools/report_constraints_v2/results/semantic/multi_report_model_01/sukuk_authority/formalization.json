@@ -1,0 +1,577 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "msg_sender": {
+      "sort": "address",
+      "unit": null,
+      "meaning": "caller of redeem/withdraw (msg.sender)",
+      "checkpoint": "call_entry",
+      "entity_ids": [
+        "attacker",
+        "werc7575_vault"
+      ],
+      "evidence": "The `WERC7575Vault` contract's `redeem` and `withdraw` functions (via internal `_withdraw`) fail to correctly validate the caller's authority to spend the `owner`'s shares when `msg.sender != owner`."
+    },
+    "owner": {
+      "sort": "address",
+      "unit": null,
+      "meaning": "owner argument naming whose shares are redeemed",
+      "checkpoint": "call_entry",
+      "entity_ids": [
+        "owner"
+      ],
+      "evidence": "The `WERC7575Vault` contract's `redeem` and `withdraw` functions (via internal `_withdraw`) fail to correctly validate the caller's authority to spend the `owner`'s shares when `msg.sender != owner`."
+    },
+    "shares": {
+      "sort": "int",
+      "unit": "shares",
+      "meaning": "share amount argument passed to redeem/withdraw",
+      "checkpoint": "call_entry",
+      "entity_ids": [
+        "share_token"
+      ],
+      "evidence": "The implementation calls `_shareToken.spendSelfAllowance(owner, shares)`, which checks if `owner` has approved themselves. In the WERC7575 system, active users are required to have self-allowance to use the token. The contract **fails to check** if `msg.sender` has an allowance from `owner`."
+    },
+    "owner_self_allowance": {
+      "sort": "int",
+      "unit": "shares",
+      "meaning": "allowance owner has granted to themselves on the share token",
+      "checkpoint": "call_entry",
+      "entity_ids": [
+        "owner",
+        "share_token"
+      ],
+      "evidence": "The implementation calls `_shareToken.spendSelfAllowance(owner, shares)`, which checks if `owner` has approved themselves. In the WERC7575 system, active users are required to have self-allowance to use the token. The contract **fails to check** if `msg.sender` has an allowance from `owner`."
+    },
+    "caller_allowance_from_owner": {
+      "sort": "int",
+      "unit": "shares",
+      "meaning": "allowance msg.sender holds from owner on the share token",
+      "checkpoint": "call_entry",
+      "entity_ids": [
+        "share_token",
+        "owner",
+        "attacker"
+      ],
+      "evidence": "The `WERC7575Vault` contract's `redeem` and `withdraw` functions (via internal `_withdraw`) fail to correctly validate the caller's authority to spend the `owner`'s shares when `msg.sender != owner`."
+    },
+    "owner_shares_burned": {
+      "sort": "int",
+      "unit": "shares",
+      "meaning": "owner's shares burned during the call",
+      "checkpoint": "post_execution",
+      "entity_ids": [
+        "owner",
+        "share_token"
+      ],
+      "evidence": "Any user can call `redeem` specifying another user as the `owner`. Since the victim (if active) has self-allowance, the check passes, and the victim's shares are burned, with assets sent to the attacker (specified as `receiver`). This allows for direct theft of funds from any user."
+    },
+    "assets_sent_to_receiver": {
+      "sort": "int",
+      "unit": "assets",
+      "meaning": "vault assets transferred to the receiver argument",
+      "checkpoint": "post_execution",
+      "entity_ids": [
+        "assets",
+        "attacker",
+        "werc7575_vault"
+      ],
+      "evidence": "Any user can call `redeem` specifying another user as the `owner`. Since the victim (if active) has self-allowance, the check passes, and the victim's shares are burned, with assets sent to the attacker (specified as `receiver`). This allows for direct theft of funds from any user."
+    }
+  },
+  "claims": [
+    {
+      "id": "non_owner_unauthorized_share_burn",
+      "scope": "single redeem/withdraw call with msg.sender != owner and owner active with self-allowance",
+      "modality": "potential",
+      "impact_ids": [
+        "impact_victim_shares_burned"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The caller differs from owner, and the active owner's self-allowance covers the redeemed shares.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "ne",
+                "args": [
+                  {
+                    "var": "msg_sender"
+                  },
+                  {
+                    "var": "owner"
+                  }
+                ]
+              },
+              {
+                "op": "ge",
+                "args": [
+                  {
+                    "var": "owner_self_allowance"
+                  },
+                  {
+                    "var": "shares"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "pre_sender_not_owner supplies msg.sender != owner; pre_owner_active_self_allowance plus the assumption that the self-allowance check passes supplies owner_self_allowance >= shares.",
+          "source_ids": [
+            "pre_sender_not_owner",
+            "pre_owner_active_self_allowance"
+          ],
+          "evidence": [
+            "The `WERC7575Vault` contract's `redeem` and `withdraw` functions (via internal `_withdraw`) fail to correctly validate the caller's authority to spend the `owner`'s shares when `msg.sender != owner`.",
+            "The implementation calls `_shareToken.spendSelfAllowance(owner, shares)`, which checks if `owner` has approved themselves. In the WERC7575 system, active users are required to have self-allowance to use the token. The contract **fails to check** if `msg.sender` has an allowance from `owner`.",
+            "Any user can call `redeem` specifying another user as the `owner`. Since the victim (if active) has self-allowance, the check passes, and the victim's shares are burned, with assets sent to the attacker (specified as `receiver`). This allows for direct theft of funds from any user."
+          ]
+        },
+        "safety": {
+          "text": "When msg.sender != owner, the caller must hold an allowance from owner covering the redeemed shares.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "ne",
+                "args": [
+                  {
+                    "var": "msg_sender"
+                  },
+                  {
+                    "var": "owner"
+                  }
+                ]
+              },
+              {
+                "op": "ge",
+                "args": [
+                  {
+                    "var": "caller_allowance_from_owner"
+                  },
+                  {
+                    "var": "shares"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "security_intent_authority_check requires the vault to validate the caller's authority to spend owner's shares, read as caller_allowance_from_owner >= shares.",
+          "source_ids": [
+            "security_intent_authority_check"
+          ],
+          "evidence": [
+            "The `WERC7575Vault` contract's `redeem` and `withdraw` functions (via internal `_withdraw`) fail to correctly validate the caller's authority to spend the `owner`'s shares when `msg.sender != owner`.",
+            "The implementation calls `_shareToken.spendSelfAllowance(owner, shares)`, which checks if `owner` has approved themselves. In the WERC7575 system, active users are required to have self-allowance to use the token. The contract **fails to check** if `msg.sender` has an allowance from `owner`."
+          ]
+        },
+        "effects": {
+          "text": "The owner's shares are burned while the call is made by a non-owner.",
+          "expression": {
+            "op": "gt",
+            "args": [
+              {
+                "var": "owner_shares_burned"
+              },
+              {
+                "const": 0
+              }
+            ]
+          },
+          "derivation": "impact_victim_shares_burned states the victim owner's shares are burned.",
+          "source_ids": [
+            "impact_victim_shares_burned"
+          ],
+          "evidence": [
+            "Any user can call `redeem` specifying another user as the `owner`. Since the victim (if active) has self-allowance, the check passes, and the victim's shares are burned, with assets sent to the attacker (specified as `receiver`). This allows for direct theft of funds from any user."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "pre_sender_not_owner",
+            "pre_owner_active_self_allowance"
+          ],
+          "args.0": [
+            "pre_sender_not_owner"
+          ],
+          "args.1": [
+            "pre_owner_active_self_allowance"
+          ]
+        },
+        "safety": {
+          "": [
+            "security_intent_authority_check"
+          ],
+          "args.0": [
+            "security_intent_authority_check"
+          ],
+          "args.1": [
+            "security_intent_authority_check"
+          ]
+        },
+        "effects": {
+          "": [
+            "impact_victim_shares_burned"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_victim_shares_burned",
+          "status": "formalized",
+          "reason": "gt(owner_shares_burned,0) captures the burn; exact burn-vs-shares magnitude not sourced."
+        }
+      ],
+      "assumptions": [
+        "Active WERC7575 users are required to hold self-allowance (assumption_self_allowance_required).",
+        "Passing the self-allowance check is read as owner_self_allowance >= shares; the report only says the check passes."
+      ],
+      "unresolved": [
+        "Report does not establish caller_allowance_from_owner < shares, so a burn alone does not witness violation of I; the unauthorized-caller condition is asserted but unsourced.",
+        "Whether spendSelfAllowance is the intended sole authorization path or a misimplemented allowance check is unclear."
+      ]
+    },
+    {
+      "id": "non_owner_unauthorized_asset_transfer",
+      "scope": "single redeem/withdraw call with msg.sender != owner and owner active with self-allowance",
+      "modality": "potential",
+      "impact_ids": [
+        "impact_assets_sent_to_attacker"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The caller differs from owner, and the active owner's self-allowance covers the redeemed shares.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "ne",
+                "args": [
+                  {
+                    "var": "msg_sender"
+                  },
+                  {
+                    "var": "owner"
+                  }
+                ]
+              },
+              {
+                "op": "ge",
+                "args": [
+                  {
+                    "var": "owner_self_allowance"
+                  },
+                  {
+                    "var": "shares"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "pre_sender_not_owner supplies msg.sender != owner; pre_owner_active_self_allowance plus the passing self-allowance check supplies owner_self_allowance >= shares.",
+          "source_ids": [
+            "pre_sender_not_owner",
+            "pre_owner_active_self_allowance"
+          ],
+          "evidence": [
+            "The `WERC7575Vault` contract's `redeem` and `withdraw` functions (via internal `_withdraw`) fail to correctly validate the caller's authority to spend the `owner`'s shares when `msg.sender != owner`.",
+            "The implementation calls `_shareToken.spendSelfAllowance(owner, shares)`, which checks if `owner` has approved themselves. In the WERC7575 system, active users are required to have self-allowance to use the token. The contract **fails to check** if `msg.sender` has an allowance from `owner`.",
+            "Any user can call `redeem` specifying another user as the `owner`. Since the victim (if active) has self-allowance, the check passes, and the victim's shares are burned, with assets sent to the attacker (specified as `receiver`). This allows for direct theft of funds from any user."
+          ]
+        },
+        "safety": {
+          "text": "When msg.sender != owner, the caller must hold an allowance from owner covering the redeemed shares.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "ne",
+                "args": [
+                  {
+                    "var": "msg_sender"
+                  },
+                  {
+                    "var": "owner"
+                  }
+                ]
+              },
+              {
+                "op": "ge",
+                "args": [
+                  {
+                    "var": "caller_allowance_from_owner"
+                  },
+                  {
+                    "var": "shares"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "security_intent_authority_check requires validation of caller authority over owner's shares, read as allowance coverage.",
+          "source_ids": [
+            "security_intent_authority_check"
+          ],
+          "evidence": [
+            "The `WERC7575Vault` contract's `redeem` and `withdraw` functions (via internal `_withdraw`) fail to correctly validate the caller's authority to spend the `owner`'s shares when `msg.sender != owner`.",
+            "The implementation calls `_shareToken.spendSelfAllowance(owner, shares)`, which checks if `owner` has approved themselves. In the WERC7575 system, active users are required to have self-allowance to use the token. The contract **fails to check** if `msg.sender` has an allowance from `owner`."
+          ]
+        },
+        "effects": {
+          "text": "Assets are transferred to the non-owner receiver.",
+          "expression": {
+            "op": "gt",
+            "args": [
+              {
+                "var": "assets_sent_to_receiver"
+              },
+              {
+                "const": 0
+              }
+            ]
+          },
+          "derivation": "impact_assets_sent_to_attacker states assets are sent to the attacker specified as receiver.",
+          "source_ids": [
+            "impact_assets_sent_to_attacker"
+          ],
+          "evidence": [
+            "Any user can call `redeem` specifying another user as the `owner`. Since the victim (if active) has self-allowance, the check passes, and the victim's shares are burned, with assets sent to the attacker (specified as `receiver`). This allows for direct theft of funds from any user."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "pre_sender_not_owner",
+            "pre_owner_active_self_allowance"
+          ],
+          "args.0": [
+            "pre_sender_not_owner"
+          ],
+          "args.1": [
+            "pre_owner_active_self_allowance"
+          ]
+        },
+        "safety": {
+          "": [
+            "security_intent_authority_check"
+          ],
+          "args.0": [
+            "security_intent_authority_check"
+          ],
+          "args.1": [
+            "security_intent_authority_check"
+          ]
+        },
+        "effects": {
+          "": [
+            "impact_assets_sent_to_attacker"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_assets_sent_to_attacker",
+          "status": "formalized",
+          "reason": "gt(assets_sent_to_receiver,0) captures the transfer to the receiver."
+        }
+      ],
+      "assumptions": [
+        "The receiver argument is controlled by the caller (attacker).",
+        "Passing the self-allowance check is read as owner_self_allowance >= shares."
+      ],
+      "unresolved": [
+        "Transfer alone does not witness violation of I unless caller_allowance_from_owner < shares, which the report does not establish.",
+        "Exact amount transferred relative to `shares` is not sourced."
+      ]
+    },
+    {
+      "id": "non_owner_unauthorized_theft",
+      "scope": "single redeem/withdraw call; report asserts theft from 'any user' (population-wide)",
+      "modality": "potential",
+      "impact_ids": [
+        "impact_direct_theft"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The caller differs from owner, and the active owner's self-allowance covers the redeemed shares.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "ne",
+                "args": [
+                  {
+                    "var": "msg_sender"
+                  },
+                  {
+                    "var": "owner"
+                  }
+                ]
+              },
+              {
+                "op": "ge",
+                "args": [
+                  {
+                    "var": "owner_self_allowance"
+                  },
+                  {
+                    "var": "shares"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "pre_sender_not_owner supplies msg.sender != owner; pre_owner_active_self_allowance plus the passing self-allowance check supplies owner_self_allowance >= shares.",
+          "source_ids": [
+            "pre_sender_not_owner",
+            "pre_owner_active_self_allowance"
+          ],
+          "evidence": [
+            "The `WERC7575Vault` contract's `redeem` and `withdraw` functions (via internal `_withdraw`) fail to correctly validate the caller's authority to spend the `owner`'s shares when `msg.sender != owner`.",
+            "The implementation calls `_shareToken.spendSelfAllowance(owner, shares)`, which checks if `owner` has approved themselves. In the WERC7575 system, active users are required to have self-allowance to use the token. The contract **fails to check** if `msg.sender` has an allowance from `owner`.",
+            "Any user can call `redeem` specifying another user as the `owner`. Since the victim (if active) has self-allowance, the check passes, and the victim's shares are burned, with assets sent to the attacker (specified as `receiver`). This allows for direct theft of funds from any user."
+          ]
+        },
+        "safety": {
+          "text": "When msg.sender != owner, the caller must hold an allowance from owner covering the redeemed shares.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "ne",
+                "args": [
+                  {
+                    "var": "msg_sender"
+                  },
+                  {
+                    "var": "owner"
+                  }
+                ]
+              },
+              {
+                "op": "ge",
+                "args": [
+                  {
+                    "var": "caller_allowance_from_owner"
+                  },
+                  {
+                    "var": "shares"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "security_intent_authority_check requires caller authority over owner's shares, read as allowance coverage.",
+          "source_ids": [
+            "security_intent_authority_check"
+          ],
+          "evidence": [
+            "The `WERC7575Vault` contract's `redeem` and `withdraw` functions (via internal `_withdraw`) fail to correctly validate the caller's authority to spend the `owner`'s shares when `msg.sender != owner`.",
+            "The implementation calls `_shareToken.spendSelfAllowance(owner, shares)`, which checks if `owner` has approved themselves. In the WERC7575 system, active users are required to have self-allowance to use the token. The contract **fails to check** if `msg.sender` has an allowance from `owner`."
+          ]
+        },
+        "effects": {
+          "text": "The owner's shares are burned and assets leave the vault to the non-owner receiver, jointly constituting theft.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "owner_shares_burned"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "assets_sent_to_receiver"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "impact_direct_theft describes theft of funds, witnessed here by the combined burn of owner's shares and transfer to the attacker.",
+          "source_ids": [
+            "impact_direct_theft"
+          ],
+          "evidence": [
+            "Any user can call `redeem` specifying another user as the `owner`. Since the victim (if active) has self-allowance, the check passes, and the victim's shares are burned, with assets sent to the attacker (specified as `receiver`). This allows for direct theft of funds from any user."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "pre_sender_not_owner",
+            "pre_owner_active_self_allowance"
+          ],
+          "args.0": [
+            "pre_sender_not_owner"
+          ],
+          "args.1": [
+            "pre_owner_active_self_allowance"
+          ]
+        },
+        "safety": {
+          "": [
+            "security_intent_authority_check"
+          ],
+          "args.0": [
+            "security_intent_authority_check"
+          ],
+          "args.1": [
+            "security_intent_authority_check"
+          ]
+        },
+        "effects": {
+          "": [
+            "impact_direct_theft"
+          ],
+          "args.0": [
+            "impact_victim_shares_burned"
+          ],
+          "args.1": [
+            "impact_assets_sent_to_attacker"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_direct_theft",
+          "status": "partial",
+          "reason": "Single-call burn+transfer is expressible; population-wide 'any user' scope and the unauthorized-caller condition are not established, so full theft coverage is incomplete."
+        }
+      ],
+      "assumptions": [
+        "Theft is understood as loss to owner via an unauthorized non-owner redemption.",
+        "Passing the self-allowance check is read as owner_self_allowance >= shares."
+      ],
+      "unresolved": [
+        "V does not witness violation of I unless caller_allowance_from_owner < shares; report provides no PoC or observed execution.",
+        "Population-wide/persistent theft and economic magnitude (all versus partial funds) cannot be encoded as a complete single-call fact.",
+        "Whether withdraw is equally affected is unstated."
+      ]
+    }
+  ],
+  "limitations": [
+    "All supplied impacts are potential; no PoC or observed execution is provided.",
+    "'Any user' / direct theft is a population-wide claim; only single-call burn+transfer is formalized (partial), not complete coverage.",
+    "Deferred impact IDs: none beyond impact_victim_shares_burned, impact_assets_sent_to_attacker, impact_direct_theft; all three are addressed, with impact_direct_theft partial.",
+    "Inactive-owner behavior, approved-spender path, and whether withdraw is equally affected are unstated and left uncovered.",
+    "Numeric relation between the supplied `shares` value and the spendSelfAllowance helper result is not given; the self-allowance path is a feature, not evidence of allowance amount.",
+    "Economic magnitude (all funds vs partial) of the loss is not expressible and remains unresolved."
+  ]
+}

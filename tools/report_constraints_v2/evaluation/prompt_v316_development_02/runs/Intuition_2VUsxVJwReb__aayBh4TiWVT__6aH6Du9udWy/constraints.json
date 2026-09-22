@@ -1,0 +1,345 @@
+{
+  "schema_version": "stage2-semantic-bundle/1",
+  "core_formalization_status": "formalized_candidate",
+  "acceptance_status": "needs_review",
+  "report_warnings": [
+    "report impacts not assigned to a claim: impact_honest_dilution",
+    "extracted preconditions not used by formal P: pre_util_lower_bound, pre_zero_prior_position",
+    "report has declared ambiguities",
+    "formalization has declared limitations"
+  ],
+  "unassigned_impact_ids": [
+    "impact_honest_dilution"
+  ],
+  "claims": [
+    {
+      "id": "core_claim",
+      "formalization_status": "needs_review",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity.",
+        "direct_counterexample_status": "passed"
+      },
+      "review_reasons": [],
+      "properties": {
+        "preconditions": {
+          "text": "Reward share is calculated from veTRUST balance at the single final timestamp of an epoch.; Personal utilization ratio is computed exclusively from MultiVault activity deltas between consecutive epochs, with lock duration within an epoch having no representation in the formula.; Epoch length is 1,209,600 seconds (14 days).",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "snapshot_defined"
+              },
+              {
+                "var": "ratio_duration_blind"
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "epoch_duration"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "pre_snapshot_mechanic",
+            "pre_duration_blind_ratio",
+            "pre_epoch_length"
+          ],
+          "evidence": [
+            "Mechanic A :  Epoch-End Point-in-Time Snapshot [Line 212](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L212)",
+            "Reward share is calculated from veTRUST balance at the single final timestamp of an epoch. A lock created one second before the epoch ends produces a balance of `lockAmount × (unlockTime − epochEnd) / MAXTIME ≈ 99.999%` of full weight.",
+            "Mechanic B : Duration-blind utilization ratio [Line 513–518](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L513-L518)",
+            "We can see that the personal utilization ratio is computed exclusively from MultiVault activity deltas between epochs. Lock duration within an epoch has zero weight in the ratio formula.",
+            "Personal utilization ratio is computed exclusively from MultiVault activity deltas between consecutive epochs. Lock duration within an epoch has no representation in the formula. A user with zero MultiVault activity receives `personalUtilizationLowerBound` unconditionally, whether they locked for 1 second or 14 days. The contract cannot distinguish between the two at this decision point, so no duration-based penalty is ever applied to the late joiner.",
+            "- Epoch length: 1,209,600 seconds (14 days)"
+          ]
+        },
+        "safety": {
+          "text": "Inferred: reward share for an epoch should reflect participation duration within that epoch, so a lock contributing for only the final second should not register approximately full reward weight and dilute honest participants.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "snapshot_defined"
+                  },
+                  {
+                    "var": "ratio_duration_blind"
+                  }
+                ]
+              },
+              {
+                "op": "le",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "var": "snapshot_weight"
+                      },
+                      {
+                        "var": "epoch_duration"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "var": "full_weight"
+                      },
+                      {
+                        "var": "held_duration"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_duration_weighted_share"
+          ],
+          "evidence": [
+            "Reward share is calculated from veTRUST balance at the single final timestamp of an epoch. A lock created one second before the epoch ends produces a balance of `lockAmount × (unlockTime − epochEnd) / MAXTIME ≈ 99.999%` of full weight.",
+            "The attacker contributed for `1 / 1_209_600 = 0.000083%` of the epoch duration, yet their full stake registers in the reward snapshot.",
+            "We can see that the personal utilization ratio is computed exclusively from MultiVault activity deltas between epochs. Lock duration within an epoch has zero weight in the ratio formula.",
+            "Personal utilization ratio is computed exclusively from MultiVault activity deltas between consecutive epochs. Lock duration within an epoch has no representation in the formula. A user with zero MultiVault activity receives `personalUtilizationLowerBound` unconditionally, whether they locked for 1 second or 14 days. The contract cannot distinguish between the two at this decision point, so no duration-based penalty is ever applied to the late joiner.",
+            "Any actor can lock a large stake in the final block of any epoch and receive proportional rewards for that epoch with zero prior participation and zero protocol activity requirement. The attack is costless beyond the lock deposit itself (which is returned at unlock), repeatable every epoch and scales linearly with stake size. Every honest participant in a sniped epoch has their rewards diluted proportionally to the attacker's injected balance."
+          ]
+        },
+        "effects": {
+          "text": "Attacker contributed 1/1,209,600 = 0.000083% of the epoch duration yet their full stake registers in the reward snapshot at ~99.999% weight.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "snapshot_defined"
+                  },
+                  {
+                    "var": "ratio_duration_blind"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "le",
+                    "args": [
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "var": "snapshot_weight"
+                          },
+                          {
+                            "var": "epoch_duration"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "mul",
+                        "args": [
+                          {
+                            "var": "full_weight"
+                          },
+                          {
+                            "var": "held_duration"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "impact_full_weight_for_second"
+          ],
+          "evidence": [
+            "The attacker contributed for `1 / 1_209_600 = 0.000083%` of the epoch duration, yet their full stake registers in the reward snapshot.",
+            "Result: Lock is included in epoch N end snapshot with ~99.999% of theoretical full weight."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "pre_snapshot_mechanic",
+            "pre_duration_blind_ratio",
+            "pre_epoch_length"
+          ],
+          "args.2": [
+            "pre_snapshot_mechanic",
+            "pre_duration_blind_ratio",
+            "pre_epoch_length"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_duration_weighted_share"
+          ],
+          "args.0": [
+            "intent_duration_weighted_share"
+          ],
+          "args.1": [
+            "intent_duration_weighted_share"
+          ]
+        },
+        "effects": {
+          "": [
+            "impact_full_weight_for_second"
+          ],
+          "args.0": [
+            "impact_full_weight_for_second"
+          ],
+          "args.1": [
+            "impact_full_weight_for_second"
+          ],
+          "args.1.args.0": [
+            "impact_full_weight_for_second"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_full_weight_for_second",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "scope": "TrustBonding reward share epoch-end snapshot and utilization ratio exploitation",
+      "modality": "asserted",
+      "assumptions": [
+        "The lock is created permissionlessly and the reward claim is available to any eligible lock holder; authorization specifics are not described in the report.",
+        "The attacker lock is still present at the epoch N end snapshot and is included in that snapshot.",
+        "epoch_duration = 1,209,600 seconds is the report-stated epoch length and thus the intended full participation window.",
+        "held_duration is strictly less than epoch_duration for the final-second entry scenario."
+      ],
+      "unresolved": []
+    }
+  ],
+  "coverage_is_model_declared_not_semantically_verified": true,
+  "human_semantic_review_required": true,
+  "code_alignment_status": "not_attempted",
+  "execution_ready": false,
+  "consistency_verdict": "not_evaluated",
+  "unassigned_precondition_ids": [
+    "pre_util_lower_bound",
+    "pre_zero_prior_position"
+  ],
+  "precondition_coverage_is_structural_not_semantic": true,
+  "strict_piv_gate": true,
+  "observability_review": {
+    "schema_version": "observability-review/1",
+    "claims": [
+      {
+        "claim_id": "core_claim",
+        "safety_variables": [
+          "epoch_duration",
+          "full_weight",
+          "held_duration",
+          "ratio_duration_blind",
+          "snapshot_defined",
+          "snapshot_weight"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      }
+    ],
+    "review_status": "no_structural_warning",
+    "observability_established": false,
+    "human_semantic_review_required": true,
+    "limitations": [
+      "I-only Boolean may be a legitimate observation; hints are not automatic errors",
+      "No code binding, predicate-name interpretation or report truth assessment",
+      "Both SAT is a review hint, not a universal UNSAT requirement"
+    ],
+    "model_calls": 0
+  },
+  "provenance": {
+    "code_provided_to_model": false,
+    "contract_file_read": false,
+    "paired_case_checked": true,
+    "case_id": "Intuition_2VUsxVJwReb__aayBh4TiWVT__6aH6Du9udWy",
+    "submission_uid": "6aH6Du9udWy",
+    "finding_uid": "aayBh4TiWVT",
+    "target_test": "test_submissionValidity",
+    "declared_code_sha256": "ecd3c16ec3bf8c3b2f6142c752d95487c6b17c28e05b2120a9feb5d5fb644961",
+    "report_path": "/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/Intuition_2VUsxVJwReb__aayBh4TiWVT__6aH6Du9udWy/report.json",
+    "report_sha256": "b0ad58e7df98bf18e36a7b1ac6f7545ecfd49b3013ba5ee913cf88606e20a804",
+    "report_input_sha256": "f89049e7873fb48fb0c3050434f34addcbd265f1a1ddc3b09e2a4800d2e692f0",
+    "report_input_policy": {
+      "source_format": "report.json",
+      "selected_fields": [
+        "title",
+        "body.description_and_impact"
+      ],
+      "excluded_fields": [
+        "proof_of_concept",
+        "recommended_mitigation",
+        "source_record",
+        "pairing",
+        "contract_code"
+      ],
+      "policy_version": "report-json-input/4",
+      "title_deduplicated": false
+    },
+    "candidate_origin": "external_model",
+    "elements_source": "tools/report_constraints_v2/evaluation/prompt_v315_holdout_02/runs/Intuition_2VUsxVJwReb__aayBh4TiWVT__6aH6Du9udWy/elements-ids.json",
+    "formalization_source": null,
+    "prompt_version": "semantic-v3.16",
+    "requested_formalization_scope": "core",
+    "formal_retries_allowed": 2,
+    "element_retries_allowed": 0,
+    "lean_formal_input": true,
+    "mechanical_salvage": false,
+    "model_catalog_view": "exact_id_text_without_offsets",
+    "neural_mode": "formalization_only",
+    "formalization_generation": "deterministic_from_plan",
+    "reference_answers_provided_to_model": false,
+    "model_provider": "deepseek",
+    "model_name": "deepseek-flash"
+  },
+  "external_model_invocations": 3
+}

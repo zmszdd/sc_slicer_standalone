@@ -1,0 +1,261 @@
+{
+  "schema_version": "stage2-semantic-bundle/1",
+  "core_formalization_status": "formalized_candidate",
+  "acceptance_status": "needs_review",
+  "report_warnings": [
+    "report has declared ambiguities",
+    "formalization has declared limitations"
+  ],
+  "unassigned_impact_ids": [],
+  "claims": [
+    {
+      "id": "stale_domain_separator_after_fork",
+      "formalization_status": "needs_review",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity."
+      },
+      "review_reasons": [
+        "claim is qualified or inferred; not a verified realized effect",
+        "claimed impact coverage is partial/unformalized",
+        "unresolved claim limitations require review"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The DOMAIN_SEPARATOR is built once at deployment from the then-current block.chainid and stored immutably, and after a fork the live chain ID differs from the cached one (current_chain_id != cached_chain_id).",
+          "expression": {
+            "op": "ne",
+            "args": [
+              {
+                "var": "current_chain_id"
+              },
+              {
+                "var": "cached_chain_id"
+              }
+            ]
+          },
+          "derivation": "separator_computed_with_chainid fixes cached_chain_id at the deployment chain ID; chain_id_changed makes the live chain ID differ from it after the fork.",
+          "source_ids": [
+            "separator_computed_with_chainid",
+            "chain_id_changed"
+          ],
+          "evidence": [
+            "The `TrailsIntentEntrypoint` contract computes its EIP-712 `DOMAIN_SEPARATOR` once in the constructor and stores it as an immutable value:",
+            "Because `block.chainid` is read once at deployment, the stored `DOMAIN_SEPARATOR` permanently embeds the original chain ID.",
+            "If the chain later forks or the chain ID changes, this cached domain separator becomes outdated. As a result, the contract will continue validating signatures against an incorrect chain ID."
+          ]
+        },
+        "safety": {
+          "text": "After a fork or chain ID change, the contract should validate against the current chain ID and accept an intent signature generated on the new chain.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "var": "signature_from_current_chain"
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "validated_chain_id"
+                      },
+                      {
+                        "var": "current_chain_id"
+                      }
+                    ]
+                  },
+                  {
+                    "var": "signature_valid"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "validate_against_current_chainid requires validation against the current chain ID so new-chain signatures are accepted.",
+          "source_ids": [
+            "validate_against_current_chainid"
+          ],
+          "evidence": [
+            "If the chain later forks or the chain ID changes, this cached domain separator becomes outdated. As a result, the contract will continue validating signatures against an incorrect chain ID."
+          ]
+        },
+        "effects": {
+          "text": "A signature generated on the new chain fails verification (signature_valid = false) and the signature-based flows depositToIntent / depositToIntentWithPermit cannot proceed (intent_flow_enabled = false).",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "signature_from_current_chain"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "signature_valid"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "intent_flow_enabled"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "signatures_invalid_on_new_chain: new-chain signature does not match the cached separator; flows_dos: signature-based flows are broken, denying intent verification.",
+          "source_ids": [
+            "signatures_invalid_on_new_chain",
+            "flows_dos"
+          ],
+          "evidence": [
+            "This causes all off-chain signatures to become invalid on the new chain, breaking signature-based flows such as `depositToIntent` and `depositToIntentWithPermit`.",
+            "Any signature generated on the new chain will not match the original domain separator. This creates a permanent denial-of-service for intent verification on the forked chain."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "separator_computed_with_chainid",
+            "chain_id_changed"
+          ]
+        },
+        "safety": {
+          "": [
+            "validate_against_current_chainid"
+          ],
+          "args.1": [
+            "validate_against_current_chainid"
+          ],
+          "args.1.args.0": [
+            "validate_against_current_chainid"
+          ]
+        },
+        "effects": {
+          "": [
+            "signatures_invalid_on_new_chain",
+            "flows_dos"
+          ],
+          "args.0": [
+            "signatures_invalid_on_new_chain"
+          ],
+          "args.0.args.1": [
+            "signatures_invalid_on_new_chain"
+          ],
+          "args.1": [
+            "flows_dos"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "signatures_invalid_on_new_chain",
+          "status": "partial",
+          "reason": "models one new-chain signature failing verification; the aggregate 'all off-chain signatures' is not expressible without quantifiers."
+        },
+        {
+          "statement_id": "flows_dos",
+          "status": "partial",
+          "reason": "models the flows as disabled; the asserted permanence of the denial-of-service is temporal and not expressible."
+        }
+      ],
+      "scope": "core",
+      "modality": "potential",
+      "assumptions": [
+        "The contract verifies intent signatures against its stored DOMAIN_SEPARATOR and does not recompute it after deployment.",
+        "The fork / chain ID change occurs after deployment and the contract is not redeployed.",
+        "Off-chain signers build the EIP-712 domain using the chain ID of the chain they intend to transact on."
+      ],
+      "unresolved": [
+        "No attacker or trigger for the fork / chain ID change is identified; the scenario is hypothetical.",
+        "Report does not state whether signatures generated before the fork remain valid on the new chain.",
+        "No update or recovery mechanism for the cached DOMAIN_SEPARATOR is mentioned."
+      ]
+    }
+  ],
+  "coverage_is_model_declared_not_semantically_verified": true,
+  "human_semantic_review_required": true,
+  "code_alignment_status": "not_attempted",
+  "execution_ready": false,
+  "consistency_verdict": "not_evaluated",
+  "observability_review": {
+    "schema_version": "observability-review/1",
+    "claims": [
+      {
+        "claim_id": "stale_domain_separator_after_fork",
+        "safety_variables": [
+          "current_chain_id",
+          "signature_from_current_chain",
+          "signature_valid",
+          "validated_chain_id"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      }
+    ],
+    "review_status": "no_structural_warning",
+    "observability_established": false,
+    "human_semantic_review_required": true,
+    "limitations": [
+      "I-only Boolean may be a legitimate observation; hints are not automatic errors",
+      "No code binding, predicate-name interpretation or report truth assessment",
+      "Both SAT is a review hint, not a universal UNSAT requirement"
+    ],
+    "model_calls": 0
+  },
+  "provenance": {
+    "code_provided_to_model": false,
+    "paired_case_checked": true,
+    "case_id": "Sequence__Transaction_Rails_Yn6A3eYizcQ__WzwMPPEGz4h__gn5zCT2m7qn",
+    "submission_uid": "gn5zCT2m7qn",
+    "finding_uid": "WzwMPPEGz4h",
+    "target_test": "testIntentSignatureBreaksAfterChainIdChange",
+    "code_sha256": "9c7f96d9ecd1c07dbc2c40db7db89905932c6f4917fe552ee98cf8ec7cfaf0fb",
+    "report_path": "/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/Sequence__Transaction_Rails_Yn6A3eYizcQ__WzwMPPEGz4h__gn5zCT2m7qn/report.json",
+    "report_sha256": "eaa67241476648d4af55b402503b10cfa7180b346714baf0344bfa82d62255bb",
+    "report_input_sha256": "024cff5522e50f7d741c3ee083ddb187e6ea5479d567553be747a8992768b1b4",
+    "candidate_origin": "external_model",
+    "elements_source": null,
+    "formalization_source": null,
+    "requested_formalization_scope": "core",
+    "prompt_version": "semantic-v3.1",
+    "model_catalog_view": "exact_id_text_without_offsets",
+    "reference_answers_provided_to_model": false
+  },
+  "external_model_invocations": 2
+}

@@ -1,0 +1,60 @@
+Protocol Invariant Violation - Premature Removal from `activeDepositRequesters` Bypasses Safety Check, Enabling Unsafe Vault Unregistration with Outstanding Liabilities
+
+### Finding Description and Impact
+
+#### Root Cause
+
+The vulnerability lies within the logic used to manage the `activeDepositRequesters` EnumerableSet. Specifically, the `cancelDepositRequest` function unconditionally removes the user from this set when a pending request is cleared.
+
+This removal logic fails to account for the state where a user may still have a **claimable deposit liability** (funds that were processed by the Investment Manager but not yet claimed by the user's final `deposit()` call).
+
+The flawed logic flow is confirmed by the proof-of-concept test:
+
+1.  **Initial State:** A user has `claimableDepositAssets > 0` (Liability 1). `activeDepositRequesters` correctly includes the user.
+    
+2.  **Action:** The user initiates and then cancels a **second** pending request (Liability 2).
+    
+3.  **Error (The Bug):** The `cancelDepositRequest` function resolves Liability 2 and **prematurely removes the user** from `activeDepositRequesters`.
+    
+4.  **Result:** The user still holds Liability 1 (`claimableDepositAssets > 0`), but the primary safety counter, `activeDepositRequestersCount`, is forced to **0**.
+    
+
+#### Impact: Protocol Invariant Violation
+
+The corrupted state directly compromises the `unregisterVault` safety mechanism. This function relies on an accurate `metrics.activeDepositRequestersCount == 0` check to guarantee that no user liabilities remain before the vault is removed from the system.
+
+1.  **Safety Bypass:** Because the counter is falsely reported as 0, the `unregisterVault` function's check is bypassed.
+    
+2.  **Unsafe State:** The Owner successfully calls `unregisterVault`, deregistering the vault while the user's 1000 tokens/shares are still owed (tracked only internally in `claimableDepositAssets`).
+    
+3.  **Risk Escalation:** Although the proof-of-concept shows that the user can still claim their funds _after_ unregistration by calling `deposit()` (an unexpected mitigation), the protocol's state is critically inconsistent. The high-severity risk is now elevated to:
+    
+    -   **Malicious Upgrade:** An unregistered vault is susceptible to being replaced with a malicious or broken implementation, immediately freezing or draining the internal liability funds.
+        
+    -   **Administrative Error:** The core registration mechanism is bypassed, leading to inconsistent state management that could cause cascading failures or fund loss during future administrative actions.
+        
+
+### Vulnerability Confirmation and Analysis of getVaultMetrics()
+
+The core bug is confirmed: The reliance on the count (`activeDepositRequestersCount`) as a proxy for outstanding deposit liability is invalid when the set removal logic is flawed.
+
+|Metric|State (Should Be)|State (Actual due to Bug)|Invariant Violation|
+|:--------|:--------|:--------|:-------|
+|**User Liability** (`claimableDepositAssets[user]`)|$> 0$|$> 0$|Liability exists|
+|**Safety Counter** (`activeDepositRequestersCount`)|$1$|$0$|**Safety Check Bypassed**|
+
+
+
+This asymmetry and reliance on a corrupted count confirm that the primary safety gate for deposit liabilities is ineffective.
+
+### Finding Confirmation
+
+**Validity Explanation** This finding represents a critical logic error in internal state management, specifically a corrupted accounting counter. It is a fundamental flaw in the handling of user liabilities during state transitions.
+
+**Severity Classification:** This finding is classified as **HIGH** severity because it violates a core protocol safety invariant, establishing a path for **future fund loss** via administrative action or malicious upgrade. This satisfies the criteria for High Severity: an issue that leads to a loss of user funds, even if that loss requires a subsequent administrative step.
+
+### C4 Review Reference
+The finding aligns with the following category in the sponsor's reference table:
+| Warden Claim | Incorrect Severity | **Correct Severity** | Reference Section | C4 Justification |
+|:-------|:------------|:---------|:---------|:---------|
+|**Reserved assets calculated wrong** |N/A|**High**  |What IS In Scope  |Actual accounting bug |

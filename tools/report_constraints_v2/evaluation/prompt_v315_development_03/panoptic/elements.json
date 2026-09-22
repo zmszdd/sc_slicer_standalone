@@ -1,0 +1,238 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Interest accrual and MarketState storage in CollateralTracker, from accrueInterest through storeMarketState to totalAssets and share price",
+    "environment": "Panoptic protocol, CollateralTracker.sol, MarketState packed struct, EVM uint256 slot with 106-bit unrealizedInterest field",
+    "evidence": [
+      "The Panoptic protocol uses a packed struct `MarketState` to store global interest accounting variables in a single `uint256` slot to optimize gas. Specifically, the `unrealizedInterest` field—which tracks interest owed by borrowers to the pool—is allocated only **106 bits**.",
+      "In `CollateralTracker.sol`, the `_accrueInterest` function calculates `_unrealizedGlobalInterest` as a `uint128`. However, when this value is passed to `storeMarketState`, the assembly `shl(150, ...)` instruction pushes any bits beyond the 106th bit off the stack (effectively modulo $2^{256}$ after the shift).",
+      "1.  **State:** Pool has accrued substantial interest (e.g., $2^{106} - 1$).",
+      "5.  **Asset Drop:** `totalAssets()` is calculated as `s_depositedAssets + s_assetsInAMM + s_marketState.unrealizedInterest()`. When the interest component drops to zero, `totalAssets()` decreases instantly."
+    ]
+  },
+  "entities": [
+    {
+      "id": "collateral_tracker",
+      "name": "CollateralTracker contract",
+      "role": "contract",
+      "evidence": [
+        "In `CollateralTracker.sol`, the `_accrueInterest` function calculates `_unrealizedGlobalInterest` as a `uint128`. However, when this value is passed to `storeMarketState`, the assembly `shl(150, ...)` instruction pushes any bits beyond the 106th bit off the stack (effectively modulo $2^{256}$ after the shift)."
+      ]
+    },
+    {
+      "id": "market_state",
+      "name": "MarketState packed struct",
+      "role": "asset",
+      "evidence": [
+        "The Panoptic protocol uses a packed struct `MarketState` to store global interest accounting variables in a single `uint256` slot to optimize gas. Specifically, the `unrealizedInterest` field—which tracks interest owed by borrowers to the pool—is allocated only **106 bits**."
+      ]
+    },
+    {
+      "id": "unrealized_interest",
+      "name": "unrealizedInterest field (106 bits)",
+      "role": "asset",
+      "evidence": [
+        "The Panoptic protocol uses a packed struct `MarketState` to store global interest accounting variables in a single `uint256` slot to optimize gas. Specifically, the `unrealizedInterest` field—which tracks interest owed by borrowers to the pool—is allocated only **106 bits**.",
+        "In `CollateralTracker.sol`, the `_accrueInterest` function calculates `_unrealizedGlobalInterest` as a `uint128`. However, when this value is passed to `storeMarketState`, the assembly `shl(150, ...)` instruction pushes any bits beyond the 106th bit off the stack (effectively modulo $2^{256}$ after the shift)."
+      ]
+    },
+    {
+      "id": "high_supply_pool",
+      "name": "Pool for a supported high-supply token (e.g. SHIB)",
+      "role": "contract",
+      "evidence": [
+        "While this is a large number, it is significantly smaller than the total supply of several major tokens that the protocol explicitly claims to support. The contest `README` states: **\"Tokens with a supply exceeding $2^{127} - 1$ are not supported.\"** This implies that tokens up to $2^{127}$ ($\\approx 1.7 \\times 10^{38}$) **are** supported.",
+        "Tokens such as **SHIB** ($\\approx 5.89 \\times 10^{32}$) and **BTT** ($\\approx 9.9 \\times 10^{32}$) are well within the supported range ($10^{32} < 10^{38}$) but exceed the `MarketState` storage capacity ($10^{32} > 10^{31}$).",
+        "If a pool is deployed for a high-supply token (e.g., SHIB) and utilization is high, the accrued interest can legitimately exceed $2^{106}$."
+      ]
+    },
+    {
+      "id": "plps",
+      "name": "Passive Liquidity Providers",
+      "role": "victim",
+      "evidence": [
+        "This results in a catastrophic and irreversible loss of yield for all Passive Liquidity Providers (PLPs)."
+      ]
+    },
+    {
+      "id": "attacker",
+      "name": "Attacker monitoring the pool",
+      "role": "attacker",
+      "evidence": [
+        "2.  **Value Extraction:** An attacker monitoring the pool can deposit a large amount of assets immediately after the overflow. Because the share price is artificially low (due to the \"forgotten\" interest), they receive an inflated number of shares. As borrowers repay loans or interest re-accrues, the value is transferred to the attacker at the expense of existing LPs."
+      ]
+    },
+    {
+      "id": "total_assets",
+      "name": "totalAssets() value",
+      "role": "asset",
+      "evidence": [
+        "5.  **Asset Drop:** `totalAssets()` is calculated as `s_depositedAssets + s_assetsInAMM + s_marketState.unrealizedInterest()`. When the interest component drops to zero, `totalAssets()` decreases instantly.",
+        "1.  **Share Price Crash:** Since `sharePrice = totalAssets / totalSupply`, the sudden drop in assets causes the share price to crash."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_high_supply_token",
+      "kind": "precondition",
+      "text": "A pool is deployed for a high-supply token such as SHIB within the supported range (supply below 2^127 - 1) but whose quantities can exceed 2^106.",
+      "modality": "potential",
+      "entity_ids": [
+        "high_supply_pool"
+      ],
+      "evidence": [
+        "While this is a large number, it is significantly smaller than the total supply of several major tokens that the protocol explicitly claims to support. The contest `README` states: **\"Tokens with a supply exceeding $2^{127} - 1$ are not supported.\"** This implies that tokens up to $2^{127}$ ($\\approx 1.7 \\times 10^{38}$) **are** supported.",
+        "Tokens such as **SHIB** ($\\approx 5.89 \\times 10^{32}$) and **BTT** ($\\approx 9.9 \\times 10^{32}$) are well within the supported range ($10^{32} < 10^{38}$) but exceed the `MarketState` storage capacity ($10^{32} > 10^{31}$).",
+        "If a pool is deployed for a high-supply token (e.g., SHIB) and utilization is high, the accrued interest can legitimately exceed $2^{106}$."
+      ]
+    },
+    {
+      "id": "p_high_utilization",
+      "kind": "precondition",
+      "text": "Pool utilization is high.",
+      "modality": "potential",
+      "entity_ids": [
+        "high_supply_pool"
+      ],
+      "evidence": [
+        "If a pool is deployed for a high-supply token (e.g., SHIB) and utilization is high, the accrued interest can legitimately exceed $2^{106}$."
+      ]
+    },
+    {
+      "id": "p_prior_interest_state",
+      "kind": "precondition",
+      "text": "The pool has accrued substantial interest, e.g. 2^106 - 1.",
+      "modality": "potential",
+      "entity_ids": [
+        "unrealized_interest",
+        "high_supply_pool"
+      ],
+      "evidence": [
+        "1.  **State:** Pool has accrued substantial interest (e.g., $2^{106} - 1$)."
+      ]
+    },
+    {
+      "id": "a_accrue_interest",
+      "kind": "action",
+      "text": "accrueInterest() is triggered, computing _unrealizedGlobalInterest as a uint128 in _accrueInterest.",
+      "modality": "potential",
+      "entity_ids": [
+        "collateral_tracker"
+      ],
+      "evidence": [
+        "In `CollateralTracker.sol`, the `_accrueInterest` function calculates `_unrealizedGlobalInterest` as a `uint128`. However, when this value is passed to `storeMarketState`, the assembly `shl(150, ...)` instruction pushes any bits beyond the 106th bit off the stack (effectively modulo $2^{256}$ after the shift).",
+        "2.  **Action:** `accrueInterest()` is triggered."
+      ]
+    },
+    {
+      "id": "a_store_market_state",
+      "kind": "action",
+      "text": "The value is passed to storeMarketState, whose assembly shl(150, ...) shifts it into the packed 106-bit unrealizedInterest field.",
+      "modality": "potential",
+      "entity_ids": [
+        "collateral_tracker",
+        "market_state",
+        "unrealized_interest"
+      ],
+      "evidence": [
+        "The Panoptic protocol uses a packed struct `MarketState` to store global interest accounting variables in a single `uint256` slot to optimize gas. Specifically, the `unrealizedInterest` field—which tracks interest owed by borrowers to the pool—is allocated only **106 bits**.",
+        "In `CollateralTracker.sol`, the `_accrueInterest` function calculates `_unrealizedGlobalInterest` as a `uint128`. However, when this value is passed to `storeMarketState`, the assembly `shl(150, ...)` instruction pushes any bits beyond the 106th bit off the stack (effectively modulo $2^{256}$ after the shift)."
+      ]
+    },
+    {
+      "id": "a_attacker_deposit",
+      "kind": "action",
+      "text": "An attacker monitoring the pool deposits a large amount of assets immediately after the overflow while share price is artificially low.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "high_supply_pool"
+      ],
+      "evidence": [
+        "2.  **Value Extraction:** An attacker monitoring the pool can deposit a large amount of assets immediately after the overflow. Because the share price is artificially low (due to the \"forgotten\" interest), they receive an inflated number of shares. As borrowers repay loans or interest re-accrues, the value is transferred to the attacker at the expense of existing LPs."
+      ]
+    },
+    {
+      "id": "c_bit_truncation",
+      "kind": "root_cause",
+      "text": "storeMarketState allocates only 106 bits to unrealizedInterest, so the shl(150, ...) assembly instruction drops any bits beyond the 106th bit, silently truncating the interest value.",
+      "modality": "asserted",
+      "entity_ids": [
+        "market_state",
+        "unrealized_interest",
+        "collateral_tracker"
+      ],
+      "evidence": [
+        "The Panoptic protocol uses a packed struct `MarketState` to store global interest accounting variables in a single `uint256` slot to optimize gas. Specifically, the `unrealizedInterest` field—which tracks interest owed by borrowers to the pool—is allocated only **106 bits**.",
+        "In `CollateralTracker.sol`, the `_accrueInterest` function calculates `_unrealizedGlobalInterest` as a `uint128`. However, when this value is passed to `storeMarketState`, the assembly `shl(150, ...)` instruction pushes any bits beyond the 106th bit off the stack (effectively modulo $2^{256}$ after the shift).",
+        "4.  **Truncation:** `storeMarketState` silently discards the most significant bits. The stored interest wraps around to a near-zero value."
+      ]
+    },
+    {
+      "id": "i_interest_exceeds_106",
+      "kind": "impact",
+      "text": "The new total interest exceeds 2^106 and the stored interest wraps around to a near-zero value.",
+      "modality": "potential",
+      "entity_ids": [
+        "unrealized_interest",
+        "market_state"
+      ],
+      "evidence": [
+        "3.  **Overflow:** The new total interest exceeds $2^{106}$.",
+        "4.  **Truncation:** `storeMarketState` silently discards the most significant bits. The stored interest wraps around to a near-zero value."
+      ]
+    },
+    {
+      "id": "i_total_assets_drop",
+      "kind": "impact",
+      "text": "totalAssets() = s_depositedAssets + s_assetsInAMM + s_marketState.unrealizedInterest() decreases instantly when the interest component drops to zero, crashing sharePrice = totalAssets / totalSupply.",
+      "modality": "potential",
+      "entity_ids": [
+        "total_assets",
+        "market_state"
+      ],
+      "evidence": [
+        "5.  **Asset Drop:** `totalAssets()` is calculated as `s_depositedAssets + s_assetsInAMM + s_marketState.unrealizedInterest()`. When the interest component drops to zero, `totalAssets()` decreases instantly.",
+        "1.  **Share Price Crash:** Since `sharePrice = totalAssets / totalSupply`, the sudden drop in assets causes the share price to crash."
+      ]
+    },
+    {
+      "id": "si_total_assets_monotonic",
+      "kind": "security_intent",
+      "text": "totalAssets should never decrease solely due to the passage of time. (inferred: report's stated invariant for the interest-bearing vault, contradicted by the interest-drop scenario).",
+      "modality": "inferred",
+      "entity_ids": [
+        "total_assets"
+      ],
+      "evidence": [
+        "This violates the fundamental invariant of an interest-bearing vault: `totalAssets` should never decrease solely due to the passage of time."
+      ]
+    },
+    {
+      "id": "asm_stored_field_only_106",
+      "kind": "assumption",
+      "text": "The stored unrealizedInterest field is limited to 106 bits while the protocol assumes the value will never exceed 2^106.",
+      "modality": "asserted",
+      "entity_ids": [
+        "unrealized_interest",
+        "market_state"
+      ],
+      "evidence": [
+        "The Panoptic protocol uses a packed struct `MarketState` to store global interest accounting variables in a single `uint256` slot to optimize gas. Specifically, the `unrealizedInterest` field—which tracks interest owed by borrowers to the pool—is allocated only **106 bits**.",
+        "This logic relies on the assumption that `unrealizedInterest` will never exceed $2^{106}$. However, $2^{106} \\approx 8.11 \\times 10^{31}$."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_accrue_interest",
+    "a_store_market_state",
+    "a_attacker_deposit"
+  ],
+  "ambiguities": [
+    "No fragment states an actual on-chain transaction triggering accrueInterest; the mechanism is described conditionally ('If a pool is deployed... and utilization is high').",
+    "No evidence establishes that the attacker's deposit after overflow actually occurred; described only as a capability ('can deposit').",
+    "No fragment confirms a specific supported token's pool has utilization high enough to reach 2^106 interest; examples are illustrative.",
+    "README range statement is the report's interpretation; the actual token-support policy wording is not otherwise corroborated."
+  ]
+}

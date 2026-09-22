@@ -1,0 +1,216 @@
+{
+  "schema_version": "report-formal-plan/2",
+  "precondition_ids": [
+    "p_vetokenid_nonzero",
+    "p_prior_totalassets",
+    "p_deposit_amount",
+    "p_not_first_depositor",
+    "asm_first_depositor_ok"
+  ],
+  "intent_id": "si_fair_mint_order",
+  "impact_ids": [
+    "imp_under_mint"
+  ],
+  "symbols": {
+    "ve_token_id": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "veNFT token id held by the vault (0 means no veNFT)",
+      "checkpoint": "before deposit",
+      "entity_ids": [
+        "vault_contract",
+        "venft"
+      ],
+      "source_ids": [
+        "p_vetokenid_nonzero"
+      ]
+    },
+    "total_assets_before": {
+      "sort": "int",
+      "unit": "HYBR",
+      "meaning": "totalAssets() value before the deposit increases it",
+      "checkpoint": "before deposit",
+      "entity_ids": [
+        "vault_contract"
+      ],
+      "source_ids": [
+        "p_prior_totalassets"
+      ]
+    },
+    "total_supply_before": {
+      "sort": "int",
+      "unit": "gHYBR",
+      "meaning": "totalSupply of gHYBR before the deposit",
+      "checkpoint": "before deposit",
+      "entity_ids": [
+        "vault_contract"
+      ],
+      "source_ids": [
+        "p_prior_totalassets"
+      ]
+    },
+    "deposit_amount": {
+      "sort": "int",
+      "unit": "HYBR",
+      "meaning": "amount of HYBR submitted by the depositor",
+      "checkpoint": "deposit call",
+      "entity_ids": [
+        "depositor"
+      ],
+      "source_ids": [
+        "p_deposit_amount"
+      ]
+    },
+    "total_supply_nonzero": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "guard that existing shares were already minted (totalSupply != 0), i.e. the depositor is not the first depositor",
+      "checkpoint": "before deposit",
+      "entity_ids": [
+        "depositor",
+        "existing_holders",
+        "vault_contract"
+      ],
+      "source_ids": [
+        "p_not_first_depositor"
+      ]
+    },
+    "minted_shares": {
+      "sort": "int",
+      "unit": "gHYBR",
+      "meaning": "gHYBR shares actually minted to the depositor",
+      "checkpoint": "after deposit",
+      "entity_ids": [
+        "depositor",
+        "ghybr_shares"
+      ],
+      "source_ids": [
+        "imp_under_mint"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_vetokenid_nonzero",
+      "predicate": {
+        "kind": "comparison",
+        "left": "ve_token_id",
+        "operator": "ne",
+        "right": {
+          "const": 0
+        }
+      }
+    },
+    {
+      "source_id": "p_prior_totalassets",
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "comparison",
+            "left": "total_assets_before",
+            "operator": "eq",
+            "right": {
+              "const": 100
+            }
+          },
+          {
+            "kind": "comparison",
+            "left": "total_supply_before",
+            "operator": "eq",
+            "right": {
+              "const": 100
+            }
+          }
+        ]
+      }
+    },
+    {
+      "source_id": "p_deposit_amount",
+      "predicate": {
+        "kind": "comparison",
+        "left": "deposit_amount",
+        "operator": "eq",
+        "right": {
+          "const": 100
+        }
+      }
+    },
+    {
+      "source_id": "p_not_first_depositor",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "total_supply_nonzero",
+        "value": true
+      }
+    },
+    {
+      "source_id": "asm_first_depositor_ok",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "total_supply_nonzero",
+        "value": true
+      }
+    }
+  ],
+  "pattern": {
+    "kind": "condition_forbids_effect",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "comparison",
+          "left": "ve_token_id",
+          "operator": "ne",
+          "right": {
+            "const": 0
+          }
+        },
+        {
+          "kind": "comparison",
+          "left": "deposit_amount",
+          "operator": "eq",
+          "right": {
+            "const": 100
+          }
+        },
+        {
+          "kind": "truth",
+          "symbol": "total_supply_nonzero",
+          "value": true
+        }
+      ]
+    },
+    "effect": {
+      "kind": "comparison",
+      "left": "minted_shares",
+      "operator": "lt",
+      "right": {
+        "const": 100
+      }
+    }
+  },
+  "assumptions": [
+    "totalAssets() equals the veNFT's locked HYBR amount while veTokenId != 0.",
+    "deposit() and calculateShares() use gHYBR ('shares') with 18-decimal-style units; no fee-on-transfer or rebasing on HYBR.",
+    "The fair pre-deposit ratio for a depositor of amount a is a * totalSupply_before / total_assets_before; with the stated before-state this is 100 shares for 100 HYBR.",
+    "deposit() is callable by the depositor; the scenario is a symbolic model of the described flow, not a live transaction."
+  ],
+  "unresolved": [
+    {
+      "category": "unsupported_relation",
+      "description": "The report only gives the worked example shares = 100*100/200 = 50 vs. 100*100/100 = 100; the exact calculateShares numerator/denominator and rounding are not fully specified, so the formula relating deposit_amount, totalAssets, and totalSupply to minted_shares is not report-grounded beyond the example.",
+      "source_ids": [
+        "si_fair_mint_order",
+        "imp_under_mint"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Only imp_under_mint is selected as the direct impact of the core V; incumbent-holder enrichment (imp_incumbent_gain) is a deferred secondary consequence.",
+    "The report does not specify the concrete calculateShares formula or rounding, so the exact minted amount rests on the one worked example.",
+    "No access control, reentrancy, or donation/attacker-triggered price manipulation variants are modeled here.",
+    "The safety intent is marked inferred; it is treated as the desired ordering condition, not as an asserted contract invariant."
+  ]
+}

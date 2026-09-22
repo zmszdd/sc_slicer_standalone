@@ -1,0 +1,64 @@
+Unaccounted Accrued Launchpad Fees Lead to Incorrect Accounting in mint/burn/swap Operations
+
+**Impact:** Financial loss for liquidity providers, incorrect AMM pricing, and potential draining of accrued fees
+
+**Root Cause:** The `mint()`, `burn()`, and `swap()` functions use raw token balances in calculations without subtracting `accruedLaunchpadFee0` and `accruedLaunchpadFee1`, leading to inflated balance calculations.
+
+## Technical Details
+
+### Vulnerability Description
+
+The `GTELaunchpadV2Pair` contract accumulates launchpad fees in `accruedLaunchpadFee0` and `accruedLaunchpadFee1` state variables during swap operations. However, the core AMM functions (`mint`, `burn`, `swap`) use raw token balances (`IERC20(token).balanceOf(address(this))`) for their calculations without properly accounting for these accrued fees.
+
+### Affected Functions
+
+1. **`mint()` function (Line 177-203)**:
+
+2. **`burn()` function (Line 207-225)**:
+
+3. **`swap()` function (Line 229-267)**:
+
+### Correct vs Incorrect Implementations
+
+** Incorrect (Current Implementation):**
+
+**Correct Implementation:**
+
+**Note:** The `_update()` function correctly handles this:
+
+## Attack Scenarios
+
+### 1. Mint Exploitation
+- **Setup:** After fees accrue from multiple swaps
+- **Attack:** User adds minimal liquidity but gets LP tokens calculated on inflated balances
+- **Impact:** User receives significantly more LP tokens than deserved
+- **Example:** Adding 0.001 tokens but getting LP tokens as if adding 0.001 + accrued fees
+
+### 2. Burn Exploitation  
+- **Setup:** User holds LP tokens when accrued fees are present
+- **Attack:** User burns LP tokens and receives pro-rata share based on inflated balances
+- **Impact:** User receives more underlying tokens than their fair share
+- **Example:** Identical LP burns yield different outputs depending on the presence of accrued fee
+
+### 3. Swap Exploitation
+- **Setup:** Accrued fees accumulate in the contract
+- **Attack:** User provides insufficient input tokens for a swap
+- **Impact:** Swap succeeds using accrued fees to cover the shortfall
+- **Example:** Required input = 100 tokens, user provides 80 tokens, swap succeeds using 20 tokens from accrued fees
+
+
+## Impact Assessment
+
+### Financial Impact
+- **Direct Loss:** Other LPs lose value as exploiters gain unfair advantages
+- **Fee Drainage:** Accrued fees meant for distribution can be consumed by exploiters
+- **Market Manipulation:** Incorrect pricing allows arbitrage opportunities
+
+### Systemic Impact
+- **AMM Invariant Violations:** Fundamental constant product formula becomes unreliable
+- **Liquidity Provider Trust:** Unfair distribution undermines LP confidence
+- **Protocol Economics:** Fee collection and distribution mechanisms compromised
+
+## Fix Recommendations
+
+### Primary Fix: Account for Accrued Fees in Balance Calculations

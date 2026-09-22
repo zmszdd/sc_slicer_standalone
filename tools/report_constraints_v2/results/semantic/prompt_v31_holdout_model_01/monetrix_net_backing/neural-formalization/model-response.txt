@@ -1,0 +1,100 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "supply_value": {
+      "sort": "int",
+      "unit": "usdc",
+      "meaning": "supply.value read from precompile return slot 4, consumed as account backing",
+      "checkpoint": "precompile return read (slot 4)",
+      "evidence_ids": ["e_02e378fe520a_0002", "e_02e378fe520a_0003"],
+      "entity_ids": ["borrow_lend_user_state_precompile", "precompile_reader"]
+    },
+    "borrow_value": {
+      "sort": "int",
+      "unit": "usdc",
+      "meaning": "borrow.value from precompile return slot 2, the account PM borrow liability",
+      "checkpoint": "account state prior to backing read",
+      "evidence_ids": ["e_02e378fe520a_0002", "e_02e378fe520a_0005"],
+      "entity_ids": ["borrow_value", "account"]
+    },
+    "total_backing_signed": {
+      "sort": "int",
+      "unit": "usdc",
+      "meaning": "totalBackingSigned() derived by MonetrixAccountant._readL1Backing from suppliedBalance alone",
+      "checkpoint": "after _readL1Backing computation",
+      "evidence_ids": ["e_02e378fe520a_0004", "e_02e378fe520a_0005"],
+      "entity_ids": ["total_backing_signed", "monetrix_accountant"]
+    }
+  },
+  "claims": [
+    {
+      "id": "backing_overstated_by_omitted_borrow",
+      "scope": "core",
+      "modality": "asserted",
+      "impact_ids": ["imp_overstated", "imp_denomination"],
+      "properties": {
+        "preconditions": {
+          "text": "Queried account holds a PM borrow (borrow.value nonzero); precompile 0x...0811 returns BorrowLendUserTokenState with borrow.value (slot 2) and supply.value (slot 4).",
+          "expression": {"op": "gt", "args": [{"var": "borrow_value"}, {"const": 0}]},
+          "evidence_ids": ["e_02e378fe520a_0001", "e_02e378fe520a_0002", "e_02e378fe520a_0005"],
+          "derivation": "p_account_borrow gives nonzero borrow; p_precompile_layout/asm_layout give distinct slots.",
+          "source_ids": ["p_precompile_layout", "p_account_borrow", "asm_layout"]
+        },
+        "safety": {
+          "text": "For an account with a PM borrow, totalBackingSigned() should not exceed the signed net supply.value minus borrow.value.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {"op": "gt", "args": [{"var": "borrow_value"}, {"const": 0}]},
+              {"op": "le", "args": [{"var": "total_backing_signed"}, {"op": "sub", "args": [{"var": "supply_value"}, {"var": "borrow_value"}]}]}
+            ]
+          },
+          "evidence_ids": ["e_02e378fe520a_0004", "e_02e378fe520a_0005", "e_02e378fe520a_0006"],
+          "derivation": "si_net_backing: guarded net-backing requirement.",
+          "source_ids": ["si_net_backing"]
+        },
+        "effects": {
+          "text": "For an account with a PM borrow, totalBackingSigned() exceeds supply.value minus borrow.value (overstated by borrow.value).",
+          "expression": {
+            "op": "and",
+            "args": [
+              {"op": "gt", "args": [{"var": "borrow_value"}, {"const": 0}]},
+              {"op": "gt", "args": [{"var": "total_backing_signed"}, {"op": "sub", "args": [{"var": "supply_value"}, {"var": "borrow_value"}]}]}
+            ]
+          },
+          "evidence_ids": ["e_02e378fe520a_0005"],
+          "derivation": "imp_overstated: reader omits borrow.value, so totalBackingSigned exceeds net.",
+          "source_ids": ["imp_overstated"]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {"": ["p_precompile_layout", "p_account_borrow", "asm_layout"]},
+        "safety": {"": ["si_net_backing"], "args.0": ["si_net_backing"], "args.1": ["si_net_backing"]},
+        "effects": {"": ["imp_overstated"], "args.0": ["imp_overstated"], "args.1": ["imp_overstated"]}
+      },
+      "effect_coverage": [
+        {"statement_id": "imp_overstated", "status": "formalized", "reason": "AST captures overstated backing for a PM-borrow account."},
+        {"statement_id": "imp_denomination", "status": "unformalized", "reason": "Asset-borrow USDC-notional conversion needs perp oracle price multiplication/division, not expressible; USDC case is unit metadata only."}
+      ],
+      "assumptions": [
+        "Precompile 0x...0811 ABI is (borrow.basis, borrow.value, supply.basis, supply.value); borrow.value slot 2, supply.value slot 4.",
+        "Core scenario is a USDC borrow, so supply.value and borrow.value share USDC units and subtraction netting is meaningful.",
+        "PrecompileReader.suppliedBalance, hence _readL1Backing, derives backing from supply.value alone and ignores borrow.value.",
+        "totalBackingSigned() is a single signed scalar comparable to the account's net backing."
+      ],
+      "unresolved": [
+        "Exact _readL1Backing arithmetic not fully shown because e_02e378fe520a_0004 is truncated.",
+        "Whether supply.value and borrow.value share units/decimals for netting is not stated.",
+        "Accuracy of the stated precompile ABI/slot layout is not independently verified.",
+        "USDC-notional conversion for asset borrows via perp oracle price cannot be expressed (no mul/div)."
+      ]
+    }
+  ],
+  "limitations": [
+    "No attacker, transaction path or exploitability is stated; the report is a code-correctness claim.",
+    "Population-wide, persistent or economic downstream consequences of overstated backing are deferred.",
+    "imp_denomination for asset borrows is unformalized.",
+    "Secondary/aggregate accounting effects are outside core scope.",
+    "No temporal or aggregate claims are formalized."
+  ]
+}

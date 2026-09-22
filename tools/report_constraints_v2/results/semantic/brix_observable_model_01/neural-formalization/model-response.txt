@@ -1,0 +1,133 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "msg_value": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "Native value (msg.value) supplied with the unstake() call.",
+      "checkpoint": "unstake_call_entry",
+      "evidence_ids": ["e_5d2a1d54551d_0003", "e_5d2a1d54551d_0007", "e_5d2a1d54551d_0014"],
+      "entity_ids": ["native_fee", "caller_integrator"]
+    },
+    "fee_native_fee": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "Exact native fee for the unstake message returned by _quote (fee.nativeFee).",
+      "checkpoint": "after_quote_in_unstake",
+      "evidence_ids": ["e_5d2a1d54551d_0007", "e_5d2a1d54551d_0008", "e_5d2a1d54551d_0014"],
+      "entity_ids": ["native_fee"]
+    },
+    "buffered_fee": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "Fee returned by quoteUnstakeWithBuffer(), deliberately larger than the exact quote.",
+      "checkpoint": "after_buffer_quote",
+      "evidence_ids": ["e_5d2a1d54551d_0010", "e_5d2a1d54551d_0011"],
+      "entity_ids": ["quote_buffer_helper", "native_fee"]
+    },
+    "call_reverts_native_mismatch": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "unstake() reverts with OAppSender.NotEnoughNative(uint256) because msg.value does not equal the native fee expected by _payNative.",
+      "checkpoint": "pay_native_execution",
+      "evidence_ids": ["e_5d2a1d54551d_0013", "e_5d2a1d54551d_0014"],
+      "entity_ids": ["pay_native", "oapp_sender"]
+    },
+    "lz_message_sent": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "A LayerZero cross-chain unstake message is dispatched by _lzSend.",
+      "checkpoint": "after_lzSend",
+      "evidence_ids": ["e_5d2a1d54551d_0009", "e_5d2a1d54551d_0014"],
+      "entity_ids": ["layerzero_endpoint", "unstake_messenger"]
+    }
+  },
+  "claims": [
+    {
+      "id": "buffered_overpay_reverts_before_dispatch",
+      "scope": "Single UnstakeMessenger.unstake() invocation on the spoke chain following the buffered-fee integration pattern.",
+      "modality": "asserted",
+      "impact_ids": ["i_all_buffered_unstakes_revert", "i_buffered_pattern_unusable", "i_users_cannot_complete_buffered_unstake"],
+      "properties": {
+        "preconditions": {
+          "text": "Caller obtains bufferedFee from quoteUnstakeWithBuffer() and invokes unstake() forwarding exactly that bufferedFee as msg.value, where msg.value strictly exceeds the exact quoted fee.nativeFee.",
+          "expression": {"op": "and", "args": [{"op": "eq", "args": [{"var": "msg_value"}, {"var": "buffered_fee"}]}, {"op": "gt", "args": [{"var": "msg_value"}, {"var": "fee_native_fee"}]}]},
+          "evidence_ids": ["e_5d2a1d54551d_0003", "e_5d2a1d54551d_0010", "e_5d2a1d54551d_0011", "e_5d2a1d54551d_0012", "e_5d2a1d54551d_0014", "e_5d2a1d54551d_0017", "e_5d2a1d54551d_0018", "e_5d2a1d54551d_0020"],
+          "derivation": "Conjunction of the buffered-fee integration precondition (msg.value equals the buffered helper result) and the overpayment precondition (msg.value strictly greater than fee.nativeFee).",
+          "source_ids": ["p_integrator_uses_buffered_flow", "p_call_value_exceeds_exact_fee"]
+        },
+        "safety": {
+          "text": "In the intended system, if msg.value is at or above the exact quoted native fee, unstake() must not abort on the LayerZero native-fee equality check (overpayment is accepted; excess refunded).",
+          "expression": {"op": "implies", "args": [{"op": "ge", "args": [{"var": "msg_value"}, {"var": "fee_native_fee"}]}, {"op": "not", "args": [{"var": "call_reverts_native_mismatch"}]}]},
+          "evidence_ids": ["e_5d2a1d54551d_0010", "e_5d2a1d54551d_0012"],
+          "derivation": "Intended behavior taken from the security intent: the buffered flow requires accepting msg.value at or above fee.nativeFee. The refund-forwarding half of the intent is not expressible here and is left unresolved.",
+          "source_ids": ["si_overpay_then_refund_should_work"]
+        },
+        "effects": {
+          "text": "The call reverts with OAppSender.NotEnoughNative(uint256) and no LayerZero unstake message is dispatched.",
+          "expression": {"op": "and", "args": [{"var": "call_reverts_native_mismatch"}, {"op": "not", "args": [{"var": "lz_message_sent"}]}]},
+          "evidence_ids": ["e_5d2a1d54551d_0003", "e_5d2a1d54551d_0014", "e_5d2a1d54551d_0017", "e_5d2a1d54551d_0020"],
+          "derivation": "Alleged effect: the overpaid buffered call fails the strict-equality native-fee check inside _payNative, reverting before dispatch.",
+          "source_ids": ["i_all_buffered_unstakes_revert"]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {"": ["p_integrator_uses_buffered_flow", "p_call_value_exceeds_exact_fee"]},
+        "safety": {"": ["si_overpay_then_refund_should_work"], "args.1": ["si_overpay_then_refund_should_work"]},
+        "effects": {"": ["i_all_buffered_unstakes_revert"], "args.1": ["i_all_buffered_unstakes_revert"]}
+      },
+      "effect_coverage": [
+        {"statement_id": "i_all_buffered_unstakes_revert", "status": "partial", "reason": "Encoded as a bounded single-call revert with no dispatch; the universal 'every buffered unstake' quantification is not expressible."},
+        {"statement_id": "i_buffered_pattern_unusable", "status": "partial", "reason": "Pattern-level unusability is a design consequence; the single-call revert is its witness but full pattern coverage is not a single-call fact."},
+        {"statement_id": "i_users_cannot_complete_buffered_unstake", "status": "partial", "reason": "User/population-level inability is not reducible to one call; only the witnessing revert is encoded."}
+      ],
+      "assumptions": ["as_excess_is_refunded: excess msg.value is recoverable via the refund address; not used as a premise and contradicted when the call reverts before any refund."],
+      "unresolved": ["Whether excess msg.value is ever forwarded/refunded to the caller's refund address (revert precedes dispatch).", "Exact upper bound and full set of overpayment values tested.", "LayerZero OAppSender version(s)/chain(s) where _payNative enforces strict equality.", "Whether the strict-equality constraint affects other UnstakeMessenger entrypoints."]
+    },
+    {
+      "id": "primary_ux_path_persistent_failure",
+      "scope": "Spoke-chain cross-chain unstake UX path across continued buffered-pattern use.",
+      "modality": "potential",
+      "impact_ids": ["i_primary_ux_path_broken"],
+      "properties": {
+        "preconditions": {
+          "text": "Integrators continue to follow the buffered-fee pattern exposed by UnstakeMessenger.",
+          "expression": null,
+          "evidence_ids": ["e_5d2a1d54551d_0020"],
+          "derivation": "Continued use of the buffered pattern is the report's stated condition for persistent failures; the numeric overpayment relation is already captured in the core claim.",
+          "source_ids": ["p_integrator_uses_buffered_flow"]
+        },
+        "safety": {
+          "text": "A primary cross-chain unstake UX path should not remain persistently unusable for users.",
+          "expression": null,
+          "evidence_ids": [],
+          "derivation": "No security_intent statement sources a persistence-scope obligation; left null/unresolved rather than inventing a free Boolean.",
+          "source_ids": []
+        },
+        "effects": {
+          "text": "Users may be unable to complete buffered cross-chain unstakes persistently until the integration is adjusted.",
+          "expression": null,
+          "evidence_ids": ["e_5d2a1d54551d_0020"],
+          "derivation": "Potential, persistent, population-scoped effect; not expressible as a bounded single-call constraint.",
+          "source_ids": ["i_primary_ux_path_broken"]
+        }
+      },
+      "formula_sources": {"preconditions": {}, "safety": {}, "effects": {}},
+      "effect_coverage": [
+        {"statement_id": "i_primary_ux_path_broken", "status": "unformalized", "reason": "Potential persistence/UX-scope effect cannot be encoded with bounded single-call AST; kept null."}
+      ],
+      "assumptions": [],
+      "unresolved": ["Duration and breadth of persistent user-facing failures across the buffered flow."]
+    }
+  ],
+  "limitations": [
+    "Deferred impact i_integrators_forced_to_exact_fee: timing/gas-price fragility between quote and execution is economic/temporal and not expressible in the allowed AST; no formula claim generated.",
+    "Deferred impact i_no_direct_fund_loss: the report asserts no fund loss, so there is no bad economic effect to formalize and no loss symbol is invented.",
+    "Impact i_all_buffered_unstakes_revert is population-scoped; coverage is partial because only a single-call revert is encoded.",
+    "Impacts i_buffered_pattern_unusable and i_users_cannot_complete_buffered_unstake are design/user-population-scoped; only the witnessing single-call revert is encoded (partial).",
+    "Impact i_primary_ux_path_broken is formalized only as a potential, null/unformalized claim; persistence scope is unsupported.",
+    "The intended refund of excess native value (si_overpay_then_refund_should_work) is not witnessed by the bad outcome, which reverts before any refund; this mismatch is flagged, not resolved.",
+    "No malicious actor is described; the report frames an integration/design mismatch, so no adversarial precondition or economic attack path is formalized.",
+    "The intended fix (accept overpayment vs alter the fee argument passed to _lzSend) is not specified by the report."
+  ]
+}

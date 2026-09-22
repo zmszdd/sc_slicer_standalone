@@ -1,0 +1,120 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Merkl_T4ExvutBBXC",
+    "audit_uid": "T4ExvutBBXC",
+    "requested_submission_uid": "HSab9DN9GRr",
+    "requested_finding_uid": "btqEyvckPQN",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Merkl_T4ExvutBBXC/20260618_144946/findings.json",
+    "source_submission_uid": "HSab9DN9GRr",
+    "source_finding_uid": "btqEyvckPQN",
+    "original_report_path": "Merkl_T4ExvutBBXC\\low_valid_HSab9DN9GRr.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "HSab9DN9GRr",
+  "finding_uid": "btqEyvckPQN",
+  "finding_number": "41",
+  "title": "createCampaign fails to enforce that duration is a multiple of EPOCH_DURATION, leading to potential reward calculation errors",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "Nyxaris",
+  "body": "## Finding description and impact\n\nThe `CampaignParameter` struct documentation in `CampaignParameters.sol` explicitly states strict requirements for the duration parameter:\n\n```solidity\n/// @notice Total duration of the campaign in seconds\n    /// @dev Must be a multiple of EPOCH_DURATION (3600 seconds / 1 hour)\n    /// @dev Must be at least EPOCH_DURATION (1 hour minimum)\n    uint32 duration;\n```\n\n\nHowever, the `DistributionCreator.sol` contract (specifically `_createCampaign` and `overrideCampaign`) only enforces the minimum duration, but fails to enforce the \"multiple of EPOCH_DURATION\" requirement.\n\n```solidity\n\n// DistributionCreator.sol :: _createCampaign\nfunction _createCampaign(CampaignParameters memory newCampaign) internal returns (bytes32) {\n    // ...\n    // Check: Duration >= HOUR\n    if (newCampaign.duration < HOUR) revert Errors.CampaignDurationBelowHour();\n    \n    // MISSING: Check that duration % HOUR == 0\n    // ...\n}\n```\n\n\nhttps://docs.merkl.xyz/merkl-mechanisms/features?q=computation+schedule#campaigns-of-any-duration\n\n### Impact \n\n- Data Consistency & Reward Calculation Errors: The Merkl protocol relies on discrete 1-hour epochs (EPOCH_DURATION) for reward calculation and distribution.\n\n - Partial Epochs: If a creator sets a duration of 5400 seconds (1.5 hours), the campaign covers one full epoch and one half-epoch.\n\n- Off-chain Failure: If the off-chain indexing engine strictly expects aligned epochs, it may either reject the campaign entirely (locking user funds) or drop the final partial epoch (causing a loss of user rewards)\n\n\n## Recommended mitigation steps\n\n- Add a modulo check in _createCampaign (and overrideCampaign if necessary) to enforce that the duration is perfectly aligned with the epoch length.\n\n```solidity\nfunction _createCampaign(CampaignParameters memory newCampaign) internal returns (bytes32) {\n        uint256 rewardTokenMinAmount = rewardTokenMinAmounts[newCampaign.rewardToken];\n        \n        if (newCampaign.duration < HOUR) revert Errors.CampaignDurationBelowHour();\n+       if (newCampaign.duration % HOUR != 0) revert Errors.InvalidParam();\n\n        // ... rest of the function\n    }\n```",
+  "proof_of_concept": "- Run this in the `c4-test` Directory.\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\nimport { console } from \"forge-std/console.sol\";\n\ncontract C4DurationMultiplePoC is Fixture {\n    uint256 internal constant amount = 100e18;\n\n    function setUp() public override {\n        super.setUp();\n\n        // 1. Whitelist token with small min-per-epoch so tests pass easily\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 1e8; // Tiny min threshold\n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        // 2. Fund and approve Alice\n        angle.mint(address(alice), amount * 10);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n    }\n\n    // PoC : Creation allows a duration that is NOT a multiple of HOUR (e.g., 5400 = 1.5 hours)\n    function test_CreateCampaign_AllowsNonMultipleDuration() external {\n        vm.startPrank(alice);\n\n        uint32 badDuration = 5400; // 1.5 hours, violates struct docs\n        uint32 start = uint32(block.timestamp + 1 hours);\n\n        CampaignParameters memory c = CampaignParameters({\n            campaignId: bytes32(0),\n            creator: alice,\n            rewardToken: address(angle),\n            amount: amount,\n            campaignType: 0,\n            startTimestamp: start,\n            duration: badDuration,\n            campaignData: bytes(\"\")\n        });\n\n        // Expect no revert even though docs require duration % HOUR == 0\n        bytes32 campaignId = creator.createCampaign(c);\n        vm.stopPrank();\n\n        // Verify on-chain state reflects invalid (per docs) duration\n        CampaignParameters memory stored = creator.campaign(campaignId);\n        console.log(\"Created campaign with duration:\", stored.duration);\n        console.log(\"Duration % HOUR:\", stored.duration % EPOCH_DURATION);\n        assertEq(stored.duration, badDuration, \"Stored duration should match the invalid value\");\n        assertTrue(stored.duration % EPOCH_DURATION != 0, \"Duration is not a multiple of HOUR\");\n    }\n\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/struct/CampaignParameters.sol#L26-#L28",
+    "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L529"
+  ],
+  "source_record": {
+    "project_id": "T4ExvutBBXC",
+    "submission_index": "646",
+    "api_submission_id": "",
+    "uid": "HSab9DN9GRr",
+    "number": "646",
+    "title": "createCampaign fails to enforce that duration is a multiple of EPOCH_DURATION, leading to potential reward calculation errors",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "Nyxaris",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/struct/CampaignParameters.sol#L26-#L28",
+      "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L529"
+    ],
+    "body": "## Finding description and impact\n\nThe `CampaignParameter` struct documentation in `CampaignParameters.sol` explicitly states strict requirements for the duration parameter:\n\n```solidity\n/// @notice Total duration of the campaign in seconds\n    /// @dev Must be a multiple of EPOCH_DURATION (3600 seconds / 1 hour)\n    /// @dev Must be at least EPOCH_DURATION (1 hour minimum)\n    uint32 duration;\n```\n\n\nHowever, the `DistributionCreator.sol` contract (specifically `_createCampaign` and `overrideCampaign`) only enforces the minimum duration, but fails to enforce the \"multiple of EPOCH_DURATION\" requirement.\n\n```solidity\n\n// DistributionCreator.sol :: _createCampaign\nfunction _createCampaign(CampaignParameters memory newCampaign) internal returns (bytes32) {\n    // ...\n    // Check: Duration >= HOUR\n    if (newCampaign.duration < HOUR) revert Errors.CampaignDurationBelowHour();\n    \n    // MISSING: Check that duration % HOUR == 0\n    // ...\n}\n```\n\n\nhttps://docs.merkl.xyz/merkl-mechanisms/features?q=computation+schedule#campaigns-of-any-duration\n\n### Impact \n\n- Data Consistency & Reward Calculation Errors: The Merkl protocol relies on discrete 1-hour epochs (EPOCH_DURATION) for reward calculation and distribution.\n\n - Partial Epochs: If a creator sets a duration of 5400 seconds (1.5 hours), the campaign covers one full epoch and one half-epoch.\n\n- Off-chain Failure: If the off-chain indexing engine strictly expects aligned epochs, it may either reject the campaign entirely (locking user funds) or drop the final partial epoch (causing a loss of user rewards)\n\n\n## Recommended mitigation steps\n\n- Add a modulo check in _createCampaign (and overrideCampaign if necessary) to enforce that the duration is perfectly aligned with the epoch length.\n\n```solidity\nfunction _createCampaign(CampaignParameters memory newCampaign) internal returns (bytes32) {\n        uint256 rewardTokenMinAmount = rewardTokenMinAmounts[newCampaign.rewardToken];\n        \n        if (newCampaign.duration < HOUR) revert Errors.CampaignDurationBelowHour();\n+       if (newCampaign.duration % HOUR != 0) revert Errors.InvalidParam();\n\n        // ... rest of the function\n    }\n```",
+    "proof_of_concept": "- Run this in the `c4-test` Directory.\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\nimport { console } from \"forge-std/console.sol\";\n\ncontract C4DurationMultiplePoC is Fixture {\n    uint256 internal constant amount = 100e18;\n\n    function setUp() public override {\n        super.setUp();\n\n        // 1. Whitelist token with small min-per-epoch so tests pass easily\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 1e8; // Tiny min threshold\n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        // 2. Fund and approve Alice\n        angle.mint(address(alice), amount * 10);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n    }\n\n    // PoC : Creation allows a duration that is NOT a multiple of HOUR (e.g., 5400 = 1.5 hours)\n    function test_CreateCampaign_AllowsNonMultipleDuration() external {\n        vm.startPrank(alice);\n\n        uint32 badDuration = 5400; // 1.5 hours, violates struct docs\n        uint32 start = uint32(block.timestamp + 1 hours);\n\n        CampaignParameters memory c = CampaignParameters({\n            campaignId: bytes32(0),\n            creator: alice,\n            rewardToken: address(angle),\n            amount: amount,\n            campaignType: 0,\n            startTimestamp: start,\n            duration: badDuration,\n            campaignData: bytes(\"\")\n        });\n\n        // Expect no revert even though docs require duration % HOUR == 0\n        bytes32 campaignId = creator.createCampaign(c);\n        vm.stopPrank();\n\n        // Verify on-chain state reflects invalid (per docs) duration\n        CampaignParameters memory stored = creator.campaign(campaignId);\n        console.log(\"Created campaign with duration:\", stored.duration);\n        console.log(\"Duration % HOUR:\", stored.duration % EPOCH_DURATION);\n        assertEq(stored.duration, badDuration, \"Stored duration should match the invalid value\");\n        assertTrue(stored.duration % EPOCH_DURATION != 0, \"Duration is not a multiple of HOUR\");\n    }\n\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/T4ExvutBBXC/submissions/646",
+    "raw": {
+      "auditUid": "T4ExvutBBXC",
+      "createdAt": "2025-11-30T22:52:50.022Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "rDPzvmCxeHG",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-17T13:56:07.800Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "btqEyvckPQN"
+        },
+        {
+          "uid": "vHUQZUv5ngo",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-17T13:56:10.174Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "btqEyvckPQN"
+        },
+        {
+          "uid": "3saijoAC9gC",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-17T13:56:27.310Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "HSab9DN9GRr",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "btqEyvckPQN",
+        "number": 41,
+        "duplicates": 11
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-12-17T13:56:27.310Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "createCampaign fails to enforce that duration is a multiple of EPOCH_DURATION, leading to potential reward calculation errors",
+      "uid": "HSab9DN9GRr",
+      "updatedAt": "2025-11-30T22:52:50.022Z",
+      "user": {
+        "uid": "yCnkCeBcyqR",
+        "handle": "Nyxaris"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe `CampaignParameter` struct documentation in `CampaignParameters.sol` explicitly states strict requirements for the duration parameter:\n\n```solidity\n/// @notice Total duration of the campaign in seconds\n    /// @dev Must be a multiple of EPOCH_DURATION (3600 seconds / 1 hour)\n    /// @dev Must be at least EPOCH_DURATION (1 hour minimum)\n    uint32 duration;\n```\n\n\nHowever, the `DistributionCreator.sol` contract (specifically `_createCampaign` and `overrideCampaign`) only enforces the minimum duration, but fails to enforce the \"multiple of EPOCH_DURATION\" requirement.\n\n```solidity\n\n// DistributionCreator.sol :: _createCampaign\nfunction _createCampaign(CampaignParameters memory newCampaign) internal returns (bytes32) {\n    // ...\n    // Check: Duration >= HOUR\n    if (newCampaign.duration < HOUR) revert Errors.CampaignDurationBelowHour();\n    \n    // MISSING: Check that duration % HOUR == 0\n    // ...\n}\n```\n\n\nhttps://docs.merkl.xyz/merkl-mechanisms/features?q=computation+schedule#campaigns-of-any-duration\n\n### Impact \n\n- Data Consistency & Reward Calculation Errors: The Merkl protocol relies on discrete 1-hour epochs (EPOCH_DURATION) for reward calculation and distribution.\n\n - Partial Epochs: If a creator sets a duration of 5400 seconds (1.5 hours), the campaign covers one full epoch and one half-epoch.\n\n- Off-chain Failure: If the off-chain indexing engine strictly expects aligned epochs, it may either reject the campaign entirely (locking user funds) or drop the final partial epoch (causing a loss of user rewards)\n\n\n## Recommended mitigation steps\n\n- Add a modulo check in _createCampaign (and overrideCampaign if necessary) to enforce that the duration is perfectly aligned with the epoch length.\n\n```solidity\nfunction _createCampaign(CampaignParameters memory newCampaign) internal returns (bytes32) {\n        uint256 rewardTokenMinAmount = rewardTokenMinAmounts[newCampaign.rewardToken];\n        \n        if (newCampaign.duration < HOUR) revert Errors.CampaignDurationBelowHour();\n+       if (newCampaign.duration % HOUR != 0) revert Errors.InvalidParam();\n\n        // ... rest of the function\n    }\n```",
+      "proofOfConcept": "- Run this in the `c4-test` Directory.\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\nimport { console } from \"forge-std/console.sol\";\n\ncontract C4DurationMultiplePoC is Fixture {\n    uint256 internal constant amount = 100e18;\n\n    function setUp() public override {\n        super.setUp();\n\n        // 1. Whitelist token with small min-per-epoch so tests pass easily\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 1e8; // Tiny min threshold\n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        // 2. Fund and approve Alice\n        angle.mint(address(alice), amount * 10);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n    }\n\n    // PoC : Creation allows a duration that is NOT a multiple of HOUR (e.g., 5400 = 1.5 hours)\n    function test_CreateCampaign_AllowsNonMultipleDuration() external {\n        vm.startPrank(alice);\n\n        uint32 badDuration = 5400; // 1.5 hours, violates struct docs\n        uint32 start = uint32(block.timestamp + 1 hours);\n\n        CampaignParameters memory c = CampaignParameters({\n            campaignId: bytes32(0),\n            creator: alice,\n            rewardToken: address(angle),\n            amount: amount,\n            campaignType: 0,\n            startTimestamp: start,\n            duration: badDuration,\n            campaignData: bytes(\"\")\n        });\n\n        // Expect no revert even though docs require duration % HOUR == 0\n        bytes32 campaignId = creator.createCampaign(c);\n        vm.stopPrank();\n\n        // Verify on-chain state reflects invalid (per docs) duration\n        CampaignParameters memory stored = creator.campaign(campaignId);\n        console.log(\"Created campaign with duration:\", stored.duration);\n        console.log(\"Duration % HOUR:\", stored.duration % EPOCH_DURATION);\n        assertEq(stored.duration, badDuration, \"Stored duration should match the invalid value\");\n        assertTrue(stored.duration % EPOCH_DURATION != 0, \"Duration is not a multiple of HOUR\");\n    }\n\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/struct/CampaignParameters.sol#L26-#L28,https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L529",
+      "number": 646,
+      "aiExplanation": null,
+      "_index": 646
+    }
+  }
+}

@@ -1,0 +1,39 @@
+Public injectAndCall allows unauthorized balance injection and arbitrary external call, enabling router balance drain
+
+## Summary
+injectAndCall is intended for delegated wallet context but is publicly callable without an onlyDelegatecall guard. It reads address(this) balances and uses them for a caller‑chosen target call, enabling anyone to drain any ETH or ERC20 tokens held by the router contract.
+
+## Description
+The router exposes two balance‑injection flows: injectSweepAndCall (pulls from msg.sender) and injectAndCall (reads from address(this) for delegated wallet usage). The latter is declared public and lacks any access‑control or delegatecall guard, despite interface docs stating it’s for delegatecalls.
+
+When called directly, injectAndCall treats the router’s own balances as the “caller balance,” then forwards ETH or grants ERC20 approval and executes an arbitrary call to a caller‑controlled target. This lets any account drain funds that reside on the router address (leftovers, accidental transfers, or intermediate balances).
+
+
+### Root Cause Analysis
+- injectAndCall is publicly callable and not restricted by onlyDelegatecall even though it assumes delegated wallet context and operates on address(this) balances.
+- The implementation allows arbitrary target and calldata after granting approval or forwarding value sourced from the contract’s own balances.
+- Other sensitive functions (e.g., sweep) correctly require onlyDelegatecall, highlighting inconsistent access control.
+
+### Exploit Scenario
+1. The router holds tokens/ETH (e.g., from prior operations, accidental transfers, or leftovers).
+2. Attacker deploys a drainer contract with a function that pulls tokens from msg.sender or forwards received ETH to the attacker.
+3. Attacker calls injectAndCall(tokenOrETH, drainer, callData, offset, placeholder):
+   - For ERC20: router approves drainer for full router balance and calls drainer; drainer transferFrom(router → attacker, fullBalance).
+   - For ETH: router calls drainer with value = router’s ETH balance; drainer forwards ETH to attacker.
+4. Router’s balances are fully drained without any authorization check.
+
+
+### Additional exploit vector: Leftovers from injectSweepAndCall
+- Flow:
+  1) Victim calls `injectSweepAndCall(token, target, ...)`, router pulls N tokens from victim and approves `target` for N.
+  2) `target` only pulls N - d via `transferFrom(msg.sender=router, receiver, N - d)`, leaving d tokens stranded on the router.
+  3) Any EOA later calls `injectAndCall(token, attackerTarget, ...)` to force-approve `attackerTarget` for the router’s current balance (d), and drain via `transferFrom(router, attacker, d)`.
+
+
+### Relevant Context
+- Interface docs label injectAndCall as “For delegatecalls from Sequence wallets,” but the implementation is callable by anyone.
+- The delegated entry path uses _injectAndCallDelegated, suggesting injectAndCall was meant to be restricted similarly to sweep/refund flows.
+
+## Impact
+- Direct theft of any ERC20 tokens or ETH held by the router.
+- High severity: permissionless balance drain of protocol‑owned assets at the router address; trivial to exploit if any funds accumulate.

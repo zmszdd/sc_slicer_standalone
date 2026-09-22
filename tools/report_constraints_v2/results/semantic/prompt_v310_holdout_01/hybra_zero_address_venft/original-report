@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Hybra Finance_xo4hapwL2Jy",
+    "audit_uid": "xo4hapwL2Jy",
+    "requested_submission_uid": "KheL7GviVGa",
+    "requested_finding_uid": "6KS8hWsQniG",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Hybra_Finance_xo4hapwL2Jy/20260618_145600/findings.json",
+    "source_submission_uid": "KheL7GviVGa",
+    "source_finding_uid": "6KS8hWsQniG",
+    "original_report_path": "Hybra Finance_xo4hapwL2Jy\\low_valid_KheL7GviVGa.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "KheL7GviVGa",
+  "finding_uid": "6KS8hWsQniG",
+  "finding_number": "69",
+  "title": "veNFT can be transferred to address(0), permanently losing locked HYBR tokens",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "piki",
+  "body": "The `VotingEscrow` contract allows veNFTs to be transferred to `address(0)`, which permanently locks the underlying HYBR tokens. The documentation says it should revert, but the code doesn't check for zero address.\n\n---\n\n## Vulnerability Details\n\n### The Bug\n\nThe `_transferFrom` function doesn't check if the recipient is `address(0)`. The documentation says it should revert, but it doesn't.\n\n**Vulnerable Code**:\n```solidity\nfunction _transferFrom(address _from, address _to, uint _tokenId, address _sender) internal {\n    require(attachments[_tokenId] == 0 && !voted[_tokenId], \"ATT\");\n    require(_isApprovedOrOwner(_sender, _tokenId), \"NAO\");\n    // MISSING: require(_to != address(0));\n    \n    _clearApproval(_from, _tokenId);\n    _removeTokenFrom(_from, _tokenId);\n    _addTokenTo(_to, _tokenId);  // Can add to address(0)!\n    emit Transfer(_from, _to, _tokenId);\n}\n```\n\n**What happens when transferred to address(0)**:\n- veNFT ownership goes to `address(0)`\n- Locked HYBR stays in contract\n- No one can withdraw it\n- Tokens are lost forever\n\n---\n\n## How This Can Happen\n\n**User makes typo**:\n- Wants to send to: `0x1234...5678`\n- Types: `0x0000...0000` (address(0))\n- veNFT goes to address(0), HYBR locked forever\n\n**Contract bug**:\n- Integration contract has uninitialized address\n- Calls `transferFrom(user, address(0), tokenId)`\n- User loses veNFT and locked HYBR\n\n**Malicious operator**:\n- User approved operator for convenience\n- Operator transfers to address(0)\n- User's funds stolen\n\nEvidence\n\n**1. Documentation says it should check**:\n```solidity\n/// Throws if `_to` is the zero address.  // Claims this but doesn't do it\n```\n\n**2. ERC721 standard requires it**:\n- EIP-721 says: \"Throws if `_to` is the zero address\"\n- This is mandatory for ERC721 compliance\n\n**3. Other contracts in codebase have this check**:\n- CLFactory: `require(token0 != address(0))`\n- GaugeManager: `require(tokenA != address(0))`\n- But VotingEscrow doesn't",
+  "proof_of_concept": "Proof of Concept\n\n**File**: `ve33/test/POC_veNFT_ZeroAddressBurn.t.sol`\n\n**How to run**:\n```bash\ncd ve33\nforge test --match-contract POC_veNFT_ZeroAddressBurn -vv\n```\n\n**Simple PoC code**:\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.13;\n\nimport \"forge-std/Test.sol\";\nimport \"./C4PoCTestbed.t.sol\";\n\ncontract POC_veNFT_ZeroAddressBurn is C4PoCTestbed {\n    \n    function test_HIGH_veNFT_CanTransferToZeroAddress() external {\n        // 1. Alice creates veNFT with 100k HYBR locked\n        address alice = address(0xa11ce);\n        uint256 lockAmount = 100000 ether;\n        \n        vm.prank(deployer);\n        hybr.transfer(alice, lockAmount);\n        \n        vm.startPrank(alice);\n        hybr.approve(address(votingEscrow), lockAmount);\n        uint256 tokenId = votingEscrow.create_lock(lockAmount, 365 days);\n        vm.stopPrank();\n        \n        // 2. Alice accidentally transfers to address(0)\n        vm.prank(alice);\n        votingEscrow.transferFrom(alice, address(0), tokenId);\n        \n        // 3. Verify permanent loss\n        assertEq(votingEscrow.ownerOf(tokenId), address(0));\n        assertEq(votingEscrow.balanceOf(alice), 0);\n        \n        // HYBR is locked forever, no one can withdraw\n        console.log(\"veNFT transferred to address(0)!\");\n        console.log(\"100,000 HYBR locked forever!\");\n    }\n}\n```\n\n**Expected output**:\n```\n[PASS] test_HIGH_veNFT_CanTransferToZeroAddress()\nveNFT transferred to address(0)!\n100,000 HYBR locked forever!\n```\n\n---\n\n## Recommended Fix\n\nAdd one line to check for zero address:\n\n```solidity\nfunction _transferFrom(address _from, address _to, uint _tokenId, address _sender) internal {\n    require(attachments[_tokenId] == 0 && !voted[_tokenId], \"ATT\");\n    require(_isApprovedOrOwner(_sender, _tokenId), \"NAO\");\n    require(_to != address(0), \"ERC721: transfer to zero\");  // ADD THIS LINE\n    \n    _clearApproval(_from, _tokenId);\n    _removeTokenFrom(_from, _tokenId);\n    _addTokenTo(_to, _tokenId);\n    emit Transfer(_from, _to, _tokenId);\n}\n```\n\nThis prevents transfers to address(0) and protects user funds.\n\n---\n\nThe `VotingEscrow` contract allows veNFTs to be transferred to `address(0)`, permanently locking the underlying HYBR tokens. The documentation claims it should revert, but the code doesn't check for zero address.\n\nFix**: Add `require(_to != address(0), \"ERC721: transfer to zero\");` to the `_transferFrom` function.",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-10-hybra-finance/blob/main/ve33/contracts/VotingEscrow.sol#L338-L368"
+  ],
+  "source_record": {
+    "project_id": "xo4hapwL2Jy",
+    "submission_index": "233",
+    "api_submission_id": "",
+    "uid": "KheL7GviVGa",
+    "number": "233",
+    "title": "veNFT can be transferred to address(0), permanently losing locked HYBR tokens",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "piki",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-10-hybra-finance/blob/main/ve33/contracts/VotingEscrow.sol#L338-L368"
+    ],
+    "body": "The `VotingEscrow` contract allows veNFTs to be transferred to `address(0)`, which permanently locks the underlying HYBR tokens. The documentation says it should revert, but the code doesn't check for zero address.\n\n---\n\n## Vulnerability Details\n\n### The Bug\n\nThe `_transferFrom` function doesn't check if the recipient is `address(0)`. The documentation says it should revert, but it doesn't.\n\n**Vulnerable Code**:\n```solidity\nfunction _transferFrom(address _from, address _to, uint _tokenId, address _sender) internal {\n    require(attachments[_tokenId] == 0 && !voted[_tokenId], \"ATT\");\n    require(_isApprovedOrOwner(_sender, _tokenId), \"NAO\");\n    // MISSING: require(_to != address(0));\n    \n    _clearApproval(_from, _tokenId);\n    _removeTokenFrom(_from, _tokenId);\n    _addTokenTo(_to, _tokenId);  // Can add to address(0)!\n    emit Transfer(_from, _to, _tokenId);\n}\n```\n\n**What happens when transferred to address(0)**:\n- veNFT ownership goes to `address(0)`\n- Locked HYBR stays in contract\n- No one can withdraw it\n- Tokens are lost forever\n\n---\n\n## How This Can Happen\n\n**User makes typo**:\n- Wants to send to: `0x1234...5678`\n- Types: `0x0000...0000` (address(0))\n- veNFT goes to address(0), HYBR locked forever\n\n**Contract bug**:\n- Integration contract has uninitialized address\n- Calls `transferFrom(user, address(0), tokenId)`\n- User loses veNFT and locked HYBR\n\n**Malicious operator**:\n- User approved operator for convenience\n- Operator transfers to address(0)\n- User's funds stolen\n\nEvidence\n\n**1. Documentation says it should check**:\n```solidity\n/// Throws if `_to` is the zero address.  // Claims this but doesn't do it\n```\n\n**2. ERC721 standard requires it**:\n- EIP-721 says: \"Throws if `_to` is the zero address\"\n- This is mandatory for ERC721 compliance\n\n**3. Other contracts in codebase have this check**:\n- CLFactory: `require(token0 != address(0))`\n- GaugeManager: `require(tokenA != address(0))`\n- But VotingEscrow doesn't",
+    "proof_of_concept": "Proof of Concept\n\n**File**: `ve33/test/POC_veNFT_ZeroAddressBurn.t.sol`\n\n**How to run**:\n```bash\ncd ve33\nforge test --match-contract POC_veNFT_ZeroAddressBurn -vv\n```\n\n**Simple PoC code**:\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.13;\n\nimport \"forge-std/Test.sol\";\nimport \"./C4PoCTestbed.t.sol\";\n\ncontract POC_veNFT_ZeroAddressBurn is C4PoCTestbed {\n    \n    function test_HIGH_veNFT_CanTransferToZeroAddress() external {\n        // 1. Alice creates veNFT with 100k HYBR locked\n        address alice = address(0xa11ce);\n        uint256 lockAmount = 100000 ether;\n        \n        vm.prank(deployer);\n        hybr.transfer(alice, lockAmount);\n        \n        vm.startPrank(alice);\n        hybr.approve(address(votingEscrow), lockAmount);\n        uint256 tokenId = votingEscrow.create_lock(lockAmount, 365 days);\n        vm.stopPrank();\n        \n        // 2. Alice accidentally transfers to address(0)\n        vm.prank(alice);\n        votingEscrow.transferFrom(alice, address(0), tokenId);\n        \n        // 3. Verify permanent loss\n        assertEq(votingEscrow.ownerOf(tokenId), address(0));\n        assertEq(votingEscrow.balanceOf(alice), 0);\n        \n        // HYBR is locked forever, no one can withdraw\n        console.log(\"veNFT transferred to address(0)!\");\n        console.log(\"100,000 HYBR locked forever!\");\n    }\n}\n```\n\n**Expected output**:\n```\n[PASS] test_HIGH_veNFT_CanTransferToZeroAddress()\nveNFT transferred to address(0)!\n100,000 HYBR locked forever!\n```\n\n---\n\n## Recommended Fix\n\nAdd one line to check for zero address:\n\n```solidity\nfunction _transferFrom(address _from, address _to, uint _tokenId, address _sender) internal {\n    require(attachments[_tokenId] == 0 && !voted[_tokenId], \"ATT\");\n    require(_isApprovedOrOwner(_sender, _tokenId), \"NAO\");\n    require(_to != address(0), \"ERC721: transfer to zero\");  // ADD THIS LINE\n    \n    _clearApproval(_from, _tokenId);\n    _removeTokenFrom(_from, _tokenId);\n    _addTokenTo(_to, _tokenId);\n    emit Transfer(_from, _to, _tokenId);\n}\n```\n\nThis prevents transfers to address(0) and protects user funds.\n\n---\n\nThe `VotingEscrow` contract allows veNFTs to be transferred to `address(0)`, permanently locking the underlying HYBR tokens. The documentation claims it should revert, but the code doesn't check for zero address.\n\nFix**: Add `require(_to != address(0), \"ERC721: transfer to zero\");` to the `_transferFrom` function.",
+    "detail_url": "https://code4rena.com/api/v1/audits/xo4hapwL2Jy/submissions/233",
+    "raw": {
+      "auditUid": "xo4hapwL2Jy",
+      "createdAt": "2025-10-10T07:07:13.123Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "ApHhKgrYVbZ",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-15T12:28:00.397Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "6KS8hWsQniG"
+        },
+        {
+          "uid": "zt7PmpagFHR",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-15T12:28:02.631Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "6KS8hWsQniG"
+        },
+        {
+          "uid": "9dw8M7RNGFq",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-19T08:02:42.779Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "KheL7GviVGa",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "6KS8hWsQniG",
+        "number": 69,
+        "duplicates": 3
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-10-28T17:34:13.988Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "veNFT can be transferred to address(0), permanently losing locked HYBR tokens",
+      "uid": "KheL7GviVGa",
+      "updatedAt": "2025-10-10T07:07:13.123Z",
+      "user": {
+        "uid": "pVf83JAExY8",
+        "handle": "piki"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "The `VotingEscrow` contract allows veNFTs to be transferred to `address(0)`, which permanently locks the underlying HYBR tokens. The documentation says it should revert, but the code doesn't check for zero address.\n\n---\n\n## Vulnerability Details\n\n### The Bug\n\nThe `_transferFrom` function doesn't check if the recipient is `address(0)`. The documentation says it should revert, but it doesn't.\n\n**Vulnerable Code**:\n```solidity\nfunction _transferFrom(address _from, address _to, uint _tokenId, address _sender) internal {\n    require(attachments[_tokenId] == 0 && !voted[_tokenId], \"ATT\");\n    require(_isApprovedOrOwner(_sender, _tokenId), \"NAO\");\n    // MISSING: require(_to != address(0));\n    \n    _clearApproval(_from, _tokenId);\n    _removeTokenFrom(_from, _tokenId);\n    _addTokenTo(_to, _tokenId);  // Can add to address(0)!\n    emit Transfer(_from, _to, _tokenId);\n}\n```\n\n**What happens when transferred to address(0)**:\n- veNFT ownership goes to `address(0)`\n- Locked HYBR stays in contract\n- No one can withdraw it\n- Tokens are lost forever\n\n---\n\n## How This Can Happen\n\n**User makes typo**:\n- Wants to send to: `0x1234...5678`\n- Types: `0x0000...0000` (address(0))\n- veNFT goes to address(0), HYBR locked forever\n\n**Contract bug**:\n- Integration contract has uninitialized address\n- Calls `transferFrom(user, address(0), tokenId)`\n- User loses veNFT and locked HYBR\n\n**Malicious operator**:\n- User approved operator for convenience\n- Operator transfers to address(0)\n- User's funds stolen\n\nEvidence\n\n**1. Documentation says it should check**:\n```solidity\n/// Throws if `_to` is the zero address.  // Claims this but doesn't do it\n```\n\n**2. ERC721 standard requires it**:\n- EIP-721 says: \"Throws if `_to` is the zero address\"\n- This is mandatory for ERC721 compliance\n\n**3. Other contracts in codebase have this check**:\n- CLFactory: `require(token0 != address(0))`\n- GaugeManager: `require(tokenA != address(0))`\n- But VotingEscrow doesn't",
+      "proofOfConcept": "Proof of Concept\n\n**File**: `ve33/test/POC_veNFT_ZeroAddressBurn.t.sol`\n\n**How to run**:\n```bash\ncd ve33\nforge test --match-contract POC_veNFT_ZeroAddressBurn -vv\n```\n\n**Simple PoC code**:\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.13;\n\nimport \"forge-std/Test.sol\";\nimport \"./C4PoCTestbed.t.sol\";\n\ncontract POC_veNFT_ZeroAddressBurn is C4PoCTestbed {\n    \n    function test_HIGH_veNFT_CanTransferToZeroAddress() external {\n        // 1. Alice creates veNFT with 100k HYBR locked\n        address alice = address(0xa11ce);\n        uint256 lockAmount = 100000 ether;\n        \n        vm.prank(deployer);\n        hybr.transfer(alice, lockAmount);\n        \n        vm.startPrank(alice);\n        hybr.approve(address(votingEscrow), lockAmount);\n        uint256 tokenId = votingEscrow.create_lock(lockAmount, 365 days);\n        vm.stopPrank();\n        \n        // 2. Alice accidentally transfers to address(0)\n        vm.prank(alice);\n        votingEscrow.transferFrom(alice, address(0), tokenId);\n        \n        // 3. Verify permanent loss\n        assertEq(votingEscrow.ownerOf(tokenId), address(0));\n        assertEq(votingEscrow.balanceOf(alice), 0);\n        \n        // HYBR is locked forever, no one can withdraw\n        console.log(\"veNFT transferred to address(0)!\");\n        console.log(\"100,000 HYBR locked forever!\");\n    }\n}\n```\n\n**Expected output**:\n```\n[PASS] test_HIGH_veNFT_CanTransferToZeroAddress()\nveNFT transferred to address(0)!\n100,000 HYBR locked forever!\n```\n\n---\n\n## Recommended Fix\n\nAdd one line to check for zero address:\n\n```solidity\nfunction _transferFrom(address _from, address _to, uint _tokenId, address _sender) internal {\n    require(attachments[_tokenId] == 0 && !voted[_tokenId], \"ATT\");\n    require(_isApprovedOrOwner(_sender, _tokenId), \"NAO\");\n    require(_to != address(0), \"ERC721: transfer to zero\");  // ADD THIS LINE\n    \n    _clearApproval(_from, _tokenId);\n    _removeTokenFrom(_from, _tokenId);\n    _addTokenTo(_to, _tokenId);\n    emit Transfer(_from, _to, _tokenId);\n}\n```\n\nThis prevents transfers to address(0) and protects user funds.\n\n---\n\nThe `VotingEscrow` contract allows veNFTs to be transferred to `address(0)`, permanently locking the underlying HYBR tokens. The documentation claims it should revert, but the code doesn't check for zero address.\n\nFix**: Add `require(_to != address(0), \"ERC721: transfer to zero\");` to the `_transferFrom` function.",
+      "linesOfCode": "https://github.com/code-423n4/2025-10-hybra-finance/blob/main/ve33/contracts/VotingEscrow.sol#L338-L368",
+      "number": 233,
+      "aiExplanation": null,
+      "_index": 233
+    }
+  }
+}

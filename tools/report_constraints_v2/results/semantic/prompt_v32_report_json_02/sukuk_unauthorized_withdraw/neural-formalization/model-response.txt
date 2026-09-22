@@ -1,0 +1,155 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "victim_deposited": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Victim has deposited funds into the vault",
+      "checkpoint": "before withdrawal call",
+      "evidence_ids": ["e_f5f848436b92_0014"],
+      "entity_ids": ["victim", "werc7575_vault"]
+    },
+    "victim_self_allowance": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Victim holds validator-granted self-allowance",
+      "checkpoint": "before withdrawal call",
+      "evidence_ids": ["e_f5f848436b92_0015"],
+      "entity_ids": ["victim", "validator"]
+    },
+    "attacker_approved": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Victim has approved the attacker as spender",
+      "checkpoint": "before withdrawal call",
+      "evidence_ids": ["e_f5f848436b92_0016"],
+      "entity_ids": ["victim", "attacker"]
+    },
+    "attacker_call": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Attacker calls withdraw()/redeem() passing the victim's address as the owner parameter",
+      "checkpoint": "at call entry",
+      "evidence_ids": ["e_f5f848436b92_0006", "e_f5f848436b92_0009"],
+      "entity_ids": ["attacker", "werc7575_vault", "victim"]
+    },
+    "withdraw_completed": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "withdraw()/redeem() call completes against the victim's position",
+      "checkpoint": "after call returns",
+      "evidence_ids": ["e_f5f848436b92_0006", "e_f5f848436b92_0009"],
+      "entity_ids": ["werc7575_vault", "victim", "attacker"]
+    },
+    "caller_authorized": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Caller authorization holds (msg.sender == owner or allowance[owner][msg.sender] >= shares)",
+      "checkpoint": "during call execution",
+      "evidence_ids": ["e_f5f848436b92_0010"],
+      "entity_ids": ["werc7575_vault"]
+    }
+  },
+  "claims": [
+    {
+      "id": "unauthorized_withdrawal_from_victim_position",
+      "scope": "core",
+      "modality": "asserted",
+      "impact_ids": ["unauthorized_state_change"],
+      "properties": {
+        "preconditions": {
+          "text": "Victim has deposited funds, victim holds validator-granted self-allowance, victim has not approved the attacker, and attacker calls withdraw()/redeem() with the victim's address as owner.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {"var": "victim_deposited"},
+              {"var": "victim_self_allowance"},
+              {"op": "not", "args": [{"var": "attacker_approved"}]},
+              {"var": "attacker_call"}
+            ]
+          },
+          "evidence_ids": ["e_f5f848436b92_0014", "e_f5f848436b92_0015", "e_f5f848436b92_0016", "e_f5f848436b92_0006", "e_f5f848436b92_0009"],
+          "derivation": "Conjunction of asserted preconditions victim_deposited, victim_has_self_allowance, no_approval_to_attacker and the prior input observation attacker_calls_withdraw_redeem. Assumption assets_sent_to_attacker is excluded from P (post-effect transfer) and named in unresolved.",
+          "source_ids": ["victim_deposited", "victim_has_self_allowance", "no_approval_to_attacker", "attacker_calls_withdraw_redeem"]
+        },
+        "safety": {
+          "text": "If the withdraw()/redeem() call completes against the victim's position, then caller authorization held.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {"var": "withdraw_completed"},
+              {"var": "caller_authorized"}
+            ]
+          },
+          "evidence_ids": ["e_f5f848436b92_0010"],
+          "derivation": "Protected-effect construction (effect -> authorized) derived from security_intent statement caller_authorization_intent, which grounds the ERC-4626 requirement that caller authorization be verified when msg.sender != owner.",
+          "source_ids": ["caller_authorization_intent"]
+        },
+        "effects": {
+          "text": "The withdraw()/redeem() call completes against the victim's position and caller authorization did not hold.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {"var": "withdraw_completed"},
+              {"op": "not", "args": [{"var": "caller_authorized"}]}
+            ]
+          },
+          "evidence_ids": ["e_f5f848436b92_0006", "e_f5f848436b92_0009"],
+          "derivation": "Direct impact statement unauthorized_state_change: the call completes against the victim's position while the victim's authorization is absent.",
+          "source_ids": ["unauthorized_state_change"]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": ["victim_deposited", "victim_has_self_allowance", "no_approval_to_attacker", "attacker_calls_withdraw_redeem"],
+          "args.0": ["victim_deposited"],
+          "args.1": ["victim_has_self_allowance"],
+          "args.2": ["no_approval_to_attacker"],
+          "args.2.args.0": ["no_approval_to_attacker"],
+          "args.3": ["attacker_calls_withdraw_redeem"]
+        },
+        "safety": {
+          "": ["caller_authorization_intent"],
+          "args.0": ["caller_authorization_intent"],
+          "args.1": ["caller_authorization_intent"]
+        },
+        "effects": {
+          "": ["unauthorized_state_change"],
+          "args.0": ["unauthorized_state_change"],
+          "args.1": ["unauthorized_state_change"],
+          "args.1.args.0": ["unauthorized_state_change"]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "unauthorized_state_change",
+          "status": "formalized",
+          "reason": "Effect modeled as withdraw_completed AND NOT caller_authorized from the asserted impact statement."
+        },
+        {
+          "statement_id": "drain_deposits",
+          "status": "unformalized",
+          "reason": "100% drain is an aggregate/percentage claim with no quantity observables and depends on the unspecified asset transfer destination; deferred to limitations."
+        }
+      ],
+      "assumptions": [
+        "Caller authorization is observed as a Boolean outcome of the cited ERC-4626 check; allowance/shares quantities are not modeled.",
+        "The validator-granted self-allowance is active; the module granting it is out of scope.",
+        "No approval from the victim to the attacker and no user interaction occur before the call."
+      ],
+      "unresolved": [
+        "assets_sent_to_attacker: the withdrawn-assets destination (owner vs caller) is unspecified; it cannot be a ground precondition without asserting the harmful transfer.",
+        "Whether msg.sender is the owner or an approved spender in the reported scenario is not stated.",
+        "Exact spendSelfAllowance() semantics are not detailed.",
+        "Deployment and reachability of WERC7575Vault at the reported time are not asserted."
+      ]
+    }
+  ],
+  "limitations": [
+    "Share/allowance quantities and vault balances are not represented; no quantitative bound for the 100% drain (e_f5f848436b92_0012) is asserted.",
+    "Downstream asset transfer to the attacker is deferred; the actual recipient of withdrawn assets is unspecified.",
+    "The ERC-4626 caller-authorization requirement is inferred, not directly observed at runtime.",
+    "Economic loss and any subsequent effects are not quantified.",
+    "Only the single core unauthorized-withdrawal scenario is formalized; other approval-based paths are out of scope."
+  ]
+}

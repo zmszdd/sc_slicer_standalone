@@ -1,0 +1,43 @@
+LaunchToken rewards accrual may not end as intended due to incorrect check
+
+## Description
+
+
+`LaunchToken::_beforeTransfer()` hook contains logic that will call `_increaseFeeShares()` and `_decreaseFeeShares()`.
+
+`LaunchToken::_increaseFeeShares()` and `LaunchToken::_decreaseFeeShares()` update the user’s share accounting for rewards calculations. 
+
+When a `LaunchToken` is first created, 80% of the bonding supply is locked on a curve and will be sold from it.
+
+When a `LaunchToken` is bought off the curve, `LaunchToken::_increaseFeeShares()` will be called, which will increase `totalFeeShares` by the amount that is purchased.
+
+`LaunchToken` cannot be transferred during the bonding phase.
+
+Therefore, `LaunchToken::_decreaseFeeShares()` will only be called if a user sells back the `LaunchToken` to `Launchpad` or after graduation is triggered when transfers are opened for users.
+
+
+The graduation process is triggered when the entire bonding supply is purchased via `Launchpad::buy()` - `unlocked` will be toggled to true in this process.
+
+
+In `LaunchToken::_decreaseFeeShares()`, `LaunchToken::_endRewards()` is supposed to be called when `totalFeeShare = 0` and `unlocked = false`.
+
+`LaunchToken::_endRewards()` will trigger the following flow:
+
+`LaunchToken::_endRewards()` → `Launchpad::endRewards()` → `Distributor::endRewards()` → `Pair::endRewardsAccrual()` 
+
+`Pair::endRewardsAccrual()` will stop forwarding swap fees to `Distributor`. 
+
+Currently, the only time `totalFeeShare = 0` and `unlocked = false` can occur is if the first purchaser of a `LaunchToken` sold back their tokens to the `Launchpad`. 
+
+However, at that point, the pair may not have been created and the transaction will revert.
+
+`_endRewards()` is intended to get called later in the `LaunchToken` lifecycle when all the original `LaunchToken` purchasers have ‘sold’ their shares. 
+
+Since `unlocked` will be toggled to true after graduation occurs, `_endRewards()` will never execute due to the check.
+
+1. The trigger for `_endRewards()` is faulty and rewards may not conclude as intended due to `unlocked` check.
+2. Users also have no incentive to end rewards accrual - The last few share holders can earn fees forever after majority of the share holders have exited the system.
+
+## Impact
+
+`LaunchToken::_endRewards()` may not trigger as intended / Last few users can prevent trigger of `LaunchToken::_endRewards()`

@@ -1,0 +1,98 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Ekubo_3FTodhsvBkM",
+    "audit_uid": "3FTodhsvBkM",
+    "requested_submission_uid": "BUQ99ShXk2t",
+    "requested_finding_uid": "UUwQB62z4Bz",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Ekubo_3FTodhsvBkM/20260618_144948/findings.json",
+    "source_submission_uid": "BUQ99ShXk2t",
+    "source_finding_uid": "UUwQB62z4Bz",
+    "original_report_path": "Ekubo_3FTodhsvBkM\\low_unknown_BUQ99ShXk2t.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "BUQ99ShXk2t",
+  "finding_uid": "UUwQB62z4Bz",
+  "finding_number": "32",
+  "title": "Missing deadline check in swap operations allows pending transactions to be executed at unfavorable times",
+  "severity": "medium",
+  "validity": "",
+  "quality": "",
+  "user_handle": "M1troV",
+  "body": "## Impact\nTransaction expiration is a standard security practice in AMMs (like Uniswap) to prevent miners or validators from withholding a transaction and executing it at a later time when the market conditions are unfavorable to the user.\n\nThe `Router` swap functions lack a `deadline` or `timestamp` check. \n\nIf a user submits a swap and the gas price spikes (or a validator holds the tx), the transaction can remain pending in the mempool for an indefinite period. When it is finally executed (e.g., hours or days later), the price might have moved significantly, leading to unexpected losses for the user that could have been prevented with a simple expiration check.",
+  "proof_of_concept": "## Proof of Concept\nThe following Foundry test demonstrates that a swap transaction signed \"now\" can be successfully executed 1 year later (`block.timestamp + 365 days`), proving there is no expiration logic.\n\nTo run this PoC:\n1. Create a file `test/RouterDeadline.t.sol` inside the project structure.\n2. Paste the code below.\n3. Run: `forge test --match-path test/RouterDeadline.t.sol --via-ir --evm-version osaka`\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Router} from \"../src/Router.sol\";\nimport {Core} from \"../src/Core.sol\";\nimport {ICore} from \"../src/interfaces/ICore.sol\";\nimport {PoolKey} from \"../src/types/poolKey.sol\";\nimport {PoolConfig} from \"../src/types/poolConfig.sol\";\nimport {SwapParameters} from \"../src/types/swapParameters.sol\";\nimport {SqrtRatio} from \"../src/types/sqrtRatio.sol\";\n\ncontract RouterDeadlineTest is Test {\n    Router public router;\n    Core public core;\n    address attacker = address(0xBAD);\n    address tokenA = address(0xAA); \n    address tokenB = address(0xBB); \n\n    function setUp() public {\n        core = new Core();\n        router = new Router(ICore(payable(address(core))));\n        vm.deal(attacker, 10 ether); \n    }\n\n    function test_SwapHasNoExpiration() public {\n        // Setup Pool\n        PoolKey memory key = PoolKey({\n            token0: tokenA, \n            token1: tokenB, \n            config: PoolConfig.wrap(bytes32(0))\n        });\n\n        core.initializePool(key, 0);\n\n        vm.startPrank(attacker);\n        \n        // 1. Simulate a massive delay (1 year later)\n        // In a secure router, this transaction should fail (Expired).\n        uint256 oneYearLater = block.timestamp + 365 days;\n        vm.warp(oneYearLater);\n        \n        // Swap parameters\n        SwapParameters params = SwapParameters.wrap(bytes32(abi.encodePacked(\n            int128(100), int128(0), uint32(0), bool(false)\n        )));\n\n        // 2. Attack: Execute the old swap\n        try router.swap(key, params, 0) {\n             // If we are here, the swap executed successfully despite being 1 year old\n        } catch {\n             revert(\"Swap failed unexpectedly\");\n        }\n        \n        vm.stopPrank();\n    }\n}\n\nRecommended Mitigation Steps\nAdd a deadline parameter to all swap functions and verify it against block.timestamp.\n\nSolidity\n\nmodifier ensure(uint256 deadline) {\n    require(block.timestamp <= deadline, \"Transaction expired\");\n    _;\n}",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-ekubo/blob/main/src/Router.sol#L363"
+  ],
+  "source_record": {
+    "project_id": "3FTodhsvBkM",
+    "submission_index": "744",
+    "api_submission_id": "",
+    "uid": "BUQ99ShXk2t",
+    "number": "744",
+    "title": "Missing deadline check in swap operations allows pending transactions to be executed at unfavorable times",
+    "severity": "medium",
+    "validity": "",
+    "quality": "",
+    "handle": "M1troV",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-ekubo/blob/main/src/Router.sol#L363"
+    ],
+    "body": "## Impact\nTransaction expiration is a standard security practice in AMMs (like Uniswap) to prevent miners or validators from withholding a transaction and executing it at a later time when the market conditions are unfavorable to the user.\n\nThe `Router` swap functions lack a `deadline` or `timestamp` check. \n\nIf a user submits a swap and the gas price spikes (or a validator holds the tx), the transaction can remain pending in the mempool for an indefinite period. When it is finally executed (e.g., hours or days later), the price might have moved significantly, leading to unexpected losses for the user that could have been prevented with a simple expiration check.",
+    "proof_of_concept": "## Proof of Concept\nThe following Foundry test demonstrates that a swap transaction signed \"now\" can be successfully executed 1 year later (`block.timestamp + 365 days`), proving there is no expiration logic.\n\nTo run this PoC:\n1. Create a file `test/RouterDeadline.t.sol` inside the project structure.\n2. Paste the code below.\n3. Run: `forge test --match-path test/RouterDeadline.t.sol --via-ir --evm-version osaka`\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Router} from \"../src/Router.sol\";\nimport {Core} from \"../src/Core.sol\";\nimport {ICore} from \"../src/interfaces/ICore.sol\";\nimport {PoolKey} from \"../src/types/poolKey.sol\";\nimport {PoolConfig} from \"../src/types/poolConfig.sol\";\nimport {SwapParameters} from \"../src/types/swapParameters.sol\";\nimport {SqrtRatio} from \"../src/types/sqrtRatio.sol\";\n\ncontract RouterDeadlineTest is Test {\n    Router public router;\n    Core public core;\n    address attacker = address(0xBAD);\n    address tokenA = address(0xAA); \n    address tokenB = address(0xBB); \n\n    function setUp() public {\n        core = new Core();\n        router = new Router(ICore(payable(address(core))));\n        vm.deal(attacker, 10 ether); \n    }\n\n    function test_SwapHasNoExpiration() public {\n        // Setup Pool\n        PoolKey memory key = PoolKey({\n            token0: tokenA, \n            token1: tokenB, \n            config: PoolConfig.wrap(bytes32(0))\n        });\n\n        core.initializePool(key, 0);\n\n        vm.startPrank(attacker);\n        \n        // 1. Simulate a massive delay (1 year later)\n        // In a secure router, this transaction should fail (Expired).\n        uint256 oneYearLater = block.timestamp + 365 days;\n        vm.warp(oneYearLater);\n        \n        // Swap parameters\n        SwapParameters params = SwapParameters.wrap(bytes32(abi.encodePacked(\n            int128(100), int128(0), uint32(0), bool(false)\n        )));\n\n        // 2. Attack: Execute the old swap\n        try router.swap(key, params, 0) {\n             // If we are here, the swap executed successfully despite being 1 year old\n        } catch {\n             revert(\"Swap failed unexpectedly\");\n        }\n        \n        vm.stopPrank();\n    }\n}\n\nRecommended Mitigation Steps\nAdd a deadline parameter to all swap functions and verify it against block.timestamp.\n\nSolidity\n\nmodifier ensure(uint256 deadline) {\n    require(block.timestamp <= deadline, \"Transaction expired\");\n    _;\n}",
+    "detail_url": "https://code4rena.com/api/v1/audits/3FTodhsvBkM/submissions/744",
+    "raw": {
+      "auditUid": "3FTodhsvBkM",
+      "createdAt": "2025-12-09T01:18:23.785Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "pkGTKFQx7yU",
+          "userUid": "nj8chUpsBrG",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-07T13:40:20.703Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "UUwQB62z4Bz"
+        }
+      ],
+      "finding": {
+        "uid": "UUwQB62z4Bz",
+        "number": 32,
+        "duplicates": 13
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": null,
+        "updatedAt": "2025-12-23T16:44:49.238Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Missing deadline check in swap operations allows pending transactions to be executed at unfavorable times",
+      "uid": "BUQ99ShXk2t",
+      "updatedAt": "2025-12-09T01:18:23.785Z",
+      "user": {
+        "uid": "x4JjsNXzzcs",
+        "handle": "M1troV"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Impact\nTransaction expiration is a standard security practice in AMMs (like Uniswap) to prevent miners or validators from withholding a transaction and executing it at a later time when the market conditions are unfavorable to the user.\n\nThe `Router` swap functions lack a `deadline` or `timestamp` check. \n\nIf a user submits a swap and the gas price spikes (or a validator holds the tx), the transaction can remain pending in the mempool for an indefinite period. When it is finally executed (e.g., hours or days later), the price might have moved significantly, leading to unexpected losses for the user that could have been prevented with a simple expiration check.",
+      "proofOfConcept": "## Proof of Concept\nThe following Foundry test demonstrates that a swap transaction signed \"now\" can be successfully executed 1 year later (`block.timestamp + 365 days`), proving there is no expiration logic.\n\nTo run this PoC:\n1. Create a file `test/RouterDeadline.t.sol` inside the project structure.\n2. Paste the code below.\n3. Run: `forge test --match-path test/RouterDeadline.t.sol --via-ir --evm-version osaka`\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Router} from \"../src/Router.sol\";\nimport {Core} from \"../src/Core.sol\";\nimport {ICore} from \"../src/interfaces/ICore.sol\";\nimport {PoolKey} from \"../src/types/poolKey.sol\";\nimport {PoolConfig} from \"../src/types/poolConfig.sol\";\nimport {SwapParameters} from \"../src/types/swapParameters.sol\";\nimport {SqrtRatio} from \"../src/types/sqrtRatio.sol\";\n\ncontract RouterDeadlineTest is Test {\n    Router public router;\n    Core public core;\n    address attacker = address(0xBAD);\n    address tokenA = address(0xAA); \n    address tokenB = address(0xBB); \n\n    function setUp() public {\n        core = new Core();\n        router = new Router(ICore(payable(address(core))));\n        vm.deal(attacker, 10 ether); \n    }\n\n    function test_SwapHasNoExpiration() public {\n        // Setup Pool\n        PoolKey memory key = PoolKey({\n            token0: tokenA, \n            token1: tokenB, \n            config: PoolConfig.wrap(bytes32(0))\n        });\n\n        core.initializePool(key, 0);\n\n        vm.startPrank(attacker);\n        \n        // 1. Simulate a massive delay (1 year later)\n        // In a secure router, this transaction should fail (Expired).\n        uint256 oneYearLater = block.timestamp + 365 days;\n        vm.warp(oneYearLater);\n        \n        // Swap parameters\n        SwapParameters params = SwapParameters.wrap(bytes32(abi.encodePacked(\n            int128(100), int128(0), uint32(0), bool(false)\n        )));\n\n        // 2. Attack: Execute the old swap\n        try router.swap(key, params, 0) {\n             // If we are here, the swap executed successfully despite being 1 year old\n        } catch {\n             revert(\"Swap failed unexpectedly\");\n        }\n        \n        vm.stopPrank();\n    }\n}\n\nRecommended Mitigation Steps\nAdd a deadline parameter to all swap functions and verify it against block.timestamp.\n\nSolidity\n\nmodifier ensure(uint256 deadline) {\n    require(block.timestamp <= deadline, \"Transaction expired\");\n    _;\n}",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-ekubo/blob/main/src/Router.sol#L363",
+      "number": 744,
+      "aiExplanation": null,
+      "_index": 744
+    }
+  }
+}

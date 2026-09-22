@@ -1,0 +1,293 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "suffix_present": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "userOp.signature carries the optional (validUntil, validAfter) suffix.",
+      "checkpoint": "pre-validation",
+      "evidence_ids": [
+        "e_e62f9a0169ed_0002"
+      ],
+      "entity_ids": [
+        "userop_signature",
+        "validity_window"
+      ]
+    },
+    "signature_authorized": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the 65-byte ECDSA signature recovers to the authorized signer over userOpHash.",
+      "checkpoint": "signature validation",
+      "evidence_ids": [
+        "e_e62f9a0169ed_0002"
+      ],
+      "entity_ids": [
+        "signer",
+        "userop_signature"
+      ]
+    },
+    "operation_submitted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a relayer/bundler submits the userOp and the EntryPoint accepts it for handling.",
+      "checkpoint": "submission",
+      "evidence_ids": [
+        "e_e62f9a0169ed_0002",
+        "e_e62f9a0169ed_0004"
+      ],
+      "entity_ids": [
+        "bundler",
+        "entry_point"
+      ]
+    },
+    "window_bound": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the digest checked by _validateSignature covers the (validUntil, validAfter) bytes, i.e. the window is committed by the signature.",
+      "checkpoint": "signature validation",
+      "evidence_ids": [
+        "e_e62f9a0169ed_0002",
+        "e_e62f9a0169ed_0004"
+      ],
+      "entity_ids": [
+        "smart_account",
+        "validity_window"
+      ]
+    },
+    "operation_executed": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the EntryPoint executes the userOp (post-state change).",
+      "checkpoint": "post-execution",
+      "evidence_ids": [
+        "e_e62f9a0169ed_0004"
+      ],
+      "entity_ids": [
+        "entry_point",
+        "smart_account"
+      ]
+    },
+    "execution_time": {
+      "sort": "int",
+      "unit": "unix timestamp seconds",
+      "meaning": "block timestamp at which the operation executes.",
+      "checkpoint": "execution",
+      "evidence_ids": [
+        "e_e62f9a0169ed_0004"
+      ],
+      "entity_ids": [
+        "entry_point"
+      ]
+    },
+    "valid_after": {
+      "sort": "int",
+      "unit": "unix timestamp seconds",
+      "meaning": "lower bound of the signer-approved (validUntil, validAfter) window.",
+      "checkpoint": "signature validation",
+      "evidence_ids": [
+        "e_e62f9a0169ed_0002"
+      ],
+      "entity_ids": [
+        "validity_window",
+        "signer"
+      ]
+    },
+    "valid_until": {
+      "sort": "int",
+      "unit": "unix timestamp seconds",
+      "meaning": "upper bound of the signer-approved (validUntil, validAfter) window.",
+      "checkpoint": "signature validation",
+      "evidence_ids": [
+        "e_e62f9a0169ed_0002"
+      ],
+      "entity_ids": [
+        "validity_window",
+        "signer"
+      ]
+    }
+  },
+  "claims": [
+    {
+      "id": "validity_window_not_bound_to_signature",
+      "scope": "core",
+      "modality": "potential",
+      "impact_ids": [
+        "i_window_bypassed",
+        "i_action_outside_window"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "Signature carries the (validUntil, validAfter) suffix, is otherwise valid over userOpHash, and a relayer can submit it; the account treats the suffix as enforceable.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "suffix_present"
+              },
+              {
+                "var": "signature_authorized"
+              },
+              {
+                "var": "operation_submitted"
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_e62f9a0169ed_0002",
+            "e_e62f9a0169ed_0004"
+          ],
+          "derivation": "Conjunction of the inferred preconditions plus the enforceability assumption.",
+          "source_ids": [
+            "p_signature_has_suffix",
+            "p_valid_ecdsa_over_hash",
+            "p_relayer_submits",
+            "as_suffix_enforced"
+          ]
+        },
+        "safety": {
+          "text": "An accepted signature should be over a digest covering the window bytes, and an executed operation should have its timestamp inside the signed window.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "implies",
+                "args": [
+                  {
+                    "var": "signature_authorized"
+                  },
+                  {
+                    "var": "window_bound"
+                  }
+                ]
+              },
+              {
+                "op": "implies",
+                "args": [
+                  {
+                    "var": "operation_executed"
+                  },
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "ge",
+                        "args": [
+                          {
+                            "var": "execution_time"
+                          },
+                          {
+                            "var": "valid_after"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "le",
+                        "args": [
+                          {
+                            "var": "execution_time"
+                          },
+                          {
+                            "var": "valid_until"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_e62f9a0169ed_0002",
+            "e_e62f9a0169ed_0004"
+          ],
+          "derivation": "Binding clause plus completion-guarded timing obligation; execution requires a state change, so a rejected attempt is no violation.",
+          "source_ids": [
+            "si_bind_window_to_signature"
+          ]
+        },
+        "effects": {
+          "text": "The operation executes outside the signer-approved window, bypassing the intended timing constraint.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "operation_executed"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "ge",
+                        "args": [
+                          {
+                            "var": "execution_time"
+                          },
+                          {
+                            "var": "valid_after"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "le",
+                        "args": [
+                          {
+                            "var": "execution_time"
+                          },
+                          {
+                            "var": "valid_until"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_e62f9a0169ed_0004"
+          ],
+          "derivation": "Execution at a timestamp outside the signed window negates the guarded timing clause of the intent.",
+          "source_ids": [
+            "i_window_bypassed"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_window_bypassed",
+          "status": "partial",
+          "reason": "Expressed as execution outside the window, but the signed window is not observable once the suffix can be rewritten."
+        },
+        {
+          "statement_id": "i_action_outside_window",
+          "status": "unformalized",
+          "reason": "Aggregate over arbitrary encoded wallet actions and their downstream effects; no single observable predicate."
+        }
+      ],
+      "assumptions": [
+        "as_suffix_enforced: the account treats (validUntil, validAfter) as the signer's enforceable timing constraint.",
+        "valid_after/valid_until denote the signer-approved window committed to by the signature.",
+        "execution_time is the block timestamp when the EntryPoint executes the operation."
+      ],
+      "unresolved": [
+        "The signed window cannot be recovered from userOpHash, so signer-approved vs rewritten suffix is not observable; V may not witness NOT I if valid_after/valid_until are read as the presented suffix.",
+        "Exact suffix encoding and whether the EntryPoint hash excludes it depend on the account implementation.",
+        "Whether any relayer or only the original bundler can rewrite the suffix is unspecified.",
+        "window_bound is a code/config digest-coverage property, not directly observable at validation runtime."
+      ]
+    }
+  ],
+  "limitations": [
+    "i_action_outside_window is aggregate/downstream and left unformalized.",
+    "Economic and persistent consequences are out of core scope.",
+    "Temporal wording 'earlier than validAfter / long after validUntil' is not separable from 'outside window' over supplied data.",
+    "Modality kept potential; no downstream consequence upgraded.",
+    "No PoC, rule catalog, or code execution used."
+  ]
+}
