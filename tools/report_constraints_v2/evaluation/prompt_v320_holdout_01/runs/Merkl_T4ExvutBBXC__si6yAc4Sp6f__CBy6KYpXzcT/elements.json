@@ -1,0 +1,280 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "createCampaign operator-funded campaign creation via _pullTokens fallback",
+    "environment": "DistributionCreator contract with USDC token and operator delegation feature",
+    "evidence": [
+      "When an operator (`msg.sender`) creates a campaign on behalf of a creator, the `_pullTokens` function is designed to first use the creator's pre-deposited balance. However, if the creator's balance is insufficient, the logic falls back to pulling the entire campaign amount directly from the operator's wallet via `safeTransferFrom`.",
+      "A malicious creator can exploit this by front-running the operator's transaction. They can deposit funds and grant an allowance to lure the operator, then withdraw their funds just before the operator's `createCampaign` call is executed. This ensures the initial balance check fails, triggering the fallback and causing the unsuspecting operator to fund the campaign.",
+      "- Alice deposits 1000 USDC into the `DistributionCreator` contract using `increaseTokenBalance`. Her internal balance is now 1000 USDC.",
+      "- Alice authorizes Bob as an operator using `toggleCampaignOperator`.",
+      "- Alice grants Bob an allowance of 1000 USDC using `increaseTokenAllowance`.",
+      "- Bob prepares and submits a transaction to call `createCampaign`, specifying Alice as the `creator` and a `campaignAmount` of 1000 USDC. He sets a standard gas price.",
+      "- Upon seeing Bob's transaction, Alice immediately submits a transaction to call `decreaseTokenBalance` to withdraw her 1000 USDC. She uses a higher gas price to ensure her transaction is mined _before_ Bob's.",
+      "- The check `if (userBalance >= campaignAmount)` becomes `if (0 >= 1000)`, which is **false**.",
+      "- The contract calls `IERC20(USDC).safeTransferFrom(msg.sender, ..., 1000)`.",
+      "- Since `msg.sender` is Bob, the 1000 USDC is pulled directly from Bob's wallet (assuming he has given the contract an allowance to spend his USDC, which is a prerequisite for any direct-payment campaign creation).",
+      "**Result:** Alice successfully created her 1000 USDC campaign, got all her money back, and forced Bob to pay for the entire thing."
+    ]
+  },
+  "entities": [
+    {
+      "id": "alice_creator",
+      "name": "Alice (Creator)",
+      "role": "attacker",
+      "evidence": [
+        "- **Alice (Creator):** The malicious attacker.",
+        "- Alice deposits 1000 USDC into the `DistributionCreator` contract using `increaseTokenBalance`. Her internal balance is now 1000 USDC.",
+        "- Upon seeing Bob's transaction, Alice immediately submits a transaction to call `decreaseTokenBalance` to withdraw her 1000 USDC. She uses a higher gas price to ensure her transaction is mined _before_ Bob's."
+      ]
+    },
+    {
+      "id": "bob_operator",
+      "name": "Bob (Operator)",
+      "role": "victim",
+      "evidence": [
+        "- **Bob (Operator):** The victim.",
+        "- Bob prepares and submits a transaction to call `createCampaign`, specifying Alice as the `creator` and a `campaignAmount` of 1000 USDC. He sets a standard gas price.",
+        "- Since `msg.sender` is Bob, the 1000 USDC is pulled directly from Bob's wallet (assuming he has given the contract an allowance to spend his USDC, which is a prerequisite for any direct-payment campaign creation)."
+      ]
+    },
+    {
+      "id": "distribution_creator",
+      "name": "DistributionCreator contract",
+      "role": "contract",
+      "evidence": [
+        "When an operator (`msg.sender`) creates a campaign on behalf of a creator, the `_pullTokens` function is designed to first use the creator's pre-deposited balance. However, if the creator's balance is insufficient, the logic falls back to pulling the entire campaign amount directly from the operator's wallet via `safeTransferFrom`.",
+        "- Alice deposits 1000 USDC into the `DistributionCreator` contract using `increaseTokenBalance`. Her internal balance is now 1000 USDC."
+      ]
+    },
+    {
+      "id": "usdc",
+      "name": "USDC token",
+      "role": "asset",
+      "evidence": [
+        "- Alice deposits 1000 USDC into the `DistributionCreator` contract using `increaseTokenBalance`. Her internal balance is now 1000 USDC.",
+        "- The contract calls `IERC20(USDC).safeTransferFrom(msg.sender, ..., 1000)`."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "alice_deposits_1000_usdc",
+      "kind": "precondition",
+      "text": "Alice deposits 1000 USDC into the DistributionCreator contract via increaseTokenBalance, giving her an internal balance of 1000 USDC.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice_creator",
+        "distribution_creator",
+        "usdc"
+      ],
+      "evidence": [
+        "- Alice deposits 1000 USDC into the `DistributionCreator` contract using `increaseTokenBalance`. Her internal balance is now 1000 USDC."
+      ]
+    },
+    {
+      "id": "alice_authorizes_bob_operator",
+      "kind": "precondition",
+      "text": "Alice authorizes Bob as an operator using toggleCampaignOperator.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice_creator",
+        "bob_operator"
+      ],
+      "evidence": [
+        "- Alice authorizes Bob as an operator using `toggleCampaignOperator`."
+      ]
+    },
+    {
+      "id": "alice_grants_bob_allowance",
+      "kind": "precondition",
+      "text": "Alice grants Bob an allowance of 1000 USDC using increaseTokenAllowance.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice_creator",
+        "bob_operator",
+        "usdc"
+      ],
+      "evidence": [
+        "- Alice grants Bob an allowance of 1000 USDC using `increaseTokenAllowance`."
+      ]
+    },
+    {
+      "id": "bob_submits_create_campaign",
+      "kind": "precondition",
+      "text": "Bob prepares and submits a transaction to call createCampaign specifying Alice as creator and campaignAmount of 1000 USDC.",
+      "modality": "asserted",
+      "entity_ids": [
+        "bob_operator",
+        "alice_creator",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "- Bob prepares and submits a transaction to call `createCampaign`, specifying Alice as the `creator` and a `campaignAmount` of 1000 USDC. He sets a standard gas price."
+      ]
+    },
+    {
+      "id": "alice_front_runs_withdrawal",
+      "kind": "action",
+      "text": "Alice monitors the mempool and submits a decreaseTokenBalance transaction with a higher gas price to withdraw her 1000 USDC before Bob's transaction is mined.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice_creator",
+        "distribution_creator",
+        "usdc"
+      ],
+      "evidence": [
+        "- Alice monitors the mempool for Bob's transaction.",
+        "- Upon seeing Bob's transaction, Alice immediately submits a transaction to call `decreaseTokenBalance` to withdraw her 1000 USDC. She uses a higher gas price to ensure her transaction is mined _before_ Bob's."
+      ]
+    },
+    {
+      "id": "alice_withdrawal_succeeds",
+      "kind": "action",
+      "text": "Alice's withdrawal succeeds, reducing her internal balance in the contract to 0.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice_creator",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "- Alice's withdrawal succeeds. Her internal balance in the contract is now 0."
+      ]
+    },
+    {
+      "id": "bob_create_campaign_mined",
+      "kind": "action",
+      "text": "Bob's createCampaign transaction is mined and proceeds to _pullTokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "bob_operator",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "- Bob's `createCampaign` transaction is now mined.",
+        "- The call proceeds to `_pullTokens`."
+      ]
+    },
+    {
+      "id": "balance_check_fails",
+      "kind": "root_cause",
+      "text": "The check if (userBalance >= campaignAmount) evaluates to if (0 >= 1000), which is false, causing execution to jump to the final else block.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distribution_creator",
+        "alice_creator"
+      ],
+      "evidence": [
+        "- The check `if (userBalance >= campaignAmount)` becomes `if (0 >= 1000)`, which is **false**.",
+        "- Execution jumps to the final `else` block."
+      ]
+    },
+    {
+      "id": "fallback_pulls_from_operator",
+      "kind": "root_cause",
+      "text": "The final else block calls IERC20(USDC).safeTransferFrom(msg.sender, ..., 1000), pulling the entire campaign amount directly from the operator's wallet when the creator's balance is insufficient.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distribution_creator",
+        "bob_operator",
+        "usdc"
+      ],
+      "evidence": [
+        "When an operator (`msg.sender`) creates a campaign on behalf of a creator, the `_pullTokens` function is designed to first use the creator's pre-deposited balance. However, if the creator's balance is insufficient, the logic falls back to pulling the entire campaign amount directly from the operator's wallet via `safeTransferFrom`.",
+        "- The contract calls `IERC20(USDC).safeTransferFrom(msg.sender, ..., 1000)`."
+      ]
+    },
+    {
+      "id": "bob_funds_campaign",
+      "kind": "impact",
+      "text": "Since msg.sender is Bob, the 1000 USDC is pulled directly from Bob's wallet, forcing the operator to pay for the entire campaign.",
+      "modality": "asserted",
+      "entity_ids": [
+        "bob_operator",
+        "usdc",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "- Since `msg.sender` is Bob, the 1000 USDC is pulled directly from Bob's wallet (assuming he has given the contract an allowance to spend his USDC, which is a prerequisite for any direct-payment campaign creation).",
+        "**Result:** Alice successfully created her 1000 USDC campaign, got all her money back, and forced Bob to pay for the entire thing."
+      ]
+    },
+    {
+      "id": "alice_campaign_created_free",
+      "kind": "impact",
+      "text": "Alice successfully created her 1000 USDC campaign and got all her money back.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice_creator",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "**Result:** Alice successfully created her 1000 USDC campaign, got all her money back, and forced Bob to pay for the entire thing."
+      ]
+    },
+    {
+      "id": "operator_financial_loss",
+      "kind": "impact",
+      "text": "Campaign operators suffer direct, unexpected financial loss.",
+      "modality": "asserted",
+      "entity_ids": [
+        "bob_operator"
+      ],
+      "evidence": [
+        "- **Financial Impact:** Direct, unexpected financial loss for campaign operators."
+      ]
+    },
+    {
+      "id": "operator_feature_untrustworthy",
+      "kind": "impact",
+      "text": "The operator/delegation feature is rendered untrustworthy and unusable.",
+      "modality": "asserted",
+      "entity_ids": [
+        "bob_operator",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "- **System Impact:** The entire operator/delegation feature is rendered untrustworthy and unusable. No rational actor would agree to be an operator under these conditions."
+      ]
+    },
+    {
+      "id": "operator_should_not_fund_campaign",
+      "kind": "security_intent",
+      "text": "When an operator creates a campaign on behalf of a creator, the operator's wallet should not be charged for the campaign amount if the creator's pre-deposited balance was sufficient at the time the operator submitted the transaction.",
+      "modality": "inferred",
+      "entity_ids": [
+        "bob_operator",
+        "alice_creator",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "When an operator (`msg.sender`) creates a campaign on behalf of a creator, the `_pullTokens` function is designed to first use the creator's pre-deposited balance. However, if the creator's balance is insufficient, the logic falls back to pulling the entire campaign amount directly from the operator's wallet via `safeTransferFrom`.",
+        "A malicious creator can exploit this by front-running the operator's transaction. They can deposit funds and grant an allowance to lure the operator, then withdraw their funds just before the operator's `createCampaign` call is executed. This ensures the initial balance check fails, triggering the fallback and causing the unsuspecting operator to fund the campaign."
+      ]
+    },
+    {
+      "id": "operator_allowance_prerequisite",
+      "kind": "assumption",
+      "text": "The operator has given the contract an allowance to spend his USDC, which is a prerequisite for any direct-payment campaign creation.",
+      "modality": "asserted",
+      "entity_ids": [
+        "bob_operator",
+        "distribution_creator",
+        "usdc"
+      ],
+      "evidence": [
+        "- Since `msg.sender` is Bob, the 1000 USDC is pulled directly from Bob's wallet (assuming he has given the contract an allowance to spend his USDC, which is a prerequisite for any direct-payment campaign creation)."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "alice_front_runs_withdrawal",
+    "alice_withdrawal_succeeds",
+    "bob_create_campaign_mined"
+  ],
+  "ambiguities": [
+    "Report does not state whether Bob's createCampaign transaction was actually observed on-chain or is a hypothetical scenario.",
+    "Report does not specify the exact timing or block ordering beyond Alice using a higher gas price.",
+    "Report does not clarify whether the operator's allowance to the contract is a separate approval from the creator's allowance to the operator."
+  ]
+}
