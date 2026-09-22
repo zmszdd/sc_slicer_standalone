@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+- **新增 `semantic-v3.20`：给最后两个系统性缺陷各一条可执行配方。**v3.19 之后只剩
+  `sequence_domain_fork`（0/10），其 10 次失败是"一个可归一化形状 + 两个真缺陷"：
+  - 6/10：把"block.chainid 在部署时读一次"编成了自反比较
+    `domain_separator_chain_id == domain_separator_chain_id`。提示词**已经禁止**自反
+    比较，但从没说"值被固定/缓存/只读一次"这类事实**应该**长什么样，模型没有正向形态
+    可抓。v3.20 在审核第 3 条给出两种忠实形态（与另一个可观察量比较，或声明一个
+    `sort:"bool"` 事件符号并以该 source ID 命名）。
+  - 3/10：`state_correspondence` 的 relation 是双可观察量等式
+    `domain_separator_chain_id == current_chain_id`。审核第 4 条**正是要求**这种等式，
+    但这两个可观察量只由 precondition 支撑，等式本身不带 impact，于是被
+    `classified_relation_alignment` 拒绝。模型其实**已经声明了**带 impact 的
+    `signature_valid`，却从未在 `relation` 里引用它。v3.20 说明"只有对应关系不够"，
+    并给出保留它的形态（`relation` 用 `any_of` 覆盖等式与该可观察量）。
+  两条配方都在写下提示词**之前**先在该真实样本上离线验证过（否则改的只是失败位置），
+  且都只加约束、不放松任何验证器。
+- **v3.20 对照实测（5 例 × 10 次 = 50 次调用）**：校验通过 **40/50 -> 43/50（86%）**；
+  `sequence_domain_fork` **0/10 -> 3/10**（首次通过）；该案例 grounding 失败 **3 -> 0**、
+  自反比较 **6 -> 3**；其余四例保持 10/10；kind 合规保持 50/50，无回归。
+  残余 7 次：4 次整数当标志位（提示词审核第 2 条已明写正确解法，模型未照做）、
+  3 次自反比较（配方把 6 减到 3，未清零）—— 都属模型能力边界，不再堆叠提示词。
+  另外 B 类归一化在**真实流程**中触发 4 次（此前只在测试里验证过接线）。
+- **修掉本次改动引入的一个重放缺陷（重要）。**`cli/batch_verify.py` 原先要求落盘的
+  `formal-plan.json` **等于**原始 `model-claim.json`；而本次归一化落盘的是修正后的
+  plan、原始响应留在 `model-claim.json`，于是**凡归一化触发过的运行都无法重放**（报
+  `neural formal plan changed`）。已跟踪的 v3.20 采样里就有 1 个（3 个通过中的
+  `sequence_domain_fork__s2`）因此丢失。
+  修法沿用项目自己的先例（元素层的 `element-format-normalization.json`）：`verify`
+  **重新施加**该已声明的变换并**审计变更记录**，然后才做严格相等 —— 因此对"其他任何
+  改动"仍然严格。修复后 `sequence_domain_fork__s2` 恢复
+  `offline_verified: true`。
+  教训：我最初的接线测试只断言"修复器跑过了、日志写出来了"，**没有跑 `verify`**，
+  所以漏掉了它。已补 `PlanNormalizationReplayTest`，断言重放能**越过**该相等检查
+  （修复前它以 `neural formal plan changed` 失败），并附一条"篡改仍被拒"的反向守卫；
+  两者都做了负向证明。
+- **判据泛化：ID 前缀是模型自选的。**原判据只接受 `source_id` 去掉 `p_`/`a_` 前缀，
+  但元素提示词**并未规定**该前缀，冻结运行里两种约定都存在 —— 而**恒等形式
+  `name == source_id` 才是最清楚的"复用来源自身标识符"**，原判据却拒绝了它。现接受
+  "来源自身 ID，至多去掉 kind 前缀"，其余（改写、截断）仍然拒绝。
+  泛化后重测：v3.19 数字不变（其 ID 全带前缀），v3.20 为 4 次声明、
+  **新增通过 0 / 原本通过被改动 0**。
+- 测试基线 312 -> 319（+7：恒等形式与截断式各一条、重放越过检查、篡改仍被拒、
+  v3.20 两条配方各一条、基线版本缺少配方的反向对照）。
+- `code_sha256` 重基线 3 处（`semantic_core.py` 覆盖 3 个清单；`cli/batch_verify.py`
+  不在任何清单跟踪范围内），重基线后零漂移。
+- 版本号顺延：`v3.20` 已被本次仅提示词的修复占用，`semantic_axioms` / schema v6 那套
+  顺延为 **v3.21**。
+
 - **`invalid truth binding` 由 `REJECT` 改判 `NORMALIZE`（边界第 3 条归一化）。**
   v3.19 遗留的 `sequence_domain_fork` 失败里 9/10 是模型在 `precondition_terms` 的
   某条里写了
@@ -63,7 +110,7 @@
   软化、progress/liveness 未被波及，以及"每个版本只在其声明的区域偏离其基线"这条
   结构性不变量改为逐版本参数化）。
 - 版本号顺延：`v3.19` 已被本次仅提示词的修复占用，`semantic_axioms` / schema v6 那套
-  顺延为 **v3.20**。
+  顺延为下一版（现为 **v3.21**）。
 
 - **新增 `semantic-v3.18`：只改提示词，删除与编译器固定模板自相矛盾的继承文字。**
   v3.16 的正式提示词里继承了 v3.15 的三处 legacy 形状说明
@@ -91,7 +138,7 @@
 - `code_sha256` 零漂移：8 个清单、9 个 key 全部一致；`prompts/registry.py` 与
   `semantic_prompts_v318.py` 不在任何清单的跟踪范围内。
 - HANDOFF 原先把 "v3.18/schema v6" 预留给了 `semantic_axioms` / I 空真那套更大的改造。
-  本次 v3.18 是**仅提示词**的窄修复、schema 仍为 `/4`；那套 schema-v6 工作顺延为 v3.20。
+  本次 v3.18 是**仅提示词**的窄修复、schema 仍为 `/4`；那套 schema-v6 工作顺延（现为 v3.21）。
 
 - **`temperature: 0` 没能带来确定性，而且移动了输出分布。**追加该字段后，同一提示词
   两次运行的 `model-claim.json` **语义仍不同**（`dimensions`/`summary`、

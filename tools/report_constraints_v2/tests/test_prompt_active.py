@@ -9,7 +9,7 @@ from prompts.active import resolve_prompt_set
 from prompts.definitions import PIV_DEFINITIONS, render_definitions
 from prompts.registry import EXPERIMENTAL_VERSION, RECOMMENDED_VERSION
 from prompts.versions import (semantic_prompts_v316, semantic_prompts_v318,
-                              semantic_prompts_v319)
+                              semantic_prompts_v319, semantic_prompts_v320)
 import preview
 
 
@@ -47,7 +47,7 @@ class ActivePromptTest(unittest.TestCase):
         resolved = resolve_prompt_set(EXPERIMENTAL_VERSION)
         self.assertEqual(resolved.version, EXPERIMENTAL_VERSION)
         self.assertEqual(resolved.formal_prompt,
-                         semantic_prompts_v319.formal_prompt('ids', 'core'))
+                         semantic_prompts_v320.formal_prompt('ids', 'core'))
 
     def test_preview_prints_exact_resolved_prompt_without_model(self):
         previous = sys.argv
@@ -124,6 +124,11 @@ class LegacyPatternKindRemovalTest(unittest.TestCase):
             (semantic_prompts_v319, 'semantic-v3.18',
              ((semantic_prompts_v319._LEGACY_ACCESS_CONTROL_RULE,
                semantic_prompts_v319._FIXED_ACCESS_CONTROL_RULE),)),
+            (semantic_prompts_v320, 'semantic-v3.19',
+             ((semantic_prompts_v320._LEGACY_TERM_RULE,
+               semantic_prompts_v320._FIXED_TERM_RULE),
+              (semantic_prompts_v320._LEGACY_CORRESPONDENCE_RULE,
+               semantic_prompts_v320._FIXED_CORRESPONDENCE_RULE))),
         )
         for module, base, pairs in cases:
             with self.subTest(version=module.PROMPT_VERSION):
@@ -179,3 +184,34 @@ class AccessControlImpactCitationTest(unittest.TestCase):
         prompt = resolve_prompt_set(EXPERIMENTAL_VERSION).formal_prompt
         self.assertIn(
             'For progress/liveness, condition is the valid operation scenario', prompt)
+
+
+class TermAndCorrespondenceRecipeTest(unittest.TestCase):
+    """The two recipes v3.20 adds for the last systematic failures.
+
+    Both were verified offline against the REAL failing sample before the prompt
+    text was written: a recipe that leads to a different rejection would only move
+    the failure instead of removing it.
+    """
+
+    def test_the_self_comparison_ban_now_names_a_faithful_form(self):
+        prompt = resolve_prompt_set(EXPERIMENTAL_VERSION).formal_prompt
+        self.assertIn('A fact that\n   says a value is fixed, cached, or read once',
+                      prompt)
+        self.assertIn('occurrence symbol for the event and name it after this source ID',
+                      prompt)
+        # The ban itself must survive: the recipe is the addition, not a relaxation.
+        self.assertIn('x==x, x!=x, x<=x, x>=x', prompt)
+
+    def test_the_correspondence_rule_now_requires_the_impact(self):
+        prompt = resolve_prompt_set(EXPERIMENTAL_VERSION).formal_prompt
+        self.assertIn('the correspondence ALONE leaves the selected', prompt)
+        self.assertIn('any_of over the correspondence', prompt)
+        self.assertIn('never appears in relation does not count', prompt)
+        # The equality guidance it qualifies must survive.
+        self.assertIn('observable equality/inequality', prompt)
+
+    def test_the_base_version_lacks_both_recipes(self):
+        prompt = resolve_prompt_set('semantic-v3.19').formal_prompt
+        self.assertNotIn('occurrence symbol for the event', prompt)
+        self.assertNotIn('any_of over the correspondence', prompt)

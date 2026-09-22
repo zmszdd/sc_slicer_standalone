@@ -28,6 +28,7 @@ MODULE_NAMES = (
     'semantic_prompts_v317',
     'semantic_prompts_v318',
     'semantic_prompts_v319',
+    'semantic_prompts_v320',
 )
 
 MODULES = tuple(import_module(f'{__package__}.versions.{name}')
@@ -41,7 +42,7 @@ VERSIONS = tuple(PROMPT_MODULES)
 # and the docs, so the recommendation cannot drift between README,
 # STRUCTURE and HANDOFF.
 RECOMMENDED_VERSION = 'semantic-v3.16'
-EXPERIMENTAL_VERSION = 'semantic-v3.19'
+EXPERIMENTAL_VERSION = 'semantic-v3.20'
 
 # The default is the recommended version; the historical pre-v3.5 versions
 # were removed on 2026-09-22.

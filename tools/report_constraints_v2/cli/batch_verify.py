@@ -27,7 +27,8 @@ from prompts.registry import (
 
 import report_only as r
 from fidelity import check_numeric_plan, check_address_plan
-from semantic_core import compile_bundle, require, validate_elements
+from semantic_core import (compile_bundle, normalize_truth_binding, require,
+                           validate_elements)
 from plan_synthesizer import (classified_relation_alignment, structured_unresolved_review,
                               synthesize_id_formalization)
 from evidence_catalog import build_catalog, hydrate_elements, hydrate_formalization
@@ -275,8 +276,20 @@ def verify(directory):
                     'neural elements changed')
         if provenance.get('prompt_version') in PLAN_VERSIONS:
             plan = json.loads((directory / 'formal-plan.json').read_text())
-            require(json.loads(accepted_model_claim_path(directory).read_text()) == plan,
-                    'neural formal plan changed')
+            claim_path = accepted_model_claim_path(directory)
+            claim = json.loads(claim_path.read_text())
+            # Boundary NORMALIZE: the live pipeline declares the boolean an
+            # undeclared `truth` symbol names, persists the amended plan, and
+            # records what moved beside the raw response.  Replay re-applies that
+            # declared transform -- and audits the record -- so the equality below
+            # stays strict for every OTHER change.  Mirrors the
+            # `element-format-normalization.json` handling above.
+            normalization_log = claim_path.parent / 'normalization-log.json'
+            if normalization_log.exists():
+                claim, changes = normalize_truth_binding(claim, raw_elements)
+                require(changes == json.loads(normalization_log.read_text())['changes'],
+                        'plan normalization audit changed')
+            require(claim == plan, 'neural formal plan changed')
             require(synthesize_id_formalization(plan, raw_elements) == raw_formal,
                     'deterministic formal synthesis changed')
             if provenance.get('prompt_version') in RELATION_ALIGNMENT_VERSIONS:

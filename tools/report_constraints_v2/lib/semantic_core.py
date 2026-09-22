@@ -621,12 +621,25 @@ def _truth_binding_candidate(term, symbols):
     name = predicate.get('symbol')
     if not isinstance(name, str) or name in symbols:
         return None
-    # The name must be the entry's OWN source ID minus its statement-kind
-    # prefix.  A paraphrase would have to be invented, and inventing the claim
-    # is exactly what the boundary forbids.
-    if not isinstance(source_id, str) or source_id[:2] not in ('p_', 'a_'):
+    if not _reuses_source_identifier(name, source_id):
         return None
-    return (name, source_id) if source_id[2:] == name else None
+    return name, source_id
+
+
+def _reuses_source_identifier(name, source_id):
+    """Is ``name`` the source's own identifier, at most minus its kind prefix?
+
+    Statement IDs are chosen by the model and the element prompt does not mandate
+    the ``p_``/``a_`` kind prefix -- real frozen runs use both conventions -- so
+    the ID itself counts as well as the ID with that prefix removed.  Everything
+    else is a paraphrase: declaring it would mean inventing the claim, which is
+    exactly what the boundary forbids.
+    """
+    if not (isinstance(name, str) and isinstance(source_id, str)):
+        return False
+    if name == source_id:
+        return True
+    return source_id[:2] in ('p_', 'a_') and source_id[2:] == name
 
 
 def normalize_truth_binding(candidate, elements):
@@ -652,8 +665,8 @@ def normalize_truth_binding(candidate, elements):
     Refuses -- leaving the plan untouched so the ORIGINAL error still fires --
     whenever a declaration would have to be invented or would break the schema:
 
-    * the name is not the entry's own ``source_id`` minus its ``p_``/``a_``
-      prefix (a paraphrase such as ``domain_separator_immutable``);
+    * the name does not reuse the entry's own ``source_id`` (a paraphrase such as
+      ``domain_separator_immutable``, or a truncation);
     * the predicate is not exactly ``kind``/``symbol``/``value`` with a real
       bool, or the value is a non-bool such as an integer read as a flag;
     * the symbol is already declared;

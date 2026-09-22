@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -526,6 +527,26 @@ class TruthBindingNormalizationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, expected):
             plan_synthesizer.synthesize_id_formalization(fixed, self.elements())
 
+    def test_the_source_identifier_itself_is_accepted(self):
+        """Both ID conventions occur: some runs prefix, some do not."""
+        elements = self.elements()
+        for statement in elements['statements']:
+            if statement['id'].startswith('p_'):
+                statement['id'] = statement['id'][2:]
+        candidate = self.plan()
+        for term in candidate['precondition_terms']:
+            term['source_id'] = term['source_id'][2:]
+        candidate['precondition_ids'] = [x[2:] for x in candidate['precondition_ids']]
+        fixed, changes = normalize_truth_binding(candidate, elements)
+        self.assertEqual([change['symbol'] for change in changes],
+                         ['separator_cached_once', 'chain_id_changes'])
+        plan_synthesizer.synthesize_id_formalization(fixed, elements)
+
+    def test_a_truncated_name_is_refused(self):
+        def truncate(plan):
+            plan['precondition_terms'][0]['predicate']['symbol'] = 'cached_once'
+        self._refuse(truncate, 'cached_once', 'invalid truth binding')
+
     def test_a_paraphrased_name_is_refused(self):
         """``separator_immutable`` is not the source's own ID: it would be invented."""
         def rename(plan):
@@ -617,10 +638,11 @@ class TruthBindingNormalizationWiringTest(unittest.TestCase):
     def test_a_plan_naming_an_undeclared_symbol_is_normalized(self):
         elements = TruthBindingNormalizationTest.elements()
         raw = TruthBindingNormalizationTest.plan()
-        seen = {}
 
         def fake(_payload, call_dir, _model, _prompt, **_kwargs):
-            seen['raw'] = list((call_dir / 'model-claim.json').parent.glob('*'))
+            # The real transport persists the RAW response here; replay depends on
+            # it, so the fake must too.
+            (call_dir / 'model-claim.json').write_text(json.dumps(raw))
             return copy.deepcopy(raw)
 
         with tempfile.TemporaryDirectory() as dirname:
@@ -640,9 +662,100 @@ class TruthBindingNormalizationWiringTest(unittest.TestCase):
             attempts = json.loads(
                 (out / 'formalization-attempts.json').read_text())
             self.assertEqual(attempts[0]['normalizations'], log['changes'])
-            # The persisted plan is the normalized one, which is what makes the
-            # zero-call replay in ``cli/batch_verify.py`` reproduce this run.
-            self.assertIsNotNone(formal)
+            # The persisted plan is the normalized one, and ``verify`` re-applies
+            # the recorded transform to the raw claim before comparing.  Check that
+            # arithmetic here too; the end-to-end guard for the replay side is
+            # ReplayAfterPlanNormalizationTest below.
+            claim = json.loads(
+                (out / 'neural-formalization' / 'model-claim.json').read_text())
+            replayed, changes = normalize_truth_binding(claim, elements)
+            self.assertEqual(changes, log['changes'])
+            self.assertEqual(replayed, candidate,
+                             'the persisted plan is not the declared transform of '
+                             'the raw claim, so verify would reject this run')
 
+
+class PlanNormalizationReplayTest(unittest.TestCase):
+    """Replay must accept the plan normalization, not just the fixer itself.
+
+    This is the invariant a "the fixer ran" assertion misses.  The first version
+    of this change persisted the amended plan while ``verify`` still compared it
+    against the RAW claim, so every run the fixer touched reported
+    ``neural formal plan changed`` and lost its replay.
+
+    Building a fully replayable run from scratch needs inputs the current code can
+    regenerate, and no tracked historical run offers those (their saved elements
+    reference a catalog the current catalog builder no longer produces).  So this
+    asserts on the exact check instead: with the raw claim carrying the defect and
+    the log recording the fix, replay must get PAST the plan equality and fail
+    later, on an artifact this test did not rebuild.  Before the fix it failed AT
+    the plan equality, which is the regression this guards.
+    """
+
+    SOURCE = HERE / 'results/semantic/deepseek_live_probe_02'
+
+    @staticmethod
+    def _mechanical_declaration(elements, source_id, name):
+        statement = next(row for row in elements['statements']
+                         if row['id'] == source_id)
+        return {'sort': 'bool', 'unit': None, 'meaning': statement['text'],
+                'checkpoint': name, 'entity_ids': list(statement['entity_ids']),
+                'source_ids': [source_id]}
+
+    def test_replay_gets_past_the_plan_equality(self):
+        with tempfile.TemporaryDirectory() as dirname:
+            run = Path(dirname) / 'run'
+            shutil.copytree(self.SOURCE, run)
+            self.assertIs(verify_semantic.verify(run)['offline_verified'], True,
+                          'the base run must verify before anything is injected')
+
+            plan = json.loads((run / 'formal-plan.json').read_text())
+            elements = json.loads((run / 'elements-ids.json').read_text())
+            # Hide the declaration of the boolean one P term already names, so the
+            # raw claim carries exactly the defect the fixer repairs.
+            term = next(row for row in plan['precondition_terms']
+                        if row['predicate'].get('kind') == 'truth')
+            source_id = term['source_id']
+            name = source_id[2:] if source_id[:2] in ('p_', 'a_') else source_id
+            amended = copy.deepcopy(plan)
+            amended['precondition_terms'][plan['precondition_terms'].index(term)] = {
+                'source_id': source_id,
+                'predicate': {'kind': 'truth', 'symbol': name, 'value': True}}
+            amended['symbols'][name] = self._mechanical_declaration(
+                elements, source_id, name)
+
+            raw = copy.deepcopy(amended)
+            del raw['symbols'][name]
+            replayed, changes = normalize_truth_binding(raw, elements)
+            self.assertEqual(replayed, amended,
+                             'the fixer no longer reproduces the amended plan')
+            self.assertTrue(changes)
+
+            (run / 'neural-formalization' / 'model-claim.json').write_text(
+                json.dumps(raw))
+            (run / 'neural-formalization' / 'normalization-log.json').write_text(
+                json.dumps({'schema_version': 'stage2-normalization-log/1',
+                            'stage': 'formalization', 'mode': NORMALIZE,
+                            'changes': changes}))
+            (run / 'formal-plan.json').write_text(json.dumps(amended))
+
+            # The plan equality must now pass; the NEXT check is expected to fail
+            # because the downstream artifacts were deliberately not rebuilt.
+            with self.assertRaisesRegex(
+                    ValueError, 'deterministic formal synthesis changed'):
+                verify_semantic.verify(run)
+
+    def test_a_tampered_plan_is_still_rejected(self):
+        """The re-application must not turn the equality into a rubber stamp."""
+        with tempfile.TemporaryDirectory() as dirname:
+            run = Path(dirname) / 'run'
+            shutil.copytree(self.SOURCE, run)
+            plan = json.loads((run / 'formal-plan.json').read_text())
+            plan['impact_ids'] = list(plan['impact_ids'])
+            plan['assumptions'] = ['fabricated']
+            (run / 'formal-plan.json').write_text(json.dumps(plan))
+            with self.assertRaisesRegex(ValueError,
+                                        'neural formal plan changed'):
+                verify_semantic.verify(run)
 
 if __name__ == '__main__': unittest.main()

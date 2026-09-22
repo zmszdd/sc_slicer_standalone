@@ -103,7 +103,7 @@ constraints.json / status.json / stage3-spec.json
   - `progress_or_liveness`
   - `range_capacity`
 
-### 3.4 semantic-v3.15 至 v3.19
+### 3.4 semantic-v3.15 至 v3.20
 
 - v3.15：加入安全关系分类、关系对齐检查和更多通用算术表达。
 - v3.16：关系类别唯一映射到固定模板；加入 `derived_definitions` 和字段级局部修复。
@@ -130,6 +130,12 @@ constraints.json / status.json / stage3-spec.json
   授权谓词只能由 precondition 支撑，两条规则无法同时成立，而提示词从未说明优先级。
   改为 condition 承载受保护动作**加上缺失或被绕过的 guard**，`relation` 在 impact
   是后果时取其自身可观察量的**否定**。`lib/plan_synthesizer.py` 未改动。
+
+- v3.20：**仅提示词**的窄修复，schema 仍是 `report-formal-plan/4`。给
+  `sequence_domain_fork` 残留的两个真缺陷各一条可执行配方：审核第 3 条补上"值被固定／
+  缓存／只读一次"事实的两种忠实形态（禁止自反比较的规则本身未动）；审核第 4 条补上
+  "只有 `state_correspondence` 的等式不够，`relation` 必须同时包含带 impact 的可观察量"。
+  两条配方都先在该真实样本上离线验证过能通过校验。
 
 ### 3.5 当前测试结果
 
@@ -190,13 +196,21 @@ v3.19 提示词修正的对照实测（同样 5 例 × 10 次 = 50 次调用，�
   且都映射到 `relation_obligation`，发出的公式相同，10/10 全部通过 ——
   **只是标签不稳定**，会影响人工评审读法，不影响产物公式。
 
+v3.20 提示词修正的对照实测（5 例 × 10 次 = 50 次调用）：
+
+- 校验通过 **40/50 -> 43/50（86%）**；kind 合规保持 50/50，无回归；
+- `sequence_domain_fork`：**0/10 -> 3/10**（首次通过）；
+- 该案例 grounding 失败 **3 -> 0**、自反比较 **6 -> 3**；
+- 其余四例保持 10/10；**没有出现任何新的失败类别**；
+- 残余 7 次：4 次整数当标志位、3 次自反比较 —— 均为模型能力边界。
+
 ### 3.6 阶段二工程结构整理
 
 - Prompt 已迁到 `tools/report_constraints_v2/prompts/versions/`，统一由
   `prompts/registry.py` 注册和管理版本能力；冻结 Prompt 文本的 SHA-256 未变。
 - P/I/V 规范已集中到 `prompts/definitions.py`，生产流程经 `prompts/active.py`
   显式解析最终 Prompt；可用 `python main.py preview-prompt --part
-  definitions|element|formal` 查看，不调用模型。v3.5–v3.19 冻结文件未修改。
+  definitions|element|formal` 查看，不调用模型。v3.5–v3.20 冻结文件未修改。
 - 自动测试已迁到 `tools/report_constraints_v2/tests/`；删除退役分支的 22 项专用测试后，当前主线 268 项通过。
 - 阶段二根目录现在**没有任何 `.py`**：入口在 `cli/`，共享模块在 `lib/`。
   重构前的 14 个旧模块名（`fidelity`、`evidence_catalog`、`verify_semantic` 等）
@@ -247,16 +261,23 @@ Z3 只判断提供给它的公式。错误公式也可能得到完美的 SAT/UNS
 
 历史运行依赖 Prompt、schema、确定性合成和文件哈希重放。发现 v3.17 缺陷后必须新建冻结版本，不能静默修改 v3.17 语义，否则已有实验无法重放。
 
-已经这样落地的两次：**v3.18 与 v3.19 都是仅提示词的窄修复，schema 仍是 `report-formal-plan/4`**，
+已经这样落地的三次：**v3.18、v3.19 与 v3.20 都是仅提示词的窄修复，schema 仍是 `report-formal-plan/4`**，
 只删除自相矛盾/无法同时满足的提示词文字，未动验证器。仍待做的是 `report-formal-plan/6`
-（`semantic_axioms` / I 空真 / 有向无环定义）那一套，顺延为 v3.20，见 §8 第二步。
+（`semantic_axioms` / I 空真 / 有向无环定义）那一套，顺延为 v3.21，见 §8 第二步。
+
+**边界归一化与重放的契约（v3.20 补记）**：`cli/batch_verify.py` 要求落盘的
+`formal-plan.json` 等于原始模型响应，所以任何"落盘前修正模型输出"的归一化都会破坏
+重放。正确做法沿用元素层的先例（`element-format-normalization.json`）：原始响应留在
+`neural-formalization/model-claim.json`，修正后的 plan 落盘，变更写入同目录的
+`normalization-log.json`，`verify` **重新施加**该变换并**审计变更记录**后才做严格相等。
+`lib/salvage.py` 的机械重放路径施加同一变换，以免重放与所重放的运行结论不同。
 
 ### 4.8 当前稳定入口仍是 v3.16
 
 v3.17 已完成开发回归，但仅 2/5 候选，并发现派生定义空真风险；v3.18 与 v3.19 都只在
 提示词层解决矛盾（关系类别 vs 固定模板；类内容规则 vs grounding 规则），也都只跑过
 5 例开发集。因此 README 仍推荐
-v3.16，`RECOMMENDED_VERSION` 与 `DEFAULT_VERSION` 都未变；v3.19 是实验版
+v3.16，`RECOMMENDED_VERSION` 与 `DEFAULT_VERSION` 都未变；v3.20 是实验版
 （`EXPERIMENTAL_VERSION`），不应直接替换默认路径。
 
 ### 4.9 断言策略可切换：`legacy` 与 `signals`（S12）
@@ -320,6 +341,8 @@ I/V 倒置），和模型自报的歧义/局限/未决项。在 72 个可重算 
   Prompt（仅提示词，派生于 v3.16，schema 仍为 `report-formal-plan/4`）。
 - `tools/report_constraints_v2/prompts/versions/semantic_prompts_v319.py`：v3.19
   Prompt（仅提示词，派生于 v3.18，schema 仍为 `report-formal-plan/4`）。
+- `tools/report_constraints_v2/prompts/versions/semantic_prompts_v320.py`：v3.20
+  Prompt（仅提示词，派生于 v3.19，schema 仍为 `report-formal-plan/4`）。
 - `tools/report_constraints_v2/prompts/versions/semantic_prompts_v316.py`：稳定版本 Prompt。
 - `tools/report_constraints_v2/lib/plan_synthesizer.py`：形式计划校验与确定性 P/I/V 合成。
 - `tools/report_constraints_v2/lib/ingest.py`：证据编号与原文回填、提取前信息充分性判断。
@@ -411,7 +434,7 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 
 ## 7. 还没有完成的工作
 
-- 尚未实现 `report-formal-plan/6`（`semantic_axioms` 那一套，顺延为 v3.20）。
+- 尚未实现 `report-formal-plan/6`（`semantic_axioms` 那一套，顺延为 v3.21）。
 - 尚未修复派生定义空真。
 - 尚未实现来源、谓词和定义的联动局部修复。
 - 尚未统一 action/root-cause 对派生定义的证据资格。
@@ -430,10 +453,10 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 
 - 不修改 v3.17 Prompt、schema 和既有产物语义。**已遵守**：v3.18 是新文件，
   v3.5–v3.17 冻结文件一字未改。
-- 确认当前主线测试继续通过：**312/312**（v3.17 时代为 286）。
+- 确认当前主线测试继续通过：**319/319**（v3.17 时代为 286）。
 - 保留 `evaluation/prompt_v317_development_03/` 原始结果。
 
-### 第二步：设计 v3.20/schema v6
+### 第二步：设计 v3.21/schema v6
 
 目标只解决已确认的通用缺陷，不为单个案例硬编码：
 
@@ -447,9 +470,9 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 
 新版本至少需要新增：
 
-- `prompts/versions/semantic_prompts_v320.py`；
+- `prompts/versions/semantic_prompts_v321.py`；
 - `report-formal-plan/6` 常量和路由；
-- v3.20 专用测试；
+- v3.21 专用测试；
 - `cli/semantic_pipeline.py`、`cli/batch_verify.py` 的版本路由；
 - 文档和新输出目录。
 
@@ -635,8 +658,8 @@ archives 和整个 `tools/report_constraints_v2/`。这些不应被视为可随�
 
 ```text
 请先完整阅读 /root/sc_slicer_standalone/HANDOFF.md，并核对其中引用的当前状态、
-v3.17 开发回归报告和 v3.18 / v3.19 提示词修正的对照实测。继续阶段二工作，只修改
+v3.17 开发回归报告和 v3.18 / v3.19 / v3.20 提示词修正的对照实测。继续阶段二工作，只修改
 tools/report_constraints_v2，不修改阶段一、阶段三，不覆盖历史实验。先给出你对
-当前剩余缺陷（grounding、truth binding）和 v3.20/schema v6 实施顺序的复述，
+当前剩余缺陷（grounding、truth binding）和 v3.21/schema v6 实施顺序的复述，
 经确认后再开始修改。
 ```
