@@ -376,7 +376,7 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 ### 第一步：冻结 v3.17
 
 - 不修改 v3.17 Prompt、schema 和既有产物语义。
-- 确认当前 269 个主线测试继续通过。
+- 确认当前 276 个主线测试继续通过。
 - 保留 `evaluation/prompt_v317_development_03/` 原始结果。
 
 ### 第二步：设计 v3.18/schema v6
@@ -479,6 +479,14 @@ cd /root/sc_slicer_standalone
   --allow-report-upload --concurrency 1
 ```
 
+**代理**：`main.py` 同时注入 `--deepseek-proxy direct`，即忽略环境里的 `*_proxy`
+变量。这是踩过坑的：环境中的 `HTTPS_PROXY` 曾指向一个不响应 HTTP CONNECT 的端口，
+urllib 隐式把请求交给它并立刻被掐断，报错却只有
+`DeepSeek network failure; details not saved`，完全看不出是代理。若你的网络确实需要
+代理，传 `--deepseek-proxy environment`（沿用环境变量）或一个 `http(s)://` URL；
+`socks5://` 会被直接拒绝（urllib 不支持 SOCKS）。该标志仅对 `--provider deepseek`
+生效。失败时看 `model-runtime-diagnostic.json` 的 `proxy_in_effect` 即可确认用了哪个代理。
+
 走官方 API 需要 `config/stage2_deepseek.local.env`（权限必须 0600）。纯离线重放
 `run`（给 `--elements` / `--formalization`）不会被注入，零调用；历史产物统一用
 `main.py verify <run-dir>` 重放。
@@ -492,7 +500,7 @@ cd /root/sc_slicer_standalone
   -t tools/report_constraints_v2 -p 'test_*.py' -q
 ```
 
-当前基线应为：`Ran 269 tests ... OK`。
+当前基线应为：`Ran 276 tests \.\.\. OK`。
 
 ### 检查格式问题
 

@@ -6,6 +6,7 @@ No slicer invocation, code binding, formula repair or report-truth classificatio
 """
 import argparse
 import copy
+import functools
 import json
 from fidelity import check_numeric_plan, check_address_plan
 from pathlib import Path
@@ -568,6 +569,11 @@ def main():
     parser.add_argument('--provider', choices=('opencode', 'deepseek'), default='opencode',
                         help='stage-2 model transport; direct DeepSeek requires a private local key file')
     parser.add_argument('--model')
+    parser.add_argument('--deepseek-proxy', metavar='POLICY', default='environment',
+                        help='official-transport proxy policy (--provider deepseek '
+                             'only, ignored otherwise): "environment" honours the '
+                             'ambient *_proxy variables, "direct" ignores them, or '
+                             'give an http(s):// URL. main.py injects "direct"')
     parser.add_argument('--evidence-mode', choices=('ids', 'quotes'), default='ids',
                         help='neural mode defaults to source IDs; quotes is legacy compatibility')
     parser.add_argument('--formalization-scope', choices=('core', 'full'), default='core',
@@ -619,6 +625,10 @@ def main():
             if args.model and args.model not in r.DEEPSEEK_MODELS:
                 parser.error('unsupported official DeepSeek model identifier')
             try:
+                r.proxy_policy(args.deepseek_proxy)
+            except ValueError as exc:
+                parser.error(str(exc))
+            try:
                 r.load_deepseek_key()
             except RuntimeError as exc:
                 parser.error(str(exc))
@@ -647,8 +657,18 @@ def main():
                                'reference_answers_provided_to_model': False})
             model = args.model or ('deepseek-flash' if args.provider == 'deepseek'
                                    else configured_model())
-            extract_fn = r.extract_deepseek if args.provider == 'deepseek' else r.extract
+            # partial keeps the three call sites' positional arity intact while
+            # pinning the transport switch; tests patch report_only.extract_deepseek
+            # and their fakes must therefore accept the extra keyword.
+            extract_fn = (functools.partial(r.extract_deepseek,
+                                            proxy=args.deepseek_proxy)
+                          if args.provider == 'deepseek' else r.extract)
             provenance.update({'model_provider': args.provider, 'model_name': model})
+            if args.provider == 'deepseek':
+                provenance['deepseek_proxy_policy'] = args.deepseek_proxy
+                endpoint = r.proxy_in_effect(args.deepseek_proxy)
+                if endpoint:
+                    provenance['deepseek_proxy_endpoint'] = endpoint
             resolved_prompts = resolve_prompt_set(
                 args.prompt_version, args.evidence_mode, args.formalization_scope)
             provenance.update({

@@ -105,6 +105,12 @@ python main.py test | versions | doctor | status | frozen
 | --- | --- | --- |
 | `STAGE2_DEEPSEEK_DEFAULTS` | `run` / `batch` | `run` 仅当带 `--extract` 或 `--formalize-only`（见 `STAGE2_NEURAL_ONLY_DEFAULTS`）；`batch` 恒生效 |
 | `STAGE2_VERDICT_DEFAULTS` | `run` / `batch` | 恒生效（见"断言策略"一节） |
+| `STAGE2_PROXY_DEFAULTS` | `run` / `batch` | 恒生效；仅对 `--provider deepseek` 有意义 |
+
+`STAGE2_PROXY_DEFAULTS` 注入的是 `--deepseek-proxy direct`。官方传输原本**隐式**继承
+`*_proxy` 环境变量，而 `HTTPS_PROXY` 指向不响应 HTTP CONNECT 的端口时，失败信息只有
+`DeepSeek network failure; details not saved`，排查代价很高。需要代理时显式传
+`--deepseek-proxy environment` 或一个 `http(s)://` URL。`opencode` 通道不读这个标志。
 
 `run` 之所以区分神经/离线：离线 run 只是重放已保存的 candidate，而 DeepSeek
 传输会直接拒绝非神经调用，无条件注入会让每一次离线 `main.py run` 退出码 2。

@@ -1,0 +1,412 @@
+{
+  "schema_version": "stage2-semantic-bundle/1",
+  "core_formalization_status": "formalized_candidate",
+  "acceptance_status": "candidate_checks_passed",
+  "report_warnings": [],
+  "unassigned_impact_ids": [
+    "v_buffered_flow_unusable",
+    "v_revert_exact_plus_one_wei"
+  ],
+  "claims": [
+    {
+      "id": "core_claim",
+      "formalization_status": "formalized_candidate",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity.",
+        "direct_counterexample_status": "passed"
+      },
+      "review_reasons": [],
+      "properties": {
+        "preconditions": {
+          "text": "When the integrator follows the buffered-fee pattern, the caller sends unstake{value: bufferedFee}(returnTripAllocation), so msg.value exceeds the exact quoted fee.nativeFee.; The buffered-fee helper quoteUnstakeWithBuffer() deliberately returns a fee larger than the exact LayerZero quote (for example, exactFee * 110 / 100).; The inherited LayerZero OAppSender._payNative() implementation requires msg.value to equal the native fee exactly.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "msg_value"
+                  },
+                  {
+                    "var": "exact_native_fee"
+                  }
+                ]
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "buffered_fee"
+                  },
+                  {
+                    "var": "exact_native_fee"
+                  }
+                ]
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "msg_value"
+                  },
+                  {
+                    "var": "exact_native_fee"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_caller_sends_buffered_value",
+            "p_buffer_helper_larger_quote",
+            "p_inherited_paynative_strict_equality"
+          ],
+          "evidence": [
+            "1. Call `quoteUnstakeWithBuffer()` to obtain a buffered fee.",
+            "2. Call `unstake{value: bufferedFee}(returnTripAllocation)` and rely on the refund address for any excess.",
+            "Because `UnstakeMessenger.unstake()` passes `fee.nativeFee` (the exact quoted amount) into `_lzSend()`, but the caller may send `msg.value > fee.nativeFee` when using the buffered helper, `_payNative()` observes the mismatch and reverts with `NotEnoughNative(msg.value)` before the message is dispatched.",
+            "To make integration safer, `UnstakeMessenger` also exposes buffered-fee helpers such as `quoteUnstakeWithBuffer()`. These helpers deliberately return a fee that is larger than the exact LayerZero quote (for example, exactFee * 110 / 100) so that integrators can:",
+            "The `UnstakeMessenger.unstake()` function is designed to support a buffered-fee flow via helper quote functions, but the underlying LayerZero `OAppSender._payNative()` implementation enforces strict equality between `msg.value` and the quoted fee. When callers use the buffered-fee helper and send more than the exact quoted amount, all unstake calls revert with `NotEnoughNative`.",
+            "However, the inherited LayerZero implementation for `_payNative()` (used inside _lzSend()) requires that `msg.value` equals the native fee exactly:"
+          ]
+        },
+        "safety": {
+          "text": "The UnstakeMessenger.unstake() operation should complete when the caller supplies the buffered fee returned by quoteUnstakeWithBuffer() (at least the exact quoted native fee), rather than reverting on a msg.value above the exact quote. (Inferred from the report's claim that the buffered-fee integration pattern is intended to be usable.)",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "buffered_fee"
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "var": "exact_native_fee"
+                      },
+                      {
+                        "const": 110
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "implies",
+                "args": [
+                  {
+                    "op": "ge",
+                    "args": [
+                      {
+                        "var": "msg_value"
+                      },
+                      {
+                        "var": "exact_native_fee"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "unstake_reverted_not_enough_native"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_buffered_value_must_succeed"
+          ],
+          "evidence": [
+            "The `UnstakeMessenger.unstake()` function is designed to support a buffered-fee flow via helper quote functions, but the underlying LayerZero `OAppSender._payNative()` implementation enforces strict equality between `msg.value` and the quoted fee. When callers use the buffered-fee helper and send more than the exact quoted amount, all unstake calls revert with `NotEnoughNative`.",
+            "To make integration safer, `UnstakeMessenger` also exposes buffered-fee helpers such as `quoteUnstakeWithBuffer()`. These helpers deliberately return a fee that is larger than the exact LayerZero quote (for example, exactFee * 110 / 100) so that integrators can:",
+            "2. Call `unstake{value: bufferedFee}(returnTripAllocation)` and rely on the refund address for any excess.",
+            "When integrators follow the buffered-fee pattern provided by `UnstakeMessenger` (calling the buffer quote helper and forwarding that value as msg.value), all cross-chain `unstake()` calls revert before any LayerZero message is sent. Users cannot complete cross-chain unstake operations via the buffered flow, and integrators must instead rely on exact-fee quoting, which is more fragile to timing and gas-price changes between quote and execution. The issue does not directly cause fund loss, but it breaks a primary cross-chain unstake UX path and can lead to persistent user-facing failures until the integration is adjusted."
+          ]
+        },
+        "effects": {
+          "text": "Unstake calls revert with OAppSender.NotEnoughNative(uint256) when msg.value equals the bufferedFee that is 10% higher than exactFee.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "buffered_fee"
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "var": "exact_native_fee"
+                      },
+                      {
+                        "const": 110
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "ge",
+                    "args": [
+                      {
+                        "var": "msg_value"
+                      },
+                      {
+                        "var": "exact_native_fee"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "op": "not",
+                        "args": [
+                          {
+                            "var": "unstake_reverted_not_enough_native"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "v_revert_notenoughnative_buffered"
+          ],
+          "evidence": [
+            "Because `UnstakeMessenger.unstake()` passes `fee.nativeFee` (the exact quoted amount) into `_lzSend()`, but the caller may send `msg.value > fee.nativeFee` when using the buffered helper, `_payNative()` observes the mismatch and reverts with `NotEnoughNative(msg.value)` before the message is dispatched.",
+            "- Revert when msg.value == bufferedFee returned by quoteUnstakeWithBuffer() (10% higher than exactFee), with selector OAppSender.NotEnoughNative(uint256)."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_caller_sends_buffered_value",
+            "p_buffer_helper_larger_quote",
+            "p_inherited_paynative_strict_equality"
+          ],
+          "args.0": [
+            "p_caller_sends_buffered_value",
+            "p_buffer_helper_larger_quote",
+            "p_inherited_paynative_strict_equality"
+          ],
+          "args.1": [
+            "p_caller_sends_buffered_value",
+            "p_buffer_helper_larger_quote",
+            "p_inherited_paynative_strict_equality"
+          ],
+          "args.2": [
+            "p_caller_sends_buffered_value",
+            "p_buffer_helper_larger_quote",
+            "p_inherited_paynative_strict_equality"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_buffered_value_must_succeed"
+          ],
+          "args.0": [
+            "si_buffered_value_must_succeed"
+          ],
+          "args.1": [
+            "si_buffered_value_must_succeed"
+          ],
+          "args.1.args.0": [
+            "si_buffered_value_must_succeed"
+          ],
+          "args.1.args.1": [
+            "si_buffered_value_must_succeed"
+          ]
+        },
+        "effects": {
+          "": [
+            "v_revert_notenoughnative_buffered"
+          ],
+          "args.0": [
+            "v_revert_notenoughnative_buffered"
+          ],
+          "args.1": [
+            "v_revert_notenoughnative_buffered"
+          ],
+          "args.1.args.0": [
+            "v_revert_notenoughnative_buffered"
+          ],
+          "args.1.args.1": [
+            "v_revert_notenoughnative_buffered"
+          ],
+          "args.1.args.1.args.0": [
+            "v_revert_notenoughnative_buffered"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "v_revert_notenoughnative_buffered",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "scope": "Cross-chain unstake on spoke chain: UnstakeMessenger.unstake() with buffered-fee helper quoting, calling _lzSend/_payNative on the LayerZero endpoint",
+      "modality": "asserted",
+      "assumptions": [
+        "The buffered-fee helper flow is the intended supported integration pattern.",
+        "No explicit authorization or permission clause restricts who may call unstake.",
+        "The report describes revert behavior via tests and conditional reasoning rather than an observed on-chain transaction."
+      ],
+      "unresolved": []
+    }
+  ],
+  "coverage_is_model_declared_not_semantically_verified": true,
+  "human_semantic_review_required": true,
+  "code_alignment_status": "not_attempted",
+  "execution_ready": false,
+  "consistency_verdict": "not_evaluated",
+  "verdict_policy": "signals-v2",
+  "report_ambiguities_declared": [
+    "No explicit authorization/permission clause is stated for who may call unstake(); the report only says callers/integrators use the helper.",
+    "The report does not establish whether a real on-chain buffered-fee unstake transaction occurred; revert behavior is described via tests and conditional reasoning.",
+    "The report does not specify the hubEid/chain or the exact payload/options values used.",
+    "Refund behavior for excess value on a successful path is mentioned as a design intent but not established as a verified state change."
+  ],
+  "formalization_limitations_declared": [
+    "Other direct impacts v_revert_exact_plus_one_wei and v_buffered_flow_unusable are deferred to future claims.",
+    "The exact hubEid, payload, and options values are not specified.",
+    "Refund behavior for excess value on a successful path is not established as a verified state change.",
+    "Code-level binding of the strict equality check and buffered fee calculation is deferred.",
+    "Deferred report impact: v_revert_exact_plus_one_wei",
+    "Deferred report impact: v_buffered_flow_unusable"
+  ],
+  "coverage_status": "partial",
+  "coverage_gaps": [
+    "impacts_not_assigned",
+    "preconditions_not_used"
+  ],
+  "unassigned_precondition_ids": [
+    "p_lzsend_exact_fee",
+    "p_unstake_enforces_min_value",
+    "p_unstake_entrypoint_exists"
+  ],
+  "precondition_coverage_is_structural_not_semantic": true,
+  "strict_piv_gate": true,
+  "observability_review": {
+    "schema_version": "observability-review/1",
+    "claims": [
+      {
+        "claim_id": "core_claim",
+        "safety_variables": [
+          "buffered_fee",
+          "exact_native_fee",
+          "msg_value",
+          "unstake_reverted_not_enough_native"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      }
+    ],
+    "review_status": "no_structural_warning",
+    "observability_established": false,
+    "human_semantic_review_required": true,
+    "limitations": [
+      "I-only Boolean may be a legitimate observation; hints are not automatic errors",
+      "No code binding, predicate-name interpretation or report truth assessment",
+      "Both SAT is a review hint, not a universal UNSAT requirement"
+    ],
+    "model_calls": 0
+  },
+  "provenance": {
+    "code_provided_to_model": false,
+    "contract_file_read": false,
+    "paired_case_checked": true,
+    "case_id": "Brix_Money_qy7NXr77sDh__PGwVR6CTD6U__3hfE23tsgzG",
+    "submission_uid": "3hfE23tsgzG",
+    "finding_uid": "PGwVR6CTD6U",
+    "target_test": "test_PoC_bufferedFee_reverts",
+    "declared_code_sha256": "4d3337a6db349911e9ad0a4635abd16d7fddd7d751ac3d33b42f7ca3dc18614b",
+    "report_path": "/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/Brix_Money_qy7NXr77sDh__PGwVR6CTD6U__3hfE23tsgzG/report.json",
+    "report_sha256": "3eb27386ad3b2c6a99a7b3f4be61ca71233ab16ea80a138a80f6d6c38cddb59e",
+    "report_input_sha256": "3c12443ab5b5a9ede37d8e225ad7d25bf8a0d1e087b2105f8c138ede05422e22",
+    "report_input_policy": {
+      "source_format": "report.json",
+      "selected_fields": [
+        "title",
+        "body.description_and_impact"
+      ],
+      "excluded_fields": [
+        "proof_of_concept",
+        "recommended_mitigation",
+        "source_record",
+        "pairing",
+        "contract_code"
+      ],
+      "policy_version": "report-json-input/4",
+      "title_deduplicated": false
+    },
+    "candidate_origin": "external_model",
+    "elements_source": null,
+    "formalization_source": null,
+    "prompt_version": "semantic-v3.16",
+    "requested_formalization_scope": "core",
+    "formal_retries_allowed": 0,
+    "element_retries_allowed": 0,
+    "lean_formal_input": false,
+    "mechanical_salvage": false,
+    "model_catalog_view": "exact_id_text_without_offsets",
+    "neural_mode": "two_step",
+    "formalization_generation": "deterministic_from_plan",
+    "reference_answers_provided_to_model": false,
+    "model_provider": "deepseek",
+    "model_name": "deepseek-flash",
+    "deepseek_proxy_policy": "direct",
+    "prompt_resolution": "prompts.active/1",
+    "element_prompt_sha256": "25bc731f970b04c0369af83d1ef0030a0aa4513cbea8d3ae9603bda9e04024f5",
+    "formal_prompt_sha256": "3728da2b5d16b6e3ef979d0d56fa521e0796ae3ad0c0386c74309ac6b670ac3b",
+    "claim_verdict_policy": "signals-v2",
+    "input_screening": "deepseek-report-readiness-v1"
+  },
+  "external_model_invocations": 3
+}

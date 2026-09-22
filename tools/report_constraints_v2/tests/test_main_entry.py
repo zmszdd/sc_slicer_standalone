@@ -241,7 +241,8 @@ class CommandSmokeTest(unittest.TestCase):
         So the invariant is asserted where it is verifiable: the target
         script's own source must declare each injected flag.
         """
-        tables = (entry.STAGE2_DEEPSEEK_DEFAULTS, entry.STAGE2_VERDICT_DEFAULTS)
+        tables = (entry.STAGE2_DEEPSEEK_DEFAULTS, entry.STAGE2_VERDICT_DEFAULTS,
+                  entry.STAGE2_PROXY_DEFAULTS)
         for table in tables:
             for command, defaults in sorted(table.items()):
                 script = entry._script_path(entry.STAGE2_COMMANDS[command][0])

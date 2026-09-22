@@ -118,6 +118,16 @@ STAGE2_NEURAL_ONLY_DEFAULTS = {
     'run': ('--extract', '--formalize-only'),
 }
 
+# 官方 DeepSeek 传输的代理策略。环境里的 HTTPS_PROXY 指向一个不响应 HTTP
+# CONNECT 的端口时，urllib 会隐式把请求交给它并立刻被掐断，而报错只有
+# `DeepSeek network failure; details not saved` —— 完全看不出是代理干的。
+# 因此神经流程默认直连；需要代理时显式传 `--deepseek-proxy environment`
+# （沿用 *_proxy 变量）或一个 http(s):// URL。仅对 `--provider deepseek` 生效。
+STAGE2_PROXY_DEFAULTS = {
+    'run': ('--deepseek-proxy', 'direct'),
+    'batch': ('--deepseek-proxy', 'direct'),
+}
+
 # 多个命令可指向同一个脚本，用前导参数区分（见 _dispatch）。
 # S12: acceptance-verdict policy.  Deliberately kept OUT of
 # STAGE2_DEEPSEEK_DEFAULTS so _with_deepseek_defaults keeps its tested exact-argv
@@ -433,6 +443,14 @@ def _with_deepseek_defaults(command, argv):
     return [*defaults, *argv]
 
 
+def _with_proxy_defaults(command, argv):
+    """Apply the DeepSeek transport's proxy default without touching the rest."""
+    defaults = STAGE2_PROXY_DEFAULTS.get(command)
+    if not defaults or defaults[0] in argv:
+        return list(argv)
+    return [*argv, *defaults]
+
+
 def _with_verdict_defaults(command, argv):
     """Apply the acceptance-verdict default without touching model defaults."""
     defaults = STAGE2_VERDICT_DEFAULTS.get(command)
@@ -457,7 +475,10 @@ def _dispatch(argv, prefix=''):
         return _delegate(STAGE2_COMMANDS[command][0],
                          [*prefix_args,
                           *_with_verdict_defaults(
-                              command, _with_deepseek_defaults(command, rest))])
+                              command,
+                              _with_proxy_defaults(
+                                  command,
+                                  _with_deepseek_defaults(command, rest)))])
     print(f'unknown {prefix}command: {command}', file=sys.stderr)
     print(_usage(), file=sys.stderr)
     return 2

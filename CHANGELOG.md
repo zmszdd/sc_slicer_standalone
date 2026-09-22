@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **新增 `--deepseek-proxy` 开关，神经流程默认直连。**官方传输此前**隐式**继承
+  环境里的 `*_proxy` 变量（`build_opener` 会自动装 `ProxyHandler(getproxies())`）。
+  当 `HTTPS_PROXY` 指向一个不响应 HTTP CONNECT 的端口时，urllib 把请求交给它并立刻
+  被掐断，而失败信息只有 `DeepSeek network failure; details not saved` —— 完全看不出
+  是代理造成的，所有真实调用都会失败。
+  - `lib/report_only.py`：`extract_deepseek(..., proxy=...)`，取值 `environment`
+    （历史行为）／`direct`（忽略环境变量）／一个 `http(s)://` URL。`direct` 通过传入
+    空的 `ProxyHandler` 实现 —— 它既注册"无代理"，又阻止 `build_opener` 装上默认的
+    读环境变量那个。`socks5://` 会被**前置拒绝**并给出明确原因（urllib 不支持 SOCKS），
+    而不是留到运行期变成一个神秘的网络错误。
+  - `cli/semantic_pipeline.py`：`--deepseek-proxy`；用 `functools.partial` 绑定，
+    保持三处调用点的位置参数元数不变。
+  - `main.py`：`STAGE2_PROXY_DEFAULTS` 为 `run`／`batch` 注入 `direct`（独立函数，
+    与 `_with_deepseek_defaults` 分开，理由同 S12）。该标志仅对 `--provider deepseek`
+    生效，`opencode` 路径保持不变。
+  - `cli/batch_verify.py` 转发给每个子进程。
+- 失败可诊断：`model-runtime-diagnostic.json` 与 `model-usage.json` 新增
+  `proxy_in_effect`（**脱敏**，只记 `scheme://host:port`，绝不写代理 URL 里的凭据）；
+  `provenance.json` 新增 `deepseek_proxy_policy` 与 `deepseek_proxy_endpoint`。
+- 实测 A/B（同一个 shell，`HTTPS_PROXY=http://127.0.0.1:7897` 仍在）：
+  `--deepseek-proxy environment` → `DeepSeek network failure`；
+  默认（注入 `direct`）→ `candidate_checks_passed`，3 次真实调用成功。
+- 6 条新测试 + 1 条接线测试（`test_pipeline_binds_the_proxy_policy_through_to_the_transport`），
+  两条关键防护都做了负向验证。测试基线 269 -> 276。
+- 重设 `code_sha256`：`report_only.py` + `semantic_pipeline.py`，14 个 key。
 - **DeepSeek 注入改为仅神经流程，修掉"离线 `run` 必然失败"。**`main.py` 原先
   无条件为 `run` 注入 `--provider deepseek`，于是纯离线 run（给 `--elements` /
   `--formalization`）撞上 `--provider deepseek requires neural extraction or

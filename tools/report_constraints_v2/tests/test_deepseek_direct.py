@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib import request as urlrequest
 from urllib.error import HTTPError
 
 import report_only as report
@@ -128,7 +129,9 @@ class DeepSeekDirectTests(unittest.TestCase):
                     '--elements-only', '--provider', 'deepseek',
                     '--prompt-version', 'semantic-v3.12', '--allow-report-upload',
                     '--output', str(out)]
-            def fake_deepseek(payload, output, _model, _prompt):
+            def fake_deepseek(payload, output, _model, _prompt, **_kwargs):
+                # semantic_pipeline binds proxy= via functools.partial,
+                # so a stand-in for extract_deepseek must absorb it.
                 if output.name == 'neural-input-screen':
                     ids = [row['id'] for row in json.loads(payload)['fragments']]
                     names = ('affected_subject', 'trigger_or_action', 'direct_effect',
@@ -160,7 +163,9 @@ class DeepSeekDirectTests(unittest.TestCase):
                     '--provider', 'deepseek', '--prompt-version', 'semantic-v3.12',
                     '--allow-report-upload', '--output', str(out)]
 
-            def insufficient(payload, output, _model, _prompt):
+            def insufficient(payload, output, _model, _prompt, **_kwargs):
+                # semantic_pipeline binds proxy= via functools.partial,
+                # so a stand-in for extract_deepseek must absorb it.
                 ids = [row['id'] for row in json.loads(payload)['fragments']]
                 return {'schema_version': 'report-readiness/1', 'decision': 'insufficient',
                         'dimensions': {
@@ -184,6 +189,99 @@ class DeepSeekDirectTests(unittest.TestCase):
             self.assertFalse((out / 'elements.json').exists())
             status = json.loads((out / 'status.json').read_text())
             self.assertEqual(status['acceptance_status'], 'excluded_before_extraction')
+
+
+class DeepSeekProxyPolicyTest(unittest.TestCase):
+    """The transport switch must really control whether ambient proxies apply.
+
+    Regression: the environment carried HTTPS_PROXY pointing at a port that
+    closes HTTP CONNECT.  urllib honoured it implicitly and every call died with
+    the opaque message "DeepSeek network failure; details not saved".
+    """
+
+    def make_key(self, root, value='sk-test-only'):
+        path = root / 'stage2_deepseek.local.env'
+        path.write_text('DEEPSEEK_API_KEY=' + value + '\n')
+        path.chmod(0o600)
+        return path
+
+    def _live_handlers(self, opener):
+        return [h for h in opener.handlers
+                if isinstance(h, urlrequest.ProxyHandler) and h.proxies]
+
+    def test_direct_ignores_ambient_proxy_variables(self):
+        with patch.dict(os.environ, {'https_proxy': 'http://127.0.0.1:9'}, clear=False):
+            self.assertEqual(self._live_handlers(report._deepseek_opener('direct')), [])
+
+    def test_environment_honours_ambient_proxy_variables(self):
+        """Negative proof: if the switch were ignored this would also be empty."""
+        with patch.dict(os.environ, {'https_proxy': 'http://127.0.0.1:9'}, clear=False):
+            self.assertNotEqual(
+                self._live_handlers(report._deepseek_opener('environment')), [])
+
+    def test_explicit_url_overrides_the_environment(self):
+        with patch.dict(os.environ, {'https_proxy': 'http://127.0.0.1:9'}, clear=False):
+            live = self._live_handlers(report._deepseek_opener('http://proxy.internal:3128'))
+            self.assertEqual(len(live), 1)
+            self.assertEqual(live[0].proxies['https'], 'http://proxy.internal:3128')
+
+    def test_socks5_is_rejected_up_front(self):
+        """urllib cannot speak SOCKS; failing here beats an opaque network error."""
+        with self.assertRaisesRegex(ValueError, 'no SOCKS support'):
+            report.proxy_policy('socks5://127.0.0.1:7897')
+
+    def test_recorded_endpoint_is_redacted(self):
+        self.assertEqual(report._redacted_proxy('http://u:p@proxy:3128'),
+                         'http://proxy:3128')
+        self.assertIsNone(report.proxy_in_effect('direct'))
+
+    def test_pipeline_binds_the_proxy_policy_through_to_the_transport(self):
+        """The switch is only real if cli/semantic_pipeline.py binds it through.
+
+        The fakes above absorb **kwargs, so deleting the binding would leave
+        every other assertion green while the flag silently did nothing.
+        """
+        seen = []
+        with tempfile.TemporaryDirectory() as dirname:
+            root = Path(dirname)
+            source = root / 'report.md'
+            source.write_text('# Finding description\n\nA buffered fee body.\n')
+            argv = ['semantic_pipeline.py', '--report', str(source), '--extract',
+                    '--elements-only', '--provider', 'deepseek',
+                    '--deepseek-proxy', 'direct', '--allow-report-upload',
+                    '--output', str(root / 'run')]
+
+            def fake(payload, output, _model, _prompt, **kwargs):
+                seen.append(kwargs)
+                raise RuntimeError('stop after the first transport call')
+
+            with patch('sys.argv', argv), \
+                    patch.object(pipeline.r, 'load_deepseek_key',
+                                 return_value='test-key'), \
+                    patch.object(pipeline.r, 'extract_deepseek', side_effect=fake):
+                pipeline.main()
+        self.assertTrue(seen, 'the transport was never reached')
+        self.assertEqual(seen[0], {'proxy': 'direct'})
+
+    def test_network_diagnostic_records_the_proxy_in_effect(self):
+        with tempfile.TemporaryDirectory() as dirname:
+            root = Path(dirname)
+            key = self.make_key(root)
+
+            class RefusingOpener:
+                def open(self, *_args, **_kwargs):
+                    raise OSError('connection refused')
+
+            policy = 'http://proxy.example:3128'
+            with self.assertRaisesRegex(RuntimeError, 'network failure'):
+                report.extract_deepseek('text', root, 'deepseek-flash', 'JSON:',
+                                        key_path=key, opener=RefusingOpener(),
+                                        proxy=policy)
+            diagnostic = json.loads(
+                (root / 'model-runtime-diagnostic.json').read_text())
+            self.assertEqual(diagnostic['category'], 'network')
+            self.assertEqual(diagnostic['proxy_in_effect'], policy)
+
 
 
 if __name__ == '__main__':

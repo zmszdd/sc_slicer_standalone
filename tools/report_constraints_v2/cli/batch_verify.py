@@ -78,6 +78,9 @@ def main():
                         default='legacy',
                         help='forwarded to every run subprocess; legacy keeps the '
                              'historical veto on report-declared uncertainty')
+    parser.add_argument('--deepseek-proxy', metavar='POLICY', default='environment',
+                        help='forwarded to every run subprocess; see '
+                             'cli/semantic_pipeline.py --deepseek-proxy')
     parser.add_argument('--prompt-version', choices=tuple(PROMPT_MODULES),
                         default=DEFAULT_VERSION)
     args = parser.parse_args()
@@ -127,6 +130,7 @@ def main():
         # and `verify` replays from that value. Dropping it would silently pin
         # every batch run back to the legacy verdict.
         command.extend(['--claim-verdict', args.claim_verdict])
+        command.extend(['--deepseek-proxy', args.deepseek_proxy])
         if args.element_retries:
             command.extend(['--element-retries', str(args.element_retries)])
         if args.formal_retries:

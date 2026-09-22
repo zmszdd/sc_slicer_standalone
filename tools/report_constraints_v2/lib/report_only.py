@@ -12,6 +12,7 @@ import tempfile
 import time
 from urllib import error as urlerror
 from urllib import request as urlrequest
+from urllib.parse import urlsplit
 
 import z3
 
@@ -417,8 +418,66 @@ class _NoRedirect(urlrequest.HTTPRedirectHandler):
         return None
 
 
-def extract_deepseek(text, output, model, prompt=PROMPT, *, key_path=None, opener=None):
-    """Direct official API transport; same candidate JSON contract as extract()."""
+def _redacted_proxy(value):
+    """scheme://host:port only; never the credentials a proxy URL may carry."""
+    if not value:
+        return None
+    parts = urlsplit(value)
+    if not parts.hostname:
+        return '(unparsable)'
+    return f'{parts.scheme}://{parts.hostname}:{parts.port}'
+
+
+def proxy_policy(value='environment'):
+    """Normalize the proxy switch into (policy, explicit_url).
+
+    'environment' honours the ambient *_proxy variables (historical default,
+    read implicitly by urllib); 'direct' ignores them entirely; an http(s)://
+    URL uses exactly that proxy.  urllib has no SOCKS support, so a socks5://
+    value is rejected up front instead of surfacing as a mystery network error.
+    """
+    if value in ('environment', 'direct'):
+        return value, None
+    parts = urlsplit(value)
+    if parts.scheme not in ('http', 'https') or not parts.hostname:
+        raise ValueError(
+            f'unsupported proxy {value!r}: use "environment", "direct", or an '
+            'http(s):// URL (urllib has no SOCKS support)')
+    return 'explicit', value
+
+
+def _deepseek_opener(proxy='environment'):
+    """Opener for the official transport; decides whether ambient proxies apply.
+
+    'direct' passes an EMPTY ProxyHandler: that both registers no proxy and stops
+    build_opener from installing the default env-reading ProxyHandler.
+    """
+    policy, explicit = proxy_policy(proxy)
+    if policy == 'environment':
+        return urlrequest.build_opener(_NoRedirect)
+    if policy == 'direct':
+        return urlrequest.build_opener(_NoRedirect, urlrequest.ProxyHandler({}))
+    return urlrequest.build_opener(
+        _NoRedirect, urlrequest.ProxyHandler({'http': explicit, 'https': explicit}))
+
+
+def proxy_in_effect(proxy='environment'):
+    """The proxy this policy will really use, redacted; None means direct."""
+    policy, explicit = proxy_policy(proxy)
+    if policy == 'explicit':
+        return _redacted_proxy(explicit)
+    if policy == 'direct':
+        return None
+    found = urlrequest.getproxies()
+    return _redacted_proxy(found.get('https') or found.get('http'))
+
+
+def extract_deepseek(text, output, model, prompt=PROMPT, *, key_path=None, opener=None,
+                     proxy='environment'):
+    """Direct official API transport; same candidate JSON contract as extract().
+
+    ``proxy`` is the transport switch; see ``proxy_policy()``.
+    """
     if model not in DEEPSEEK_MODELS:
         raise ValueError('unsupported official DeepSeek model identifier')
     key = load_deepseek_key(key_path)
@@ -434,7 +493,8 @@ def extract_deepseek(text, output, model, prompt=PROMPT, *, key_path=None, opene
     request = urlrequest.Request(
         DEEPSEEK_CHAT_URL, data=request_body, method='POST',
         headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key})
-    opener = opener or urlrequest.build_opener(_NoRedirect)
+    opener = opener or _deepseek_opener(proxy)
+    proxy_endpoint = proxy_in_effect(proxy)
     started = time.monotonic()
     try:
         with opener.open(request, timeout=240) as response:
@@ -443,7 +503,8 @@ def extract_deepseek(text, output, model, prompt=PROMPT, *, key_path=None, opene
         (output / 'model-runtime-diagnostic.json').write_text(json.dumps({
             'schema_version': 'model-runtime-diagnostic/1',
             'provider': 'deepseek', 'category': 'http_error',
-            'http_status': exc.code, 'raw_provider_output_saved': False,
+            'http_status': exc.code, 'proxy_in_effect': proxy_endpoint,
+            'raw_provider_output_saved': False,
         }, indent=2) + '\n')
         raise RuntimeError(f'DeepSeek HTTP {exc.code}; response body not saved') from None
     except (TimeoutError, urlerror.URLError, OSError, http.client.IncompleteRead) as exc:
@@ -455,6 +516,7 @@ def extract_deepseek(text, output, model, prompt=PROMPT, *, key_path=None, opene
             'provider': 'deepseek',
             'category': ('timeout' if timed_out else
                          'incomplete_response' if interrupted else 'network'),
+            'proxy_in_effect': proxy_endpoint,
             'raw_provider_output_saved': False,
         }, indent=2) + '\n')
         if timed_out:
@@ -477,6 +539,7 @@ def extract_deepseek(text, output, model, prompt=PROMPT, *, key_path=None, opene
     (output / 'model-usage.json').write_text(json.dumps({
         'provider': 'deepseek', 'model': response.get('model', model),
         'elapsed_seconds': round(time.monotonic() - started, 3),
+        'proxy_in_effect': proxy_endpoint,
         'usage': usage if isinstance(usage, dict) else None,
     }, ensure_ascii=False, indent=2))
     if choice.get('finish_reason') != 'stop':
