@@ -119,8 +119,6 @@ LIBRARY_MODULES = {
     'semantic_core.py': 'P/I/V schema、类型、编译与基础校验',
     'plan_synthesizer.py': '形式计划校验与确定性 P/I/V 公式合成',
     'ingest.py': '原文片段编号、证据 ID 回填、提取前信息充分性门',
-    'solving.py': 'SMT/Z3 查询与 witness 校验、分流与可观察变量审查',
-    'salvage.py': '数值与零地址保真守卫、机械修复',
 }
 
 

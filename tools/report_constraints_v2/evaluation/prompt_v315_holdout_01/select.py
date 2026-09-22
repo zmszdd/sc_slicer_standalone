@@ -11,6 +11,10 @@ HERE = Path(__file__).resolve().parent
 STAGE2 = HERE.parents[1]
 EVALUATION = STAGE2 / 'evaluation'
 sys.path.insert(0, str(STAGE2))
+for _d in (STAGE2 / 'lib', STAGE2 / 'cli'):
+    _s = str(_d)
+    if _s not in sys.path:
+        sys.path.insert(0, _s)
 
 from semantic_pipeline import load_report  # noqa: E402
 from prompts.versions import semantic_prompts_v315 as prompts  # noqa: E402
@@ -27,6 +31,29 @@ CORE_FILES = (
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+# S10：代码已迁至 cli/ 与 lib/，部分模块被合并、原文件名已不再指向实现。
+# 记录/校验哈希时，按“现在真正包含该代码的文件”来解析名字。
+CODE_PATHS = {
+    'semantic_pipeline.py': 'cli/semantic_pipeline.py',
+    'report_only.py': 'lib/report_only.py',
+    'plan_synthesizer.py': 'lib/plan_synthesizer.py',
+    'semantic_core.py': 'lib/semantic_core.py',
+    'evidence_catalog.py': 'lib/ingest.py',
+    'report_readiness.py': 'lib/ingest.py',
+    'fidelity.py': 'lib/salvage.py',
+    'numeric_fidelity.py': 'lib/salvage.py',
+    'address_fidelity.py': 'lib/salvage.py',
+    'review.py': 'lib/solving.py',
+    'symbolic_queries.py': 'lib/solving.py',
+}
+
+
+def code_path(name):
+    if name.startswith('semantic_prompts'):
+        return STAGE2 / 'prompts/versions' / name
+    return STAGE2 / CODE_PATHS.get(name, name)
 
 
 def prior_case_ids():
@@ -123,7 +150,7 @@ def main():
         'continue_on_review': True,
         'element_prompt_sha256': sha(prompts.ID_ELEMENT_PROMPT.encode()),
         'formal_prompt_sha256': sha(prompts.formal_prompt('ids', 'core').encode()),
-        'code_sha256': {name: sha((STAGE2 / name).read_bytes()) for name in CORE_FILES},
+        'code_sha256': {name: sha(code_path(name).read_bytes()) for name in CORE_FILES},
         'cases': selected,
     }
     args.output.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')

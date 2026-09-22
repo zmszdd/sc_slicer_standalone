@@ -7,6 +7,10 @@ import sys
 HERE = Path(__file__).resolve().parent
 MODULE = HERE.parents[1]
 sys.path.insert(0, str(MODULE))
+for _d in (MODULE / 'lib', MODULE / 'cli'):
+    _s = str(_d)
+    if _s not in sys.path:
+        sys.path.insert(0, _s)
 from verify_semantic import verify
 
 VALUES = {"pass", "partial", "fail", "not_evaluable"}

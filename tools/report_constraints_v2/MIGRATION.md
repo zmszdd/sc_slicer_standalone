@@ -135,3 +135,99 @@ DeepSeek"，又不破坏测试安全边界。
 `evaluation/`、`results/`、`samples/`、`review_samples/` 没有删除：当前回归测试仍读取其中的
 冻结响应、SMT、金样例和人工审核材料。它们不参与生产控制流，但不是无引用文件；若后续要把
 活动树继续缩小，应先把测试路径统一迁到单独的测试夹具归档，而不是直接删除。
+
+## 2026-09-22：S1–S9 重构记录（阶段二收敛为 `lib/` + `cli/`）
+
+目标：阶段二只保留**入口层 `cli/`** 与**共享库层 `lib/`**，实现代码不再留在
+阶段二根目录；根目录只保留迁移期兼容 shim。**只搬组织，不改语义**：迁移后的
+函数体逐字未改，并由备份做了字节级比对。
+
+每一步的原始文件都备份在 `archives/stage2_refactor_20260921/S<n>_originals/`。
+
+| 步骤 | 做了什么 |
+| --- | --- |
+| S1 | 建立 `lib/`、`cli/` 两个空层；`main.py` 的脚本解析改为按 `cli/` → `lib/` → 根目录的顺序查找（`_script_path`），并加入 `STAGE2_ARG_PREFIX` 与 `LIBRARY_MODULES` 两张表 |
+| S2 | `semantic_core.py` → `lib/semantic_core.py`；`plan_synthesizer.py` → `lib/plan_synthesizer.py` |
+| S3 | `report_only.py` → `lib/report_only.py`；**删除其中的 `main()` / `VERSION` / `__main__`**（死代码）；因下沉一层而修正 `ROOT` 的 `parents` 深度；`tests/__init__.py` 补 `lib/` 与 `cli/` 到 `sys.path` |
+| S4 | `semantic_pipeline.py` → `cli/semantic_pipeline.py`；`preview.py` → `cli/preview.py`；`preconditions.py` → `cli/preconditions.py` |
+| S5 | `evidence_catalog.py` + `report_readiness.py` → **合并**为 `lib/ingest.py`（两个旧名现在指向同一个模块对象） |
+| S6 | `symbolic_queries.py` → `lib/solving.py`；`fidelity.py` → `lib/salvage.py`（纯搬运）；同时修正 `tests/test_main_entry.py` 的脚本存在性判断口径（原来只看根目录，与 `main.py` 的 `cli/` → `lib/` → 根目录顺序不一致，造成假失败） |
+| S7 | `review.py` → 并入 `lib/solving.py`（80 → 226 行）；`observability` 命令恢复可用 |
+| S8 | `mechanical_salvage.py` → 并入 `lib/salvage.py`（180 → 385 行）；`salvage-replay` 命令恢复可用 |
+| S9 | `run_semantic_batch.py` + `verify_semantic.py` → **合并**为 `cli/batch_verify.py`（330 行）；`batch` 与 `verify` 命令恢复可用 |
+
+### S3：`report_only.main()` / `VERSION` 已删除
+
+`lib/report_only.py` 不再有 `main()`、`VERSION` 常量或 `__main__` 块。
+全仓库检索确认无任何调用方引用它们。根入口从未公开过 `report-only` /
+`legacy-verify` / 演示命令，因此这一步不影响任何可用命令。
+
+### S8：`mechanical_salvage` 的 `__file__` 与自引用 import
+
+合并 `mechanical_salvage.py` 进 `lib/salvage.py` 时踩到两个坑，都已修复：
+
+1. **自引用 import。** 被并入的文件里有
+   `from fidelity import check_address_plan, check_numeric_plan`。合并后
+   `fidelity` 就是本模块自己的 shim，该行变成自引用，抛
+   `ImportError: cannot import name ... from partially initialized module`。
+   已删除该行（名字现在就在本文件内）。
+2. **`__file__` 深度。** 子进程调用原本写作
+   `Path(__file__).with_name('semantic_pipeline.py')`，搬到 `lib/` 后
+   `with_name` 会指向 `lib/semantic_pipeline.py`（不存在）。已改为
+   `Path(__file__).resolve().parents[1] / 'semantic_pipeline.py'`，即阶段二根目录
+   下的 shim。
+
+**为什么必须指向根目录的 shim**：`subprocess [sys.executable, <script>]` 会把
+**子进程的 `sys.path[0]` 设为该脚本自己所在的目录**。若直接生成 `cli/x.py`，
+子进程的裸名 import（`from fidelity import ...`）就会 `ModuleNotFoundError`。
+指向根目录 shim 后，`sys.path[0]` 是阶段二根目录，所有 shim 都在那里。
+
+### S9：`cli/batch_verify.py` 的 `HERE` 修复
+
+`run_semantic_batch.py` 原本用 `HERE = Path(__file__).resolve().parent` 表示
+阶段二根目录，并据此生成子进程 `HERE / 'semantic_pipeline.py'`。搬到 `cli/`
+后 `parent` 变成了 `cli/`，同一个表达式会指向 `cli/semantic_pipeline.py`——
+正是上一节说的"不能直接生成 `cli/` 文件"的情形。已改为：
+
+```python
+HERE = Path(__file__).resolve().parents[1]  # 阶段二根目录（shim 所在）
+```
+
+`verify_semantic.py` 的模块级 argparse 被包进 `verify_main()`（函数体逐字未改，
+只加缩进），并在文件末尾加入统一分派器：
+
+```python
+if __name__ == '__main__':
+    if sys.argv[1:2] == ['verify']:
+        del sys.argv[1]           # 去掉 main.py 注入的前导参数
+        raise SystemExit(verify_main())
+    raise SystemExit(main())
+```
+
+同时修正 `lib/salvage.py` 的 `__main__` 块：`replay_main()` 改为
+`raise SystemExit(replay_main())`，使退出码能真正传播。
+
+### 迁移期的三条经验
+
+1. **合并会制造自引用 import。** 若 B 里有 `from A import name`，而 `name` 定义
+   在 A 中，合并 A+B 后该行会经 A 的 shim 变回自引用。必须删掉这行。
+2. **顶层重名会静默覆盖。** Python 对同一模块里的重复顶层定义取最后一个。历史上
+   `preconditions.py` 的 `PROMPT` 就这样被静默覆盖过。合并前后都要做
+   `def` / `class` / `NAME =` 的重名扫描。
+3. **shim 的 `__main__` 转发不能省。** 省略后会静默退出 0 而不执行任何逻辑，
+   且没有测试能发现。详见 `STRUCTURE.md` 的「shim 的 `sys.modules` 别名机制」。
+
+### 本节取代下列旧说法
+
+S1–S9 之后，本文档前面几节中这几句已经过时，以本节为准：
+
+- 「主流程命令不变：`semantic_pipeline.py`、`run_semantic_batch.py` 和
+  `verify_semantic.py` 仍保留在阶段二根目录。」
+  → 现在实现位于 `cli/semantic_pipeline.py` 与 `cli/batch_verify.py`
+  （`batch_verify.py` 是 `run_semantic_batch.py` + `verify_semantic.py` 的合并体）；
+  根目录同名文件只剩 3–4 行的兼容 shim。
+- 「`numeric_fidelity.py` / `address_fidelity.py` 保留不合并」（第二轮）
+  → 第三轮已合并为 `fidelity.py`，S6/S8 又并入 `lib/salvage.py`。
+- 「`evaluation/fresh_holdout_01/manifest.json` 的 `code_sha256` 重新基线」
+  → S10 再次重新基线，并改用「按现在真正包含该代码的文件解析」的新规则，
+  映射表见 `STRUCTURE.md` 的「另一套冻结哈希」一节。
