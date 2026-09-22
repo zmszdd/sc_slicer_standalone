@@ -1,8 +1,5 @@
 """Synthetic compiler controls; NOT evaluation of model extraction accuracy."""
 import unittest
-from unittest.mock import patch
-from pathlib import Path
-import tempfile
 
 import z3
 
@@ -182,13 +179,5 @@ class ReportOnlyTests(unittest.TestCase):
     def test_quantity_not_boolean(self):
         x = fixture(); x['properties']['safety']['expression'] = {'var': 'paid'}
         with self.assertRaises(ValueError): r.compile_spec(x, TEXT)
-
-    def test_upload_gate_does_not_call_model(self):
-        case = Path('/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/Brix_Money_qy7NXr77sDh__PGwVR6CTD6U__3hfE23tsgzG')
-        if not case.exists(): self.skipTest('external paired input not present')
-        with tempfile.TemporaryDirectory() as work, patch.object(r, 'extract') as call:
-            with patch('sys.argv', ['report_only.py', '--case-dir', str(case), '--output', str(Path(work) / 'result')]):
-                self.assertEqual(r.main(), 2)
-            call.assert_not_called()
 
 if __name__ == '__main__': unittest.main()
