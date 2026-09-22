@@ -10,8 +10,10 @@ import unittest
 from unittest.mock import patch
 
 import semantic_core as s
-from semantic_core import (BOUNDARY, NORMALIZE, REJECT, WARN, classify,
-                           entry_for, exact_entry_for, normalize_readiness)
+from semantic_core import (BOUNDARY, MAX_PLAN_SYMBOLS, NORMALIZE, REJECT, WARN,
+                           classify, entry_for, exact_entry_for,
+                           normalize_readiness, normalize_truth_binding)
+import plan_synthesizer
 import semantic_pipeline as p
 import verify_semantic
 
@@ -386,6 +388,261 @@ class ScreeningNormalizationWiringTest(unittest.TestCase):
             provenance = json.loads((out / 'provenance.json').read_text())
             self.assertEqual(provenance['input_screening_normalizations'],
                              log['changes'])
+
+
+
+class TruthBindingNormalizationTest(unittest.TestCase):
+    """The second in-boundary fix: declare the boolean the plan already names.
+
+    Observed on a real run: the entry for ``p_domain_separator_computed_once``
+    carried ``{"kind": "truth", "symbol": "domain_separator_computed_once",
+    "value": true}`` -- the name is exactly that entry's own ``source_id``
+    without its ``p_`` prefix -- and the plan never declared the symbol, so
+    ``_predicate`` raised ``invalid truth binding``.
+    """
+
+    @staticmethod
+    def _statement(identifier, kind, text):
+        return {'id': identifier, 'kind': kind, 'text': text,
+                'modality': 'asserted', 'entity_ids': ['contract'],
+                'evidence_ids': ['e_0001']}
+
+    @classmethod
+    def elements(cls):
+        return {
+            'scope': {'flow': 'domain separator'},
+            'statements': [
+                cls._statement('p_separator_cached_once', 'precondition',
+                               'The contract computes its DOMAIN_SEPARATOR once.'),
+                cls._statement('p_chain_id_changes', 'precondition',
+                               'The chain ID later changes.'),
+                cls._statement('si_separator_matches_chain', 'security_intent',
+                               'The separator should match the current chain.'),
+                cls._statement('i_signature_mismatch', 'impact',
+                               'Signatures become invalid.')],
+            'entities': [{'id': 'contract', 'name': 'Contract',
+                          'role': 'contract'}]}
+
+    @staticmethod
+    def _bool_symbol(meaning, checkpoint, sources):
+        return {'sort': 'bool', 'unit': None, 'meaning': meaning,
+                'checkpoint': checkpoint, 'entity_ids': ['contract'],
+                'source_ids': list(sources)}
+
+    @classmethod
+    def declared(cls):
+        """The two booleans the fix is allowed to add, spelled out correctly."""
+        return {
+            'separator_cached_once': cls._bool_symbol(
+                'The contract computes its DOMAIN_SEPARATOR once.',
+                'separator_cached_once', ['p_separator_cached_once']),
+            'chain_id_changes': cls._bool_symbol(
+                'The chain ID later changes.', 'chain_id_changes',
+                ['p_chain_id_changes'])}
+
+    @classmethod
+    def plan(cls):
+        return {
+            'schema_version': 'report-formal-plan/4',
+            'relation_class': 'state_correspondence',
+            'precondition_ids': ['p_separator_cached_once', 'p_chain_id_changes'],
+            'intent_id': 'si_separator_matches_chain',
+            'impact_ids': ['i_signature_mismatch'],
+            'symbols': {'signature_valid': cls._bool_symbol(
+                'whether a signature verifies', 'signature_valid',
+                ['si_separator_matches_chain', 'i_signature_mismatch'])},
+            'precondition_terms': [
+                {'source_id': 'p_separator_cached_once',
+                 'predicate': {'kind': 'truth', 'symbol': 'separator_cached_once',
+                               'value': True}},
+                {'source_id': 'p_chain_id_changes',
+                 'predicate': {'kind': 'truth', 'symbol': 'chain_id_changes',
+                               'value': True}}],
+            'pattern': {
+                'kind': 'relation_obligation',
+                'condition': {'kind': 'truth', 'symbol': 'separator_cached_once',
+                              'value': True},
+                'relation': {'kind': 'truth', 'symbol': 'signature_valid',
+                             'value': True}},
+            'derived_definitions': [],
+            'assumptions': [], 'unresolved': [], 'limitations': []}
+
+    # ---- the fix ----
+
+    def test_message_is_declared_as_normalize(self):
+        self.assertEqual(classify('invalid truth binding'), NORMALIZE)
+
+    def test_the_unfixed_plan_fails_with_the_declared_message(self):
+        with self.assertRaisesRegex(ValueError, 'invalid truth binding'):
+            plan_synthesizer.synthesize_id_formalization(self.plan(),
+                                                        self.elements())
+
+    def test_declaring_the_named_symbol_lets_the_plan_validate(self):
+        fixed, changes = normalize_truth_binding(self.plan(), self.elements())
+        plan_synthesizer.synthesize_id_formalization(fixed, self.elements())
+        self.assertEqual([change['symbol'] for change in changes],
+                         ['separator_cached_once', 'chain_id_changes'])
+        self.assertEqual(changes[0], {
+            'kind': 'declare_truth_symbol', 'symbol': 'separator_cached_once',
+            'source_id': 'p_separator_cached_once',
+            'reason': 'a truth predicate named it but the plan never declared it'})
+
+    def test_the_declaration_invents_nothing(self):
+        """sort is forced by the ``truth`` kind; the rest is the source's own."""
+        fixed, _ = normalize_truth_binding(self.plan(), self.elements())
+        self.assertEqual(fixed['symbols']['separator_cached_once'],
+                         self.declared()['separator_cached_once'])
+
+    def test_the_input_is_never_mutated(self):
+        candidate = self.plan()
+        snapshot = copy.deepcopy(candidate)
+        normalize_truth_binding(candidate, self.elements())
+        self.assertEqual(candidate, snapshot)
+
+    def test_a_correctly_declared_plan_is_untouched(self):
+        candidate = self.plan()
+        candidate['symbols'].update(self.declared())
+        plan_synthesizer.synthesize_id_formalization(candidate, self.elements())
+        self.assertEqual(normalize_truth_binding(candidate, self.elements()),
+                         (candidate, []))
+
+    def test_malformed_inputs_are_left_for_the_validator(self):
+        for candidate, elements in ((None, self.elements()), ({}, self.elements()),
+                                    (self.plan(), None), (self.plan(), {}),
+                                    ({'symbols': {}}, self.elements())):
+            with self.subTest(candidate=candidate, elements=elements):
+                self.assertEqual(normalize_truth_binding(candidate, elements),
+                                 (candidate, []))
+
+    # ---- refusals: the ORIGINAL error must survive, unfixed ----
+
+    def _refuse(self, mutate, added, expected):
+        """Mutate the plan, normalize, and prove the defect is still reported."""
+        candidate = self.plan()
+        mutate(candidate)
+        declared_before = set(candidate['symbols'])
+        fixed, _ = normalize_truth_binding(candidate, self.elements())
+        self.assertNotIn(added, set(fixed['symbols']) - declared_before)
+        with self.assertRaisesRegex(ValueError, expected):
+            plan_synthesizer.synthesize_id_formalization(fixed, self.elements())
+
+    def test_a_paraphrased_name_is_refused(self):
+        """``separator_immutable`` is not the source's own ID: it would be invented."""
+        def rename(plan):
+            plan['precondition_terms'][0]['predicate']['symbol'] = \
+                'separator_immutable'
+        self._refuse(rename, 'separator_immutable', 'invalid truth binding')
+
+    def test_a_non_bool_value_is_refused(self):
+        def number(plan):
+            plan['precondition_terms'][0]['predicate']['value'] = 1
+        self._refuse(number, 'separator_cached_once', 'invalid truth binding')
+
+    def test_extra_predicate_keys_are_refused(self):
+        def extra(plan):
+            plan['precondition_terms'][0]['predicate']['note'] = 'because'
+        self._refuse(extra, 'separator_cached_once', 'invalid truth binding')
+
+    def test_an_integer_used_as_a_flag_is_refused(self):
+        """Sub-case A: the prompt already prescribes the occurrence symbol."""
+        def redeclare(plan):
+            plan['symbols']['separator_cached_once'] = {
+                'sort': 'int', 'unit': 'dimensionless', 'meaning': 'cached id',
+                'checkpoint': 'cached_id', 'entity_ids': ['contract'],
+                'source_ids': ['p_separator_cached_once']}
+        candidate = self.plan()
+        redeclare(candidate)
+        fixed, _ = normalize_truth_binding(candidate, self.elements())
+        self.assertEqual(fixed['symbols']['separator_cached_once'],
+                         candidate['symbols']['separator_cached_once'],
+                         'an integer declaration must be left exactly as written')
+        with self.assertRaisesRegex(ValueError,
+                                    'truth binding requires bool symbol'):
+            plan_synthesizer.synthesize_id_formalization(fixed, self.elements())
+
+    def test_a_source_without_an_entity_binding_is_refused(self):
+        """Nothing is invented -- an unbound declaration would be."""
+        elements = self.elements()
+        elements['statements'][0]['entity_ids'] = []
+        declared_before = set(self.plan()['symbols'])
+        fixed, changes = normalize_truth_binding(self.plan(), elements)
+        self.assertNotIn('separator_cached_once',
+                         set(fixed['symbols']) - declared_before)
+        # The other term is well formed, so it is still declared.
+        self.assertEqual([change['symbol'] for change in changes],
+                         ['chain_id_changes'])
+
+    # ---- the cap is duplicated, so pin it to the validator ----
+
+    def test_the_cap_constant_matches_the_schema(self):
+        def with_symbols(count):
+            plan = self.plan()
+            plan['symbols'].update(self.declared())
+            fillers = count - len(plan['symbols'])
+            self.assertGreaterEqual(fillers, 0)
+            for index in range(fillers):
+                plan['symbols'][f'filler_{index}'] = self._bool_symbol(
+                    'unused', f'filler_{index}', ['p_chain_id_changes'])
+            self.assertEqual(len(plan['symbols']), count)
+            return plan
+
+        plan_synthesizer.synthesize_id_formalization(
+            with_symbols(MAX_PLAN_SYMBOLS), self.elements())
+        with self.assertRaisesRegex(ValueError, 'invalid plan symbols'):
+            plan_synthesizer.synthesize_id_formalization(
+                with_symbols(MAX_PLAN_SYMBOLS + 1), self.elements())
+
+    def test_the_fixer_refuses_to_exceed_the_cap(self):
+        """Better to leave the original error than trade it for another one."""
+        plan = self.plan()
+        self.assertEqual(sorted(plan['symbols']), ['signature_valid'])
+        while len(plan['symbols']) < MAX_PLAN_SYMBOLS - 1:
+            index = len(plan['symbols'])
+            plan['symbols'][f'filler_{index}'] = self._bool_symbol(
+                'unused', f'filler_{index}', ['p_chain_id_changes'])
+        # MAX_PLAN_SYMBOLS - 1 declared + the 2 the fix would add > the cap.
+        self.assertEqual(len(plan['symbols']), MAX_PLAN_SYMBOLS - 1)
+        fixed, changes = normalize_truth_binding(plan, self.elements())
+        self.assertEqual(changes, [])
+        self.assertEqual(fixed, plan)
+
+
+class TruthBindingNormalizationWiringTest(unittest.TestCase):
+    """Wiring guard: without this, deleting the call keeps every other test green.
+
+    The fixer's own tests above would still pass if ``request_formalization``
+    stopped calling it, which is exactly the gap this class closes.
+    """
+
+    def test_a_plan_naming_an_undeclared_symbol_is_normalized(self):
+        elements = TruthBindingNormalizationTest.elements()
+        raw = TruthBindingNormalizationTest.plan()
+        seen = {}
+
+        def fake(_payload, call_dir, _model, _prompt, **_kwargs):
+            seen['raw'] = list((call_dir / 'model-claim.json').parent.glob('*'))
+            return copy.deepcopy(raw)
+
+        with tempfile.TemporaryDirectory() as dirname:
+            out = Path(dirname)
+            candidate, formal, _review = p.request_formalization(
+                '{}', 'PROMPT', 'deepseek-flash', out, 0, True, elements,
+                extract_fn=fake, attempts=[])
+            self.assertIn('separator_cached_once', candidate['symbols'],
+                          'the normalization never ran')
+            log = json.loads(
+                (out / 'neural-formalization' / 'normalization-log.json')
+                .read_text())
+            self.assertEqual(log['mode'], NORMALIZE)
+            self.assertEqual(log['stage'], 'formalization')
+            self.assertEqual([c['symbol'] for c in log['changes']],
+                             ['separator_cached_once', 'chain_id_changes'])
+            attempts = json.loads(
+                (out / 'formalization-attempts.json').read_text())
+            self.assertEqual(attempts[0]['normalizations'], log['changes'])
+            # The persisted plan is the normalized one, which is what makes the
+            # zero-call replay in ``cli/batch_verify.py`` reproduce this run.
+            self.assertIsNotNone(formal)
 
 
 if __name__ == '__main__': unittest.main()

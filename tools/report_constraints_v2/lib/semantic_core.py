@@ -304,12 +304,22 @@ NORMALIZE = 'normalize'
 REJECT = 'reject'
 WARN = 'warn'
 
+#: Mirrors the schema cap enforced by ``lib/plan_synthesizer.py``
+#: (``1 <= len(plan['symbols']) <= 8``).  Duplicated on purpose: this is
+#: the lower layer -- ``plan_synthesizer`` imports THIS module, so the
+#: reverse import would be circular.  Declaring more symbols than the
+#: schema allows would trade one rejection for another.
+MAX_PLAN_SYMBOLS = 8
+
 #: ``(message, mode, note?)``.  Matched by exact equality first, then by prefix,
 #: so dynamic messages such as ``f'unknown evidence ID {x}'`` (which the guard
 #: test sees as the literal prefix ``'unknown evidence ID '``) also resolve.
 #: Order matters only for prefix matches: NORMALIZE entries come first.
 BOUNDARY = (
     # ---- NORMALIZE: a mechanical fix preserves every semantic assertion ----
+    ('invalid truth binding', NORMALIZE,
+     'a truth predicate named an undeclared symbol after its own source;'
+     ' declared by normalize_truth_binding()'),
     ('invalid report-readiness fields', NORMALIZE,
      'readiness telemetry nested one level too deep; hoisted by normalize_readiness()'),
     ('missing report-readiness summary', NORMALIZE,
@@ -426,7 +436,6 @@ BOUNDARY = (
     ('invalid symbol count', REJECT),
     ('invalid symbols', REJECT),
     ('invalid temporal order pattern', REJECT),
-    ('invalid truth binding', REJECT),
     ('invalid/deep AST', REJECT),
     ('invalid/duplicate evidence IDs', REJECT),
     ('invalid/reserved symbol name', REJECT),
@@ -591,3 +600,95 @@ def normalize_readiness(candidate):
                   'dimensions': {key: value for key, value in dimensions.items()
                                  if key not in hoisted}}
     return normalized, [f'hoisted {key} out of dimensions' for key in hoisted]
+
+
+
+def _truth_binding_candidate(term, symbols):
+    """The ``(name, source_id)`` a ``truth`` predicate names but never declares.
+
+    Returns ``None`` unless the shapes are exactly the ones this fix may touch.
+    Strict on purpose; see ``normalize_truth_binding`` for the reasoning.
+    """
+    if not isinstance(term, dict):
+        return None
+    predicate, source_id = term.get('predicate'), term.get('source_id')
+    if not isinstance(predicate, dict) or predicate.get('kind') != 'truth':
+        return None
+    if set(predicate) != {'kind', 'symbol', 'value'}:
+        return None
+    if type(predicate.get('value')) is not bool or not isinstance(symbols, dict):
+        return None
+    name = predicate.get('symbol')
+    if not isinstance(name, str) or name in symbols:
+        return None
+    # The name must be the entry's OWN source ID minus its statement-kind
+    # prefix.  A paraphrase would have to be invented, and inventing the claim
+    # is exactly what the boundary forbids.
+    if not isinstance(source_id, str) or source_id[:2] not in ('p_', 'a_'):
+        return None
+    return (name, source_id) if source_id[2:] == name else None
+
+
+def normalize_truth_binding(candidate, elements):
+    """Declare the boolean a ``truth`` predicate already names.
+
+    Observed on a real run:
+
+        {"source_id": "p_domain_separator_computed_once",
+         "predicate": {"kind": "truth",
+                       "symbol": "domain_separator_computed_once",
+                       "value": true}}
+
+    The model reused the precondition's own ID as the symbol name and simply
+    never declared it, so ``_predicate`` raised ``invalid truth binding``.
+
+    Nothing about the assertion is in doubt, which is what makes this a
+    normalization rather than a repair: the ``truth`` kind already forces
+    ``sort: bool``, the enclosing entry already names the source, and that
+    source's statement already supplies the entity binding and the wording.
+    Declaring the symbol therefore restates what was claimed instead of adding
+    to it.
+
+    Refuses -- leaving the plan untouched so the ORIGINAL error still fires --
+    whenever a declaration would have to be invented or would break the schema:
+
+    * the name is not the entry's own ``source_id`` minus its ``p_``/``a_``
+      prefix (a paraphrase such as ``domain_separator_immutable``);
+    * the predicate is not exactly ``kind``/``symbol``/``value`` with a real
+      bool, or the value is a non-bool such as an integer read as a flag;
+    * the symbol is already declared;
+    * the source statement is unknown, or carries no entity to bind;
+    * the plan would exceed ``MAX_PLAN_SYMBOLS``.
+
+    Returns ``(candidate, changes)``; ``changes`` is empty when nothing applied.
+    """
+    if not isinstance(candidate, dict) or not isinstance(elements, dict):
+        return candidate, []
+    terms, symbols = candidate.get('precondition_terms'), candidate.get('symbols')
+    if not isinstance(terms, list) or not isinstance(symbols, dict):
+        return candidate, []
+    statements = {row['id']: row for row in elements.get('statements') or []
+                  if isinstance(row, dict) and isinstance(row.get('id'), str)}
+    added, changes = {}, []
+    for term in terms:
+        found = _truth_binding_candidate(term, {**symbols, **added})
+        if found is None:
+            continue
+        name, source_id = found
+        entities = statements.get(source_id, {}).get('entity_ids')
+        if not (isinstance(entities, list) and entities and
+                all(isinstance(item, str) and item for item in entities)):
+            continue
+        text = statements[source_id].get('text')
+        added[name] = {
+            'sort': 'bool', 'unit': None,
+            'meaning': text.strip() if isinstance(text, str) and text.strip() else name,
+            'checkpoint': name, 'entity_ids': list(entities),
+            'source_ids': [source_id]}
+        changes.append({
+            'kind': 'declare_truth_symbol', 'symbol': name,
+            'source_id': source_id,
+            'reason': 'a truth predicate named it but the plan never declared it'})
+    if not added or len(symbols) + len(added) > MAX_PLAN_SYMBOLS:
+        return candidate, []
+    return {**candidate, 'symbols': {**symbols, **added}}, changes

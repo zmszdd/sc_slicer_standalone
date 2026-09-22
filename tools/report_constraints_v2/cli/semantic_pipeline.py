@@ -14,7 +14,7 @@ import subprocess
 
 import report_only as r
 from semantic_core import (NORMALIZE, compile_bundle, normalize_readiness,
-                           validate_elements)
+                           normalize_truth_binding, validate_elements)
 from prompts.registry import (
     ADDRESS_GUARD_VERSIONS, ALLOWED_STATEMENT_ID_VERSIONS, CORE_COUNT_VERSIONS,
     DEFAULT_VERSION, ID_NORMALIZATION_VERSIONS, LEAN_FORMAL_INPUT_VERSIONS,
@@ -456,6 +456,17 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                 record['changed_top_level_fields'] = validate_local_repair(
                     repair_base, candidate, mutable_fields)
             if plan_mode:
+                # Boundary NORMALIZE: the model named the boolean after the
+                # precondition that asserts it and only forgot to declare it.
+                # The raw response stays untouched in model-claim.json.
+                amended, normalized = normalize_truth_binding(candidate, elements)
+                if normalized:
+                    write_json(call_dir / 'normalization-log.json', {
+                        'schema_version': 'stage2-normalization-log/1',
+                        'stage': 'formalization', 'mode': NORMALIZE,
+                        'changes': normalized})
+                    record['normalizations'] = normalized
+                    candidate = amended
                 if mechanical_salvage:
                     candidate, repairs = drop_unused_invalid_symbols(candidate)
                     if repairs:

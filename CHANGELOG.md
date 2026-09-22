@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **`invalid truth binding` 由 `REJECT` 改判 `NORMALIZE`（边界第 3 条归一化）。**
+  v3.19 遗留的 `sequence_domain_fork` 失败里 9/10 是模型在 `precondition_terms` 的
+  某条里写了
+  `{"kind":"truth","symbol":"domain_separator_computed_once","value":true}` ——
+  符号名**恰好就是该条目自己的 `source_id` 去掉 `p_` 前缀**，只是从没在 `symbols`
+  里声明过。
+  按边界判据这是**改写方式而非改写声称**：`truth` 这个 kind 本身已强制
+  `sort:"bool"`，外层条目已给出 source，而该 source 的语句已提供实体绑定与措辞。
+  所以 `normalize_truth_binding()` 只补一条声明，不发明任何东西。
+  判据收得很紧，任一条不满足就**保持原判**、让原始错误照旧抛出：名字不是该条目
+  `source_id` 去前缀后本身（如模型自行改名的 `domain_separator_immutable`）；谓词
+  键集不是恰好三个、或 `value` 不是真 bool（整数当标志位）；符号已声明；source 语句
+  缺失或没有 `entity_ids`；补声明后会超过 schema 的 8 符号上限（`MAX_PLAN_SYMBOLS`，
+  与验证器的漂移耦合守卫见测试）。
+  实测（对 v3.19 的 50 个真实样本离线再评分，**0 次 API 调用** —— 归一化不触碰提示
+  词，模型输出分布不变）：40/50 通过的计划**完全未被改动**；9/10 受影响计划共补声明
+  15 个符号；**新增通过 0**、**原本通过被改动 0**。
+  新增通过为 0 是因为该案例在形状失误之后还压着两个独立真缺陷：
+  `trivial self-comparison predicate` 6 次（`x == x` 恒真式，提示词审计第 3 条明令
+  禁止）；`core relation observables lack intent/impact grounding` 3 次（模型声明了
+  带 impact 的 `signature_valid`，却没在 `relation` 里使用它）。修这两者都会**改变
+  声称**，故维持 `REJECT`。
+  因此本次改判的真实价值是**消除伪中止**：失败原因第一次诚实地指向真缺陷，而不是被
+  一个形状失误遮蔽。只有"B 是唯一缺陷"的报告才会直接体现为通过率提升，而现有 5 例
+  开发集里没有这样的案例 —— 如实记录，不当作通过率收益。
+- `code_sha256` 重基线 7 处（`semantic_pipeline.py` ×3、`semantic_core.py` ×3、
+  `fidelity.py` ×1，覆盖 3 个清单），仍是字符串替换而非重新序列化，重基线后零漂移。
+- 测试基线 297 -> 312（+15：B 类归一化的 happy path、纯函数性、声明不发明任何东西、
+  4 条负向证明、无实体绑定拒绝、符号上限与验证器的耦合守卫、超上限拒绝、接线守卫）。
+  5 个既有离线重放仍全部 `offline_verified: true`。
+
 - **新增 `semantic-v3.19`：修正 `access_control` 类内容规则与 grounding 规则的冲突。**
   v3.18 之后剩下的 grounding 失败，根因是**提示词两条规则无法同时满足**：
   类规则说 access control 的 `relation`
@@ -90,7 +121,7 @@
   `WARN` 目前**按设计为空**：这些校验器只检查**声明格式**是否合法，格式错误仍应
   `reject`；"已声明的未确定性不否决断言"那层语义在 `compile_bundle` 的 `signals`
   策略里（S12），两层不可混。
-- 边界表 `BOUNDARY` 逐条列出全部 **210 条**不同消息（2 `NORMALIZE` / 208 `REJECT`）。
+- 边界表 `BOUNDARY` 逐条列出全部 **210 条**不同消息（现为 3 `NORMALIZE` / 207 `REJECT`，见下条）。
   `tests/test_semantic_core.py` 用 `ast` 从源码重新导出判废面，任何未登记的
   消息都会让测试失败 —— 边界因此无法静默漂移。防护用 `exact_entry_for`（精确匹配），
   而不是 `entry_for`（带前缀兜底）：前缀兜底会让一条被截短的条目继续"覆盖"它本该声明

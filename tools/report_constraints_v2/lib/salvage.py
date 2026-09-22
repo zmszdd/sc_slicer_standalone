@@ -16,7 +16,7 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from semantic_core import identifier
+from semantic_core import identifier, normalize_truth_binding
 from plan_synthesizer import synthesize_id_formalization
 # NOTE(S8): `from fidelity import check_address_plan, check_numeric_plan` was DROPPED:
 # both names are defined in THIS file now, so that import became a self-import via the
@@ -354,6 +354,10 @@ def replay_main():
         plan_raw = json.loads(plan_path.read_text())
         record['source_plan'] = str(plan_path.resolve())
         plan, record['plan_repairs'] = drop_unused_invalid_symbols(plan_raw)
+        # Same boundary NORMALIZE the live pipeline applies, so this
+        # offline replay reaches the same verdict as the run it replays.
+        plan, truth_declarations = normalize_truth_binding(plan, elements)
+        record['plan_repairs'] += truth_declarations
         write_json(args.output / 'formal-plan.json', plan)
         try:
             formal = synthesize_id_formalization(plan, elements)
