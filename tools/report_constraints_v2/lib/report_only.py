@@ -487,6 +487,11 @@ def extract_deepseek(text, output, model, prompt=PROMPT, *, key_path=None, opene
                      {'role': 'user', 'content': text}],
         'response_format': {'type': 'json_object'},
         'thinking': {'type': 'disabled'},
+        # Bounded decoding: without this the official API applies its default
+        # temperature and the same prompt yields different output every run,
+        # which makes any pass/fail verdict a property of the draw rather than
+        # of the report.  Measured: identical prompts, 4/4 differing outputs.
+        'temperature': 0,
         'max_tokens': 8192,
         'stream': False,
     }, ensure_ascii=False).encode()

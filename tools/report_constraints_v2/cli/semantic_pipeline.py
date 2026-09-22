@@ -13,8 +13,8 @@ from pathlib import Path
 import subprocess
 
 import report_only as r
-from lib.normalization import NORMALIZE, normalize_readiness
-from semantic_core import compile_bundle, validate_elements
+from semantic_core import (NORMALIZE, compile_bundle, normalize_readiness,
+                           validate_elements)
 from prompts.registry import (
     ADDRESS_GUARD_VERSIONS, ALLOWED_STATEMENT_ID_VERSIONS, CORE_COUNT_VERSIONS,
     DEFAULT_VERSION, ID_NORMALIZATION_VERSIONS, LEAN_FORMAL_INPUT_VERSIONS,

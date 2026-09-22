@@ -2,7 +2,24 @@
 
 ## Unreleased
 
-- **新增规范化边界（`lib/normalization.py`）。**lib 层原本从 **228 个判废点**中止一轮
+- **`temperature: 0` 没能带来确定性，而且移动了输出分布。**追加该字段后，同一提示词
+  两次运行的 `model-claim.json` **语义仍不同**（`dimensions`/`summary`、
+  `ambiguities`/`statements`、`intent_id`/`impact_ids`/`assumptions` 均异）。且
+  `gte_fok_dust` 由改动前的 2/2 通过变为 1/3 —— 它不是中性的"收紧采样"。
+  唯一改善：失败模式稳定了（两次 probe 在同一处以同一 `ValueError` 失败）。
+- **盲测三采样分布（5 例 × 3 次，45 次调用，114739 prompt / 32829 completion tokens）**：
+  `intuition_pause_escrow` 2/3、`panoptic_builder_init` 1/3、`gte_fok_dust` 1/3、
+  `sequence_domain_fork` 0/3、`olas_permissionless_sweep` 0/3。合计 **4/15 = 26.7%**，
+  **没有任何案例 3/3 通过**。
+  失败原因：`fixed relation template mismatch` 5 次（**抖动型**：同一案例有时过有时不过）、
+  `core relation observables lack intent/impact grounding` 3 次、`invalid truth binding`
+  3 次（后两者在各自案例上 3/3 一致 → **系统性**，不是运气）。
+  结论：单次运行的通过/拒绝不是关于报告的属性，而是一次抽样的属性。
+- 结构按前提恢复：规范化并入 `lib/semantic_core.py`（`lib/` 回到 8 个文件），其测试并入
+  `tests/test_semantic_core.py`（`tests/` 回到 32 个文件）；`lib/normalization.py` 与
+  `tests/test_normalization_boundary.py` 已删除。
+- 重设 `code_sha256`：`semantic_core.py` + `report_only.py`，14 个 key。
+- **新增规范化边界（在 `lib/semantic_core.py` 内）。**lib 层原本从 **228 个判废点**中止一轮
   运行（`require(...)` 加直接 `raise`），而且**一个都没被分类** —— 那不是边界，是雷区：
   任何一处形状失误都会静默丢掉一轮本来正确的结果。gold-v1 盲测里
   `intuition_pause_escrow` 就死于 `invalid report-readiness fields`，而它四个筛查维度
@@ -14,7 +31,7 @@
   `reject`；"已声明的未确定性不否决断言"那层语义在 `compile_bundle` 的 `signals`
   策略里（S12），两层不可混。
 - 边界表 `BOUNDARY` 逐条列出全部 **210 条**不同消息（2 `NORMALIZE` / 208 `REJECT`）。
-  `tests/test_normalization_boundary.py` 用 `ast` 从源码重新导出判废面，任何未登记的
+  `tests/test_semantic_core.py` 用 `ast` 从源码重新导出判废面，任何未登记的
   消息都会让测试失败 —— 边界因此无法静默漂移。防护用 `exact_entry_for`（精确匹配），
   而不是 `entry_for`（带前缀兜底）：前缀兜底会让一条被截短的条目继续"覆盖"它本该声明
   的消息，从而悄悄丢掉一个点。
@@ -31,8 +48,8 @@
     条件侧，关系侧由 intent 支撑，等于把"声称的对象"换了。
 - 测试基线 276 -> 286（+8 边界覆盖/修复器测试，+2 接线与纯函数）。两条关键防护均负向
   验证：新增未分类判废点、删条目、截短条目文字，三者都以预期断言失败。
-- 已知覆盖缺口（与 `cli/batch_verify.py` 同类）：`lib/normalization.py` 决定一轮是否
-  中止，但它**不在**任何清单的 `code_sha256` 里 —— 清单只记历史遗留的 11 个名字。
+- 已知覆盖缺口（与 `cli/batch_verify.py` 同类）：(该边界决定一轮是否
+  中止)，但它**不在**任何清单的 `code_sha256` 里 —— 清单只记历史遗留的 11 个名字。
 - 重设 `code_sha256`：`semantic_pipeline.py`，7 个 key。
 - **新增 `--deepseek-proxy` 开关，神经流程默认直连。**官方传输此前**隐式**继承
   环境里的 `*_proxy` 变量（`build_opener` 会自动装 `ProxyHandler(getproxies())`）。

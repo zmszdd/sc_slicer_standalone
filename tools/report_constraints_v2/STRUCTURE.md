@@ -153,22 +153,12 @@ python main.py test | versions | doctor | status | frozen
 | `semantic_core.py` | 223 | P/I/V schema、类型、编译与基础校验 | — |
 | `plan_synthesizer.py` | 782 | 形式计划校验和确定性公式合成 | — |
 | `report_only.py` | 532 | 报告解析、表达式编译、DeepSeek 传输 | （含原 `review_semantics.py` 的 `relationship_review`） |
-| `normalization.py` | 315 | 规范化边界表与修复器（判废点的显式分类） | — |
 | `ingest.py` | 164 | 原文片段编号、ID 回填、提取前信息充分性门 | `evidence_catalog.py` + `report_readiness.py` |
 | `solving.py` | 226 | SMT/Z3 查询与 witness 校验、分流与可观察变量审查 | `symbolic_queries.py` + `review.py` |
 | `salvage.py` | 385 | 数值与零地址保真守卫、机械修复 | `fidelity.py`（原 `numeric_fidelity.py` + `address_fidelity.py`）+ `mechanical_salvage.py` |
 
 `report_only.py` 是唯一不 import 任何同层模块的叶子模块。
 
-### 规范化边界（`lib/normalization.py`）
-
-lib 层可以从 228 个判废点中止一轮运行。`BOUNDARY` 把它们**逐条显式分类**，判据是：
-
-> **规范化只能改“怎么写下来”，不能改“声称了什么”。**
-
-`tests/test_normalization_boundary.py` 用 `ast` 从源码重新导出判废面并要求**精确**条目，
-因此新增一个 `require(...)` 而忘记分类会让测试失败。首个修复器只处理 readiness 的
-嵌套错位；其余保持 `REJECT`（即既有行为），所以边界是“显式保守”而非“激进放宽”。
 它保留少量历史 CLI 兼容代码，但当前职责是报告解析、表达式编译和 DeepSeek 传输库。
 
 ### 历史模块名兼容层（`lib/compat.py`）
