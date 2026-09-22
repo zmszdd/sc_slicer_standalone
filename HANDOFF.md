@@ -129,12 +129,13 @@ v3.17 五例开发回归：
 - 只向 DeepSeek `deepseek-flash` 发送已保存的阶段二结构化要素；
 - 未发送合约代码；
 - 2/5 生成最终候选：Monetrix、Olas；
-- 2/5 可带警告继续，均仍为 `needs_review`；
+- 2/5 可带警告继续，均仍为 `needs_review`（该批 run 的 provenance 未记录策略，按 `legacy` 重放；
+  `signals` 策略下同一批会变成 `candidate_checks_passed`，见 §4.9）；
 - 2/2 候选通过零调用离线重放；
 - 11 次调用；
 - 65,925 输入 tokens、12,961 输出 tokens，共 78,886 tokens；
 - 模型响应耗时合计 95.778 秒；
-- 清理退役切片绑定分支后，当前主线全量本地测试 336/336 通过。
+- 清理退役切片绑定分支后，当前主线全量本地测试 266/266 通过。
 
 保守语义初评：
 
@@ -153,7 +154,13 @@ v3.17 五例开发回归：
 - P/I/V 规范已集中到 `prompts/definitions.py`，生产流程经 `prompts/active.py`
   显式解析最终 Prompt；可用 `python main.py preview-prompt --part
   definitions|element|formal` 查看，不调用模型。v3.5–v3.17 冻结文件未修改。
-- 自动测试已迁到 `tools/report_constraints_v2/tests/`；删除退役分支的 22 项专用测试后，当前主线 336 项通过。
+- 自动测试已迁到 `tools/report_constraints_v2/tests/`；删除退役分支的 22 项专用测试后，当前主线 266 项通过。
+- 阶段二根目录现在**没有任何 `.py`**：入口在 `cli/`，共享模块在 `lib/`。
+  重构前的 14 个旧模块名（`fidelity`、`evidence_catalog`、`verify_semantic` 等）
+  由 `lib/compat.py` 的 `sys.meta_path` finder 惰性解析，并保持模块同一性；
+  详见 `STRUCTURE.md` 的"历史模块名兼容层"。
+- 断言策略在 S12 变为可切换（`--claim-verdict legacy|signals`）。默认 `legacy`
+  与重构前输出逐字节一致；`main.py run` / `batch` 自动使用 `signals`。详见 §4.9。
 - 设计、状态和历史报告已迁到 `tools/report_constraints_v2/docs/`。
 - `evaluation/` 和 `results/` 各有索引，明确开发集、留出集和运行产物的边界。
 - 已删除与当前主线脱节的早期切片绑定/旧阶段三接口分支，包括其专用代码、
@@ -202,6 +209,38 @@ v3.18/schema v6，不能静默修改 v3.17 语义，否则已有实验无法重�
 
 v3.17 已完成开发回归，但仅 2/5 候选，并发现派生定义空真风险。因此 README 仍推荐
 v3.16；v3.17 是实验版，不应直接替换默认路径。
+
+### 4.9 断言策略可切换：`legacy` 与 `signals`（S12）
+
+原先 `acceptance_status` 把两类东西混在一起否决：真正的结构失败（公式不可满足、
+I/V 倒置），和模型自报的歧义/局限/未决项。在 72 个可重算 run 上实测，前者只占
+4 个，后者却把通过率压在 0/72 —— 等于"越诚实越不通过"。
+
+`lib/semantic_core.py` 的 `compile_bundle()` 现在有 `verdict_v2` 形参，对应两套策略：
+
+| 策略 | 触发 | 判断依据 |
+| --- | --- | --- |
+| `legacy` | 默认；直接跑 `cli/semantic_pipeline.py` | 结构原因 **或** 任何模型自报的不确定性 |
+| `signals` | `--claim-verdict signals`；`main.py run` / `batch` 自动注入 | 仅结构原因 |
+
+`signals` 下模型自报的不确定性全部降级为信息性字段：`report_ambiguities_declared`、
+`formalization_limitations_declared`、claim 自带的 `unresolved` / `modality`，
+以及新增的 `coverage_status`（`complete` / `partial`）与 `coverage_gaps`
+（`impacts_not_assigned` / `preconditions_not_used` / `effect_coverage_partial`）。
+
+两条必须记住的约束：
+
+1. **`legacy` 逐字节不变。**`cli/batch_verify.py` 用
+   `require(bundle == saved, 'bundle replay mismatch')` 做严格相等重放，78 份冻结
+   产物和 8 个测试文件依赖旧输出，所以新行为一律在 `verdict_v2` 之后。
+2. **策略写进 `provenance.claim_verdict_policy`，`verify` 按它重放，不猜测。**
+   旧 run 没有该字段时回落 `legacy`，历史产物仍可逐字节复现。
+
+实测（72 个可重算 run，零模型调用）：`candidate_checks_passed` 由 0/72 升至
+68/72（94.4%）；剩余 4 个 `needs_review` 全是真实问题 —— 3 个
+`effects_feasibility` / `safety_negation_feasibility` unsat，1 个 I/V 倒置。
+
+`coverage_status` 描述报告覆盖完整度，与 `acceptance_status` 正交，不能互相替代。
 
 ## 5. 重要文件索引
 
@@ -337,7 +376,7 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 ### 第一步：冻结 v3.17
 
 - 不修改 v3.17 Prompt、schema 和既有产物语义。
-- 确认当前 336 个主线测试继续通过。
+- 确认当前 266 个主线测试继续通过。
 - 保留 `evaluation/prompt_v317_development_03/` 原始结果。
 
 ### 第二步：设计 v3.18/schema v6
@@ -357,7 +396,7 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 - `prompts/versions/semantic_prompts_v318.py`；
 - `report-formal-plan/6` 常量和路由；
 - v3.18 专用测试；
-- `semantic_pipeline.py`、`verify_semantic.py`、`run_semantic_batch.py` 的版本路由；
+- `cli/semantic_pipeline.py`、`cli/batch_verify.py` 的版本路由；
 - 文档和新输出目录。
 
 不要删除 v3.17 兼容代码。
@@ -406,7 +445,10 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 14. **不要让局部修复偷换 intent、impact 或整体关系。**只有类型/单位等明确冲突才允许有界
     重分类，并保留完整审计记录。
 15. **不要重启旧的生成后案例筛选。**用户要求的是提取前过滤信息不足的报告。
-16. **不要把 `needs_review` 或 `--continue-on-review` 描述为通过。**它们只表示可以保留候选。
+16. **不要把 `needs_review` 或 `--continue-on-review` 描述为通过。**它们只表示可以
+    保留候选。同样地，`signals` 策略下的 `candidate_checks_passed` 也不表示"报告与
+    实现一致"：它只说明这张断言通过了本地结构自检，阶段三仍未实现，
+    `consistency_verdict` 始终是 `not_evaluated`。见 §4.9。
 17. **不要泄露 API Key。**不打印、不提交、不复制到聊天或报告。
 18. **不要执行破坏性 Git 操作。**当前工作树包含大量用户已有修改和未跟踪文件，不能
     `git reset --hard`、`git clean` 或删除不相关目录。
@@ -427,7 +469,7 @@ cd /root/sc_slicer_standalone
   -t tools/report_constraints_v2 -p 'test_*.py' -q
 ```
 
-当前基线应为：`Ran 336 tests ... OK`。
+当前基线应为：`Ran 266 tests ... OK`。
 
 ### 检查格式问题
 
@@ -439,15 +481,18 @@ git diff --check
 ### 离线重放 v3.17 两个候选
 
 ```bash
-cd /root/sc_slicer_standalone/tools/report_constraints_v2
-/root/.local/share/uv/tools/halmos/bin/python verify_semantic.py \
-  evaluation/prompt_v317_development_03/runs/Monetrix_L3gNZDymiju__XdnQZTBJovh__ckuTxYrFvYX
-
-/root/.local/share/uv/tools/halmos/bin/python verify_semantic.py \
-  evaluation/prompt_v317_development_03/runs/Olas_j3PRAMM3fVq__9eKVuFn3L2m__fvnHZN9Wssa
+cd /root/sc_slicer_standalone
+for c in Monetrix_L3gNZDymiju__XdnQZTBJovh__ckuTxYrFvYX \
+         Olas_j3PRAMM3fVq__9eKVuFn3L2m__fvnHZN9Wssa; do
+  /root/.local/share/uv/tools/halmos/bin/python main.py verify \
+    "tools/report_constraints_v2/evaluation/prompt_v317_development_03/runs/$c"
+done
 ```
 
-两者应返回 `offline_verified: true`、`acceptance_status: needs_review`。
+注意：`verify_semantic.py` 已在 S11 删除，上面的旧写法不再可执行。
+
+两者应返回 `offline_verified: true`。`acceptance_status` 取决于该 run 记录的
+策略：`legacy` 为 `needs_review`，`signals` 为 `candidate_checks_passed`。
 
 ### 自动化批量运行（推荐）
 
