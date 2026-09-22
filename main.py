@@ -17,7 +17,11 @@
 设计约束
 --------
 * 本文件只做分发，不实现任何阶段逻辑，也不改写任何脚本行为。
-* 各脚本仍可被直接执行：冻结评测报告、HANDOFF 和 docs/ 中的历史命令必须保持可重放。
+* 阶段二只有两层：入口在 cli/，共享库在 lib/，阶段二根目录不含任何 .py。
+* 重构前的 14 个模块名由 lib/compat.py 的 meta path finder 延迟解析；注册点为本文件、
+  tests/__init__.py、cli/__init__.py、lib/__init__.py 四处（详见该文件与 STRUCTURE.md）。
+* 阶段二脚本不再从根目录直接执行：请用 `python main.py <command>`，或
+  `python -m cli.<script>` / `python -m lib.<script>`（cwd 为阶段二目录）。
 * 不读取、不打印、不写入任何 API Key；doctor 只检查配置文件是否存在。
 * 不创建、不覆盖既有实验产物目录。
 * 命令与脚本的对应关系集中在下面的表里，新增脚本只需改表，不要新增入口文件。
@@ -26,6 +30,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import runpy
 import subprocess
@@ -104,6 +109,17 @@ STAGE2_DEEPSEEK_DEFAULTS = {
 }
 
 # 多个命令可指向同一个脚本，用前导参数区分（见 _dispatch）。
+# S12: acceptance-verdict policy.  Deliberately kept OUT of
+# STAGE2_DEEPSEEK_DEFAULTS so _with_deepseek_defaults keeps its tested exact-argv
+# contract.  legacy = historical behaviour (report ambiguities / non-asserted
+# realization veto the claim); signals = record them as informational fields so a
+# positive verdict is reachable at all.  verify/screen/etc. get no default and
+# keep replaying byte-for-byte.
+STAGE2_VERDICT_DEFAULTS = {
+    'run': ('--claim-verdict', 'signals'),
+    'batch': ('--claim-verdict', 'signals'),
+}
+
 STAGE2_ARG_PREFIX = {
     'verify': ('verify',),
     'screen': ('screen',),
@@ -181,6 +197,17 @@ def _script_path(script: str):
     return None
 
 
+def _install_compat():
+    """Register the legacy module-name aliases (lib/compat.py) for this process.
+
+    Needed because cli/ and lib/ still import the pre-refactor module names
+    (``from fidelity import ...``).  Lazy: the mapping is only resolved when a
+    legacy name is actually imported.
+    """
+    from lib import compat          # needs the stage-2 root on sys.path
+    compat.install()
+
+
 def _delegate(script: str, argv):
     """Run a stage-2 script as __main__, preserving its exit code exactly."""
     path = _script_path(script)
@@ -195,6 +222,7 @@ def _delegate(script: str, argv):
     for directory in reversed(STAGE2_SCRIPT_DIRS):
         sys.path.insert(0, str(directory))
     try:
+        _install_compat()
         runpy.run_path(str(path), run_name='__main__')
     except SystemExit as exc:
         code = exc.code
@@ -259,6 +287,25 @@ def _doctor(argv=()):
             add(f'缺少脚本 {script}', False, '命令表与 cli/、lib/ 中均不存在')
     missing = [name for name in LIBRARY_MODULES if _script_path(name) is None]
     add('库模块齐备', not missing, ', '.join(missing) or 'ok')
+    # 历史模块名兼容层（lib/compat.py）自检：14 个旧名字及其目标都必须可解析。
+    # 这一条专门用来发现"某个入口忘了调用 compat.install()"。
+    stage2 = str(STAGE2_DIR)
+    inserted = stage2 not in sys.path
+    if inserted:
+        sys.path.insert(0, stage2)
+    try:
+        from lib import compat  # type: ignore[import-not-found]
+        compat.install()
+        unresolved = [f'{name}->{target}' for name, target in compat.ALIASES.items()
+                      if importlib.util.find_spec(name) is None
+                      or importlib.util.find_spec(target) is None]
+        add(f'历史模块名兼容层({len(compat.ALIASES)} 个)',
+            not unresolved, ', '.join(unresolved) if unresolved else 'ok')
+    except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
+        add('历史模块名兼容层', False, f'{type(exc).__name__}: {exc}')
+    finally:
+        if inserted:
+            sys.path.remove(stage2)
     tests_dir = STAGE2_DIR / 'tests'
     tests = sorted(tests_dir.glob('test_*.py')) if tests_dir.is_dir() else []
     add('测试文件存在', bool(tests), f'{len(tests)} 个文件')
@@ -368,6 +415,14 @@ def _with_deepseek_defaults(command, argv):
     return [*defaults, *argv]
 
 
+def _with_verdict_defaults(command, argv):
+    """Apply the acceptance-verdict default without touching model defaults."""
+    defaults = STAGE2_VERDICT_DEFAULTS.get(command)
+    if not defaults or defaults[0] in argv:
+        return list(argv)
+    return [*argv, *defaults]
+
+
 def _dispatch(argv, prefix=''):
     """Resolve and run one command; ``prefix`` is only for error messages."""
     if not argv:
@@ -382,7 +437,9 @@ def _dispatch(argv, prefix=''):
     if command in STAGE2_COMMANDS:
         prefix_args = STAGE2_ARG_PREFIX.get(command, ())
         return _delegate(STAGE2_COMMANDS[command][0],
-                         [*prefix_args, *_with_deepseek_defaults(command, rest)])
+                         [*prefix_args,
+                          *_with_verdict_defaults(
+                              command, _with_deepseek_defaults(command, rest))])
     print(f'unknown {prefix}command: {command}', file=sys.stderr)
     print(_usage(), file=sys.stderr)
     return 2

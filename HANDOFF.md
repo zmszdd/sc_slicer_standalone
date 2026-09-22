@@ -223,20 +223,20 @@ v3.16；v3.17 是实验版，不应直接替换默认路径。
 
 ### 5.2 核心实现
 
-- `tools/report_constraints_v2/semantic_pipeline.py`：主流程、模型调用、重试、路由和输出。
+- `tools/report_constraints_v2/cli/semantic_pipeline.py`：主流程、模型调用、重试、路由和输出。
 - `tools/report_constraints_v2/prompts/definitions.py`：P/I/V 唯一的人类可读规范。
 - `tools/report_constraints_v2/prompts/active.py`：生产 Prompt 解析、契约检查和最终文本哈希。
 - `tools/report_constraints_v2/prompts/registry.py`：Prompt 统一注册和功能矩阵。
 - `tools/report_constraints_v2/prompts/versions/semantic_prompts_v317.py`：v3.17 Prompt。
 - `tools/report_constraints_v2/prompts/versions/semantic_prompts_v316.py`：稳定版本 Prompt。
-- `tools/report_constraints_v2/plan_synthesizer.py`：形式计划校验与确定性 P/I/V 合成。
-- `tools/report_constraints_v2/report_readiness.py`：提取前信息充分性判断。
-- `tools/report_constraints_v2/report_only.py`：报告输入、DeepSeek 调用和本地配置。
-- `tools/report_constraints_v2/fidelity.py`：数值保真（含协议编号排除）与地址性质保真。
-- `tools/report_constraints_v2/symbolic_queries.py`：SMT/Z3 查询与 witness。
-- `tools/report_constraints_v2/evidence_catalog.py`：证据编号和原文回填。
-- `tools/report_constraints_v2/verify_semantic.py`：零调用离线重放验证。
-- `tools/report_constraints_v2/run_semantic_batch.py`：批量运行入口。
+- `tools/report_constraints_v2/lib/plan_synthesizer.py`：形式计划校验与确定性 P/I/V 合成。
+- `tools/report_constraints_v2/lib/ingest.py`：证据编号与原文回填、提取前信息充分性判断。
+- `tools/report_constraints_v2/lib/report_only.py`：报告输入、DeepSeek 调用和本地配置。
+- `tools/report_constraints_v2/lib/salvage.py`：数值保真（含协议编号排除）、地址性质保真与机械规范化。
+- `tools/report_constraints_v2/lib/solving.py`：SMT/Z3 查询与 witness、可观察性审查与自动分流。
+- `tools/report_constraints_v2/lib/semantic_core.py`：P/I/V schema、类型、编译与基础校验。
+- `tools/report_constraints_v2/cli/batch_verify.py`：批量运行与零调用离线重放验证。
+- `tools/report_constraints_v2/lib/compat.py`：历史模块名兼容注册（重构前的 14 个名字）。
 - `tools/report_constraints_v2/tests/test_main_entry.py`：统一入口的命令表、退出码和保密回归。
 
 ### 5.3 关键测试
@@ -469,7 +469,7 @@ python main.py batch --reports-root /path/to/reports --output results/semantic/a
 ```bash
 cd /root/sc_slicer_standalone
 /root/.local/share/uv/tools/halmos/bin/python \
-  tools/report_constraints_v2/preview.py report --case-dir /absolute/path/to/case
+  main.py preview-report --case-dir /absolute/path/to/case
 ```
 
 ### 当前稳定版单案例运行
@@ -477,7 +477,7 @@ cd /root/sc_slicer_standalone
 ```bash
 cd /root/sc_slicer_standalone
 PYTHONDONTWRITEBYTECODE=1 /root/.local/share/uv/tools/halmos/bin/python \
-  tools/report_constraints_v2/semantic_pipeline.py \
+  main.py run \
   --case-dir /absolute/path/to/case \
   --extract --provider deepseek --model deepseek-flash \
   --prompt-version semantic-v3.16 --lean-formal-input \

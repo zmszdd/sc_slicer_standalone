@@ -112,7 +112,7 @@ def main():
                                       time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()))
             output.rename(parked)
             print(f'PARKED {output.name} -> {parked.name}', flush=True)
-        command = [sys.executable, str(HERE / 'semantic_pipeline.py'),
+        command = [sys.executable, '-m', 'cli.semantic_pipeline',
                    '--case-dir', str(Path(manifest['data_root']) / row['case_directory']),
                    '--extract', '--allow-report-upload', '--provider', args.provider,
                    '--model', args.model,
@@ -128,7 +128,8 @@ def main():
         if args.continue_on_review:
             command.append('--continue-on-review')
         print('START ' + row['id'], flush=True)
-        proc = subprocess.run(command, capture_output=True, text=True)
+        proc = subprocess.run(command, capture_output=True, text=True,
+                              cwd=str(HERE))
         # stdout contains pipeline status, not credentials or environment dumps.
         (output / 'pipeline-stdout.txt').write_text(proc.stdout)
         path = output / 'status.json'
@@ -230,7 +231,9 @@ def verify(directory):
             require(hydrate_formalization(json.loads((directory / 'formalization-ids.json').read_text()), catalog, text) == formal, 'ID formal resolution mismatch')
     bundle = compile_bundle(elements, formal, text,
                             strict_piv=(provenance.get('prompt_version') in
-                                        STRICT_PIV_VERSIONS))
+                                        STRICT_PIV_VERSIONS),
+                            verdict_v2=(provenance.get('claim_verdict_policy')
+                                        == 'signals-v2'))
     bundle['provenance'] = provenance
     saved = json.loads((directory / 'constraints.json').read_text())
     if 'observability_review' in saved:

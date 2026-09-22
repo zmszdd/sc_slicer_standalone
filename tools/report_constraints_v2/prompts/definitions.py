@@ -63,8 +63,10 @@ V = PropertyDefinition(
     symbol='V',
     name='Direct violation witness',
     meaning=(
-        'A report-claimed, directly observable behavior, return, or state/value '
-        'change that makes I false under the same applicability context.'
+        'A report-supported, directly observable behavior, return, or state/value '
+        'change that occurs in the claimed scenario and is presented as undesired. '
+        'It is defined independently of I: that V contradicts I is an obligation to '
+        'be established by the P AND V AND I check, not a definitional assumption.'
     ),
     includes=(
         'unauthorized completion or state change',
@@ -75,7 +77,8 @@ V = PropertyDefinition(
     excludes=(
         'implementation root cause by itself',
         'generic severity',
-        'downstream profit, loss, or denial that does not directly negate I',
+        'downstream profit, loss, or denial that is a consequence rather than the '
+        'protected relation itself',
     ),
     formal_role='A constructive witness of not-I, commonly condition AND NOT desired_relation.',
 )

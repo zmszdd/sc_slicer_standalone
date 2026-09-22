@@ -13,10 +13,10 @@ for _d in (MODULE / 'lib', MODULE / 'cli'):
     if _s not in sys.path:
         sys.path.insert(0, _s)
 
-import report_only as r
-from evidence_catalog import build_catalog, hydrate_elements, hydrate_formalization
-from semantic_core import validate_elements, validate_formalization
-from verify_semantic import verify
+from lib import report_only as r
+from lib.ingest import build_catalog, hydrate_elements, hydrate_formalization
+from lib.semantic_core import validate_elements, validate_formalization
+from cli.batch_verify import verify
 
 DIMENSIONS = ("scope_actors", "preconditions", "safety_intent", "formal_I", "core_V", "qualifiers_coverage")
 VALUES = ("pass", "partial", "fail", "not_evaluable")

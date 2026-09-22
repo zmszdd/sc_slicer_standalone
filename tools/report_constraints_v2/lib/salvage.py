@@ -346,7 +346,7 @@ def replay_main():
               'formalization_precheck': 'not_attempted', 'external_model_calls': 0}
 
     plan_path = args.plan or args.source_run / 'neural-formalization/model-claim.json'
-    command = [sys.executable, str(Path(__file__).resolve().parents[1] / 'semantic_pipeline.py'),
+    command = [sys.executable, '-m', 'cli.semantic_pipeline',
                '--case-dir', str(args.case_dir), '--elements', str(elements_path),
                '--origin', 'external_model', '--prompt-version', args.prompt_version,
                '--output', str(args.output / 'pipeline')]
@@ -369,7 +369,8 @@ def replay_main():
             command.append('--elements-only')
     else:
         command.append('--elements-only')
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    completed = subprocess.run(command, check=False, capture_output=True, text=True,
+                               cwd=str(Path(__file__).resolve().parents[1]))
     record['offline_pipeline_exit_code'] = completed.returncode
     record['offline_pipeline_status'] = (json.loads((args.output / 'pipeline/status.json').read_text())
                                          if (args.output / 'pipeline/status.json').is_file() else None)

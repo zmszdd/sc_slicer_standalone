@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import z3
-import report_only as r
+from lib import report_only as r
 
 HERE = Path(__file__).resolve().parent
 

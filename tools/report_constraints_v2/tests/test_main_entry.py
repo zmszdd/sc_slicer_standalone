@@ -60,7 +60,7 @@ class CommandTableTest(unittest.TestCase):
         self.assertEqual(primary | advanced, set(entry.STAGE2_COMMANDS))
 
     def test_stage2_layout_is_where_the_entry_point_expects_it(self):
-        self.assertTrue((STAGE2 / 'semantic_pipeline.py').is_file())
+        self.assertTrue(entry._script_path('semantic_pipeline.py').is_file())
         self.assertTrue((STAGE2 / 'prompts' / 'registry.py').is_file())
         self.assertTrue((STAGE2 / 'tests').is_dir())
 

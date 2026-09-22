@@ -20,8 +20,8 @@ tools/report_constraints_v2/
 │   ├── report_only.py        # 报告解析、表达式编译、DeepSeek 传输
 │   ├── ingest.py             # evidence_catalog + report_readiness 合并
 │   ├── solving.py            # symbolic_queries + review 合并
-│   └── salvage.py            # fidelity + mechanical_salvage 合并
-├── *.py                      # 14 个兼容 shim（每个 3–4 行，仅做模块别名）
+│   ├── salvage.py            # fidelity + mechanical_salvage 合并
+│   └── compat.py             # 历史模块名兼容注册（14 个旧名字，见下）
 ├── prompts/                  # Prompt 注册表与冻结版本
 │   ├── definitions.py        # P/I/V 集中式语义定义
 │   ├── active.py             # 生产 Prompt 显式解析与哈希
@@ -41,10 +41,10 @@ tools/report_constraints_v2/
 | --- | --- | --- | --- |
 | 入口层 | `cli/` | 4 个脚本 | 可被 `main.py` 直接调用的脚本放这里；**不要直接 `python cli/x.py`** |
 | 共享库层 | `lib/` | 6 个模块 | 无命令入口，只被 import |
-| 兼容层 | 阶段二根目录 | 14 个 shim | 每个 3–4 行，只做 `sys.modules` 别名转发；不含任何业务逻辑 |
+| 兼容层 | `lib/compat.py` | 14 个旧名字的映射表 | 不是目录层；只做名字解析，不含任何业务逻辑 |
 
-阶段二根目录已**不再包含任何实现代码**：14 个 `.py` 全部是别名 shim。
-迁移前的实现文件都已在 `lib/` 或 `cli/` 中。
+阶段二根目录**不含任何 `.py`**：实现全部在 `lib/` 或 `cli/`，旧名字的兼容由
+`lib/compat.py` 集中承担。
 
 ### 为什么 `cli/x.py` 不能直接运行
 
@@ -58,11 +58,19 @@ ModuleNotFoundError: No module named 'prompts'
 这是刻意的边界，不是缺陷——4 个 `cli/` 文件行为一致。正确入口：
 
 - `python main.py <command>`（`main.py` 会把 `cli/`、`lib/`、阶段二根目录一起加入 `sys.path`）
-- 或运行阶段二根目录下同名的 shim
+- 或 `python -m cli.<script>` / `python -m lib.<script>`，且 **cwd 为阶段二目录**
 
-同样的原因，任何脚本用 `subprocess` 调另一脚本时，**必须指向阶段二根目录的
-shim，而不是 `cli/` 里的文件**；否则子进程的 `sys.path[0]` 会变成 `cli/`。
-见 `lib/salvage.py` 的 `replay_main()` 与 `cli/batch_verify.py` 的 `HERE`。
+同样的原因，任何脚本用 `subprocess` 调另一脚本时，**用 `-m` + `cwd=阶段二目录`，
+不要直接指向 `cli/` 里的文件**：
+
+```python
+subprocess.run([sys.executable, '-m', 'cli.semantic_pipeline', *args],
+               cwd=str(STAGE2_ROOT))
+```
+
+`-m` 会把 cwd 放进子进程的 `sys.path[0]`，于是 `cli` 与 `lib` 两个包都可 import，
+`cli/__init__.py` 也顺带完成兼容注册。3 处调用点：`cli/batch_verify.py`、
+`lib/salvage.py` 的 `replay_main()`、`evaluation/gold_v1/run_blind.py`。
 
 ## 唯一入口
 
@@ -136,57 +144,92 @@ python main.py test | versions | doctor | status | frozen
 `report_only.py` 是唯一不 import 任何同层模块的叶子模块。
 它保留少量历史 CLI 兼容代码，但当前职责是报告解析、表达式编译和 DeepSeek 传输库。
 
-### 阶段二根目录：兼容 shim
+### 历史模块名兼容层（`lib/compat.py`）
 
-14 个文件，每个 3–4 行，全部形如：
+重构前的 14 个模块名不再对应任何文件，它们由**一个**文件集中接管：
+`lib/compat.py` 的 `ALIASES` 表 + 一个 `sys.meta_path` finder。
 
-```python
-"""Compat 别名：实现已迁至 lib/xxx.py（S<n>）。本文件仅做模块别名与 CLI 转发。"""
-import sys, lib.xxx as _m
-sys.modules[__name__] = _m
-if __name__ == '__main__': raise SystemExit(_m.main())   # 仅当原文件有 __main__
-```
-
-| shim（根目录） | 指向 | 有 `__main__` |
+| 旧名字 | 现在真正包含该代码的模块 | 来源 |
 | --- | --- | --- |
-| `semantic_core.py` | `lib/semantic_core.py` | 否 |
-| `plan_synthesizer.py` | `lib/plan_synthesizer.py` | 否 |
-| `report_only.py` | `lib/report_only.py` | 否 |
-| `evidence_catalog.py` | `lib/ingest.py` | 否 |
-| `report_readiness.py` | `lib/ingest.py` | 否 |
-| `review.py` | `lib/solving.py` | 否 |
-| `symbolic_queries.py` | `lib/solving.py` | 否 |
-| `fidelity.py` | `lib/salvage.py` | 否 |
-| `mechanical_salvage.py` | `lib/salvage.py` | 是 |
-| `semantic_pipeline.py` | `cli/semantic_pipeline.py` | 是 |
-| `preview.py` | `cli/preview.py` | 是 |
-| `preconditions.py` | `cli/preconditions.py` | 是 |
-| `run_semantic_batch.py` | `cli/batch_verify.py` | 是（`main()`） |
-| `verify_semantic.py` | `cli/batch_verify.py` | 是（`verify_main()`） |
+| `evidence_catalog` / `report_readiness` | `lib/ingest.py` | 合并（S5） |
+| `review` / `symbolic_queries` | `lib/solving.py` | 合并（S6/S7） |
+| `fidelity` / `mechanical_salvage` | `lib/salvage.py` | 合并（S6/S8） |
+| `run_semantic_batch` / `verify_semantic` | `cli/batch_verify.py` | 合并（S9） |
+| `semantic_core` / `plan_synthesizer` / `report_only` | `lib/` 下的同名文件 | 移动（S2/S3） |
+| `semantic_pipeline` / `preview` / `preconditions` | `cli/` 下的同名文件 | 移动（S4） |
 
-### shim 的 `sys.modules` 别名机制
+14 个名字对应 **10 个**真实模块（前四行各是两个名字共用一个文件）。
 
-shim 不是"再导出一遍"，而是**把自己替换成真正的模块对象**：
+#### 注册点（每个进程各一次）
+
+模块名是**按进程**解析的，所以 finder 必须在每个入口进程里注册一次：
+
+| 注册点 | 覆盖 |
+| --- | --- |
+| `main.py`（`_delegate` 内） | `cli/` 与 `lib/` 的全部命令路径 |
+| `tests/__init__.py` | 13 个引用旧名字的测试文件 |
+| `cli/__init__.py` | `python -m cli.<script>` 子进程（3 处 `subprocess` 都走这条） |
+| `lib/__init__.py` | `python -m lib.<script>` |
+
+`python main.py doctor` 有一条专用自检 `历史模块名兼容层(14 个)`，用来发现
+"某个入口忘了注册"。
+
+#### 为什么是延迟解析 + `insert(0)`
+
+finder 只在某个旧名字**真的被 import 时**才加载目标模块，不会在启动时把 14 个模块
+（含 z3 与 53KB 的 `semantic_pipeline`）全部拉进来。
+
+`sys.meta_path.insert(0, ...)`（**不能**是 `append`）是必需的：`cli/` 与 `lib/` 都在
+`sys.path` 上，若让 PathFinder 先跑，`import report_only` 会把
+`lib/report_only.py` 加载成一个名为 `report_only` 的**独立模块**，与
+`lib.report_only` 变成两份互不相干的对象（模块级状态会分叉）。插到最前面才能保证
+别名就是真模块本身：
 
 ```python
-sys.modules[__name__] = _m
+sys.modules['fidelity'] is sys.modules['lib.salvage']   # True
 ```
 
-因此 `import semantic_core` 拿到的对象与 `lib.semantic_core` **是同一个对象**
-（`semantic_core is lib.semantic_core` 为真，`__name__` 为 `lib.semantic_core`）。
-这带来三点必须知道的性质：
+`_AliasLoader.create_module()` 直接返回目标模块对象，因此 identity 与旧 shim 的
+`sys.modules[__name__] = _m` 完全等价：私有名（`_predicate` 等）照常可访问，
+`patch.object(report_only, 'extract')` 这类测试也不受影响。
 
-1. **私有名也能访问。** `from plan_synthesizer import _predicate` 可以正常工作；
-   若改用 `from plan_synthesizer import *` 写 shim，`_` 开头名字不会导出。
-2. **`from semantic_core import *` 在 shim 里是自引用**，会静默得到空模块。
-   所以本目录的 shim 一律用 `sys.modules` 别名写法。
-3. **`__main__` 转发是必需的。** 没有那行时，`python semantic_pipeline.py`
-   会导入真文件（不是 `__main__`），原文件的 `if __name__ == '__main__'` 为
-   False，于是**静默退出 0**、什么都不做。这类错误没有测试能发现。
+## 断言策略（claim verdict policy）
 
-因为 shim 与真模块是同一对象，`evidence_catalog is report_readiness` 为真
-（两者都指向 `lib/ingest.py`）；`fidelity`/`mechanical_salvage` 指向
-`lib/salvage.py`；`review`/`symbolic_queries` 指向 `lib/solving.py`。
+`lib/semantic_core.py` 的 `compile_bundle()` 是唯一的"这张断言能不能算通过"
+判定处。严格度由 `verdict_v2` 形参决定，共两套策略：
+
+| 策略 | 触发方式 | `acceptance_status` 由什么决定 |
+| --- | --- | --- |
+| `legacy` | 默认值；直接跑 `cli/semantic_pipeline.py` | 结构性原因 **或** 任何模型自报的歧义/局限/未决项 |
+| `signals` | `--claim-verdict signals`；`main.py run` / `batch` 自动注入 | 仅结构性原因（公式不可满足、I/V 倒置等） |
+
+`signals` 把"模型自报不确定性"从**否决票**降级为**信息性字段**：
+
+| 原先的否决项 | `signals` 下的去向 |
+| --- | --- |
+| `elements.ambiguities` | `report_ambiguities_declared` |
+| `formalization.limitations` | `formalization_limitations_declared` |
+| `claim.unresolved` | 保留在该 claim 的 `unresolved` 字段 |
+| `claim.modality != 'asserted'` | 保留在该 claim 的 `modality` 字段 |
+| effect coverage 不完整 | `coverage_status` / `coverage_gaps` |
+| `report impacts not assigned` | `coverage_gaps` 含 `impacts_not_assigned` |
+| `unused preconditions`（仅 `strict_piv`） | `coverage_gaps` 含 `preconditions_not_used` |
+
+设计约束：**`legacy` 必须逐字节不变**。`cli/batch_verify.py` 用
+`require(bundle == saved, 'bundle replay mismatch')` 做严格相等重放，
+78 份冻结产物与 8 个测试文件依赖旧输出。因此所有新行为都在 `verdict_v2` 之后，
+且策略必须写进 `provenance.claim_verdict_policy`，`verify` 才能按原策略重放：
+
+```bash
+python main.py verify <run-dir>   # 读 provenance 里的策略，不猜测
+```
+
+在 72 个可重算 run 上的实测（零模型调用）：`legacy` 0/72 通过，
+`signals` 68/72（94.4%），剩余 4 个均为真实结构/语义问题。
+
+`coverage_status` 描述的是**报告覆盖的完整度**，不是断言的对错
+（当前 70/72 为 `partial`，多为 `effect_coverage_partial`）。它与
+`acceptance_status` 正交，不要用前者替代后者做放行判断。
 
 ## 依赖关系（分层 DAG）
 
@@ -258,8 +301,8 @@ python main.py frozen --write  # 确认是预期变更后重新生成
 `manifest.json` / `SELECTION.json` 各自记录了一组 `code_sha256`，用来证明
 "这批结果由哪份实现产出"。
 
-迁移到 `lib/` + `cli/` 后，这些键名已不再指向实现文件（部分模块被合并、
-原文件名只剩 shim）。因此清单读取方按 **"现在真正包含该代码的文件"** 解析名字，
+迁移到 `lib/` + `cli/` 后，这些键名已不再指向实现文件（部分模块被合并、原文件名
+已不存在）。因此清单读取方按 **"现在真正包含该代码的文件"** 解析名字，
 映射表见 `evaluation/fresh_holdout_01/evaluate.py` 的 `CODE_PATHS`：
 
 | 清单里的键 | 现在的文件 |
@@ -281,9 +324,16 @@ cd tools/report_constraints_v2
 # 关注输出里的 current_code_differs_from_frozen，空列表表示无漂移
 ```
 
-**注意**：这组哈希在 S10 已重新基线，记录的是"迁移后的当前实现"，不再等于
-各次实验当时的历史代码版本（`semantic_pipeline.py` 曾有 6 个不同版本）。
-历史版本仅保留在 Git 与 `archives/` 中。
+**注意**：这组哈希已两次重新基线 —— S10 重建了全部 46 个 key（迁移前它
+们指向已合并/已删除的文件名），S12 又因 `semantic_core.py` 与
+`semantic_pipeline.py` 的改动重设了 10 个 key（7 份清单）。它记录的是
+"迁移后的当前实现"，不再等于各次实验当时的历史代码版本
+（`semantic_pipeline.py` 曾有 6 个不同版本）。历史版本仅保留在 Git 与
+`archives/` 中。重设过程只替换哈希值字符串，不重新序列化 JSON，
+以保证 diff 干净。
+
+`prompts/definitions.py` **不在** `CODE_PATHS` 中，因此不受这组哈希约束：
+它是人读的规范文本，运行时提示词来自冻结的 `prompts/versions/*`。
 
 ## 产物与源码的边界
 

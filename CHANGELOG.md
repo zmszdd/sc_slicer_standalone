@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- **S12: 断言策略改为可切换。** `compile_bundle()` 新增 `verdict_v2` 形参，
+  `cli/semantic_pipeline.py` 新增 `--claim-verdict {legacy,signals}`（默认
+  `legacy`）。`main.py` 对 `run` / `batch` 自动注入 `--claim-verdict signals`
+  （`STAGE2_VERDICT_DEFAULTS`），`verify` 按 `provenance.claim_verdict_policy`
+  记录的策略重放，不猜测。
+- `signals` 策略下，模型自报的不确定性不再否决整条断言：
+  `elements.ambiguities`、`formalization.limitations`、`claim.unresolved`、
+  `claim.modality != 'asserted'`、effect coverage 不完整，以及 bundle 级
+  `report impacts not assigned` / `unused preconditions`，全部从否决票改为
+  信息性字段；`acceptance_status` 只由结构性原因决定。
+- 新增 `coverage_status`（`complete` / `partial`）与 `coverage_gaps`
+  （`impacts_not_assigned` / `preconditions_not_used` /
+  `effect_coverage_partial`），替代原先混在 `report_warnings` 里的覆盖率信号。
+  `verdict_policy` 记录 `signals-v2`。
+- `legacy` 策略下输出与 S12 之前**逐字节一致**，8 个测试文件与 78 份冻结产物
+  不受影响。72 个可重算 run 上实测（零模型调用）：`candidate_checks_passed`
+  由 0/72 升至 **68/72（94.4%）**；剩余 4 个 `needs_review` 全部是真问题
+  （3 个 `effects_feasibility` / `safety_negation_feasibility` unsat，
+  1 个 I/V 倒置）。
+- **修正 `V` 的规范定义**（`prompts/definitions.py`）：原文写作 "makes I
+  false"，等于把 `P AND V AND I` unsat 检查要证的结论写进了定义，使该检查退化
+  为套套逻辑。现改为独立于 `I` 的可观察事实，"与 `I` 矛盾"降级为待验证的义务；
+  `excludes` 同步去掉对 `I` 的引用。该文本只用于
+  `preview-prompt --part definitions` 的人读呈现，**不进入发给模型的提示词**
+  （运行时提示词来自冻结的 `prompts/versions/*`），故不影响任何重放。
+- 再次重设 `evaluation/` 清单的 `code_sha256`：`semantic_core.py` 与
+  `semantic_pipeline.py` 共 10 个 key、7 份清单。
+  `prompts/definitions.py` 不在 `CODE_PATHS` 中，不受哈希约束。
+
+- Removed the 14 root-level compatibility shim files from
+  `tools/report_constraints_v2/`. The stage-2 root now contains **no `.py` at all**:
+  entrypoints live in `cli/`, shared modules in `lib/`.
+- The pre-refactor module names (e.g. `fidelity`, `evidence_catalog`,
+  `verify_semantic`) are now served by a single `lib/compat.py` using a
+  `sys.meta_path` finder that resolves them lazily and preserves module identity
+  (`sys.modules['fidelity'] is sys.modules['lib.salvage']`). Registered from
+  `main.py`, `tests/__init__.py`, `cli/__init__.py` and `lib/__init__.py`.
+- The 3 `subprocess` call sites that used to spawn the root `semantic_pipeline.py`
+  shim now use `python -m cli.semantic_pipeline` with `cwd` set to the stage-2
+  directory, which removes the long-standing `sys.path[0]` pitfall.
+- 10 scripts under `evaluation/` and `review_samples/` now import the real module
+  paths (`lib.*` / `cli.*`) instead of relying on the alias mechanism.
+- `main.py doctor` gained a self-check that all 14 legacy names still resolve.
+- Re-baselined 9 `code_sha256` values in the frozen `evaluation/` manifests
+  (affected by the `lib/salvage.py` subprocess change); all 46 keys re-derivable.
+- Removed the obsolete guarantee that the historical root-path commands in
+  `docs/` remain replayable; use `python main.py run` / `python main.py verify`.
+
+
 - Refactored stage 2 (`tools/report_constraints_v2/`) into two layers: `cli/` for
   entrypoints and `lib/` for shared modules. Implementation code no longer lives at
   the stage-2 root; the 14 root-level `.py` files are now 3-4 line compatibility

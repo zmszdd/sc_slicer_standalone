@@ -18,7 +18,10 @@ class CanonicalDefinitionsTest(unittest.TestCase):
         rendered = render_definitions()
         self.assertIn('hold before the checked action', rendered)
         self.assertIn('property that should hold', rendered)
-        self.assertIn('makes I false', rendered)
+        # V must NOT be defined as "makes I false": that would assume the very
+        # conclusion that the P AND V AND I check exists to establish.
+        self.assertIn('defined independently of I', rendered)
+        self.assertIn('P AND V AND I check', rendered)
 
 
 class ActivePromptTest(unittest.TestCase):

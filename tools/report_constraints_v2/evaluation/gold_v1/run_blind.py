@@ -50,13 +50,14 @@ def main():
 
     def run(case):
         output = args.output / case['id']
-        command = [sys.executable, str(MODULE / 'semantic_pipeline.py'),
+        command = [sys.executable, '-m', 'cli.semantic_pipeline',
                    '--report', str(HERE / case['input']), '--extract',
                    '--allow-report-upload', '--model', args.model,
                    '--formal-retries', str(args.formal_retries),
                    '--prompt-version', 'semantic-v3.7', '--evidence-mode', 'ids',
                    '--formalization-scope', 'core', '--output', str(output)]
-        proc = subprocess.run(command, capture_output=True, text=True)
+        proc = subprocess.run(command, capture_output=True, text=True,
+                              cwd=str(MODULE))
         if output.is_dir():
             (output / 'pipeline-stdout.txt').write_text(proc.stdout)
         status_path = output / 'status.json'

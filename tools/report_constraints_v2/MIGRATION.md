@@ -225,9 +225,97 @@ S1–S9 之后，本文档前面几节中这几句已经过时，以本节为准
   `verify_semantic.py` 仍保留在阶段二根目录。」
   → 现在实现位于 `cli/semantic_pipeline.py` 与 `cli/batch_verify.py`
   （`batch_verify.py` 是 `run_semantic_batch.py` + `verify_semantic.py` 的合并体）；
-  根目录同名文件只剩 3–4 行的兼容 shim。
+  阶段二根目录已无同名文件，旧名字由 `lib/compat.py` 提供（见 S11 一节）。
 - 「`numeric_fidelity.py` / `address_fidelity.py` 保留不合并」（第二轮）
   → 第三轮已合并为 `fidelity.py`，S6/S8 又并入 `lib/salvage.py`。
 - 「`evaluation/fresh_holdout_01/manifest.json` 的 `code_sha256` 重新基线」
   → S10 再次重新基线，并改用「按现在真正包含该代码的文件解析」的新规则，
   映射表见 `STRUCTURE.md` 的「另一套冻结哈希」一节。
+
+## 2026-09-22：S11 收尾 —— 删除 14 个兼容 shim
+
+目标：阶段二根目录 **0 个 `.py`**，同时保持全部旧模块名可用。做法是**用 1 个文件
+取代 14 个别名文件**。
+
+| 项 | 变化 |
+| --- | --- |
+| 新增 | `lib/compat.py`：`ALIASES` 表（14 个旧名字 → 10 个真实模块）+ `sys.meta_path` finder（延迟解析、`insert(0)`） |
+| 删除 | 根目录 14 个别名文件：`semantic_core.py` `plan_synthesizer.py` `report_only.py` `evidence_catalog.py` `report_readiness.py` `review.py` `symbolic_queries.py` `fidelity.py` `mechanical_salvage.py` `semantic_pipeline.py` `preview.py` `preconditions.py` `run_semantic_batch.py` `verify_semantic.py` |
+| 注册点 | `main.py`、`tests/__init__.py`、`cli/__init__.py`、`lib/__init__.py` 各调一次 `compat.install()` |
+| 改显式 import | `evaluation/` 8 个（6 个 `evaluate.py` + 2 个 `select.py`）+ `review_samples/` 2 个，共 23 处改指 `lib.*` / `cli.*`，不再依赖别名 |
+| 3 处子进程 | 由"生成根目录别名文件 + 依赖子进程 `sys.path[0]`"改为 `python -m cli.semantic_pipeline` + `cwd=阶段二目录` |
+| 测试 | `test_main_entry.py` 的 `test_stage2_layout_is_where_the_entry_point_expects_it` 改用 `entry._script_path(...)` 判断，不再断言根目录文件存在 |
+| `doctor` | 新增自检 `历史模块名兼容层(14 个)` |
+| 冻结哈希 | `evaluation/` 清单中 9 个值因 `lib/salvage.py` 改动而重新基线；46 个键全部可复算 |
+
+### 为什么 `lib/__init__.py` / `cli/__init__.py` 也必须是注册点
+
+`cli/__init__.py` 是唯一能覆盖 `-m` 子进程的位置：`python -m cli.semantic_pipeline`
+会先导入 `cli` 包，其 `__init__` 在子进程里必然执行，finder 得以注册。
+
+但它们**不能单独作为机制**：`cli/`、`lib/` 的消费者 import 的是旧名字
+（`from fidelity import ...`），从不 `import lib`，所以这两个 `__init__` 在主进程里
+根本不会被执行。主进程依赖 `main.py` 与 `tests/__init__.py` 两处注册。
+
+### 为什么必须 `insert(0)` 而不是 `append`
+
+删掉旧文件名后 `cli/` 与 `lib/` 都在 `sys.path` 上。若让 PathFinder 先跑，
+`import report_only` 会把 `lib/report_only.py` 加载为名为 `report_only` 的**独立
+模块**，与 `lib.report_only` 变成两份互不相干的对象。`insert(0)` 才能保证别名就是
+真模块本身（`sys.modules['fidelity'] is sys.modules['lib.salvage']` 为真）。
+
+### 执行顺序（每步都跑全套验证）
+
+1. 装 finder + 4 个注册点 + 改 10 个脚本的 import → `doctor` / 266 test / 21 frozen / 3 replay / 漂移 / 11 命令 全绿
+2. **演练**：把 14 个文件移到 `/tmp` → 全绿（仅剩计划内的 `test_main_entry.py` 断言）
+3. 恢复 → 改 3 处子进程 + 1 处断言 → **再演练，零文件全绿** → 正式删除
+
+第 2、3 步的两次演练把"删除不可逆"变成了"演练全绿后再删"。
+
+### 已知损失
+
+`docs/` 中历史实验报告里的命令行（`tools/report_constraints_v2/semantic_pipeline.py ...`、
+`.../verify_semantic.py ...` 等）不再可直接重放。这些报告是历史记录，按
+"docs/ 中的历史报告不控制程序行为"的约定未改写；重放请改用
+`python main.py run` / `python main.py verify`。
+
+## 2026-09-22：S12 —— 断言策略开关 + `V` 定义修正
+
+### 为什么要加开关，而不是直接放宽
+
+`acceptance_status` 原先把两类东西混在一起否决：真正的结构失败（公式 unsat、
+I/V 倒置），和模型自报的歧义/局限/未决项。在 72 个可重算 run 上实测，前者只占
+4 个，后者却把通过率压在 0/72 —— 等于"越诚实越不通过"。
+
+直接放宽不可行：`cli/batch_verify.py` 的
+`require(bundle == saved, 'bundle replay mismatch')` 是严格相等比较，任何输出
+变动都会让 78 份冻结产物与 8 个测试文件失效。所以改为**加形参 + 加开关**：
+默认 `legacy` 逐字节不变，新行为经 `--claim-verdict signals` 显式启用，
+并把策略写进 `provenance.claim_verdict_policy` 供 `verify` 重放。
+
+`main.py` 里的注入是与 DeepSeek 注入**分开**的两组默认值
+（`STAGE2_VERDICT_DEFAULTS` vs `STAGE2_DEEPSEEK_DEFAULTS`）：
+`tests/test_main_entry.py` 断言了后者返回的**精确 argv**，合并会破坏该断言。
+
+### 顺带修正的规范缺陷
+
+`prompts/definitions.py` 中 `V` 的 `meaning` 原为
+"a … change that **makes I false** under the same applicability context"。
+但管线正是靠 `P AND V AND I` unsat 来**验证** `V` 确实否定 `I`；定义里已经假定
+了结论，该检查就退化为套套逻辑。现改为独立于 `I` 的可观察事实，把"与 `I`
+矛盾"写成待验证的义务。
+
+这段文本**不进入运行时提示词**（运行时用冻结的 `prompts/versions/*`），
+所以不影响任何重放；受影响的只有 `preview-prompt --part definitions` 的输出，
+以及 `tests/test_prompt_active.py` 里的一条断言（已同步改为校验独立性）。
+`prompts/active.py` 校验的 `ELEMENT_CONTRACT_MARKERS` /
+`FORMAL_CONTRACT_MARKERS` 是**另两个常量**，本次未动 —— 改它们会一次性破坏
+全部 14 个冻结版本。
+
+### 本次重设的哈希
+
+`semantic_core.py`、`semantic_pipeline.py` 共 10 个 key，分布在 7 份清单
+（`deepseek_flash_pilot_01`、`deepseek_v41_fresh_01`、`fresh_holdout_01`
+的 `manifest.json`，以及 `prompt_v314/v315×2/v316_holdout_01` 的
+`SELECTION.json`）。`prompts/definitions.py` 不在 `CODE_PATHS` 中，故不在哈希
+约束范围内。

@@ -6,3 +6,7 @@ for _d in (_STAGE2 / 'lib', _STAGE2 / 'cli', _STAGE2):
     _s = str(_d)
     if _s not in sys.path:
         sys.path.insert(0, _s)
+
+from lib import compat  # noqa: E402  (needs lib/ on sys.path first)
+
+compat.install()

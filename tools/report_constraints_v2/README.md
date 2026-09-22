@@ -127,20 +127,19 @@ status.json              本次运行状态
 
 ```text
 report_constraints_v2/
-├── semantic_pipeline.py     主流程
-├── run_semantic_batch.py    批量运行
-├── verify_semantic.py       零模型离线复验
-├── preview.py               输入、计划和 Prompt 预览
-├── preconditions.py         可选 P 审计与受约束修复
-├── semantic_core.py         schema、来源、类型与 bundle 校验
-├── plan_synthesizer.py      确定性 P/I/V 公式合成
-├── evidence_catalog.py      证据编号与原文回填
-├── report_readiness.py      提取前信息充分性门
-├── report_only.py           报告解析、表达式基础设施和 DeepSeek 传输
-├── fidelity.py              数值与地址保真检查
-├── symbolic_queries.py      SMT/Z3 查询
-├── review.py                可观察性审查与自动分流
-├── mechanical_salvage.py    显式启用的机械规范化
+├── cli/                     入口层（由 main.py 调用）
+│   ├── semantic_pipeline.py 主流程
+│   ├── batch_verify.py      批量运行 + 零模型离线复验
+│   ├── preview.py           输入、计划和 Prompt 预览
+│   └── preconditions.py     可选 P 审计与受约束修复
+├── lib/                     共享库层
+│   ├── semantic_core.py     schema、来源、类型与 bundle 校验
+│   ├── plan_synthesizer.py  确定性 P/I/V 公式合成
+│   ├── report_only.py       报告解析、表达式基础设施和 DeepSeek 传输
+│   ├── ingest.py            证据编号与原文回填 + 提取前信息充分性门
+│   ├── solving.py           SMT/Z3 查询 + 可观察性审查与自动分流
+│   ├── salvage.py           数值与地址保真检查 + 显式启用的机械规范化
+│   └── compat.py            历史模块名兼容注册（meta path finder）
 ├── prompts/                 当前定义、运行时解析和冻结 Prompt 版本
 ├── tests/                   自动回归
 ├── samples/                 固定测试样例

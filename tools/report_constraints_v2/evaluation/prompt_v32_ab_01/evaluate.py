@@ -11,7 +11,7 @@ for _d in (MODULE / 'lib', MODULE / 'cli'):
     _s = str(_d)
     if _s not in sys.path:
         sys.path.insert(0, _s)
-from verify_semantic import verify
+from cli.batch_verify import verify
 
 VALUES = {"pass", "partial", "fail", "not_evaluable"}
 

@@ -14,9 +14,9 @@ for _d in (STAGE2 / 'lib', STAGE2 / 'cli'):
     if _s not in sys.path:
         sys.path.insert(0, _s)
 
-from semantic_pipeline import load_report  # noqa: E402
+from cli.semantic_pipeline import load_report  # noqa: E402
 from prompts.versions import semantic_prompts_v311 as prompts  # noqa: E402
-from verify_semantic import verify  # noqa: E402
+from cli.batch_verify import verify  # noqa: E402
 
 DIMENSIONS = ('P_evidence', 'P_semantics', 'I_evidence', 'I_semantics',
               'V_evidence', 'V_semantics')

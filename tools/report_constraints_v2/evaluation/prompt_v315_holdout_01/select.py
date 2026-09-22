@@ -16,7 +16,7 @@ for _d in (STAGE2 / 'lib', STAGE2 / 'cli'):
     if _s not in sys.path:
         sys.path.insert(0, _s)
 
-from semantic_pipeline import load_report  # noqa: E402
+from cli.semantic_pipeline import load_report  # noqa: E402
 from prompts.versions import semantic_prompts_v315 as prompts  # noqa: E402
 
 

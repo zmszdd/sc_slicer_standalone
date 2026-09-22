@@ -584,6 +584,12 @@ def main():
                         help='exit successfully when core P/I/V is complete; keep review warnings and never certify semantic truth')
     parser.add_argument('--prompt-version', choices=tuple(PROMPT_MODULES),
                         default=DEFAULT_VERSION)
+    parser.add_argument('--claim-verdict', choices=('legacy', 'signals'),
+                        default='legacy',
+                        help='legacy: report ambiguities/limitations and non-asserted '
+                             'modality veto every claim; signals: record them as '
+                             'informational fields instead (main.py run/batch inject '
+                             'signals)')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.prompt_version in PLAN_VERSIONS and (
@@ -650,6 +656,8 @@ def main():
                 'element_prompt_sha256': resolved_prompts.sha256('element'),
                 'formal_prompt_sha256': resolved_prompts.sha256('formal'),
             })
+        provenance['claim_verdict_policy'] = (
+            'signals-v2' if args.claim_verdict == 'signals' else 'legacy')
         write_json(args.output / 'provenance.json', provenance)
         (args.output / 'original-report').write_bytes(raw)
         (args.output / 'extraction-input.txt').write_text(text)
@@ -785,7 +793,8 @@ def main():
             formal = formal_raw
         write_json(args.output / 'formalization.json', formal)
         bundle = compile_bundle(elements, formal, text,
-                                strict_piv=args.prompt_version in STRICT_PIV_VERSIONS)
+                                strict_piv=args.prompt_version in STRICT_PIV_VERSIONS,
+                                verdict_v2=args.claim_verdict == 'signals')
         observability = attach_review(bundle, formal)
         write_json(args.output / 'observability-review.json', observability)
         bundle['provenance'] = provenance
