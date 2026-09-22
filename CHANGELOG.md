@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **DeepSeek 注入改为仅神经流程，修掉"离线 `run` 必然失败"。**`main.py` 原先
+  无条件为 `run` 注入 `--provider deepseek`，于是纯离线 run（给 `--elements` /
+  `--formalization`）撞上 `--provider deepseek requires neural extraction or
+  formalization`，每次都以退出码 2 失败，必须显式补 `--provider opencode` 才能跑。
+  现在 `run` 只在带 `--extract` 或 `--formalize-only` 时注入；`batch` 恒为神经
+  流程，注入不变。条件表是新增的 `STAGE2_NEURAL_ONLY_DEFAULTS`，
+  `STAGE2_DEEPSEEK_DEFAULTS` 仍是静态防护测试的唯一来源（`run` 保留在其中）。
+- 测试基线 268 -> 269。
 - **修复 S12 引入的回归：`main.py batch` 曾完全不可用。**`main.py` 会为
   `batch` 注入 `--claim-verdict signals`，但 `cli/batch_verify.py` 既没有声明该
   参数（argparse 直接 `unrecognized arguments` 并退出 2），也没有把它转发给

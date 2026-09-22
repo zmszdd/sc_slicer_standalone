@@ -108,6 +108,16 @@ STAGE2_DEEPSEEK_DEFAULTS = {
     'batch': ('--provider', 'deepseek', '--model', 'deepseek-flash'),
 }
 
+# 只有真的走神经流程时才需要 DeepSeek 传输。纯离线 `run` 只是重放已保存的
+# candidate，而 deepseek 传输会直接拒绝非神经调用
+# （`--provider deepseek requires neural extraction or formalization`），
+# 导致此前每一次离线 `main.py run` 都以退出码 2 失败，必须显式补
+# `--provider opencode` 才能跑。
+# `batch` 恒为神经流程（其子进程固定带 `--extract`），故不列在这里。
+STAGE2_NEURAL_ONLY_DEFAULTS = {
+    'run': ('--extract', '--formalize-only'),
+}
+
 # 多个命令可指向同一个脚本，用前导参数区分（见 _dispatch）。
 # S12: acceptance-verdict policy.  Deliberately kept OUT of
 # STAGE2_DEEPSEEK_DEFAULTS so _with_deepseek_defaults keeps its tested exact-argv
@@ -406,9 +416,17 @@ META_HANDLERS = {
 
 
 def _with_deepseek_defaults(command, argv):
-    """Prepend the DeepSeek defaults unless the caller set provider/model itself."""
+    """Prepend the DeepSeek defaults unless the caller set provider/model itself.
+
+    Commands listed in ``STAGE2_NEURAL_ONLY_DEFAULTS`` are injected only when the
+    invocation actually extracts or formalizes; an offline replay keeps the
+    caller's own (model-free) transport.
+    """
     defaults = STAGE2_DEEPSEEK_DEFAULTS.get(command)
     if not defaults:
+        return list(argv)
+    required = STAGE2_NEURAL_ONLY_DEFAULTS.get(command)
+    if required and not any(flag in argv for flag in required):
         return list(argv)
     if set(defaults[::2]) & set(argv):
         return list(argv)

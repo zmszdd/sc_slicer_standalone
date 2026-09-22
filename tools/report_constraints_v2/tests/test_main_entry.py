@@ -175,9 +175,24 @@ class Stage2OnlyTest(unittest.TestCase):
             self.assertNotIn(forbidden, source,
                              f'{forbidden} should have moved out of the stage-2 entry point')
 
-    def test_run_injects_deepseek_when_the_caller_omits_it(self):
-        self.assertEqual(entry._with_deepseek_defaults('run', ['--case-dir', 'x']),
-                         ['--provider', 'deepseek', '--case-dir', 'x'])
+    def test_run_injects_deepseek_for_the_neural_flow(self):
+        self.assertEqual(
+            entry._with_deepseek_defaults('run', ['--extract', '--case-dir', 'x']),
+            ['--provider', 'deepseek', '--extract', '--case-dir', 'x'])
+
+    def test_offline_run_is_not_pinned_to_the_deepseek_transport(self):
+        """An offline run replays saved candidates and makes no model call.
+
+        The DeepSeek transport rejects non-neural invocations outright
+        (`--provider deepseek requires neural extraction or formalization`), so
+        injecting it made EVERY offline `main.py run` fail with exit 2.
+        """
+        offline = (['--case-dir', 'x', '--elements', 'e',
+                    '--formalization', 'f'],
+                   ['--report', 'r', '--elements-only', 'e'])
+        for argv in offline:
+            with self.subTest(argv=argv):
+                self.assertEqual(entry._with_deepseek_defaults('run', argv), argv)
 
     def test_batch_also_pins_the_official_model_id(self):
         args = entry._with_deepseek_defaults('batch', ['--reports-root', 'r'])
@@ -185,7 +200,9 @@ class Stage2OnlyTest(unittest.TestCase):
                          ['--provider', 'deepseek', '--model', 'deepseek-flash'])
 
     def test_explicit_provider_is_never_overridden(self):
-        argv = ['--provider', 'opencode', '--case-dir', 'x']
+        argv = ['--provider', 'opencode', '--extract', '--case-dir', 'x']
+        self.assertEqual(entry._with_deepseek_defaults('run', argv), argv)
+        argv = ['--provider', 'opencode', '--formalize-only', '--case-dir', 'x']
         self.assertEqual(entry._with_deepseek_defaults('run', argv), argv)
 
     def test_offline_commands_get_no_model_defaults(self):

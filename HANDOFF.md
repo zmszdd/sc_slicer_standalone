@@ -376,7 +376,7 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 ### 第一步：冻结 v3.17
 
 - 不修改 v3.17 Prompt、schema 和既有产物语义。
-- 确认当前 268 个主线测试继续通过。
+- 确认当前 269 个主线测试继续通过。
 - 保留 `evaluation/prompt_v317_development_03/` 原始结果。
 
 ### 第二步：设计 v3.18/schema v6
@@ -460,6 +460,29 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 `python main.py versions`、`python main.py status`。`python main.py versions`、`python main.py verify <dir>`、`python main.py run ...`。
 下面的原始命令与它们等价，保留用于历史重放。
 
+### 全流程跑在官方 DeepSeek 上
+
+`main.py` 只为**神经流程**注入 `--provider deepseek`：`run` 需要 `--extract` 或
+`--formalize-only`，`batch` 恒为神经流程。`--allow-report-upload` 是上传报告文本
+的显式同意门，缺它会在发起任何调用前退出。
+
+```bash
+# 单案例全流程：3 次 DeepSeek 调用（输入充分性筛查 + 抽 P/I/V 要素 + 形式化）
+cd /root/sc_slicer_standalone
+/root/.local/share/uv/tools/halmos/bin/python main.py run \
+  --extract --allow-report-upload --case-dir /path/to/case \
+  --output results/semantic/<新目录>
+
+# 批量：每案例 3 次调用（--concurrency 1 便于对账）
+/root/.local/share/uv/tools/halmos/bin/python main.py batch \
+  --reports-root /path/to/reports --output results/semantic/<新目录> \
+  --allow-report-upload --concurrency 1
+```
+
+走官方 API 需要 `config/stage2_deepseek.local.env`（权限必须 0600）。纯离线重放
+`run`（给 `--elements` / `--formalization`）不会被注入，零调用；历史产物统一用
+`main.py verify <run-dir>` 重放。
+
 ### 全量本地测试
 
 ```bash
@@ -469,7 +492,7 @@ cd /root/sc_slicer_standalone
   -t tools/report_constraints_v2 -p 'test_*.py' -q
 ```
 
-当前基线应为：`Ran 268 tests ... OK`。
+当前基线应为：`Ran 269 tests ... OK`。
 
 ### 检查格式问题
 

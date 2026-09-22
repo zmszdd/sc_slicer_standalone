@@ -99,6 +99,16 @@ python main.py test | versions | doctor | status | frozen
 脚本解析顺序为 `cli/` → `lib/` → 阶段二根目录，由 `main.py` 的
 `STAGE2_SCRIPT_DIRS` 定义。
 
+`main.py` 还会注入两组默认值，且**只在调用者没有自己指定时**生效：
+
+| 表 | 命令 | 生效条件 |
+| --- | --- | --- |
+| `STAGE2_DEEPSEEK_DEFAULTS` | `run` / `batch` | `run` 仅当带 `--extract` 或 `--formalize-only`（见 `STAGE2_NEURAL_ONLY_DEFAULTS`）；`batch` 恒生效 |
+| `STAGE2_VERDICT_DEFAULTS` | `run` / `batch` | 恒生效（见"断言策略"一节） |
+
+`run` 之所以区分神经/离线：离线 run 只是重放已保存的 candidate，而 DeepSeek
+传输会直接拒绝非神经调用，无条件注入会让每一次离线 `main.py run` 退出码 2。
+
 ## 命令到脚本的映射
 
 | 命令 | 脚本 | 前导参数 |
