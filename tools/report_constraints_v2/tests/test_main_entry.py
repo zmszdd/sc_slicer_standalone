@@ -32,7 +32,7 @@ class CommandTableTest(unittest.TestCase):
     def test_every_command_points_at_an_existing_script(self):
         for command, (script, description) in entry.STAGE2_COMMANDS.items():
             with self.subTest(command=command):
-                self.assertTrue((entry.STAGE2_DIR / script).is_file(),
+                self.assertTrue(entry._script_path(script) is not None,
                                 f'{command} -> missing {script}')
                 self.assertTrue(description.strip(), command)
 
@@ -46,7 +46,7 @@ class CommandTableTest(unittest.TestCase):
         commands = {script for script, _ in entry.STAGE2_COMMANDS.values()}
         for name in entry.LIBRARY_MODULES:
             with self.subTest(module=name):
-                self.assertTrue((entry.STAGE2_DIR / name).is_file())
+                self.assertTrue(entry._script_path(name) is not None)
         self.assertEqual(commands & set(entry.LIBRARY_MODULES), set())
 
     def test_meta_and_stage2_tables_do_not_overlap(self):
