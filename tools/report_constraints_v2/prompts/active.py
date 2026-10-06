@@ -9,8 +9,8 @@ from dataclasses import dataclass
 import hashlib
 
 from .definitions import ELEMENT_CONTRACT_MARKERS, FORMAL_CONTRACT_MARKERS
-from .registry import (DEFAULT_VERSION, EXPERIMENTAL_VERSION, RECOMMENDED_VERSION,
-                       module_for)
+from .registry import (DEFAULT_VERSION, EXPERIMENTAL_VERSION, LIVE_VERSION,
+                       RECOMMENDED_VERSION, module_for)
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class ResolvedPromptSet:
 
 def _assert_piv_contract(prompts: ResolvedPromptSet) -> None:
     """Fail early if an active prompt loses the canonical P/I/V distinctions."""
-    if prompts.version not in {RECOMMENDED_VERSION, EXPERIMENTAL_VERSION}:
+    if prompts.version not in {RECOMMENDED_VERSION, EXPERIMENTAL_VERSION, LIVE_VERSION}:
         return
     missing = [marker for marker in ELEMENT_CONTRACT_MARKERS
                if marker not in prompts.element_prompt]

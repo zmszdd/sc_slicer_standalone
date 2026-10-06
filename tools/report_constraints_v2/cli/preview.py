@@ -12,7 +12,7 @@ import sys
 
 from prompts.active import resolve_prompt_set
 from prompts.definitions import render_definitions
-from prompts.registry import DEFAULT_VERSION, VERSIONS
+from prompts.registry import DEFAULT_VERSION, SELECTABLE_VERSIONS
 
 
 def screen_case(case_dir):
@@ -85,7 +85,7 @@ def preview_main():
     plan.add_argument('--elements', type=Path, required=True,
                       help='existing report-elements/2 JSON from the same case')
     prompt = modes.add_parser('prompt', help='preview canonical definitions or an exact resolved prompt')
-    prompt.add_argument('--version', choices=VERSIONS, default=DEFAULT_VERSION)
+    prompt.add_argument('--version', choices=SELECTABLE_VERSIONS, default=DEFAULT_VERSION)
     prompt.add_argument('--part', choices=('definitions', 'element', 'formal'),
                         default='definitions')
     args = parser.parse_args()

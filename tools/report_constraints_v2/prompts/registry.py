@@ -10,6 +10,7 @@ from pathlib import Path
 # Importing the package installs the frozen-version directory on sys.path.  The
 # source files can therefore keep their historical absolute import statements.
 from . import versions as _versions  # noqa: F401
+from . import current as _current
 
 
 MODULE_NAMES = (
@@ -34,7 +35,15 @@ MODULE_NAMES = (
 MODULES = tuple(import_module(f'{__package__}.versions.{name}')
                 for name in MODULE_NAMES)
 PROMPT_MODULES = {module.PROMPT_VERSION: module for module in MODULES}
+# ``VERSIONS`` stays frozen-only: the live prompt is appended to
+# ``PROMPT_MODULES`` afterwards so it never leaks into the ``_from()`` slices.
 VERSIONS = tuple(PROMPT_MODULES)
+
+LIVE_VERSION = _current.PROMPT_VERSION
+PROMPT_MODULES[LIVE_VERSION] = _current
+# Versions selectable on the command line: the frozen archive plus the live
+# file that is maintained in place.
+SELECTABLE_VERSIONS = VERSIONS + (LIVE_VERSION,)
 
 # Single source of truth for "which version should people actually run".
 # Every frozen version stays listed in ``VERSIONS``; these two labels only
@@ -44,9 +53,10 @@ VERSIONS = tuple(PROMPT_MODULES)
 RECOMMENDED_VERSION = 'semantic-v3.16'
 EXPERIMENTAL_VERSION = 'semantic-v3.20'
 
-# The default is the recommended version; the historical pre-v3.5 versions
-# were removed on 2026-09-22.
-DEFAULT_VERSION = RECOMMENDED_VERSION
+# The default is the single editable live prompt; the frozen archive is only
+# for replaying historical runs.  Feature parity with v3.16/v3.20 was verified
+# at creation time, so switching the default changes only the prompt text.
+DEFAULT_VERSION = LIVE_VERSION
 
 VERSIONS_DIR = Path(__file__).resolve().parent / 'versions'
 
@@ -73,6 +83,62 @@ LOCAL_REPAIR_VERSIONS = _from('semantic-v3.16')
 REFERENCED_CATALOG_VERSIONS = _from('semantic-v3.5')
 ALLOWED_STATEMENT_ID_VERSIONS = _from('semantic-v3.5')
 PROTOCOL_IDENTIFIER_EXCLUSION_VERSIONS = frozenset({'semantic-v3.17'})
+
+# Feature lookup decoupled from version names: the live prompt toggles its
+# features in ``current.FEATURES`` while frozen versions keep their historical
+# sets, so editing the live file can never silently rewrite history.
+FEATURE_NAMES = (
+    'strict_piv',
+    'plan_synthesis',
+    'structured_unresolved',
+    'numeric_guard',
+    'address_guard',
+    'lean_formal_input',
+    'step_normalization',
+    'core_count',
+    'id_normalization',
+    'relation_alignment',
+    'local_repair',
+    'referenced_catalog',
+    'allowed_statement_ids',
+    'protocol_identifier_exclusion',
+    'assumption_numeric_relief',
+)
+_LEGACY_FEATURE_SETS = {
+    'strict_piv': STRICT_PIV_VERSIONS,
+    'plan_synthesis': PLAN_VERSIONS,
+    'structured_unresolved': STRUCTURED_UNRESOLVED_VERSIONS,
+    'numeric_guard': NUMERIC_GUARD_VERSIONS,
+    'address_guard': ADDRESS_GUARD_VERSIONS,
+    'lean_formal_input': LEAN_FORMAL_INPUT_VERSIONS,
+    'step_normalization': STEP_NORMALIZATION_VERSIONS,
+    'core_count': CORE_COUNT_VERSIONS,
+    'id_normalization': ID_NORMALIZATION_VERSIONS,
+    'relation_alignment': RELATION_ALIGNMENT_VERSIONS,
+    'local_repair': LOCAL_REPAIR_VERSIONS,
+    'referenced_catalog': REFERENCED_CATALOG_VERSIONS,
+    'allowed_statement_ids': ALLOWED_STATEMENT_ID_VERSIONS,
+    'protocol_identifier_exclusion': PROTOCOL_IDENTIFIER_EXCLUSION_VERSIONS,
+    # No frozen version ships the assumption relief: old runs replay with the
+    # strict numeric gate they were produced under.
+    'assumption_numeric_relief': frozenset(),
+}
+
+
+def feature_enabled(version, feature):
+    """Report whether ``version`` enables the named pipeline feature."""
+    if feature not in FEATURE_NAMES:
+        raise ValueError(f'unknown prompt feature: {feature}')
+    if version not in PROMPT_MODULES:
+        raise ValueError(f'unknown prompt version: {version}')
+    if version == LIVE_VERSION:
+        return bool(_current.FEATURES.get(feature))
+    return version in _LEGACY_FEATURE_SETS[feature]
+
+
+def features_for(version):
+    """Return the full feature mapping for ``version`` (recorded in provenance)."""
+    return {name: feature_enabled(version, name) for name in FEATURE_NAMES}
 
 
 def module_for(version):

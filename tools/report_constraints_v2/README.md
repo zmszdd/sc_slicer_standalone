@@ -161,9 +161,13 @@ report_constraints_v2/
 
 - P/I/V 规范只在 `prompts/definitions.py` 维护；
 - 主流程只通过 `prompts/active.py` 获取最终 Prompt；
-- `prompts/registry.py` 管理版本及功能开关；
-- `prompts/versions/` 是冻结实验版本，不原地修改；
-- 推荐稳定版为 `semantic-v3.16`，实验版为 `semantic-v3.17`。
+- `prompts/registry.py` 管理版本、`feature_enabled`/`features_for` 功能开关；
+- 唯一可编辑的 Prompt 是 `prompts/current.py`（`semantic-live`，默认版本），
+  原地修改；每次 neural 运行把精确 prompt 快照与功能开关决策写进 run 目录，
+  离线重放依据快照而非 current.py 当前内容；
+- `prompts/versions/` 是冻结只读存档（v3.5–v3.20），供旧 run 回放，不再修改；
+- 推荐稳定版仍标记为 `semantic-v3.16`（冻结）；政策细节见
+  `docs/PROMPT_LIVE_POLICY.md`。
 
 ## 测试与归档
 

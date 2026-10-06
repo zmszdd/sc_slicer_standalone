@@ -289,12 +289,19 @@ graph TD
 
 ## Prompt 管理原则
 
-- 所有运行时版本从 `prompts/registry.py` 获取。
+- 所有运行时版本从 `prompts/registry.py` 获取；功能开关经
+  `feature_enabled(version, feature)` / `features_for(version)` 查询，不在主流程
+  重复写版本元组。
 - 主流程通过 `prompts/active.py` 解析最终 Prompt，不直接追踪版本继承链。
 - P/I/V 的人类可读规范只在 `prompts/definitions.py` 维护。
-- `prompts/versions/` 中每个文件对应一个冻结实验版本，内容不可原地改写。
-- 功能开关集中在注册表，不在主流程重复写版本元组。
-- 新版本新增文件；不要复制一套新的 pipeline。
+- **唯一可编辑的 Prompt 是 `prompts/current.py`（`semantic-live`，默认版本），
+  原地修改**；功能门翻转在其中的 `FEATURES` 同步声明。
+- `prompts/versions/` 是冻结只读存档（v3.5–v3.20），供历史 run 回放；
+  不修改、不折叠、不新增。
+- 重放契约：neural 运行把 `prompt-element.txt`/`prompt-formal.txt` 快照与
+  `prompt_features` 决策写进 run 目录；`verify` 优先回放快照（不读 current.py
+  当前内容），无快照的旧 run 回落冻结版本解析。政策全文见
+  `docs/PROMPT_LIVE_POLICY.md`。
 
 使用 `python main.py preview-prompt --part definitions|element|formal` 可查看集中定义或
 生产流程实际使用的最终文本；该命令不读取 API Key，也不调用模型。

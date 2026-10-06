@@ -273,6 +273,9 @@ def _versions(argv=()):
     print(f'默认版本        : {registry.DEFAULT_VERSION}')
     print(f'推荐稳定版      : {getattr(registry, "RECOMMENDED_VERSION", "(未登记)")}')
     print(f'实验版本        : {getattr(registry, "EXPERIMENTAL_VERSION", "(未登记)")}')
+    live = getattr(registry, 'LIVE_VERSION', None)
+    if live:
+        print(f'活版本          : {live}（prompts/current.py，原地维护；运行目录快照保证重放）')
     print(f'已冻结版本({len(registry.VERSIONS)}): ' + ', '.join(registry.VERSIONS))
     print()
     print('功能开关（版本集合）:')
