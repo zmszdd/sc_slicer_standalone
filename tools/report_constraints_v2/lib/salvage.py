@@ -122,18 +122,27 @@ def predicate_constants(predicate):
     return found
 
 
-def check_numeric_plan(plan, elements, exclude_protocol_identifiers=False):
+def check_numeric_plan(plan, elements, exclude_protocol_identifiers=False,
+                       relax_assumptions=False):
+    """Assumption statements carry context, not constraints: with
+    ``relax_assumptions`` an un-encoded assumption no longer has to enter P
+    (its numbers may merely restate literals already bound in P terms or name
+    chain constants).  Fidelity checks on statements that ARE encoded are not
+    relaxed, and preconditions stay fully strict either way."""
     statements = {row['id']: row for row in elements['statements']
                   if row['kind'] in ('precondition', 'assumption')}
     terms = {row['source_id']: row['predicate'] for row in plan['precondition_terms']}
     for source_id, statement in statements.items():
+        unencoded_assumption = (relax_assumptions and
+                                statement['kind'] == 'assumption' and
+                                source_id not in terms)
         bounds = explicit_bounds(statement['text'])
         literals = explicit_numbers(
             statement['text'],
             exclude_protocol_identifiers=exclude_protocol_identifiers)
         if not bounds:
             if source_id not in terms:
-                if literals:
+                if literals and not unencoded_assumption:
                     raise ValueError('numeric P source missing from plan')
                 continue
             constants = predicate_constants(terms[source_id])
@@ -141,7 +150,9 @@ def check_numeric_plan(plan, elements, exclude_protocol_identifiers=False):
                 raise ValueError('numeric P literal changed')
             continue
         if source_id not in terms:
-            raise ValueError('numeric P source missing from plan')
+            if not unencoded_assumption:
+                raise ValueError('numeric P source missing from plan')
+            continue
         bound = predicate_bound(terms[source_id])
         if bound is None:
             raise ValueError('numeric P bound hidden by non-comparison predicate')

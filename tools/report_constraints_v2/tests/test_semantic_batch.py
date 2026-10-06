@@ -2,6 +2,7 @@
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -73,6 +74,40 @@ class BatchGuards(unittest.TestCase):
             self.assertEqual(saved['retry_count'], 0)
             self.assertEqual(saved['prompt_version'], DEFAULT_VERSION)
             self.assertEqual(saved['results'][0]['exit_code'], 2)
+
+    def test_relative_output_is_resolved_before_child_changes_cwd(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            (root / 'case').mkdir()
+            (root / 'case' / 'report.json').write_text('{}')
+            manifest = root / 'manifest.json'
+            manifest.write_text(json.dumps({'data_root': str(root), 'cases': [
+                {'id': 'x', 'case_directory': 'case'}]}))
+
+            seen = []
+
+            def fake(command, **kwargs):
+                target = Path(command[command.index('--output') + 1])
+                seen.append(target)
+                target.mkdir(parents=True)
+                status = {'acceptance_status': 'needs_review'}
+                (target / 'status.json').write_text(json.dumps(status))
+                return batch.subprocess.CompletedProcess(command, 0, json.dumps(status), '')
+
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                argv = ['batch', '--manifest', str(manifest), '--output', 'relative-out',
+                        '--allow-report-upload']
+                with patch('sys.argv', argv), \
+                        patch.object(batch.subprocess, 'run', side_effect=fake):
+                    with redirect_stdout(io.StringIO()):
+                        batch.main()
+            finally:
+                os.chdir(previous)
+
+            self.assertEqual(seen, [root / 'relative-out' / 'x'])
+            self.assertTrue((root / 'relative-out' / 'batch-summary.json').is_file())
 
 
 

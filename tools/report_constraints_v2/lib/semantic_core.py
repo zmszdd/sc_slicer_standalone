@@ -117,6 +117,7 @@ def validate_formalization(formal, elements, text):
         require(strings(item['entity_ids']) and all(x in entities for x in item['entity_ids']), 'unknown observable entity')
         symbol_base[name] = {k: v for k, v in item.items() if k != 'entity_ids'}
     claims = index(formal['claims'], 'claim')
+    require(bool(claims), 'formalization requires at least one claim')
     require(len(claims) <= 8, 'too many claims')
     claimed_impacts = set()
     for claim in claims.values():
@@ -177,7 +178,8 @@ def validate_formalization(formal, elements, text):
 CONTRADICTION_CHECKS = frozenset({'precondition_feasibility', 'safety_feasibility'})
 
 
-def compile_bundle(elements, formal, text, strict_piv=False, verdict_v2=False):
+def compile_bundle(elements, formal, text, strict_piv=False, verdict_v2=False,
+                   require_complete_piv=False):
     symbol_base, covered = validate_formalization(formal, elements, text)
     impacts = {x['id'] for x in elements['statements'] if x['kind'] == 'impact'}
     unassigned_preconditions = set()
@@ -194,7 +196,8 @@ def compile_bundle(elements, formal, text, strict_piv=False, verdict_v2=False):
                 'properties': {name: {k: v for k, v in prop.items() if k != 'source_ids'}
                                for name, prop in claim['properties'].items()},
                 'assumptions': claim['assumptions'], 'unresolved': claim['unresolved']}
-        validation, smt = r.compile_spec(base, text)
+        validation, smt = r.compile_spec(
+            base, text, require_complete_piv=require_complete_piv)
         relationship = r.relationship_review(base, text, require_direct_counterexample=strict_piv)
         reasons = list(validation['warnings']) + list(relationship['warnings'])
         # S12: under verdict_v2 a non-asserted modality is a *realization* fact, not
@@ -276,7 +279,23 @@ def compile_bundle(elements, formal, text, strict_piv=False, verdict_v2=False):
     if strict_piv:
         result['unassigned_precondition_ids'] = sorted(unassigned_preconditions)
         result['precondition_coverage_is_structural_not_semantic'] = True
-        result['strict_piv_gate'] = True
+        if require_complete_piv:
+            # The historical ``strict_piv_gate: true`` was an unconditional
+            # marker, not a gate.  New artifacts expose what was actually
+            # checked and explicitly deny a semantic-correctness interpretation.
+            result['piv_completeness_gate'] = {
+                'claims_present': bool(output),
+                'all_claims_have_p_i_v': bool(output) and all(
+                    all(claim['properties'][name]['expression'] is not None
+                        for name in ('preconditions', 'safety', 'effects'))
+                    for claim in output),
+                'relationship_checks_are_structural_only': True,
+                'semantic_fidelity_verified': False,
+            }
+        else:
+            # Replay compatibility for artifacts produced before
+            # acceptance-policy/complete-piv-v1.
+            result['strict_piv_gate'] = True
     return result
 
 

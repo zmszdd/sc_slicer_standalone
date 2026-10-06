@@ -92,6 +92,47 @@ class NumericFidelityTests(unittest.TestCase):
         candidate = {'precondition_terms': []}
         check_numeric_plan(candidate, elements, exclude_protocol_identifiers=True)
 
+    def test_relax_assumptions_exempts_unencoded_assumption_numbers(self):
+        # prompt_live1_blind_01: Kinetiq/Intuition were rejected because a
+        # narrative assumption restating numbers (or naming a chain constant)
+        # was not itself encoded as a P predicate.
+        elements = {'statements': [
+            {'id': 'p_interval', 'kind': 'precondition',
+             'text': 'The oracle updates at most every 24 hours.'},
+            {'id': 'asm_narrative', 'kind': 'assumption',
+             'text': 'The 1-hour fast oracle versus the 24-hour slow oracle '
+                     'creates a front-running window; blocks are 2 seconds.'},
+        ]}
+        candidate = {'precondition_terms': [
+            {'source_id': 'p_interval',
+             'predicate': {'kind': 'comparison', 'left': 'interval_hours',
+                           'operator': 'eq', 'right': {'const': 24}}}]}
+        with self.assertRaisesRegex(ValueError, 'source missing'):
+            check_numeric_plan(candidate, elements)
+        check_numeric_plan(candidate, elements, relax_assumptions=True)
+
+    def test_relax_assumptions_never_reaches_preconditions_or_fidelity(self):
+        elements = {'statements': [
+            {'id': 'p_interval', 'kind': 'precondition',
+             'text': 'The oracle updates at most every 24 hours.'},
+            {'id': 'asm_narrative', 'kind': 'assumption',
+             'text': 'Blocks are 2 seconds.'},
+        ]}
+        strict_precondition = {'precondition_terms': []}
+        # Precondition literals stay mandatory even with the relief on.
+        with self.assertRaisesRegex(ValueError, 'source missing'):
+            check_numeric_plan(strict_precondition, elements, relax_assumptions=True)
+        # An assumption that IS encoded still has its literals checked.
+        changed_literal = {'precondition_terms': [
+            {'source_id': 'p_interval',
+             'predicate': {'kind': 'comparison', 'left': 'interval_hours',
+                           'operator': 'le', 'right': {'const': 24}}},
+            {'source_id': 'asm_narrative',
+             'predicate': {'kind': 'comparison', 'left': 'block_seconds',
+                           'operator': 'eq', 'right': {'const': 12}}}]}
+        with self.assertRaisesRegex(ValueError, 'literal changed'):
+            check_numeric_plan(changed_literal, elements, relax_assumptions=True)
+
     def test_v310_retries_only_bad_numeric_plan(self):
         weak = plan({'kind': 'truth', 'symbol': 'low_offset', 'value': True})
         good = plan({'kind': 'comparison', 'left': 'offset18', 'operator': 'lt',

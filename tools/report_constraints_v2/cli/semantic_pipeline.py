@@ -15,15 +15,8 @@ import subprocess
 import report_only as r
 from semantic_core import (NORMALIZE, compile_bundle, normalize_readiness,
                            normalize_truth_binding, validate_elements)
-from prompts.registry import (
-    ADDRESS_GUARD_VERSIONS, ALLOWED_STATEMENT_ID_VERSIONS, CORE_COUNT_VERSIONS,
-    DEFAULT_VERSION, ID_NORMALIZATION_VERSIONS, LEAN_FORMAL_INPUT_VERSIONS,
-    LOCAL_REPAIR_VERSIONS, NUMERIC_GUARD_VERSIONS, PLAN_VERSIONS,
-    PROMPT_MODULES, PROTOCOL_IDENTIFIER_EXCLUSION_VERSIONS,
-    REFERENCED_CATALOG_VERSIONS, RELATION_ALIGNMENT_VERSIONS,
-    STEP_NORMALIZATION_VERSIONS, STRICT_PIV_VERSIONS,
-    STRUCTURED_UNRESOLVED_VERSIONS,
-)
+from prompts.registry import (DEFAULT_VERSION, PROMPT_MODULES, SELECTABLE_VERSIONS,
+                              features_for)
 from prompts.active import resolve_prompt_set
 from evidence_catalog import build_catalog, hydrate_elements, hydrate_formalization
 from plan_synthesizer import (classified_relation_alignment, structured_unresolved_review,
@@ -353,6 +346,55 @@ def element_retry_hint(_exc):
             'may reference action statements only. Use only supplied evidence IDs.\n')
 
 
+def request_readiness(payload, prompt, model, output, retries, catalog,
+                      extract_fn=None, on_attempt=None):
+    """Run the pre-extraction sufficiency gate with bounded, audited retries."""
+    extract_fn = extract_fn or r.extract
+    attempts = []
+    feedback = ''
+    for attempt in range(retries + 1):
+        call_dir = output / ('neural-input-screen' if attempt == 0 else
+                             f'neural-input-screen-retry-{attempt}')
+        call_dir.mkdir()
+        attempt_prompt = prompt + feedback
+        (call_dir / 'prompt.txt').write_text(attempt_prompt + payload)
+        record = {'attempt': attempt + 1, 'artifact_dir': call_dir.name}
+        attempts.append(record)
+        try:
+            if on_attempt is not None:
+                on_attempt()
+            raw = extract_fn(payload, call_dir, model, attempt_prompt)
+            normalized, changes = normalize_readiness(raw)
+            readiness = validate_readiness(normalized, catalog)
+            if changes:
+                write_json(call_dir / 'normalization-log.json', {
+                    'schema_version': 'stage2-normalization-log/1',
+                    'stage': 'input-screening', 'mode': NORMALIZE,
+                    'changes': changes})
+                record['normalizations'] = changes
+            record['outcome'] = 'accepted_for_validation'
+            write_json(output / 'readiness-attempts.json', attempts)
+            return readiness, changes
+        except (json.JSONDecodeError, subprocess.TimeoutExpired,
+                r.TransientModelError, ValueError, KeyError, TypeError) as exc:
+            record.update({'outcome': 'retryable_failure',
+                           'error_type': type(exc).__name__,
+                           'error': ('model timeout' if isinstance(
+                               exc, subprocess.TimeoutExpired) else str(exc))})
+            write_json(output / 'readiness-attempts.json', attempts)
+            if attempt == retries:
+                raise
+            feedback = ('\nRETRY FEEDBACK: Previous readiness answer failed '
+                        'deterministic JSON/schema/evidence validation. Return only '
+                        'the requested compact JSON using supplied evidence IDs.\n')
+        except (RuntimeError, OSError) as exc:
+            record.update({'outcome': 'non_retryable_failure',
+                           'error_type': type(exc).__name__, 'error': str(exc)})
+            write_json(output / 'readiness-attempts.json', attempts)
+            raise
+    raise AssertionError('unreachable')
+
+
 def validate_core_element_candidate(candidate, catalog, text, normalize_steps=False,
                                     require_core_counts=False, normalize_ids=False,
                                     max_core_impacts=2):
@@ -374,7 +416,7 @@ def validate_core_element_candidate(candidate, catalog, text, normalize_steps=Fa
 
 
 def request_elements(payload, prompt, model, output, retries, extract_fn=None,
-                     validate_fn=None):
+                     validate_fn=None, on_attempt=None):
     """Bounded recovery for transport/JSON failures; preserve every attempt."""
     extract_fn = extract_fn or r.extract
     attempts = []
@@ -388,6 +430,8 @@ def request_elements(payload, prompt, model, output, retries, extract_fn=None,
         record = {'attempt': attempt + 1, 'artifact_dir': call_dir.name}
         attempts.append(record)
         try:
+            if on_attempt is not None:
+                on_attempt()
             result = extract_fn(payload, call_dir, model, attempt_prompt)
             if validate_fn is not None:
                 validate_fn(result)
@@ -416,7 +460,8 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                           elements, structured=False, extract_fn=None, attempts=None,
                           numeric_guard=False, address_guard=False,
                           mechanical_salvage=False, local_repair=False,
-                          exclude_protocol_identifiers=False):
+                          exclude_protocol_identifiers=False,
+                          relax_assumptions=False, on_attempt=None):
     """Retry malformed responses or perform a bounded, field-scoped plan repair.
 
     Each attempt keeps its own raw model artifacts. A rejected plan is never
@@ -451,6 +496,8 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
         attempts.append(record)
         candidate = None
         try:
+            if on_attempt is not None:
+                on_attempt()
             candidate = extract_fn(attempt_payload, call_dir, model, attempt_prompt)
             if local_repair and repair_base is not None:
                 record['changed_top_level_fields'] = validate_local_repair(
@@ -475,7 +522,8 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                 if numeric_guard:
                     check_numeric_plan(
                         candidate, elements,
-                        exclude_protocol_identifiers=exclude_protocol_identifiers)
+                        exclude_protocol_identifiers=exclude_protocol_identifiers,
+                        relax_assumptions=relax_assumptions)
                 if address_guard:
                     check_address_plan(candidate, elements)
                 if structured:
@@ -594,13 +642,15 @@ def main():
                         help='up to two audited retries for second-step empty/invalid JSON, timeout, or invalid plan')
     parser.add_argument('--element-retries', type=int, choices=(0, 1), default=0,
                         help='optional one retry for first-step timeout or invalid JSON; preserves both attempts')
+    parser.add_argument('--readiness-retries', type=int, choices=(0, 1), default=0,
+                        help='optional one audited retry for the pre-extraction sufficiency gate')
     parser.add_argument('--lean-formal-input', action='store_true',
                         help='v3.12 core plan: send statement text/IDs without duplicated evidence catalog')
     parser.add_argument('--mechanical-salvage', action='store_true',
                         help='opt-in: lowercase unambiguous IDs and drop unused symbols with empty entity bindings')
     parser.add_argument('--continue-on-review', action='store_true',
                         help='exit successfully when core P/I/V is complete; keep review warnings and never certify semantic truth')
-    parser.add_argument('--prompt-version', choices=tuple(PROMPT_MODULES),
+    parser.add_argument('--prompt-version', choices=SELECTABLE_VERSIONS,
                         default=DEFAULT_VERSION)
     parser.add_argument('--claim-verdict', choices=('legacy', 'signals'),
                         default='legacy',
@@ -610,7 +660,10 @@ def main():
                              'signals)')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    if args.prompt_version in PLAN_VERSIONS and (
+    # Feature decisions are resolved once and recorded in provenance so that
+    # offline replay of a run never depends on the current live prompt toggles.
+    features = features_for(args.prompt_version)
+    if features['plan_synthesis'] and (
             args.evidence_mode != 'ids' or args.formalization_scope != 'core'):
         parser.error('plan-synthesis prompts support --evidence-mode ids --formalization-scope core only')
     if args.extract and args.formalize_only:
@@ -619,11 +672,13 @@ def main():
         parser.error('--formal-retries requires neural formalization')
     if args.element_retries and not args.extract:
         parser.error('--element-retries requires --extract')
+    if args.readiness_retries and not (args.extract and args.provider == 'deepseek'):
+        parser.error('--readiness-retries requires DeepSeek full extraction')
     if args.lean_formal_input and (args.elements_only or
                                   not (args.extract or args.formalize_only) or
-                                  args.prompt_version not in LEAN_FORMAL_INPUT_VERSIONS or
+                                  not features['lean_formal_input'] or
                                   args.evidence_mode != 'ids'):
-        parser.error('--lean-formal-input requires neural v3.12-v3.17 ID mode')
+        parser.error('--lean-formal-input requires neural ID mode with a lean-input prompt version')
     neural_formalization = args.extract or args.formalize_only
     if args.provider == 'deepseek' and not neural_formalization:
         parser.error('--provider deepseek requires neural extraction or formalization')
@@ -653,7 +708,8 @@ def main():
         provenance.update({'candidate_origin': 'external_model' if neural_formalization else args.origin,
                            'elements_source': str(args.elements) if args.elements else None,
                            'formalization_source': str(args.formalization) if args.formalization else None,
-                           'prompt_version': args.prompt_version})
+                           'prompt_version': args.prompt_version,
+                           'prompt_features': features})
         unresolved_review = None
         if neural_formalization:
             provenance.update({'requested_formalization_scope': args.formalization_scope,
@@ -664,7 +720,7 @@ def main():
                                'model_catalog_view': 'exact_id_text_without_offsets',
                                'neural_mode': 'two_step' if args.extract else 'formalization_only',
                                'formalization_generation': ('deterministic_from_plan'
-                                                            if args.prompt_version in PLAN_VERSIONS
+                                                            if features['plan_synthesis']
                                                             else 'model_full_formalization'),
                                'reference_answers_provided_to_model': False})
             model = args.model or ('deepseek-flash' if args.provider == 'deepseek'
@@ -685,36 +741,41 @@ def main():
                 args.prompt_version, args.evidence_mode, args.formalization_scope)
             provenance.update({
                 'prompt_resolution': 'prompts.active/1',
+                'requested_evidence_mode': args.evidence_mode,
                 'element_prompt_sha256': resolved_prompts.sha256('element'),
                 'formal_prompt_sha256': resolved_prompts.sha256('formal'),
             })
+            # Snapshot the exact prompt text into the run directory so offline
+            # replay never has to re-resolve an editable live prompt.
+            (args.output / 'prompt-element.txt').write_text(
+                resolved_prompts.element_prompt)
+            (args.output / 'prompt-formal.txt').write_text(
+                resolved_prompts.formal_prompt)
         provenance['claim_verdict_policy'] = (
             'signals-v2' if args.claim_verdict == 'signals' else 'legacy')
+        provenance['acceptance_policy_version'] = 'complete-piv-v1'
         write_json(args.output / 'provenance.json', provenance)
         (args.output / 'original-report').write_bytes(raw)
         (args.output / 'extraction-input.txt').write_text(text)
         catalog = build_catalog(text)
         write_json(args.output / 'evidence-catalog.json', catalog)
+
+        def record_model_attempt():
+            nonlocal calls
+            calls += 1
+            provenance['external_model_invocations'] = calls
+            write_json(args.output / 'provenance.json', provenance)
+
         if args.extract and args.provider == 'deepseek':
             # Mandatory semantic input gate for the supported production path.
             # It sees only numbered report prose and runs before P/I/V extraction.
-            screen_dir = args.output / 'neural-input-screen'
-            screen_dir.mkdir()
             screen_payload = model_payload(catalog)
-            (screen_dir / 'prompt.txt').write_text(READINESS_PROMPT + screen_payload)
-            calls += 1
-            screening_raw = extract_fn(screen_payload, screen_dir, model,
-                                       READINESS_PROMPT)
-            screening_raw, normalized = normalize_readiness(screening_raw)
+            readiness, normalized = request_readiness(
+                screen_payload, READINESS_PROMPT, model, args.output,
+                args.readiness_retries, catalog, extract_fn=extract_fn,
+                on_attempt=record_model_attempt)
             if normalized:
-                # Never hide a correction: the raw response stays untouched in
-                # model-claim.json, and both the log and provenance name what moved.
-                write_json(screen_dir / 'normalization-log.json', {
-                    'schema_version': 'stage2-normalization-log/1',
-                    'stage': 'input-screening', 'mode': NORMALIZE,
-                    'changes': normalized})
                 provenance['input_screening_normalizations'] = normalized
-            readiness = validate_readiness(screening_raw, catalog)
             write_json(args.output / 'input-readiness.json', readiness)
             provenance['input_screening'] = 'deepseek-report-readiness-v1'
             write_json(args.output / 'provenance.json', provenance)
@@ -739,29 +800,25 @@ def main():
         if args.extract:
             payload = compact_json(model_catalog(catalog)) if args.evidence_mode == 'ids' else text
             prompt = resolved_prompts.element_prompt
-            try:
-                elements_raw, _ = request_elements(
-                    payload, prompt, model, args.output, args.element_retries,
-                    extract_fn=extract_fn,
-                    validate_fn=(lambda candidate: validate_core_element_candidate(
-                        candidate, catalog, text,
-                        normalize_steps=args.prompt_version in STEP_NORMALIZATION_VERSIONS,
-                        normalize_ids=args.prompt_version in ID_NORMALIZATION_VERSIONS,
-                        require_core_counts=args.prompt_version in CORE_COUNT_VERSIONS,
-                        max_core_impacts=(4 if args.prompt_version in RELATION_ALIGNMENT_VERSIONS
-                                          else 2))
-                        if args.evidence_mode == 'ids' else None))
-            finally:
-                attempts_path = args.output / 'element-attempts.json'
-                if attempts_path.is_file():
-                    calls += len(json.loads(attempts_path.read_text()))
+            elements_raw, _ = request_elements(
+                payload, prompt, model, args.output, args.element_retries,
+                extract_fn=extract_fn,
+                validate_fn=(lambda candidate: validate_core_element_candidate(
+                    candidate, catalog, text,
+                    normalize_steps=features['step_normalization'],
+                    normalize_ids=features['id_normalization'],
+                    require_core_counts=features['core_count'],
+                    max_core_impacts=(4 if features['relation_alignment']
+                                      else 2))
+                    if args.evidence_mode == 'ids' else None),
+                on_attempt=record_model_attempt)
         else:
             elements_raw = json.loads(args.elements.read_text())
         element_normalizations = []
-        if args.prompt_version in ID_NORMALIZATION_VERSIONS:
+        if features['id_normalization']:
             elements_raw, id_normalizations = normalize_element_ids(elements_raw)
             element_normalizations.extend(id_normalizations)
-        if args.prompt_version in STEP_NORMALIZATION_VERSIONS:
+        if features['step_normalization']:
             elements_raw, step_normalizations = normalize_attack_step_roles(elements_raw)
             element_normalizations.extend(step_normalizations)
         if element_normalizations:
@@ -791,35 +848,33 @@ def main():
                     formal_input = lean_formal_input(elements_raw)
                 else:
                     allowed = (referenced_evidence_ids(elements_raw)
-                               if args.prompt_version in REFERENCED_CATALOG_VERSIONS else None)
+                               if features['referenced_catalog'] else None)
                     formal_input = {'elements': elements_raw,
                                     'evidence_catalog': model_catalog(catalog, allowed)}
                 if (not args.lean_formal_input and
-                        args.prompt_version in ALLOWED_STATEMENT_ID_VERSIONS):
+                        features['allowed_statement_ids']):
                     formal_input['allowed_statement_ids'] = allowed_statement_ids(elements_raw)
                 payload = compact_json(formal_input)
             else:
                 payload = compact_json({'elements': elements, 'report_prose': text})
             prompt = resolved_prompts.formal_prompt
-            plan_mode = args.prompt_version in PLAN_VERSIONS
+            plan_mode = features['plan_synthesis']
             attempts = []
-            try:
-                model_candidate, formal_raw, unresolved_review = request_formalization(
-                    payload, prompt, model, args.output, args.formal_retries, plan_mode,
-                    elements_raw,
-                    args.prompt_version in STRUCTURED_UNRESOLVED_VERSIONS,
-                    numeric_guard=args.prompt_version in NUMERIC_GUARD_VERSIONS,
-                    address_guard=args.prompt_version in ADDRESS_GUARD_VERSIONS,
-                    extract_fn=extract_fn, attempts=attempts,
-                    mechanical_salvage=args.mechanical_salvage,
-                    local_repair=args.prompt_version in LOCAL_REPAIR_VERSIONS,
-                    exclude_protocol_identifiers=(
-                        args.prompt_version in PROTOCOL_IDENTIFIER_EXCLUSION_VERSIONS))
-            finally:
-                calls += len(attempts)
+            model_candidate, formal_raw, unresolved_review = request_formalization(
+                payload, prompt, model, args.output, args.formal_retries, plan_mode,
+                elements_raw,
+                features['structured_unresolved'],
+                numeric_guard=features['numeric_guard'],
+                address_guard=features['address_guard'],
+                extract_fn=extract_fn, attempts=attempts,
+                mechanical_salvage=args.mechanical_salvage,
+                local_repair=features['local_repair'],
+                exclude_protocol_identifiers=features['protocol_identifier_exclusion'],
+                relax_assumptions=features['assumption_numeric_relief'],
+                on_attempt=record_model_attempt)
             if plan_mode:
                 write_json(args.output / 'formal-plan.json', model_candidate)
-                if args.prompt_version in RELATION_ALIGNMENT_VERSIONS:
+                if features['relation_alignment']:
                     write_json(args.output / 'relation-alignment.json',
                                classified_relation_alignment(model_candidate, elements_raw))
                 if unresolved_review is not None:
@@ -835,8 +890,9 @@ def main():
             formal = formal_raw
         write_json(args.output / 'formalization.json', formal)
         bundle = compile_bundle(elements, formal, text,
-                                strict_piv=args.prompt_version in STRICT_PIV_VERSIONS,
-                                verdict_v2=args.claim_verdict == 'signals')
+                                strict_piv=features['strict_piv'],
+                                verdict_v2=args.claim_verdict == 'signals',
+                                require_complete_piv=True)
         observability = attach_review(bundle, formal)
         write_json(args.output / 'observability-review.json', observability)
         bundle['provenance'] = provenance
@@ -902,7 +958,7 @@ def main():
                        'continuation_blockers': triage['continuation_blockers']})
         write_json(args.output / 'status.json', status)
         print(json.dumps(status))
-        return 0 if (bundle['acceptance_status'] == 'candidate_checks_passed' or
+        return 0 if (triage['route'] == 'candidate' or
                      args.continue_on_review and triage['stage2_can_continue']) else 2
     except (ValueError, KeyError, TypeError, RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
         status = {'core_formalization_status': 'failed', 'acceptance_status': 'rejected',

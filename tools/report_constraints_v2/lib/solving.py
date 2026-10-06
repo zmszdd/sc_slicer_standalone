@@ -129,10 +129,11 @@ def from_bundle(bundle, unresolved_review=None):
     infeasible_claims = [claim['id'] for claim in bundle.get('claims', [])
                          if claim.get('semantic_relationship', {}).get('queries', {}).get(
                              'P_and_V') in ('unsat', 'unknown')]
-    # `rejected` means the compiler found a contradiction, so automation must
-    # abstain rather than route the bundle to review.
-    if (bundle['core_formalization_status'] != 'formalized_candidate' or
-            infeasible_claims or acceptance == 'rejected'):
+    blockers = continuation_blockers(bundle, unresolved_review)
+    # A route is an action decision, so it must agree with the continuation
+    # gate.  Previously a bundle with a missing P or V could be labelled
+    # ``candidate`` while ``stage2_can_continue`` was false.
+    if blockers or infeasible_claims or acceptance == 'rejected':
         route = 'abstain'
     elif acceptance == 'candidate_checks_passed':
         route = 'candidate'
@@ -146,7 +147,6 @@ def from_bundle(bundle, unresolved_review=None):
         reasons.append('core P/I/V is not fully formalized')
     if infeasible_claims:
         reasons.append('P AND V is not feasible for claim(s): ' + ', '.join(infeasible_claims))
-    blockers = continuation_blockers(bundle, unresolved_review)
     return {'schema_version': 'stage2-auto-triage/1', 'route': route,
             'reasons': list(dict.fromkeys(reasons)),
             'stage2_can_continue': not blockers,

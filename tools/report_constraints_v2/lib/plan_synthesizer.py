@@ -599,7 +599,8 @@ def synthesize_id_formalization(plan, elements):
                     'relation class and pattern mismatch')
     statements = _index(elements['statements'], 'statement')
     entities = _index(elements['entities'], 'entity')
-    require(strings(plan['precondition_ids']) and len(set(plan['precondition_ids'])) ==
+    require(strings(plan['precondition_ids']) and bool(plan['precondition_ids']) and
+            len(set(plan['precondition_ids'])) ==
             len(plan['precondition_ids']), 'invalid plan precondition IDs')
     require(all(x in statements and statements[x]['kind'] in ('precondition', 'assumption')
                 for x in plan['precondition_ids']), 'plan P source role mismatch')

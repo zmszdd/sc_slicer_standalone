@@ -18,24 +18,26 @@ import subprocess
 import sys
 import time
 
-from prompts.registry import (
-    ADDRESS_GUARD_VERSIONS, DEFAULT_VERSION, ID_NORMALIZATION_VERSIONS,
-    NUMERIC_GUARD_VERSIONS, PLAN_VERSIONS, PROMPT_MODULES,
-    PROTOCOL_IDENTIFIER_EXCLUSION_VERSIONS, RELATION_ALIGNMENT_VERSIONS,
-    STRICT_PIV_VERSIONS, STRUCTURED_UNRESOLVED_VERSIONS,
-)
+from prompts.registry import (DEFAULT_VERSION, FEATURE_NAMES, SELECTABLE_VERSIONS,
+                              feature_enabled)
+from prompts.active import resolve_prompt_set
 
 import report_only as r
 from fidelity import check_numeric_plan, check_address_plan
-from semantic_core import (compile_bundle, normalize_truth_binding, require,
+from semantic_core import (compile_bundle, normalize_readiness,
+                           normalize_truth_binding, require,
                            validate_elements)
 from plan_synthesizer import (classified_relation_alignment, identical_p_predicates,
                               structured_unresolved_review,
                               synthesize_id_formalization)
-from evidence_catalog import build_catalog, hydrate_elements, hydrate_formalization
+from evidence_catalog import (PROMPT as READINESS_PROMPT, build_catalog,
+                              hydrate_elements, hydrate_formalization,
+                              model_payload as readiness_payload,
+                              validate_readiness)
 from symbolic_queries import solve_queries, verify_witness
 from review import attach_review
 from mechanical_salvage import normalize_attack_step_roles, normalize_element_ids
+from semantic_pipeline import validate_core_element_candidate
 
 
 # ------------------- 节选自 run_semantic_batch.py -------------------
@@ -72,8 +74,9 @@ def main():
     parser.add_argument('--provider', choices=('opencode', 'deepseek'), default='opencode')
     parser.add_argument('--model', default='opencode-go/deepseek-v4-flash')
     parser.add_argument('--concurrency', type=int, choices=(1, 2), default=2)
-    parser.add_argument('--element-retries', type=int, choices=(0, 1), default=0)
-    parser.add_argument('--formal-retries', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--readiness-retries', type=int, choices=(0, 1), default=1)
+    parser.add_argument('--element-retries', type=int, choices=(0, 1), default=1)
+    parser.add_argument('--formal-retries', type=int, choices=(0, 1), default=1)
     parser.add_argument('--lean-formal-input', action='store_true')
     parser.add_argument('--continue-on-review', action='store_true')
     parser.add_argument('--claim-verdict', choices=('legacy', 'signals'),
@@ -83,9 +86,13 @@ def main():
     parser.add_argument('--deepseek-proxy', metavar='POLICY', default='environment',
                         help='forwarded to every run subprocess; see '
                              'cli/semantic_pipeline.py --deepseek-proxy')
-    parser.add_argument('--prompt-version', choices=tuple(PROMPT_MODULES),
+    parser.add_argument('--prompt-version', choices=SELECTABLE_VERSIONS,
                         default=DEFAULT_VERSION)
     args = parser.parse_args()
+    # Child pipelines run with cwd=HERE.  Resolve once in the caller so a
+    # user-supplied relative output does not become relative to a different
+    # directory in the child and leave the parent looking in the wrong tree.
+    args.output = args.output.resolve()
     if not args.allow_report_upload:
         parser.error('explicit consent required; no model calls made')
     if (args.manifest is None) == (args.reports_root is None):
@@ -133,6 +140,8 @@ def main():
         # every batch run back to the legacy verdict.
         command.extend(['--claim-verdict', args.claim_verdict])
         command.extend(['--deepseek-proxy', args.deepseek_proxy])
+        if args.readiness_retries and args.provider == 'deepseek':
+            command.extend(['--readiness-retries', str(args.readiness_retries)])
         if args.element_retries:
             command.extend(['--element-retries', str(args.element_retries)])
         if args.formal_retries:
@@ -159,11 +168,13 @@ def main():
             results.append(future.result())
     results.sort(key=lambda row: ids.index(row['case_id']))
     per_case_calls = (3 if args.provider == 'deepseek' else 2) + \
+        (args.readiness_retries if args.provider == 'deepseek' else 0) + \
         args.element_retries + args.formal_retries
     summary = {'schema_version': 'real-semantic-batch/1', 'provider': args.provider,
                'model': args.model, 'prompt_version': args.prompt_version,
                'maximum_model_invocations': per_case_calls * len(ids),
-               'retry_count': args.element_retries + args.formal_retries,
+               'retry_count': ((args.readiness_retries if args.provider == 'deepseek' else 0) +
+                               args.element_retries + args.formal_retries),
                'concurrency': args.concurrency,
                'reference_answers_provided_to_model': False,
                'results': results, 'semantic_accuracy_percentage': None}
@@ -203,7 +214,21 @@ def accepted_model_claim_path(directory):
 
 
 def verify(directory):
+    checks_performed = []
     provenance = json.loads((directory / 'provenance.json').read_text())
+    # Replay feature gates from the run's own record.  Runs without the key
+    # (pre-live-prompt outputs) fall back to the frozen version matrix, which
+    # is time-invariant; live runs always record their decisions.  Runs with
+    # no prompt version at all (older offline provenance) keep the historical
+    # all-disabled semantics.
+    recorded_features = provenance.get('prompt_features')
+    if recorded_features is not None:
+        features = recorded_features
+    else:
+        version = provenance.get('prompt_version')
+        features = ({name: False for name in FEATURE_NAMES} if version is None else
+                    {name: feature_enabled(version, name)
+                     for name in FEATURE_NAMES})
     raw = (directory / 'original-report').read_bytes()
     require(r.sha(raw) == provenance['report_sha256'], 'report snapshot hash mismatch')
     text = (directory / 'extraction-input.txt').read_text()
@@ -235,19 +260,112 @@ def verify(directory):
     require(text == expected_text, 'prose not derived from saved report')
     elements = json.loads((directory / 'elements.json').read_text())
     require(validate_elements(elements, text) == json.loads((directory / 'evidence-spans.json').read_text()), 'evidence spans changed')
+    checks_performed.append('report_and_grounded_elements')
     formal = json.loads((directory / 'formalization.json').read_text())
-    if (directory / 'evidence-catalog.json').exists():
-        catalog = json.loads((directory / 'evidence-catalog.json').read_text())
-        require(catalog == build_catalog(text), 'catalog mismatch')
-        if (directory / 'elements-ids.json').exists():
-            require(hydrate_elements(json.loads((directory / 'elements-ids.json').read_text()), catalog, text) == elements, 'ID element resolution mismatch')
-        if (directory / 'formalization-ids.json').exists():
-            require(hydrate_formalization(json.loads((directory / 'formalization-ids.json').read_text()), catalog, text) == formal, 'ID formal resolution mismatch')
+    # Every pipeline mode writes a catalog.  Missing it is an unverifiable
+    # artifact, never a reason to silently skip ID resolution checks.
+    require((directory / 'evidence-catalog.json').is_file(),
+            'evidence catalog missing; ID grounding cannot be replayed')
+    catalog = json.loads((directory / 'evidence-catalog.json').read_text())
+    require(catalog == build_catalog(text), 'catalog mismatch')
+    checks_performed.append('evidence_catalog')
+    raw_elements = None
+    if (directory / 'elements-ids.json').exists():
+        raw_elements = json.loads((directory / 'elements-ids.json').read_text())
+        require(hydrate_elements(raw_elements, catalog, text) == elements,
+                'ID element resolution mismatch')
+        if features['core_count']:
+            validate_core_element_candidate(
+                raw_elements, catalog, text,
+                normalize_steps=features['step_normalization'],
+                normalize_ids=features['id_normalization'],
+                require_core_counts=True,
+                max_core_impacts=(4 if features['relation_alignment'] else 2))
+            checks_performed.append('core_element_candidate_gate')
+    if (directory / 'formalization-ids.json').exists():
+        require(hydrate_formalization(json.loads(
+            (directory / 'formalization-ids.json').read_text()), catalog, text) == formal,
+            'ID formal resolution mismatch')
+    checks_performed.append('id_hydration')
+
+    if provenance.get('candidate_origin') == 'external_model':
+        # Newer runs snapshot the exact prompt text next to their artifacts;
+        # replay then never re-resolves an editable live prompt.  Runs without
+        # snapshots (pre-live-prompt outputs) resolve the frozen module, which
+        # is time-invariant.  A live run whose snapshots were deleted fails
+        # honestly: deleting them forfeits replay.
+        snapshots = (directory / 'prompt-element.txt',
+                     directory / 'prompt-formal.txt')
+        if all(path.is_file() for path in snapshots):
+            require(r.sha(snapshots[0].read_bytes()) ==
+                    provenance.get('element_prompt_sha256'),
+                    'element prompt snapshot hash mismatch')
+            require(r.sha(snapshots[1].read_bytes()) ==
+                    provenance.get('formal_prompt_sha256'),
+                    'formal prompt snapshot hash mismatch')
+            sent = directory / 'neural-elements' / 'prompt.txt'
+            if sent.is_file():
+                # Cross-check that the snapshot was the text actually sent:
+                # the first attempt's prompt.txt is prompt + payload, no
+                # feedback section.
+                require(sent.read_text().startswith(snapshots[0].read_text()),
+                        'element prompt snapshot was not the text sent')
+            checks_performed.append('prompt_snapshots')
+        else:
+            prompts = resolve_prompt_set(
+                provenance['prompt_version'],
+                provenance.get('requested_evidence_mode', 'ids'),
+                provenance.get('requested_formalization_scope', 'core'))
+            require(provenance.get('element_prompt_sha256') == prompts.sha256('element'),
+                    'element prompt hash mismatch')
+            require(provenance.get('formal_prompt_sha256') == prompts.sha256('formal'),
+                    'formal prompt hash mismatch')
+            checks_performed.append('resolved_prompt_hashes')
+
+    if provenance.get('input_screening'):
+        require(provenance['input_screening'] == 'deepseek-report-readiness-v1',
+                'unknown input screening policy')
+        require((directory / 'input-readiness.json').is_file(),
+                'saved input readiness missing')
+        attempts_path = directory / 'readiness-attempts.json'
+        if attempts_path.is_file():
+            attempts = json.loads(attempts_path.read_text())
+            accepted = [row for row in attempts
+                        if row.get('outcome') == 'accepted_for_validation']
+            require(len(accepted) == 1, 'readiness attempt count mismatch')
+            artifact_dir = accepted[0].get('artifact_dir')
+        else:
+            # Compatibility with pre-retry runs.
+            artifact_dir = 'neural-input-screen'
+        require(isinstance(artifact_dir, str) and
+                artifact_dir.startswith('neural-input-screen'),
+                'invalid readiness artifact directory')
+        screen = directory / artifact_dir
+        raw_readiness = json.loads((screen / 'model-claim.json').read_text())
+        normalized_readiness, changes = normalize_readiness(raw_readiness)
+        log_path = screen / 'normalization-log.json'
+        if changes:
+            require(log_path.is_file() and
+                    json.loads(log_path.read_text()).get('changes') == changes,
+                    'readiness normalization audit changed')
+        else:
+            require(not log_path.exists(), 'unexpected readiness normalization log')
+        require(validate_readiness(normalized_readiness, catalog) == json.loads(
+            (directory / 'input-readiness.json').read_text()),
+            'input readiness replay mismatch')
+        prompt_text = (screen / 'prompt.txt').read_text()
+        expected_payload = readiness_payload(catalog)
+        require(prompt_text.startswith(READINESS_PROMPT) and
+                prompt_text.endswith(expected_payload),
+                'readiness prompt/payload mismatch')
+        checks_performed.append('input_readiness')
     bundle = compile_bundle(elements, formal, text,
-                            strict_piv=(provenance.get('prompt_version') in
-                                        STRICT_PIV_VERSIONS),
+                            strict_piv=features['strict_piv'],
                             verdict_v2=(provenance.get('claim_verdict_policy')
-                                        == 'signals-v2'))
+                                        == 'signals-v2'),
+                            require_complete_piv=(
+                                provenance.get('acceptance_policy_version') ==
+                                'complete-piv-v1'))
     bundle['provenance'] = provenance
     saved = json.loads((directory / 'constraints.json').read_text())
     if 'observability_review' in saved:
@@ -266,7 +384,7 @@ def verify(directory):
                 (directory / 'neural-elements/model-claim.json').read_text())
             if (directory / 'element-format-normalization.json').exists():
                 changes = []
-                if provenance.get('prompt_version') in ID_NORMALIZATION_VERSIONS:
+                if features['id_normalization']:
                     neural_elements, id_changes = normalize_element_ids(neural_elements)
                     changes.extend(id_changes)
                 neural_elements, step_changes = normalize_attack_step_roles(neural_elements)
@@ -276,7 +394,7 @@ def verify(directory):
                     'element normalization audit changed')
             require(neural_elements == raw_elements,
                     'neural elements changed')
-        if provenance.get('prompt_version') in PLAN_VERSIONS:
+        if features['plan_synthesis']:
             plan = json.loads((directory / 'formal-plan.json').read_text())
             # Reported, not enforced: see identical_p_predicates().
             redundant_p_predicates = identical_p_predicates(plan)
@@ -296,19 +414,21 @@ def verify(directory):
             require(claim == plan, 'neural formal plan changed')
             require(synthesize_id_formalization(plan, raw_elements) == raw_formal,
                     'deterministic formal synthesis changed')
-            if provenance.get('prompt_version') in RELATION_ALIGNMENT_VERSIONS:
+            if features['relation_alignment']:
                 require(classified_relation_alignment(plan, raw_elements) ==
                         json.loads((directory / 'relation-alignment.json').read_text()),
                         'classified relation alignment changed')
-            if provenance.get('prompt_version') in NUMERIC_GUARD_VERSIONS:
+            if features['numeric_guard']:
                 check_numeric_plan(
                     plan, raw_elements,
-                    exclude_protocol_identifiers=(
-                        provenance.get('prompt_version') in
-                        PROTOCOL_IDENTIFIER_EXCLUSION_VERSIONS))
-            if provenance.get('prompt_version') in ADDRESS_GUARD_VERSIONS:
+                    exclude_protocol_identifiers=features['protocol_identifier_exclusion'],
+                    # Runs recorded before the feature existed (their
+                    # prompt_features predates the key) replay with the
+                    # strict gate they were produced under.
+                    relax_assumptions=features.get('assumption_numeric_relief', False))
+            if features['address_guard']:
                 check_address_plan(plan, raw_elements)
-            if provenance.get('prompt_version') in STRUCTURED_UNRESOLVED_VERSIONS:
+            if features['structured_unresolved']:
                 require(structured_unresolved_review(plan, raw_elements) ==
                         json.loads((directory / 'unresolved-review.json').read_text()),
                         'structured unresolved review changed')
@@ -344,7 +464,10 @@ def verify(directory):
     for row in interface['claims']:
         require(row['predicates_sha256'] == r.sha((directory / row['predicates_path']).read_bytes()), 'interface SMT hash mismatch')
     require(interface['execution_ready'] is False, 'unexpected execution-ready claim')
-    return {'offline_verified': True, 'model_calls': 0, 'candidate_origin': provenance['candidate_origin'],
+    checks_performed.extend(['bundle_and_smt_replay', 'stage3_interface_hashes'])
+    return {'offline_verified': True, 'model_calls': 0,
+            'checks_performed': checks_performed, 'checks_skipped': [],
+            'candidate_origin': provenance['candidate_origin'],
             'core_formalization_status': bundle['core_formalization_status'],
             'acceptance_status': bundle['acceptance_status'],
             'redundant_p_predicates': redundant_p_predicates,

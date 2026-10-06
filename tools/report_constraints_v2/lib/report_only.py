@@ -270,7 +270,7 @@ def validate(claim, text):
             raise ValueError('invalid caveat list')
 
 
-def compile_spec(claim, text):
+def compile_spec(claim, text, require_complete_piv=False):
     validate(claim, text)
     address = z3.DeclareSort('ReportAddress')
     variables = {name: z3.Bool(name) if item['sort'] == 'bool' else
@@ -287,7 +287,9 @@ def compile_spec(claim, text):
         if name in formulas: checks[name + '_feasibility'] = check(*pre, formulas[name])
     if 'safety' in formulas: checks['safety_negation_feasibility'] = check(*pre, z3.Not(formulas['safety']))
     warnings = [name for name, result in checks.items() if result in ('unsat', 'unknown')]
-    status = 'not_formalized' if 'safety' not in formulas else 'needs_review' if warnings else 'formalized_candidate'
+    required = {'preconditions', 'safety', 'effects'} if require_complete_piv else {'safety'}
+    status = ('not_formalized' if not required <= set(formulas) else
+              'needs_review' if warnings else 'formalized_candidate')
     # Force declarations even for symbols not referenced in the extracted formula.
     solver = z3.Solver()
     solver.add(*[v == v for v in variables.values()])
