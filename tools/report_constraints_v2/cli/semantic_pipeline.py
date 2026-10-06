@@ -99,8 +99,11 @@ def formal_repair_fields(exc):
                    'distinct P sources reuse identical predicate',
                    'P terms must cover selected preconditions exactly once') or \
             message.startswith('numeric P '):
+        # Numeric-gate repairs routinely need to rewrite the failing comparison
+        # predicate itself (restore an explicit bound the first attempt hid),
+        # so pattern joins the mutable set here.
         return ('precondition_ids', 'precondition_terms', 'symbols',
-                'assumptions', 'unresolved', 'limitations')
+                'assumptions', 'pattern', 'unresolved', 'limitations')
     if message == 'core relation observables lack intent/impact grounding':
         return ('impact_ids', 'symbols', 'derived_definitions', 'pattern',
                 'unresolved', 'limitations')
@@ -295,10 +298,17 @@ def formal_retry_hint(exc):
         return ('\nRETRY FEEDBACK: Include EVERY extracted P/assumption source ID '
                 'in precondition_terms. If its statement contains an explicit '
                 'numeric comparison, its OWN P predicate must encode the SAME '
-                'literal and comparison direction. Do not use a Boolean '
-                'placeholder or weaker threshold. For 2^N +/- K use the exact '
-                'power_of_two/offset operand, never floating point or scientific '
-                'notation. Keep report facts unchanged.\n')
+                'literal and comparison direction, written as '
+                'right:{"const":N} with N a literal that appears in the cited '
+                'report text. Do not use a Boolean placeholder or weaker '
+                'threshold. Do not compute the constant: a bound stated as a '
+                '12-bit width or bit range binds to 12 (the text literal), '
+                'never 4096 or a mask; an enum bound like type == 1 uses '
+                '{"const":1}, never a named symbol for the constant. For 2^N '
+                '+/- K use the exact power_of_two/offset operand, never '
+                'floating point or scientific notation. If the text has no '
+                'plain numeric literal for the bound, record it in unresolved '
+                'instead of inventing a constant. Keep report facts unchanged.\n')
     if str(exc).startswith('zero-address '):
         return ('\nRETRY FEEDBACK: A report claim explicitly mentions '
                 'address(0)/zero address. Declare zero_address and the relevant '

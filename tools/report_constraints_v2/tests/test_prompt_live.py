@@ -5,6 +5,7 @@ from prompts import current
 from prompts.active import resolve_prompt_set
 from prompts import registry
 from prompts.definitions import ELEMENT_CONTRACT_MARKERS, FORMAL_CONTRACT_MARKERS
+from semantic_pipeline import formal_repair_fields
 
 
 class LivePromptTests(unittest.TestCase):
@@ -64,6 +65,36 @@ class LivePromptTests(unittest.TestCase):
             self.assertIn(phrase, formal)
         # The formal prompt's own audit list must keep the applicability check.
         self.assertIn("7. Compare the condition of I against the intent statement", formal)
+
+    def test_live_formal_prompt_keeps_constant_literal_mandates(self):
+        # prompt_live2_blind_01 attribution: Panoptic expressed a 12-bit width
+        # bound as the computed constant 4096 and Hybra expressed an explicit
+        # `_gaugeType == 1` bound as a named symbol, so the numeric gate
+        # correctly rejected both while the repair channel then discarded the
+        # direction-correct repairs.  Guards keep the live-3 constant-form rule
+        # from silently disappearing in a later in-place edit.
+        formal = current.FORMAL_PLAN_PROMPT
+        self.assertIn('TASK VERSION: semantic-live-3', formal)
+        for phrase in ('Every explicit bound constant must be a literal',
+                       'appears in the cited report text',
+                       'never 2^12, 4096, or a',
+                       'symbol standing for the constant',
+                       'record that bound in unresolved',
+                       'instead of inventing a'):
+            self.assertIn(phrase, formal)
+
+    def test_numeric_repair_fields_allow_pattern(self):
+        # prompt_live2_blind_01 attribution: both constant-expression rejections
+        # died as "local repair changed frozen fields" because the numeric
+        # gate's repair scope omitted pattern, so a direction-correct repair
+        # that rewrote the comparison predicate was mechanically discarded.
+        for message in ('numeric P literal changed',
+                        'numeric P bound hidden by non-comparison predicate',
+                        'numeric P literal or direction changed',
+                        'numeric P source missing from plan'):
+            fields = formal_repair_fields(ValueError(message))
+            self.assertIn('pattern', fields, message)
+            self.assertIn('precondition_terms', fields, message)
 
 
 class FeatureDecouplingTests(unittest.TestCase):
