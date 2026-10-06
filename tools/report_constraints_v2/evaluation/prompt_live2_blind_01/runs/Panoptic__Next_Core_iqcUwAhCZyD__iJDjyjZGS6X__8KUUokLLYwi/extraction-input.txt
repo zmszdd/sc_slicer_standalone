@@ -1,0 +1,115 @@
+TokenId.width() Applies Modulo After Shift Causing Incorrect Tick Range Calculations
+
+## Finding description and impact
+
+## Summary
+
+The `width()` function extracts a 12-bit width value from a TokenId, but applies `% 4096` after right-shifting instead of using a bit mask (`& 0xFFF`). In multi-leg positions, bits from upper legs remain after the shift, causing the modulo operation to produce incorrect width values. This leads to positions being created at wrong tick ranges, incorrect premium calculations, and collateral miscalculations.
+
+
+
+
+
+## Vulnerability Details
+
+
+### Location
+
+- **File:** `contracts/types/TokenId.sol`
+- **Function:** `TokenIdLibrary.width()`
+- **Lines:** ~390
+
+
+
+
+### Root Cause
+
+The `width()` function extracts width using modulo instead of bit masking:
+
+
+
+function width(TokenId self, uint256 legIndex) internal pure returns (int24) {
+unchecked {
+return int24(int256(TokenId.unwrap(self) >> (64 + legIndex * 48 + 36)) % 4096);
+
+// ^^^^^^^
+// WRONG OPERATION
+}
+}
+
+
+
+
+
+
+**Why This is Wrong:**
+
+The operation `% 4096` is mathematically different from `& 0xFFF`:
+
+- `value % 4096` constrains result to `0-4095` but doesn't isolate bits
+- `value & 0xFFF` isolates exactly the lower 12 bits
+- In multi-leg positions, after right-shift, upper bits from other legs remain
+- Modulo wraps these incorrectly instead of masking them out
+
+
+
+
+**Concrete Example:**
+
+Assume after shift: value = 0x10000000A (upper bits from leg 1, lower bits = 10)
+Modulo: 0x10000000A % 4096 = depends on upper bits (wrong!)
+Bitmask: 0x10000000A & 0xFFF = 0xA (correct!)
+
+
+
+### Technical Analysis
+
+Width is stored in bits [36:48) of each 48-bit leg segment:
+
+- Leg layout: optionRatio(7) | asset(1) | isLong(1) | tokenType(1) | riskPartner(2) | strike(24) | **width(12)**
+
+- Width offset from leg start: 36 bits
+- Total offset: 64 + legIndex*48 + 36
+
+
+
+After right-shift by this offset, the lower 12 bits should contain the width, but upper bits may contain data from higher-indexed legs. The modulo operation doesn't remove these upper bits correctly.
+
+
+
+
+
+## Impact
+
+### Severity: CRITICAL
+
+
+
+**Direct Impacts:**
+
+1. **Wrong Tick Ranges** - Positions deployed to Uniswap with incorrect tick ranges
+2. **Liquidity Deployment Errors** - Liquidity placed in wrong price ranges
+3. **Premium Calculation Errors** - Incorrect range width affects premium calculations
+4. **Collateral Miscalculation** - Wrong width affects required collateral (wider ranges need more)
+5. **Position Conflicts** - May create overlapping or invalid ranges that should be rejected
+
+
+
+
+**Cascading Effects:**
+
+
+- Every multi-leg position has potentially wrong widths
+- Users may receive less premium than expected
+- Users may be liquidated incorrectly
+- Protocol accounting becomes unreliable
+
+
+
+**Financial Impact Example:**
+
+- User intends width=10 (narrow range for high premium)
+- Bug causes width=2000 (wide range, low premium)
+- User provides liquidity at wrong range
+- Receives 99% less premium than expected
+- Position may fail to generate enough premium to cover costs

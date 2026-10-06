@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Panoptic Hypovault_c9MhophgwGP",
+    "audit_uid": "c9MhophgwGP",
+    "requested_submission_uid": "b3JuyroVfQn",
+    "requested_finding_uid": "MoUD6X4jmfD",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Panoptic_Hypovault_c9MhophgwGP/20260618_092947/findings.json",
+    "source_submission_uid": "b3JuyroVfQn",
+    "source_finding_uid": "MoUD6X4jmfD",
+    "original_report_path": "Panoptic Hypovault_c9MhophgwGP\\low_valid_b3JuyroVfQn.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "b3JuyroVfQn",
+  "finding_uid": "MoUD6X4jmfD",
+  "finding_number": "5",
+  "title": "Users Can Bypass Performance Fees Through Share Transfers",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "retroactivized",
+  "body": "## Summary\n\nUsers can bypass performance fees by transferring profitable shares instead of withdrawing, causing the protocol to lose 100% of its performance fee revenue on profitable positions.\n\n## Root cause\n\nThe `transfer()` function only performs regular ERC20 transfers without calculating and deducting performance fees as the withdrawal function does.\n\n```solidity \n406:    function transfer(address to, uint256 amount) public override returns (bool success) {\n407:        _transferBasis(msg.sender, to, amount);\n408:        return super.transfer(to, amount);\n408:    }\n```\n`function transfer` is incomplete - allows profit inheritance without fee assessment.\n\n## Attack path \n\n1. User deposits when vault NAV = X\n2. Vault generates profit, NAV = Y (where Y > X)\n3. User's shares now worth more than their basis\n4. User transfers shares to accomplice instead of withdrawing\n5. Performance fee completely bypassed\n6. Accomplice can withdraw profit without fee\n\n## Impact\n\nThe protocol loses its entire revenue stream from performance fees because users can bypass the fee system through simple share transfers, making the vault business model unsustainable.\n>No fees = No revenue = Broken business model \n\n## Mitigation\n\nAdd profit check in `transfer()` function before calling `_transferBasis`:\n\n```diff\nfunction transfer(address to, uint256 amount) public override returns (bool success) {\n+   // Check if transfer involves profit\n+   uint256 userBalance = balanceOf[msg.sender];\n+   if (userBalance > 0) {\n+       uint256 userBasisForTransfer = (userBasis[msg.sender] * amount) / userBalance;\n+       \n+       uint256 totalAssets = accountant.computeNAV(address(this), underlyingToken, \"\") + 1 \n+                           - depositEpochState[depositEpoch].assetsDeposited \n+                           - reservedWithdrawalAssets;\n+       uint256 currentValueForTransfer = Math.mulDiv(amount, totalAssets, totalSupply);\n+       \n+       if (currentValueForTransfer > userBasisForTransfer) {\n+           revert(\"Use withdrawal mechanism for profitable position\");\n+       }\n+   }\n    \n    _transferBasis(msg.sender, to, amount);\n    return super.transfer(to, amount);\n}\n```",
+  "proof_of_concept": "This function proves that `function transfer()` in `HypoVault` that performance fees can be bypassed completely.\n\nRan with the following command: `forge test --match-test test_submissionValidity -vvvv`\n\n```solidity\nfunction test_submissionValidity() external {\n    // Setup vault\n    mockAccountant.setExpectedVault(address(vault));\n    mockAccountant.setNav(1000 ether);\n    \n    // Alice deposits 100 ether\n    vm.startPrank(Alice);\n    vault.requestDeposit(100 ether);\n    vm.stopPrank();\n    \n    vm.startPrank(Manager);\n    vault.fulfillDeposits(100 ether, \"\");\n    vault.executeDeposit(Alice, 0);\n    vm.stopPrank();\n    \n    // Vault makes 100% profit\n    mockAccountant.setNav(2000 ether); // 1000 → 2000 ether\n    \n    // Alice's shares now worth 200 ether (100 ether profit)\n    // Expected performance fee: 100 ether × 1% = 1 ether\n    \n    // Alice transfers all shares to Bob\n    uint256 aliceShares = vault.balanceOf(Alice);\n    vm.startPrank(Alice);\n    vault.transfer(Bob, aliceShares);\n    vm.stopPrank();\n    \n    // VULNERABILITY: No fee collected despite 100 ether profit transfer\n    uint256 feeWalletShares = vault.balanceOf(FeeWallet);\n    uint256 bobShares = vault.balanceOf(Bob);\n    \n    assertEq(feeWalletShares, 0, \"CRITICAL: No performance fee collected\");\n    assertEq(bobShares, aliceShares, \"Bob receives full profitable shares\");\n    \n    // Bob now owns 200 ether worth of shares but only pays fee on his \"basis\"\n    // Alice earned 100 ether profit but paid ZERO fee\n    // Protocol lost 1 ether in performance fees\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-06-panoptic/blob/main/src/HypoVault.sol#L406-L409"
+  ],
+  "source_record": {
+    "project_id": "c9MhophgwGP",
+    "submission_index": "310",
+    "api_submission_id": "",
+    "uid": "b3JuyroVfQn",
+    "number": "310",
+    "title": "Users Can Bypass Performance Fees Through Share Transfers",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "retroactivized",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-06-panoptic/blob/main/src/HypoVault.sol#L406-L409"
+    ],
+    "body": "## Summary\n\nUsers can bypass performance fees by transferring profitable shares instead of withdrawing, causing the protocol to lose 100% of its performance fee revenue on profitable positions.\n\n## Root cause\n\nThe `transfer()` function only performs regular ERC20 transfers without calculating and deducting performance fees as the withdrawal function does.\n\n```solidity \n406:    function transfer(address to, uint256 amount) public override returns (bool success) {\n407:        _transferBasis(msg.sender, to, amount);\n408:        return super.transfer(to, amount);\n408:    }\n```\n`function transfer` is incomplete - allows profit inheritance without fee assessment.\n\n## Attack path \n\n1. User deposits when vault NAV = X\n2. Vault generates profit, NAV = Y (where Y > X)\n3. User's shares now worth more than their basis\n4. User transfers shares to accomplice instead of withdrawing\n5. Performance fee completely bypassed\n6. Accomplice can withdraw profit without fee\n\n## Impact\n\nThe protocol loses its entire revenue stream from performance fees because users can bypass the fee system through simple share transfers, making the vault business model unsustainable.\n>No fees = No revenue = Broken business model \n\n## Mitigation\n\nAdd profit check in `transfer()` function before calling `_transferBasis`:\n\n```diff\nfunction transfer(address to, uint256 amount) public override returns (bool success) {\n+   // Check if transfer involves profit\n+   uint256 userBalance = balanceOf[msg.sender];\n+   if (userBalance > 0) {\n+       uint256 userBasisForTransfer = (userBasis[msg.sender] * amount) / userBalance;\n+       \n+       uint256 totalAssets = accountant.computeNAV(address(this), underlyingToken, \"\") + 1 \n+                           - depositEpochState[depositEpoch].assetsDeposited \n+                           - reservedWithdrawalAssets;\n+       uint256 currentValueForTransfer = Math.mulDiv(amount, totalAssets, totalSupply);\n+       \n+       if (currentValueForTransfer > userBasisForTransfer) {\n+           revert(\"Use withdrawal mechanism for profitable position\");\n+       }\n+   }\n    \n    _transferBasis(msg.sender, to, amount);\n    return super.transfer(to, amount);\n}\n```",
+    "proof_of_concept": "This function proves that `function transfer()` in `HypoVault` that performance fees can be bypassed completely.\n\nRan with the following command: `forge test --match-test test_submissionValidity -vvvv`\n\n```solidity\nfunction test_submissionValidity() external {\n    // Setup vault\n    mockAccountant.setExpectedVault(address(vault));\n    mockAccountant.setNav(1000 ether);\n    \n    // Alice deposits 100 ether\n    vm.startPrank(Alice);\n    vault.requestDeposit(100 ether);\n    vm.stopPrank();\n    \n    vm.startPrank(Manager);\n    vault.fulfillDeposits(100 ether, \"\");\n    vault.executeDeposit(Alice, 0);\n    vm.stopPrank();\n    \n    // Vault makes 100% profit\n    mockAccountant.setNav(2000 ether); // 1000 → 2000 ether\n    \n    // Alice's shares now worth 200 ether (100 ether profit)\n    // Expected performance fee: 100 ether × 1% = 1 ether\n    \n    // Alice transfers all shares to Bob\n    uint256 aliceShares = vault.balanceOf(Alice);\n    vm.startPrank(Alice);\n    vault.transfer(Bob, aliceShares);\n    vm.stopPrank();\n    \n    // VULNERABILITY: No fee collected despite 100 ether profit transfer\n    uint256 feeWalletShares = vault.balanceOf(FeeWallet);\n    uint256 bobShares = vault.balanceOf(Bob);\n    \n    assertEq(feeWalletShares, 0, \"CRITICAL: No performance fee collected\");\n    assertEq(bobShares, aliceShares, \"Bob receives full profitable shares\");\n    \n    // Bob now owns 200 ether worth of shares but only pays fee on his \"basis\"\n    // Alice earned 100 ether profit but paid ZERO fee\n    // Protocol lost 1 ether in performance fees\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/c9MhophgwGP/submissions/310",
+    "raw": {
+      "auditUid": "c9MhophgwGP",
+      "createdAt": "2025-07-02T10:52:53.349Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "xqt3Nyogv8t",
+          "userUid": "FtdUe6YkFxN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-06T11:59:25.376Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "b3JuyroVfQn",
+          "findingUid": null
+        },
+        {
+          "uid": "eNpf3MwjwTm",
+          "userUid": "FtdUe6YkFxN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-06T12:17:03.552Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "MoUD6X4jmfD"
+        },
+        {
+          "uid": "9TMFfdntLJa",
+          "userUid": "FtdUe6YkFxN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-15T07:10:11.766Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "MoUD6X4jmfD"
+        },
+        {
+          "uid": "h9YF66W3oSp",
+          "userUid": "foNT8nGvdaV",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-07-15T18:18:51.263Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "MoUD6X4jmfD"
+        }
+      ],
+      "finding": {
+        "uid": "MoUD6X4jmfD",
+        "number": 5,
+        "duplicates": 19
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-07-15T18:18:51.263Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Users Can Bypass Performance Fees Through Share Transfers",
+      "uid": "b3JuyroVfQn",
+      "updatedAt": "2025-07-02T11:37:55.655Z",
+      "user": {
+        "uid": "2u6j26UwJ8U",
+        "handle": "retroactivized"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Summary\n\nUsers can bypass performance fees by transferring profitable shares instead of withdrawing, causing the protocol to lose 100% of its performance fee revenue on profitable positions.\n\n## Root cause\n\nThe `transfer()` function only performs regular ERC20 transfers without calculating and deducting performance fees as the withdrawal function does.\n\n```solidity \n406:    function transfer(address to, uint256 amount) public override returns (bool success) {\n407:        _transferBasis(msg.sender, to, amount);\n408:        return super.transfer(to, amount);\n408:    }\n```\n`function transfer` is incomplete - allows profit inheritance without fee assessment.\n\n## Attack path \n\n1. User deposits when vault NAV = X\n2. Vault generates profit, NAV = Y (where Y > X)\n3. User's shares now worth more than their basis\n4. User transfers shares to accomplice instead of withdrawing\n5. Performance fee completely bypassed\n6. Accomplice can withdraw profit without fee\n\n## Impact\n\nThe protocol loses its entire revenue stream from performance fees because users can bypass the fee system through simple share transfers, making the vault business model unsustainable.\n>No fees = No revenue = Broken business model \n\n## Mitigation\n\nAdd profit check in `transfer()` function before calling `_transferBasis`:\n\n```diff\nfunction transfer(address to, uint256 amount) public override returns (bool success) {\n+   // Check if transfer involves profit\n+   uint256 userBalance = balanceOf[msg.sender];\n+   if (userBalance > 0) {\n+       uint256 userBasisForTransfer = (userBasis[msg.sender] * amount) / userBalance;\n+       \n+       uint256 totalAssets = accountant.computeNAV(address(this), underlyingToken, \"\") + 1 \n+                           - depositEpochState[depositEpoch].assetsDeposited \n+                           - reservedWithdrawalAssets;\n+       uint256 currentValueForTransfer = Math.mulDiv(amount, totalAssets, totalSupply);\n+       \n+       if (currentValueForTransfer > userBasisForTransfer) {\n+           revert(\"Use withdrawal mechanism for profitable position\");\n+       }\n+   }\n    \n    _transferBasis(msg.sender, to, amount);\n    return super.transfer(to, amount);\n}\n```",
+      "proofOfConcept": "This function proves that `function transfer()` in `HypoVault` that performance fees can be bypassed completely.\n\nRan with the following command: `forge test --match-test test_submissionValidity -vvvv`\n\n```solidity\nfunction test_submissionValidity() external {\n    // Setup vault\n    mockAccountant.setExpectedVault(address(vault));\n    mockAccountant.setNav(1000 ether);\n    \n    // Alice deposits 100 ether\n    vm.startPrank(Alice);\n    vault.requestDeposit(100 ether);\n    vm.stopPrank();\n    \n    vm.startPrank(Manager);\n    vault.fulfillDeposits(100 ether, \"\");\n    vault.executeDeposit(Alice, 0);\n    vm.stopPrank();\n    \n    // Vault makes 100% profit\n    mockAccountant.setNav(2000 ether); // 1000 → 2000 ether\n    \n    // Alice's shares now worth 200 ether (100 ether profit)\n    // Expected performance fee: 100 ether × 1% = 1 ether\n    \n    // Alice transfers all shares to Bob\n    uint256 aliceShares = vault.balanceOf(Alice);\n    vm.startPrank(Alice);\n    vault.transfer(Bob, aliceShares);\n    vm.stopPrank();\n    \n    // VULNERABILITY: No fee collected despite 100 ether profit transfer\n    uint256 feeWalletShares = vault.balanceOf(FeeWallet);\n    uint256 bobShares = vault.balanceOf(Bob);\n    \n    assertEq(feeWalletShares, 0, \"CRITICAL: No performance fee collected\");\n    assertEq(bobShares, aliceShares, \"Bob receives full profitable shares\");\n    \n    // Bob now owns 200 ether worth of shares but only pays fee on his \"basis\"\n    // Alice earned 100 ether profit but paid ZERO fee\n    // Protocol lost 1 ether in performance fees\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-06-panoptic/blob/main/src/HypoVault.sol#L406-L409",
+      "number": 310,
+      "aiExplanation": null,
+      "_index": 310
+    }
+  }
+}

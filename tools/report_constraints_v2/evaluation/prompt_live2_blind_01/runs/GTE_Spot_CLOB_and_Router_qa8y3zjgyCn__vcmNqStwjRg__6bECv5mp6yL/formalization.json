@@ -1,0 +1,275 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "order_posted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a limit order has been posted by a user to the CLOB contract",
+      "checkpoint": "before addOrderToBook",
+      "entity_ids": [
+        "user",
+        "clob_contract"
+      ],
+      "evidence": "In the CLOB contract, when a user submits a limit order, it is added to the book by calling BookLib.addOrderToBook."
+    },
+    "same_price_order_exists": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "another order already exists at the same price as the posted order",
+      "checkpoint": "before addOrderToBook",
+      "entity_ids": [
+        "existing_order",
+        "new_order"
+      ],
+      "evidence": "If an order is posted and another order already exists at the same price, the prevId and nextId fields are not updated, which completely breaks the linked list."
+    },
+    "stored_prev_order_id": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "prevOrderId of the new order as stored in the order book storage",
+      "checkpoint": "after addOrderToBook",
+      "entity_ids": [
+        "new_order",
+        "order_book"
+      ],
+      "evidence": "If an order is posted and another order already exists at the same price, the prevId and nextId fields are not updated, which completely breaks the linked list."
+    },
+    "stored_next_order_id": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "nextOrderId of the new order as stored in the order book storage",
+      "checkpoint": "after addOrderToBook",
+      "entity_ids": [
+        "new_order",
+        "order_book"
+      ],
+      "evidence": "If an order is posted and another order already exists at the same price, the prevId and nextId fields are not updated, which completely breaks the linked list."
+    },
+    "zero_id": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "the zero value that prevOrderId and nextOrderId remain at when storage is not updated",
+      "checkpoint": "constant",
+      "entity_ids": [
+        "new_order"
+      ],
+      "evidence": "As a result, the linked list becomes invalid after the call: the order’s prevOrderId and nextOrderId both remain zero. This is dangerous because it can create a discrepancy between the price applied and the actual price of an order when the CLOB matches orders, as shown in the PoC."
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "CLOB limit order insertion into the order book via BookLib.addOrderToBook when an order already exists at the same price",
+      "modality": "asserted",
+      "impact_ids": [
+        "i_prev_next_remain_zero"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "A limit order is posted by a user to the CLOB contract.; Another order already exists at the same price as the posted order.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "order_posted"
+              },
+              {
+                "var": "same_price_order_exists"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_order_posted",
+            "p_same_price_order_exists"
+          ],
+          "evidence": [
+            "In the CLOB contract, when a user submits a limit order, it is added to the book by calling BookLib.addOrderToBook.",
+            "If an order is posted and another order already exists at the same price, the prevId and nextId fields are not updated, which completely breaks the linked list.",
+            "If an order already exists at that price, it updates tailOrder."
+          ]
+        },
+        "safety": {
+          "text": "When an order is added at a price where an order already exists, the order book's prevId and nextId linked-list pointers should be updated consistently so the stored list remains valid.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "order_posted"
+                  },
+                  {
+                    "var": "same_price_order_exists"
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "ne",
+                    "args": [
+                      {
+                        "var": "stored_prev_order_id"
+                      },
+                      {
+                        "var": "zero_id"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "ne",
+                    "args": [
+                      {
+                        "var": "stored_next_order_id"
+                      },
+                      {
+                        "var": "zero_id"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_linked_list_consistency"
+          ],
+          "evidence": [
+            "If an order is posted and another order already exists at the same price, the prevId and nextId fields are not updated, which completely breaks the linked list.",
+            "It also sets the prevOrderId and nextOrderId of the new order.",
+            "The issue is that the order stored in storage is never updated—the changes occur only in memory, as indicated by the function signature."
+          ]
+        },
+        "effects": {
+          "text": "The order's prevOrderId and nextOrderId both remain zero.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "order_posted"
+                  },
+                  {
+                    "var": "same_price_order_exists"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "ne",
+                        "args": [
+                          {
+                            "var": "stored_prev_order_id"
+                          },
+                          {
+                            "var": "zero_id"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "ne",
+                        "args": [
+                          {
+                            "var": "stored_next_order_id"
+                          },
+                          {
+                            "var": "zero_id"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_prev_next_remain_zero"
+          ],
+          "evidence": [
+            "As a result, the linked list becomes invalid after the call: the order’s prevOrderId and nextOrderId both remain zero. This is dangerous because it can create a discrepancy between the price applied and the actual price of an order when the CLOB matches orders, as shown in the PoC."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_order_posted",
+            "p_same_price_order_exists"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_linked_list_consistency"
+          ],
+          "args.0": [
+            "si_linked_list_consistency"
+          ],
+          "args.1": [
+            "si_linked_list_consistency"
+          ],
+          "args.1.args.0": [
+            "si_linked_list_consistency"
+          ],
+          "args.1.args.1": [
+            "si_linked_list_consistency"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_prev_next_remain_zero"
+          ],
+          "args.0": [
+            "i_prev_next_remain_zero"
+          ],
+          "args.1": [
+            "i_prev_next_remain_zero"
+          ],
+          "args.1.args.0": [
+            "i_prev_next_remain_zero"
+          ],
+          "args.1.args.0.args.0": [
+            "i_prev_next_remain_zero"
+          ],
+          "args.1.args.0.args.1": [
+            "i_prev_next_remain_zero"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_prev_next_remain_zero",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The report's PoC demonstrates the price discrepancy during CLOB order matching (as_poc_shows_matching_discrepancy).",
+        "The same-price existing order is a conditional scenario, not an established prior state.",
+        "No authorization or caller restriction on addOrderToBook is stated, so access control is not part of this claim."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Only the direct impact i_prev_next_remain_zero is formalized; i_linked_list_broken, i_price_discrepancy and i_drain_user_funds are deferred to future claims.",
+    "The relation is stated at the storage-pointer level; the in-memory-only update described by rc_storage_not_updated is treated as the root cause, not as P.",
+    "No concrete numeric price/quantity values are available, so the price-discrepancy relation is not encoded here.",
+    "Code/PoC binding of the storage vs memory distinction has not been performed.",
+    "Deferred report impact: i_linked_list_broken",
+    "Deferred report impact: i_price_discrepancy",
+    "Deferred report impact: i_drain_user_funds"
+  ]
+}

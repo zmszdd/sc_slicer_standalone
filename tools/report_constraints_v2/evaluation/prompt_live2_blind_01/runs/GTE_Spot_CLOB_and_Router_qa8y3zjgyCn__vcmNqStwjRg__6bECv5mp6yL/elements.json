@@ -1,0 +1,247 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "CLOB limit order insertion into the order book via BookLib.addOrderToBook when an order already exists at the same price",
+    "environment": "CLOB contract order book with price-level linked lists",
+    "evidence": [
+      "If an order is posted and another order already exists at the same price, the prevId and nextId fields are not updated, which completely breaks the linked list.",
+      "In the CLOB contract, when a user submits a limit order, it is added to the book by calling BookLib.addOrderToBook.",
+      "This function creates the order and then updates the price level (limit) as follows:",
+      "If an order already exists at that price, it updates tailOrder.",
+      "It also sets the prevOrderId and nextOrderId of the new order.",
+      "The issue is that the order stored in storage is never updated—the changes occur only in memory, as indicated by the function signature.",
+      "As a result, the linked list becomes invalid after the call: the order’s prevOrderId and nextOrderId both remain zero. This is dangerous because it can create a discrepancy between the price applied and the actual price of an order when the CLOB matches orders, as shown in the PoC."
+    ]
+  },
+  "entities": [
+    {
+      "id": "user",
+      "name": "user submitting a limit order",
+      "role": "attacker",
+      "evidence": [
+        "In the CLOB contract, when a user submits a limit order, it is added to the book by calling BookLib.addOrderToBook."
+      ]
+    },
+    {
+      "id": "clob_contract",
+      "name": "CLOB contract",
+      "role": "contract",
+      "evidence": [
+        "In the CLOB contract, when a user submits a limit order, it is added to the book by calling BookLib.addOrderToBook."
+      ]
+    },
+    {
+      "id": "book_lib",
+      "name": "BookLib.addOrderToBook",
+      "role": "contract",
+      "evidence": [
+        "In the CLOB contract, when a user submits a limit order, it is added to the book by calling BookLib.addOrderToBook.",
+        "This function creates the order and then updates the price level (limit) as follows:"
+      ]
+    },
+    {
+      "id": "order_book",
+      "name": "order book price-level linked list",
+      "role": "asset",
+      "evidence": [
+        "If an order is posted and another order already exists at the same price, the prevId and nextId fields are not updated, which completely breaks the linked list.",
+        "As a result, the linked list becomes invalid after the call: the order’s prevOrderId and nextOrderId both remain zero. This is dangerous because it can create a discrepancy between the price applied and the actual price of an order when the CLOB matches orders, as shown in the PoC."
+      ]
+    },
+    {
+      "id": "new_order",
+      "name": "newly submitted limit order",
+      "role": "other",
+      "evidence": [
+        "It also sets the prevOrderId and nextOrderId of the new order.",
+        "As a result, the linked list becomes invalid after the call: the order’s prevOrderId and nextOrderId both remain zero. This is dangerous because it can create a discrepancy between the price applied and the actual price of an order when the CLOB matches orders, as shown in the PoC."
+      ]
+    },
+    {
+      "id": "existing_order",
+      "name": "order already existing at the same price",
+      "role": "other",
+      "evidence": [
+        "If an order is posted and another order already exists at the same price, the prevId and nextId fields are not updated, which completely breaks the linked list.",
+        "If an order already exists at that price, it updates tailOrder."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_order_posted",
+      "kind": "precondition",
+      "text": "A limit order is posted by a user to the CLOB contract.",
+      "modality": "potential",
+      "entity_ids": [
+        "user",
+        "clob_contract"
+      ],
+      "evidence": [
+        "In the CLOB contract, when a user submits a limit order, it is added to the book by calling BookLib.addOrderToBook."
+      ]
+    },
+    {
+      "id": "p_same_price_order_exists",
+      "kind": "precondition",
+      "text": "Another order already exists at the same price as the posted order.",
+      "modality": "potential",
+      "entity_ids": [
+        "existing_order",
+        "new_order"
+      ],
+      "evidence": [
+        "If an order is posted and another order already exists at the same price, the prevId and nextId fields are not updated, which completely breaks the linked list.",
+        "If an order already exists at that price, it updates tailOrder."
+      ]
+    },
+    {
+      "id": "a_add_order_to_book",
+      "kind": "action",
+      "text": "The CLOB contract adds the submitted limit order to the book by calling BookLib.addOrderToBook.",
+      "modality": "potential",
+      "entity_ids": [
+        "clob_contract",
+        "book_lib",
+        "new_order"
+      ],
+      "evidence": [
+        "In the CLOB contract, when a user submits a limit order, it is added to the book by calling BookLib.addOrderToBook.",
+        "This function creates the order and then updates the price level (limit) as follows:"
+      ]
+    },
+    {
+      "id": "a_update_tail_order",
+      "kind": "action",
+      "text": "BookLib.addOrderToBook updates tailOrder for the existing price level.",
+      "modality": "potential",
+      "entity_ids": [
+        "book_lib",
+        "existing_order"
+      ],
+      "evidence": [
+        "If an order already exists at that price, it updates tailOrder."
+      ]
+    },
+    {
+      "id": "a_set_prev_next_ids",
+      "kind": "action",
+      "text": "BookLib.addOrderToBook sets the prevOrderId and nextOrderId of the new order.",
+      "modality": "potential",
+      "entity_ids": [
+        "book_lib",
+        "new_order"
+      ],
+      "evidence": [
+        "It also sets the prevOrderId and nextOrderId of the new order."
+      ]
+    },
+    {
+      "id": "rc_storage_not_updated",
+      "kind": "root_cause",
+      "text": "The order stored in storage is never updated; the prevOrderId and nextOrderId changes occur only in memory.",
+      "modality": "asserted",
+      "entity_ids": [
+        "book_lib",
+        "new_order",
+        "order_book"
+      ],
+      "evidence": [
+        "The issue is that the order stored in storage is never updated—the changes occur only in memory, as indicated by the function signature."
+      ]
+    },
+    {
+      "id": "i_linked_list_broken",
+      "kind": "impact",
+      "text": "The linked list becomes invalid after the call, completely breaking it.",
+      "modality": "asserted",
+      "entity_ids": [
+        "order_book"
+      ],
+      "evidence": [
+        "If an order is posted and another order already exists at the same price, the prevId and nextId fields are not updated, which completely breaks the linked list.",
+        "As a result, the linked list becomes invalid after the call: the order’s prevOrderId and nextOrderId both remain zero. This is dangerous because it can create a discrepancy between the price applied and the actual price of an order when the CLOB matches orders, as shown in the PoC."
+      ]
+    },
+    {
+      "id": "i_prev_next_remain_zero",
+      "kind": "impact",
+      "text": "The order's prevOrderId and nextOrderId both remain zero.",
+      "modality": "asserted",
+      "entity_ids": [
+        "new_order",
+        "order_book"
+      ],
+      "evidence": [
+        "As a result, the linked list becomes invalid after the call: the order’s prevOrderId and nextOrderId both remain zero. This is dangerous because it can create a discrepancy between the price applied and the actual price of an order when the CLOB matches orders, as shown in the PoC."
+      ]
+    },
+    {
+      "id": "i_price_discrepancy",
+      "kind": "impact",
+      "text": "A discrepancy can be created between the price applied and the actual price of an order when the CLOB matches orders.",
+      "modality": "potential",
+      "entity_ids": [
+        "clob_contract",
+        "order_book",
+        "new_order"
+      ],
+      "evidence": [
+        "As a result, the linked list becomes invalid after the call: the order’s prevOrderId and nextOrderId both remain zero. This is dangerous because it can create a discrepancy between the price applied and the actual price of an order when the CLOB matches orders, as shown in the PoC."
+      ]
+    },
+    {
+      "id": "i_drain_user_funds",
+      "kind": "impact",
+      "text": "Mismatched orders can drain user funds.",
+      "modality": "potential",
+      "entity_ids": [
+        "user",
+        "order_book"
+      ],
+      "evidence": [
+        "Broken Linked List Pointers Allow Mismatched Orders to Drain User Funds"
+      ]
+    },
+    {
+      "id": "si_linked_list_consistency",
+      "kind": "security_intent",
+      "text": "When an order is added at a price where an order already exists, the order book's prevId and nextId linked-list pointers should be updated consistently so the stored list remains valid.",
+      "modality": "inferred",
+      "entity_ids": [
+        "order_book",
+        "book_lib",
+        "new_order"
+      ],
+      "evidence": [
+        "If an order is posted and another order already exists at the same price, the prevId and nextId fields are not updated, which completely breaks the linked list.",
+        "It also sets the prevOrderId and nextOrderId of the new order.",
+        "The issue is that the order stored in storage is never updated—the changes occur only in memory, as indicated by the function signature."
+      ]
+    },
+    {
+      "id": "as_poc_shows_matching_discrepancy",
+      "kind": "assumption",
+      "text": "The report's PoC demonstrates the price discrepancy during CLOB order matching.",
+      "modality": "inferred",
+      "entity_ids": [
+        "clob_contract",
+        "order_book"
+      ],
+      "evidence": [
+        "As a result, the linked list becomes invalid after the call: the order’s prevOrderId and nextOrderId both remain zero. This is dangerous because it can create a discrepancy between the price applied and the actual price of an order when the CLOB matches orders, as shown in the PoC."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_add_order_to_book",
+    "a_update_tail_order",
+    "a_set_prev_next_ids"
+  ],
+  "ambiguities": [
+    "No fragment states whether the caller is unauthorized or that anyone can call addOrderToBook.",
+    "No fragment establishes a prior transaction or initial allocation before the posted order; the same-price existing order is only a conditional scenario.",
+    "The report does not specify the exact numeric price or quantity values involved in the mismatch.",
+    "The report does not state whether the drain of user funds was observed or only possible."
+  ]
+}

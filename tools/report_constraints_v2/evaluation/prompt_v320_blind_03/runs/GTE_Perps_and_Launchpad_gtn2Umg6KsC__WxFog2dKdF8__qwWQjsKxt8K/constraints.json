@@ -1,0 +1,311 @@
+{
+  "schema_version": "stage2-semantic-bundle/1",
+  "core_formalization_status": "formalized_candidate",
+  "acceptance_status": "candidate_checks_passed",
+  "report_warnings": [],
+  "unassigned_impact_ids": [
+    "i_fee_mechanism_disabled",
+    "i_permanent_dos"
+  ],
+  "claims": [
+    {
+      "id": "core_claim",
+      "formalization_status": "formalized_candidate",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity.",
+        "direct_counterexample_status": "passed"
+      },
+      "review_reasons": [],
+      "properties": {
+        "preconditions": {
+          "text": "The createPair function of GTELaunchpadV2PairFactory.sol is publicly callable by anyone for any two tokens.; The factory enables the launchpad fee-on-transfer mechanism only when msg.sender of createPair is the Launchpad contract; any other caller gets a standard fee-less pair.; The attacker can observe the mempool for a launchpad.buy() transaction that will graduate a new token.; A token's bonding curve is fully sold, so the final buy transaction triggers _createPairAndSwapRemaining.; The try/catch around createPair in _createPairAndSwapRemaining has an empty catch block that swallows the PAIR_EXISTS revert.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "factory_publicly_callable"
+              },
+              {
+                "var": "fee_requires_launchpad_sender"
+              },
+              {
+                "var": "mempool_observable"
+              },
+              {
+                "var": "bonding_curve_fully_sold"
+              },
+              {
+                "var": "catch_swallows_pair_exists"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_public_createpair",
+            "p_fee_only_launchpad",
+            "p_mempool_observable",
+            "p_bonding_curve_full",
+            "p_empty_catch"
+          ],
+          "evidence": [
+            "1.  **Publicly Callable `createPair` Function:** The `GTELaunchpadV2PairFactory.sol` contract allows anyone to call the `createPair` function for any two tokens ([L29-L48](https://github.com/code-423n4/2025-08-gte-perps/blob/main/contracts/launchpad/uniswap/GTELaunchpadV2PairFactory.sol#L29-L48)). Crucially, the factory's logic only enables the launchpad's fee-on-transfer mechanism if the `msg.sender` of this call is the `Launchpad` contract itself. If called by any other address, a standard, fee-less pair is created.",
+            "1.  Monitoring the mempool for a `launchpad.buy()` transaction that will graduate a new token.",
+            "2.  **Flawed Error Handling in `Launchpad.sol`:** When a token's bonding curve is fully sold, the final `buy` transaction triggers the `_createPairAndSwapRemaining` internal function. This function attempts to create the Uniswap V2 pair, but it wraps the `createPair` call in a `try/catch` block ([L483-L489](https://github.com/code-423n4/2025-08-gte-perps/blob/main/contracts/launchpad/Launchpad.sol#L483-L489)). The `catch` block is empty, meaning it incorrectly swallows the critical `PAIR_EXISTS` revert from the factory. Instead of handling the error gracefully, execution continues in a broken state. This ultimately causes the transaction to revert when the `uniV2Router.addLiquidity` call fai"
+          ]
+        },
+        "safety": {
+          "text": "A token whose bonding curve is fully sold should be able to complete graduation: the launchpad's createPair call should succeed and seed the pair with the GTE fee mechanism, rather than being blocked by a pre-existing pair.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "bonding_curve_fully_sold"
+                  },
+                  {
+                    "var": "factory_publicly_callable"
+                  },
+                  {
+                    "var": "fee_requires_launchpad_sender"
+                  },
+                  {
+                    "var": "catch_swallows_pair_exists"
+                  }
+                ]
+              },
+              {
+                "var": "graduation_completed"
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_graduation_pair_guard"
+          ],
+          "evidence": [
+            "The token launch process is vulnerable to a front-running griefing attack that can permanently prevent any token from graduating, effectively bricking the core functionality of the Launchpad. An attacker can achieve this by observing the mempool and front-running the specific transaction that graduates a token, leading to a permanent Denial of Service (DoS) for that token's launch and a loss of trust in the platform.",
+            "2.  **Flawed Error Handling in `Launchpad.sol`:** When a token's bonding curve is fully sold, the final `buy` transaction triggers the `_createPairAndSwapRemaining` internal function. This function attempts to create the Uniswap V2 pair, but it wraps the `createPair` call in a `try/catch` block ([L483-L489](https://github.com/code-423n4/2025-08-gte-perps/blob/main/contracts/launchpad/Launchpad.sol#L483-L489)). The `catch` block is empty, meaning it incorrectly swallows the critical `PAIR_EXISTS` revert from the factory. Instead of handling the error gracefully, execution continues in a broken state. This ultimately causes the transaction to revert when the `uniV2Router.addLiquidity` call fai",
+            "*   **Permanent Denial of Service:** The legitimate `launchpad.buy()` transaction will now *always* fail for this token, as the pair already exists and the graduation logic cannot handle this state. The token can never graduate, its liquidity pool can never be seeded by the protocol, and its transfers can never be unlocked."
+          ]
+        },
+        "effects": {
+          "text": "The legitimate launchpad.buy() graduation transaction reverts because the pair already exists and the graduation logic cannot handle that state.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "bonding_curve_fully_sold"
+                  },
+                  {
+                    "var": "factory_publicly_callable"
+                  },
+                  {
+                    "var": "fee_requires_launchpad_sender"
+                  },
+                  {
+                    "var": "catch_swallows_pair_exists"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "graduation_completed"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_graduation_reverts"
+          ],
+          "evidence": [
+            "4.  The legitimate `launchpad.buy()` transaction is then mined, but its internal call to `createPair` fails. The flawed `try/catch` block prevents the transaction from reverting immediately, but the logic cannot proceed correctly, causing the entire graduation transaction to revert.",
+            "*   **Permanent Denial of Service:** The legitimate `launchpad.buy()` transaction will now *always* fail for this token, as the pair already exists and the graduation logic cannot handle this state. The token can never graduate, its liquidity pool can never be seeded by the protocol, and its transfers can never be unlocked."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_public_createpair",
+            "p_fee_only_launchpad",
+            "p_mempool_observable",
+            "p_bonding_curve_full",
+            "p_empty_catch"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_graduation_pair_guard"
+          ],
+          "args.0": [
+            "si_graduation_pair_guard"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_graduation_reverts"
+          ],
+          "args.0": [
+            "i_graduation_reverts"
+          ],
+          "args.1": [
+            "i_graduation_reverts"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_graduation_reverts",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "scope": "Token graduation via launchpad.buy() triggering _createPairAndSwapRemaining and createPair",
+      "modality": "potential",
+      "assumptions": [
+        "The attacker is able to get their createPair transaction mined before the legitimate graduation transaction by paying a higher gas fee (as_attacker_can_frontrun).",
+        "The scenario is described as possible; no real front-running incident is asserted.",
+        "The attacker's createPair call is treated as permissionless because the factory is publicly callable."
+      ],
+      "unresolved": []
+    }
+  ],
+  "coverage_is_model_declared_not_semantically_verified": true,
+  "human_semantic_review_required": true,
+  "code_alignment_status": "not_attempted",
+  "execution_ready": false,
+  "consistency_verdict": "not_evaluated",
+  "verdict_policy": "signals-v2",
+  "report_ambiguities_declared": [
+    "Report does not state whether the attacker's createPair call is permissionless in practice beyond the factory being publicly callable.",
+    "Report does not specify the exact token pair or whether the attacker needs to hold any tokens to call createPair.",
+    "Report does not establish that a real front-running incident was observed; the scenario is described as possible.",
+    "Report does not state whether the legitimate buy transaction's revert is guaranteed or only occurs under the described ordering."
+  ],
+  "formalization_limitations_declared": [
+    "Only the direct impact i_graduation_reverts is formalized; i_permanent_dos and i_fee_mechanism_disabled are deferred to future claims.",
+    "The front-running ordering is an assumption, not an observed event.",
+    "No concrete token pair or attacker token holdings are specified.",
+    "Code/PoC binding and SMT model values are deferred.",
+    "Deferred report impact: i_permanent_dos",
+    "Deferred report impact: i_fee_mechanism_disabled"
+  ],
+  "coverage_status": "partial",
+  "coverage_gaps": [
+    "impacts_not_assigned"
+  ],
+  "unassigned_precondition_ids": [],
+  "precondition_coverage_is_structural_not_semantic": true,
+  "strict_piv_gate": true,
+  "observability_review": {
+    "schema_version": "observability-review/1",
+    "claims": [
+      {
+        "claim_id": "core_claim",
+        "safety_variables": [
+          "bonding_curve_fully_sold",
+          "catch_swallows_pair_exists",
+          "factory_publicly_callable",
+          "fee_requires_launchpad_sender",
+          "graduation_completed"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      }
+    ],
+    "review_status": "no_structural_warning",
+    "observability_established": false,
+    "human_semantic_review_required": true,
+    "limitations": [
+      "I-only Boolean may be a legitimate observation; hints are not automatic errors",
+      "No code binding, predicate-name interpretation or report truth assessment",
+      "Both SAT is a review hint, not a universal UNSAT requirement"
+    ],
+    "model_calls": 0
+  },
+  "provenance": {
+    "code_provided_to_model": false,
+    "contract_file_read": false,
+    "paired_case_checked": true,
+    "case_id": "GTE_Perps_and_Launchpad_gtn2Umg6KsC__WxFog2dKdF8__qwWQjsKxt8K",
+    "submission_uid": "qwWQjsKxt8K",
+    "finding_uid": "WxFog2dKdF8",
+    "target_test": "test_submissionValidity",
+    "declared_code_sha256": "a272584103d0f889071b380a7be0af9c421fc16ffe25e3db0455103ab4c92c90",
+    "report_path": "/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/GTE_Perps_and_Launchpad_gtn2Umg6KsC__WxFog2dKdF8__qwWQjsKxt8K/report.json",
+    "report_sha256": "bb6c5b9fc0ee137de8f3880c20a6fd83210b1b7e3d9bf2022393e413b62ff73b",
+    "report_input_sha256": "3a52b8a7036e2728d5694bd06f72d79ee305eefbb7bd8b6b605a2000e0430cf8",
+    "report_input_policy": {
+      "source_format": "report.json",
+      "selected_fields": [
+        "title",
+        "body.description_and_impact"
+      ],
+      "excluded_fields": [
+        "proof_of_concept",
+        "recommended_mitigation",
+        "source_record",
+        "pairing",
+        "contract_code"
+      ],
+      "policy_version": "report-json-input/4",
+      "title_deduplicated": false
+    },
+    "candidate_origin": "external_model",
+    "elements_source": null,
+    "formalization_source": null,
+    "prompt_version": "semantic-v3.20",
+    "requested_formalization_scope": "core",
+    "formal_retries_allowed": 1,
+    "element_retries_allowed": 1,
+    "lean_formal_input": true,
+    "mechanical_salvage": false,
+    "model_catalog_view": "exact_id_text_without_offsets",
+    "neural_mode": "two_step",
+    "formalization_generation": "deterministic_from_plan",
+    "reference_answers_provided_to_model": false,
+    "model_provider": "deepseek",
+    "model_name": "deepseek-flash",
+    "deepseek_proxy_policy": "direct",
+    "prompt_resolution": "prompts.active/1",
+    "element_prompt_sha256": "e66f9f86d40dcb245ed431803385c6b2d57c35e72e2c2ab88862fd3800af992c",
+    "formal_prompt_sha256": "08b05a343ecc5249095776c7769f5def9702816d5fd21142f32d753435b93b55",
+    "claim_verdict_policy": "signals-v2",
+    "input_screening": "deepseek-report-readiness-v1"
+  },
+  "external_model_invocations": 3
+}

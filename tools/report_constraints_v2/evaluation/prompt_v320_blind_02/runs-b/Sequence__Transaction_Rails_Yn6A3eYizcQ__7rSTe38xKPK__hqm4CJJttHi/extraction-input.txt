@@ -1,0 +1,46 @@
+injectAndCall Lets Anyone Spend Router-Held Funds due to missing  Delegatecall Guard
+
+## Finding description and impact
+
+The TrailsRouter.injectAndCall function is designed to run only in a delegatecall context (inside a Sequence wallet), where address(this) resolves to the wallet and _getSelfBalance(token) refers to the wallet’s balance.
+
+Because injectAndCall is public and not protected by onlyDelegatecall, anyone can call it directly on the router contract. In that direct-call context, _getSelfBalance(token) returns the router’s own ERC20/ETH balance, and _injectAndExecuteCall uses that balance to approve and call an attacker-controlled target.
+
+If any tokens or ETH ever sit on the router contract, a malicious user can drain all router-held funds via a single injectAndCall call.
+
+The router assumes that any call to injectAndCall is executed via delegatecall from a wallet. Under that assumption:
+
+address(this) is the wallet.
+
+_getSelfBalance(token) returns the wallet’s funds.
+
+Using that balance in a downstream call spends the caller’s own funds.
+
+In reality, the function is:
+
+
+and has no onlyDelegatecall modifier. So there are two execution modes:
+
+Intended mode (safe-ish): delegatecalled from a wallet
+
+address(this) == wallet
+
+_getSelfBalance = wallet balance
+
+Actual vulnerable mode: called directly on the router
+
+address(this) == router
+
+_getSelfBalance = router contract’s own balance
+
+Impact
+
+In the vulnerable (direct-call) mode, any ERC20 tokens or ETH that end up held by the TrailsRouter contract itself can be spent by any arbitrary external caller.
+
+A malicious user only needs:
+
+The router to hold a balance (any non-zero ERC20 or ETH).
+
+A target contract of their choosing (e.g., something that calls transferFrom(msg.sender, ...)).
+
+One direct call to injectAndCall.

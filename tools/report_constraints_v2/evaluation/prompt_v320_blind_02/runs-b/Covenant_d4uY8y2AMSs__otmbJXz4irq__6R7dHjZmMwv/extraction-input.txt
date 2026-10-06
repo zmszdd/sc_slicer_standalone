@@ -1,0 +1,52 @@
+Logical AND Operator in Small Market Mint Cap Check Allows Unbounded Mints up to 2^96
+
+## Summary
+The `_checkMintCap` function uses `&&` (AND) instead of `||` (OR) in the small market branch, allowing mint amounts up to 2^96 (~7.9×10²⁸) to bypass intended caps when minting more than the market's total supply.
+
+## Finding Description
+
+The `_checkMintCap` function enforces different restrictions based on market size. For small markets (where `marketBaseTokenSupply <= 2^noCapLimit`), the code attempts to cap mint amounts to prevent destabilization:
+
+
+**The Flaw:** The condition uses `&&` requiring **both** conditions to be true for a revert:
+1. `mintAmount > Q96` (where Q96 = 2^96 = 79,228,162,514,264,337,593,543,950,336)
+2. `mintAmount > marketBaseTokenSupply`
+
+This creates a bypass: if either condition is false, the check passes. Since Q96 is astronomically large (10²⁸), practically all real-world mint amounts will be below it, making the first condition false and allowing the entire check to pass regardless of the second condition.
+
+**Attack Scenario:**
+1. Market has `baseSupply = 1 ETH` (considered "small" with default `noCapLimit = 60`)
+2. Attacker mints `100 ETH` (100x the market size)
+3. Check evaluates: `(100e18 > Q96) && (100e18 > 1e18)` → `false && true` → `false`
+4. Transaction succeeds, bypassing the intended cap
+
+The comment states: *"for small markets we can mint up to 2^96"* - but the intent was clearly to limit mints to `min(Q96, marketBaseTokenSupply)`, not allow anything below Q96 regardless of market size.
+
+**Code Flow:**
+
+Every mint operation calls `_calcMint`, which invokes `_checkMintCap`. The flawed logic allows small markets to accept disproportionately large mints that should be rejected.
+
+## Impact Explanation
+
+**HIGH Severity** - This vulnerability completely undermines the mint cap protection mechanism for small markets:
+
+1. **Market Manipulation:** Attackers can flood small markets with liquidity orders of magnitude larger than the market size (e.g., 100x, 1000x)
+2. **ETWAP Bypass:** The Exponential Time-Weighted Average Price (ETWAP) flow control is circumvented, as mints don't respect the gradual growth constraints
+3. **Price Destabilization:** Sudden massive liquidity injections can distort pricing mechanisms, LTV ratios, and synthetic token valuations
+4. **Liquidity Imbalance:** The protocol's balanced mint/redeem flow is broken, allowing asymmetric position building
+5. **Economic Exploitation:** Attackers can mint enormous positions in nascent markets, manipulate prices through other operations, then redeem at profit
+
+The issue affects all markets during their "small" phase (below `2^noCapLimit` threshold), which for 18-decimal tokens is below ~1.15×10¹⁸ tokens - essentially all early-stage markets.
+
+## Likelihood Explanation
+
+**HIGH Likelihood:**
+
+- No special privileges required - any user can exploit this
+- The vulnerability is present in every mint operation on small markets
+- Small markets are common during protocol launch and new market creation
+- The flaw is deterministic and easily reproducible
+- Default `noCapLimit = 60` means markets below ~1.15 billion billion tokens are vulnerable
+- Attackers can intentionally keep markets "small" while exploiting the bypass
+
+The combination of ease of exploitation and wide attack surface (all small markets) makes this highly likely to occur.

@@ -1,0 +1,240 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "GaugeCL reward rate calculation for a new period",
+    "environment": "GaugeCL / CLPool reward distribution",
+    "evidence": [
+      "GaugeCL fails to include rollover rewards in rate calculation for new periods, causing permanent undistribution",
+      "While I was reviewing the reward distribution logic in GaugeCL, I notice a bug. The code fetches `clPool.rollover()` and adds it to calculate `totalRewardAmount`, then passes this value to `rewardReserve`. But when I looked at the `rewardRate` calculation, it only uses `rewardAmount`. That felt wrong.",
+      "The else branch properly includes `pendingRewards` in the rate calculation. So why doesn't the if branch include the rollover? They serve the same purpose - both represent undistributed rewards that should be part of the new rate.",
+      "And here's the kicker - `syncReward()` explicitly deletes the rollover:",
+      "Let's say Week 1 has no staked liquidity. All 1000 HYBR emissions roll over. Then Week 2 starts with liquidity staked and another 1000 HYBR comes in.",
+      "- Total in reserve: 2000 HYBR (correctly set)",
+      "- Rate: 1000 / 604800 seconds = 0.001653439 HYBR/sec (missing rollover!)"
+    ]
+  },
+  "entities": [
+    {
+      "id": "gauge_cl",
+      "name": "GaugeCL",
+      "role": "contract",
+      "evidence": [
+        "GaugeCL fails to include rollover rewards in rate calculation for new periods, causing permanent undistribution",
+        "While I was reviewing the reward distribution logic in GaugeCL, I notice a bug. The code fetches `clPool.rollover()` and adds it to calculate `totalRewardAmount`, then passes this value to `rewardReserve`. But when I looked at the `rewardRate` calculation, it only uses `rewardAmount`. That felt wrong."
+      ]
+    },
+    {
+      "id": "cl_pool",
+      "name": "CLPool",
+      "role": "contract",
+      "evidence": [
+        "Looking at CLPool.sol, rollover accumulates when there's no staked liquidity to receive rewards:",
+        "And here's the kicker - `syncReward()` explicitly deletes the rollover:"
+      ]
+    },
+    {
+      "id": "rollover_rewards",
+      "name": "Rollover rewards",
+      "role": "asset",
+      "evidence": [
+        "GaugeCL fails to include rollover rewards in rate calculation for new periods, causing permanent undistribution",
+        "Looking at CLPool.sol, rollover accumulates when there's no staked liquidity to receive rewards:",
+        "Let's say Week 1 has no staked liquidity. All 1000 HYBR emissions roll over. Then Week 2 starts with liquidity staked and another 1000 HYBR comes in."
+      ]
+    },
+    {
+      "id": "reward_reserve",
+      "name": "Reward reserve",
+      "role": "asset",
+      "evidence": [
+        "While I was reviewing the reward distribution logic in GaugeCL, I notice a bug. The code fetches `clPool.rollover()` and adds it to calculate `totalRewardAmount`, then passes this value to `rewardReserve`. But when I looked at the `rewardRate` calculation, it only uses `rewardAmount`. That felt wrong.",
+        "- Total in reserve: 2000 HYBR (correctly set)"
+      ]
+    },
+    {
+      "id": "users",
+      "name": "Stakers",
+      "role": "victim",
+      "evidence": [
+        "Users only get half the rewards they should. The rollover persists but never gets distributed because each new period makes the same mistake."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_rollover_accumulated",
+      "kind": "precondition",
+      "text": "Rollover rewards accumulated in CLPool because a prior period had no staked liquidity to receive rewards.",
+      "modality": "potential",
+      "entity_ids": [
+        "cl_pool",
+        "rollover_rewards"
+      ],
+      "evidence": [
+        "Looking at CLPool.sol, rollover accumulates when there's no staked liquidity to receive rewards:",
+        "Let's say Week 1 has no staked liquidity. All 1000 HYBR emissions roll over. Then Week 2 starts with liquidity staked and another 1000 HYBR comes in."
+      ]
+    },
+    {
+      "id": "p_new_period_starts",
+      "kind": "precondition",
+      "text": "A new reward period starts with liquidity staked and new emissions arriving.",
+      "modality": "potential",
+      "entity_ids": [
+        "gauge_cl",
+        "users"
+      ],
+      "evidence": [
+        "Let's say Week 1 has no staked liquidity. All 1000 HYBR emissions roll over. Then Week 2 starts with liquidity staked and another 1000 HYBR comes in."
+      ]
+    },
+    {
+      "id": "p_rollover_added_to_total",
+      "kind": "precondition",
+      "text": "The code fetches clPool.rollover() and adds it to totalRewardAmount before passing that value to rewardReserve.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_cl",
+        "rollover_rewards",
+        "reward_reserve"
+      ],
+      "evidence": [
+        "While I was reviewing the reward distribution logic in GaugeCL, I notice a bug. The code fetches `clPool.rollover()` and adds it to calculate `totalRewardAmount`, then passes this value to `rewardReserve`. But when I looked at the `rewardRate` calculation, it only uses `rewardAmount`. That felt wrong."
+      ]
+    },
+    {
+      "id": "a_calculate_rate",
+      "kind": "action",
+      "text": "GaugeCL calculates rewardRate for the new period using only rewardAmount.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_cl"
+      ],
+      "evidence": [
+        "While I was reviewing the reward distribution logic in GaugeCL, I notice a bug. The code fetches `clPool.rollover()` and adds it to calculate `totalRewardAmount`, then passes this value to `rewardReserve`. But when I looked at the `rewardRate` calculation, it only uses `rewardAmount`. That felt wrong.",
+        "- Rate: 1000 / 604800 seconds = 0.001653439 HYBR/sec (missing rollover!)"
+      ]
+    },
+    {
+      "id": "a_sync_reward",
+      "kind": "action",
+      "text": "syncReward() deletes the rollover.",
+      "modality": "asserted",
+      "entity_ids": [
+        "cl_pool",
+        "rollover_rewards"
+      ],
+      "evidence": [
+        "And here's the kicker - `syncReward()` explicitly deletes the rollover:"
+      ]
+    },
+    {
+      "id": "rc_rollover_omitted",
+      "kind": "root_cause",
+      "text": "The new-period branch of the rewardRate calculation omits rollover, unlike the else branch which includes pendingRewards.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_cl",
+        "rollover_rewards"
+      ],
+      "evidence": [
+        "While I was reviewing the reward distribution logic in GaugeCL, I notice a bug. The code fetches `clPool.rollover()` and adds it to calculate `totalRewardAmount`, then passes this value to `rewardReserve`. But when I looked at the `rewardRate` calculation, it only uses `rewardAmount`. That felt wrong.",
+        "The else branch properly includes `pendingRewards` in the rate calculation. So why doesn't the if branch include the rollover? They serve the same purpose - both represent undistributed rewards that should be part of the new rate."
+      ]
+    },
+    {
+      "id": "i_rate_too_low",
+      "kind": "impact",
+      "text": "Actual rate is 1000 / 604800 = 0.001653439 HYBR/sec instead of the expected 2000 / 604800 = 0.003306878 HYBR/sec.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_cl",
+        "rollover_rewards"
+      ],
+      "evidence": [
+        "- Rate: 2000 / 604800 seconds = 0.003306878 HYBR/sec",
+        "- Rate: 1000 / 604800 seconds = 0.001653439 HYBR/sec (missing rollover!)"
+      ]
+    },
+    {
+      "id": "i_underdistributed",
+      "kind": "impact",
+      "text": "Only 1000 HYBR is distributed over the week while 1000 HYBR remains undistributed and becomes new rollover.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_cl",
+        "rollover_rewards",
+        "users"
+      ],
+      "evidence": [
+        "- Distributed over week: 1000 HYBR",
+        "- Undistributed: 1000 HYBR (becomes new rollover)"
+      ]
+    },
+    {
+      "id": "i_users_half_rewards",
+      "kind": "impact",
+      "text": "Users receive only half the rewards they should.",
+      "modality": "asserted",
+      "entity_ids": [
+        "users",
+        "rollover_rewards"
+      ],
+      "evidence": [
+        "Users only get half the rewards they should. The rollover persists but never gets distributed because each new period makes the same mistake."
+      ]
+    },
+    {
+      "id": "i_rollover_grows",
+      "kind": "impact",
+      "text": "If the pattern continues, rollover grows infinitely because each new period repeats the omission.",
+      "modality": "potential",
+      "entity_ids": [
+        "rollover_rewards",
+        "gauge_cl"
+      ],
+      "evidence": [
+        "Users only get half the rewards they should. The rollover persists but never gets distributed because each new period makes the same mistake.",
+        "I ran some math and realized if this pattern continues, rollover just grows infinitely. That's not sustainable and definitely breaks the emission model the protocol designed."
+      ]
+    },
+    {
+      "id": "si_include_rollover",
+      "kind": "security_intent",
+      "text": "Inferred: the new-period rewardRate calculation should include rollover rewards so the full available amount is distributed over the period.",
+      "modality": "inferred",
+      "entity_ids": [
+        "gauge_cl",
+        "rollover_rewards"
+      ],
+      "evidence": [
+        "GaugeCL fails to include rollover rewards in rate calculation for new periods, causing permanent undistribution",
+        "The else branch properly includes `pendingRewards` in the rate calculation. So why doesn't the if branch include the rollover? They serve the same purpose - both represent undistributed rewards that should be part of the new rate.",
+        "- Total available: 2000 HYBR (1000 new + 1000 rollover)"
+      ]
+    },
+    {
+      "id": "as_rollover_meant_distributed",
+      "kind": "assumption",
+      "text": "Rollover is meant to be distributed in the new period, as suggested by syncReward() deleting it.",
+      "modality": "inferred",
+      "entity_ids": [
+        "cl_pool",
+        "rollover_rewards"
+      ],
+      "evidence": [
+        "And here's the kicker - `syncReward()` explicitly deletes the rollover:",
+        "If rollover wasn't meant to be distributed in the new period, why delete it?"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_calculate_rate",
+    "a_sync_reward"
+  ],
+  "ambiguities": [
+    "No explicit transaction or caller is described; the scenario is hypothetical (Week 1/Week 2 example).",
+    "Whether syncReward() is called before or after the rate calculation is not specified.",
+    "The report does not state who triggers the new period or the rate calculation."
+  ]
+}

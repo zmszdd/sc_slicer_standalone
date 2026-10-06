@@ -1,0 +1,20 @@
+End-of-Epoch snapshot logic in `TrustBonding` enables Just-In-Time (JIT) reward theft and systematic yield loss for expiring locks.
+
+## Finding description and impact
+
+### Root Cause
+The `TrustBonding` contract calculates a user's pro-rata share of epoch rewards by taking a single point-in-time snapshot of their `veTRUST` (bonded) balance at the absolute end of the epoch. 
+
+The `_userEligibleRewardsForEpoch` function relies on `userBondedBalanceAtEpochEnd`:
+
+Because `ve` tokens (Voting Escrow) are designed to **decay linearly over time**, a point-in-time snapshot creates a critical mismatch between the continuous nature of the lock and the discrete nature of reward distribution.
+
+### Impact 1: Just-In-Time (JIT) Reward Theft
+An attacker can wait until the very last block (or second) of a 14-day epoch and call `create_lock()` with a large amount of `TRUST`. Because the snapshot is taken at the end of the epoch, the attacker's balance is "fresh" and has not suffered any decay. 
+
+Meanwhile, honest users who locked at the beginning of the epoch have had their balances decaying for 14 days. As a result, the attacker captures a disproportionately large share of the rewards despite their capital only being at risk for a single second of the 14-day period. This allows attackers to systematically drain the protocol's inflationary emissions, diluting the yield for honest participants to negligible levels.
+
+### Impact 2: Systematic Yield Loss for Expiring Locks
+The `VotingEscrow` logic (inherited from Curve) strictly rounds lock expiries down to the nearest `WEEK`. In standard configurations where `EPOCH_LENGTH` is a multiple of weeks (e.g., 14 days), a user's lock will frequently expire exactly at an `epochTimestampEnd`.
+
+If a user is locked for the entire duration of an epoch, but their lock expires at the exact second the epoch ends, `_balanceOf(account, _epochTimestampEnd(epoch))` will evaluate to **0**. The user is then told they have `NoRewardsToClaim`, effectively stealing 14 days of yield that their locked capital earned.

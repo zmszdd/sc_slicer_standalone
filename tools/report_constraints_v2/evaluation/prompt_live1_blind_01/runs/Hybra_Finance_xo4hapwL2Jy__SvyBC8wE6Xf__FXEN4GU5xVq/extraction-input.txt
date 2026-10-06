@@ -1,0 +1,44 @@
+GaugeCL fails to include rollover rewards in rate calculation for new periods, causing permanent undistribution
+
+## Vulnerability details
+
+While I was reviewing the reward distribution logic in GaugeCL, I notice a bug. The code fetches `clPool.rollover()` and adds it to calculate `totalRewardAmount`, then passes this value to `rewardReserve`. But when I looked at the `rewardRate` calculation, it only uses `rewardAmount`. That felt wrong.
+
+Here's the problematic section:
+
+
+I compared this to the else branch (when continuing an existing period):
+
+
+The else branch properly includes `pendingRewards` in the rate calculation. So why doesn't the if branch include the rollover? They serve the same purpose - both represent undistributed rewards that should be part of the new rate.
+
+### What rollover actually is
+
+Looking at CLPool.sol, rollover accumulates when there's no staked liquidity to receive rewards:
+
+
+And here's the kicker - `syncReward()` explicitly deletes the rollover:
+
+
+If rollover wasn't meant to be distributed in the new period, why delete it?
+
+### Impact breakdown
+
+Let's say Week 1 has no staked liquidity. All 1000 HYBR emissions roll over. Then Week 2 starts with liquidity staked and another 1000 HYBR comes in.
+
+**What should happen:**
+- Total available: 2000 HYBR (1000 new + 1000 rollover)
+- Rate: 2000 / 604800 seconds = 0.003306878 HYBR/sec
+- Distributed over week: 2000 HYBR 
+
+**What actually happens:**
+- Total in reserve: 2000 HYBR (correctly set)
+- Rate: 1000 / 604800 seconds = 0.001653439 HYBR/sec (missing rollover!)
+- Distributed over week: 1000 HYBR
+- Undistributed: 1000 HYBR (becomes new rollover)
+
+Users only get half the rewards they should. The rollover persists but never gets distributed because each new period makes the same mistake.
+
+I ran some math and realized if this pattern continues, rollover just grows infinitely. That's not sustainable and definitely breaks the emission model the protocol designed.
+
+**Paste the POC code below into C4Poc.t.sol and run the command `forge test --mt test_M01_RolloverNotIncludedInRateCalculation -vvv`

@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Merkl_T4ExvutBBXC",
+    "audit_uid": "T4ExvutBBXC",
+    "requested_submission_uid": "X2HQE9uKsCs",
+    "requested_finding_uid": "btqEyvckPQN",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Merkl_T4ExvutBBXC/20260618_144946/findings.json",
+    "source_submission_uid": "X2HQE9uKsCs",
+    "source_finding_uid": "btqEyvckPQN",
+    "original_report_path": "Merkl_T4ExvutBBXC\\low_valid_X2HQE9uKsCs.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "X2HQE9uKsCs",
+  "finding_uid": "btqEyvckPQN",
+  "finding_number": "41",
+  "title": "Non–hour-multiple campaign durations accepted, stranding creator funds in Distributor",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "eloujoe",
+  "body": "## Finding description and impact\n\nCampaign durations are supposed to align to hourly epochs, but _createCampaign only enforces duration >= HOUR and never checks duration % HOUR == 0 (see DistributionCreator.sol#L247-L287). An operator can create a campaign with a duration like HOUR + 1, which passes all on-chain checks and pulls the creator’s funds into the Distributor. The off-chain engine expects integer-hour epochs; a non–hour-multiple is likely rejected or ignored, so no Merkle root is ever produced for this campaign. Result: the creator’s reward tokens are stranded in the Distributor with no on-chain recovery path (except governor sweep), violating the “campaign pre-deposit protection” and “creator autonomy” assumptions.\n\n## Recommended mitigation steps\n\nIn _createCampaign, enforce alignment to the epoch duration, e.g., require(newCampaign.duration % HOUR == 0, Errors.InvalidParam());. Optionally also enforce startTimestamp % HOUR == 0 if the engine requires start-time alignment. Reject any campaign with a non-hour-multiple duration before pulling funds.",
+  "proof_of_concept": "### Test file\n\ntest/c4/C4PoCNonHourDuration.t.sol\n\n    // SPDX-License-Identifier: UNLICENSED\n    pragma solidity ^0.8.17;\n\n    import { Fixture } from \"../Fixture.t.sol\";\n    import { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\n\n    /// PoC: duration not multiple of 1 hour is accepted, funds pulled to Distributor\n    contract C4PoCNonHourDuration is Fixture {\n      function setUp() public override {\n          super.setUp();\n\n          vm.prank(governor);\n          creator.setFeeRecipient(dylan);\n\n          vm.startPrank(guardian);\n          address[] memory tokens = new address[](1);\n          uint256[] memory amounts = new uint256[](1);\n          tokens[0] = address(angle);\n          amounts[0] = 1e8;\n          creator.setRewardTokenMinAmounts(tokens, amounts);\n          vm.stopPrank();\n\n          angle.mint(address(alice), 1e22);\n          vm.prank(alice);\n          angle.approve(address(creator), type(uint256).max);\n      }\n\n      function test_submissionValidity() external {\n          uint256 amount = 5e8;            // above min-per-epoch\n          uint32 duration = EPOCH_DURATION + 1; // violates hour multiple\n          uint32 futureStart = uint32(block.timestamp + EPOCH_DURATION);\n\n          uint256 bobBalanceBefore = angle.balanceOf(bob);\n          vm.prank(alice);\n          bytes32 campaignId = creator.createCampaign(\n              CampaignParameters({\n                  campaignId: bytes32(0),\n                  creator: alice,\n                  rewardToken: address(angle),\n                  amount: amount,\n                  campaignType: 1,\n                  startTimestamp: futureStart,\n                  duration: duration,\n                  campaignData: bytes(\"non_hour\")\n              })\n          );\n\n          // Confirm non-hour duration stored and funds pulled\n          CampaignParameters memory campaign = creator.campaign(campaignId);\n          assertEq(campaign.duration, duration, \"duration not stored\");\n          uint256 expectedNet = (amount * (1e9 - creator.defaultFees())) / 1e9;\n          assertEq(angle.balanceOf(bob) - bobBalanceBefore, expectedNet, \"funds not pulled\");\n      }\n    }\n\n### How to run\n\nforge test --match-test submissionValidity --match-path test/c4/C4PoCNonHourDuration.t.sol\n\nExpected: Test passes, showing a non-hour duration is accepted and still pulls the creator’s funds.",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L247-L287"
+  ],
+  "source_record": {
+    "project_id": "T4ExvutBBXC",
+    "submission_index": "336",
+    "api_submission_id": "",
+    "uid": "X2HQE9uKsCs",
+    "number": "336",
+    "title": "Non–hour-multiple campaign durations accepted, stranding creator funds in Distributor",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "eloujoe",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L247-L287"
+    ],
+    "body": "## Finding description and impact\n\nCampaign durations are supposed to align to hourly epochs, but _createCampaign only enforces duration >= HOUR and never checks duration % HOUR == 0 (see DistributionCreator.sol#L247-L287). An operator can create a campaign with a duration like HOUR + 1, which passes all on-chain checks and pulls the creator’s funds into the Distributor. The off-chain engine expects integer-hour epochs; a non–hour-multiple is likely rejected or ignored, so no Merkle root is ever produced for this campaign. Result: the creator’s reward tokens are stranded in the Distributor with no on-chain recovery path (except governor sweep), violating the “campaign pre-deposit protection” and “creator autonomy” assumptions.\n\n## Recommended mitigation steps\n\nIn _createCampaign, enforce alignment to the epoch duration, e.g., require(newCampaign.duration % HOUR == 0, Errors.InvalidParam());. Optionally also enforce startTimestamp % HOUR == 0 if the engine requires start-time alignment. Reject any campaign with a non-hour-multiple duration before pulling funds.",
+    "proof_of_concept": "### Test file\n\ntest/c4/C4PoCNonHourDuration.t.sol\n\n    // SPDX-License-Identifier: UNLICENSED\n    pragma solidity ^0.8.17;\n\n    import { Fixture } from \"../Fixture.t.sol\";\n    import { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\n\n    /// PoC: duration not multiple of 1 hour is accepted, funds pulled to Distributor\n    contract C4PoCNonHourDuration is Fixture {\n      function setUp() public override {\n          super.setUp();\n\n          vm.prank(governor);\n          creator.setFeeRecipient(dylan);\n\n          vm.startPrank(guardian);\n          address[] memory tokens = new address[](1);\n          uint256[] memory amounts = new uint256[](1);\n          tokens[0] = address(angle);\n          amounts[0] = 1e8;\n          creator.setRewardTokenMinAmounts(tokens, amounts);\n          vm.stopPrank();\n\n          angle.mint(address(alice), 1e22);\n          vm.prank(alice);\n          angle.approve(address(creator), type(uint256).max);\n      }\n\n      function test_submissionValidity() external {\n          uint256 amount = 5e8;            // above min-per-epoch\n          uint32 duration = EPOCH_DURATION + 1; // violates hour multiple\n          uint32 futureStart = uint32(block.timestamp + EPOCH_DURATION);\n\n          uint256 bobBalanceBefore = angle.balanceOf(bob);\n          vm.prank(alice);\n          bytes32 campaignId = creator.createCampaign(\n              CampaignParameters({\n                  campaignId: bytes32(0),\n                  creator: alice,\n                  rewardToken: address(angle),\n                  amount: amount,\n                  campaignType: 1,\n                  startTimestamp: futureStart,\n                  duration: duration,\n                  campaignData: bytes(\"non_hour\")\n              })\n          );\n\n          // Confirm non-hour duration stored and funds pulled\n          CampaignParameters memory campaign = creator.campaign(campaignId);\n          assertEq(campaign.duration, duration, \"duration not stored\");\n          uint256 expectedNet = (amount * (1e9 - creator.defaultFees())) / 1e9;\n          assertEq(angle.balanceOf(bob) - bobBalanceBefore, expectedNet, \"funds not pulled\");\n      }\n    }\n\n### How to run\n\nforge test --match-test submissionValidity --match-path test/c4/C4PoCNonHourDuration.t.sol\n\nExpected: Test passes, showing a non-hour duration is accepted and still pulls the creator’s funds.",
+    "detail_url": "https://code4rena.com/api/v1/audits/T4ExvutBBXC/submissions/336",
+    "raw": {
+      "auditUid": "T4ExvutBBXC",
+      "createdAt": "2025-11-28T11:24:10.382Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "rDPzvmCxeHG",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-17T13:56:07.800Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "btqEyvckPQN"
+        },
+        {
+          "uid": "vHUQZUv5ngo",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-17T13:56:10.174Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "btqEyvckPQN"
+        },
+        {
+          "uid": "7iP2NC5Fs4p",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-17T13:56:39.317Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "X2HQE9uKsCs",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "btqEyvckPQN",
+        "number": 41,
+        "duplicates": 11
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-12-17T13:56:39.317Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Non–hour-multiple campaign durations accepted, stranding creator funds in Distributor",
+      "uid": "X2HQE9uKsCs",
+      "updatedAt": "2025-11-28T11:24:10.382Z",
+      "user": {
+        "uid": "2TpRcP8FbRb",
+        "handle": "eloujoe"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nCampaign durations are supposed to align to hourly epochs, but _createCampaign only enforces duration >= HOUR and never checks duration % HOUR == 0 (see DistributionCreator.sol#L247-L287). An operator can create a campaign with a duration like HOUR + 1, which passes all on-chain checks and pulls the creator’s funds into the Distributor. The off-chain engine expects integer-hour epochs; a non–hour-multiple is likely rejected or ignored, so no Merkle root is ever produced for this campaign. Result: the creator’s reward tokens are stranded in the Distributor with no on-chain recovery path (except governor sweep), violating the “campaign pre-deposit protection” and “creator autonomy” assumptions.\n\n## Recommended mitigation steps\n\nIn _createCampaign, enforce alignment to the epoch duration, e.g., require(newCampaign.duration % HOUR == 0, Errors.InvalidParam());. Optionally also enforce startTimestamp % HOUR == 0 if the engine requires start-time alignment. Reject any campaign with a non-hour-multiple duration before pulling funds.",
+      "proofOfConcept": "### Test file\n\ntest/c4/C4PoCNonHourDuration.t.sol\n\n    // SPDX-License-Identifier: UNLICENSED\n    pragma solidity ^0.8.17;\n\n    import { Fixture } from \"../Fixture.t.sol\";\n    import { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\n\n    /// PoC: duration not multiple of 1 hour is accepted, funds pulled to Distributor\n    contract C4PoCNonHourDuration is Fixture {\n      function setUp() public override {\n          super.setUp();\n\n          vm.prank(governor);\n          creator.setFeeRecipient(dylan);\n\n          vm.startPrank(guardian);\n          address[] memory tokens = new address[](1);\n          uint256[] memory amounts = new uint256[](1);\n          tokens[0] = address(angle);\n          amounts[0] = 1e8;\n          creator.setRewardTokenMinAmounts(tokens, amounts);\n          vm.stopPrank();\n\n          angle.mint(address(alice), 1e22);\n          vm.prank(alice);\n          angle.approve(address(creator), type(uint256).max);\n      }\n\n      function test_submissionValidity() external {\n          uint256 amount = 5e8;            // above min-per-epoch\n          uint32 duration = EPOCH_DURATION + 1; // violates hour multiple\n          uint32 futureStart = uint32(block.timestamp + EPOCH_DURATION);\n\n          uint256 bobBalanceBefore = angle.balanceOf(bob);\n          vm.prank(alice);\n          bytes32 campaignId = creator.createCampaign(\n              CampaignParameters({\n                  campaignId: bytes32(0),\n                  creator: alice,\n                  rewardToken: address(angle),\n                  amount: amount,\n                  campaignType: 1,\n                  startTimestamp: futureStart,\n                  duration: duration,\n                  campaignData: bytes(\"non_hour\")\n              })\n          );\n\n          // Confirm non-hour duration stored and funds pulled\n          CampaignParameters memory campaign = creator.campaign(campaignId);\n          assertEq(campaign.duration, duration, \"duration not stored\");\n          uint256 expectedNet = (amount * (1e9 - creator.defaultFees())) / 1e9;\n          assertEq(angle.balanceOf(bob) - bobBalanceBefore, expectedNet, \"funds not pulled\");\n      }\n    }\n\n### How to run\n\nforge test --match-test submissionValidity --match-path test/c4/C4PoCNonHourDuration.t.sol\n\nExpected: Test passes, showing a non-hour duration is accepted and still pulls the creator’s funds.",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L247-L287",
+      "number": 336,
+      "aiExplanation": null,
+      "_index": 336
+    }
+  }
+}

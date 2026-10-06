@@ -1,0 +1,222 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "AtomWallet UserOperation signature validity window (validUntil/validAfter) handling",
+    "environment": "AtomWallet / EntryPoint ERC-4337 account abstraction",
+    "evidence_ids": [
+      "e_fd342706df75_0003",
+      "e_fd342706df75_0004",
+      "e_fd342706df75_0005",
+      "e_fd342706df75_0009",
+      "e_fd342706df75_0010",
+      "e_fd342706df75_0014",
+      "e_fd342706df75_0015",
+      "e_fd342706df75_0016",
+      "e_fd342706df75_0024",
+      "e_fd342706df75_0026"
+    ]
+  },
+  "entities": [
+    {
+      "id": "atom_wallet",
+      "name": "AtomWallet",
+      "role": "contract",
+      "evidence_ids": [
+        "e_fd342706df75_0003",
+        "e_fd342706df75_0009"
+      ]
+    },
+    {
+      "id": "entry_point",
+      "name": "EntryPoint",
+      "role": "contract",
+      "evidence_ids": [
+        "e_fd342706df75_0010",
+        "e_fd342706df75_0024"
+      ]
+    },
+    {
+      "id": "owner",
+      "name": "AtomWallet owner",
+      "role": "victim",
+      "evidence_ids": [
+        "e_fd342706df75_0009",
+        "e_fd342706df75_0020"
+      ]
+    },
+    {
+      "id": "bundler_relayer",
+      "name": "Bundler or relayer",
+      "role": "attacker",
+      "evidence_ids": [
+        "e_fd342706df75_0004",
+        "e_fd342706df75_0024"
+      ]
+    },
+    {
+      "id": "user_op",
+      "name": "UserOperation",
+      "role": "asset",
+      "evidence_ids": [
+        "e_fd342706df75_0009",
+        "e_fd342706df75_0018"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_owner_time_window_signature",
+      "kind": "precondition",
+      "text": "The AtomWallet owner produces a 77-byte signature consisting of a 65-byte ECDSA signature followed by validUntil and validAfter, intending to restrict the UserOperation to a specific time window.",
+      "modality": "potential",
+      "entity_ids": [
+        "owner",
+        "atom_wallet",
+        "user_op"
+      ],
+      "evidence_ids": [
+        "e_fd342706df75_0009",
+        "e_fd342706df75_0010",
+        "e_fd342706df75_0026"
+      ]
+    },
+    {
+      "id": "p_validity_bytes_outside_digest",
+      "kind": "precondition",
+      "text": "The 12-byte validUntil/validAfter suffix is appended to the signature blob but is not included in the signed digest (userOpHash).",
+      "modality": "asserted",
+      "entity_ids": [
+        "atom_wallet"
+      ],
+      "evidence_ids": [
+        "e_fd342706df75_0003",
+        "e_fd342706df75_0004",
+        "e_fd342706df75_0014",
+        "e_fd342706df75_0015"
+      ]
+    },
+    {
+      "id": "p_attacker_can_intercept",
+      "kind": "precondition",
+      "text": "The attacker can be the bundler, a relayer, or anyone who can intercept and re-submit the UserOp before the EntryPoint processes it.",
+      "modality": "potential",
+      "entity_ids": [
+        "bundler_relayer",
+        "entry_point",
+        "user_op"
+      ],
+      "evidence_ids": [
+        "e_fd342706df75_0024"
+      ]
+    },
+    {
+      "id": "a_overwrite_validity_bytes",
+      "kind": "action",
+      "text": "The bundler or relayer silently overwrites the 12-byte validUntil/validAfter suffix in the signature blob.",
+      "modality": "potential",
+      "entity_ids": [
+        "bundler_relayer",
+        "atom_wallet"
+      ],
+      "evidence_ids": [
+        "e_fd342706df75_0004",
+        "e_fd342706df75_0005"
+      ]
+    },
+    {
+      "id": "a_submit_modified_userop",
+      "kind": "action",
+      "text": "The modified UserOperation is re-submitted to the EntryPoint for processing.",
+      "modality": "potential",
+      "entity_ids": [
+        "bundler_relayer",
+        "entry_point",
+        "user_op"
+      ],
+      "evidence_ids": [
+        "e_fd342706df75_0024"
+      ]
+    },
+    {
+      "id": "rc_suffix_not_hashed",
+      "kind": "root_cause",
+      "text": "_extractValidUntilAndValidAfterFromSignature reads bytes [65:77] of the signature blob, but userOpHash is computed independently of those trailing bytes, so rewriting the suffix leaves the recovered signer unchanged.",
+      "modality": "asserted",
+      "entity_ids": [
+        "atom_wallet"
+      ],
+      "evidence_ids": [
+        "e_fd342706df75_0014",
+        "e_fd342706df75_0015",
+        "e_fd342706df75_0016"
+      ]
+    },
+    {
+      "id": "i_execute_after_intended_window",
+      "kind": "impact",
+      "text": "Time-sensitive UserOps can be executed long after the owner intended, letting a bundler choose the most favorable moment.",
+      "modality": "potential",
+      "entity_ids": [
+        "bundler_relayer",
+        "owner",
+        "user_op"
+      ],
+      "evidence_ids": [
+        "e_fd342706df75_0018"
+      ]
+    },
+    {
+      "id": "i_expiry_unreliable",
+      "kind": "impact",
+      "text": "Owners can no longer rely on expiry for safety; to stop execution after the intended window they must send a separate cancellation transaction.",
+      "modality": "potential",
+      "entity_ids": [
+        "owner",
+        "atom_wallet"
+      ],
+      "evidence_ids": [
+        "e_fd342706df75_0020",
+        "e_fd342706df75_0021"
+      ]
+    },
+    {
+      "id": "si_validity_window_bound",
+      "kind": "security_intent",
+      "text": "A UserOperation signed with a validUntil/validAfter window should only execute within that owner-specified time window, and the validity window should be cryptographically bound to the owner's signature.",
+      "modality": "inferred",
+      "entity_ids": [
+        "owner",
+        "atom_wallet",
+        "entry_point",
+        "user_op"
+      ],
+      "evidence_ids": [
+        "e_fd342706df75_0009",
+        "e_fd342706df75_0010",
+        "e_fd342706df75_0011"
+      ]
+    },
+    {
+      "id": "as_no_special_privileges",
+      "kind": "assumption",
+      "text": "No special funds or elevated privileges are required; the cost is effectively zero.",
+      "modality": "asserted",
+      "entity_ids": [
+        "bundler_relayer"
+      ],
+      "evidence_ids": [
+        "e_fd342706df75_0023"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_overwrite_validity_bytes",
+    "a_submit_modified_userop"
+  ],
+  "ambiguities": [
+    "Report does not state whether the overwritten window is extended, shortened, or replaced with arbitrary values.",
+    "Report does not establish that a real transaction with a manipulated window was observed; the scenario is described as a capability.",
+    "Report does not specify whether the EntryPoint enforces the window before or after signature validation.",
+    "Report does not state the exact digest computation or whether any other field commits to the suffix."
+  ]
+}

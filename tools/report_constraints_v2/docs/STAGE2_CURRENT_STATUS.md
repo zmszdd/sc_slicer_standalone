@@ -83,6 +83,112 @@ P 符号必须由各自来源支撑且不同来源不能复用同一谓词；协
 
 ## 已完成
 
+2026-10-05 起 Prompt 管理切换为**单一活文件**：`prompts/current.py`
+（`semantic-live`，默认版本）是唯一可原地修改的提示词，初始文本逐字节等于
+`semantic-v3.20` 的解析结果；`prompts/versions/` 16 个冻结文件转为只读存档。
+功能开关经 `registry.feature_enabled` 与 live 的 `FEATURES` 声明解耦，每次 neural
+运行把 prompt 快照（`prompt-element.txt`/`prompt-formal.txt`）与功能决策
+（`prompt_features`）写进 run 目录，`verify` 优先回放快照，因此原地修改 live
+不再破坏历史 run 的可验证性。切换时已核实 live 与 v3.16/v3.20 的功能门完全一致
+（切换只改文本、不改门行为）。政策与重放契约见
+[PROMPT_LIVE_POLICY.md](PROMPT_LIVE_POLICY.md)。
+
+2026-10-06 完成第一次 live 原地修改（`semantic-live-1`），针对 blind_03 归因的
+要素层 P 缺陷：**禁止后置观察量进入 P**。要素 prompt 新增两条规则——(a) 动作自身
+产出的观察量（post-state、unchanged/stays 断言、动作计算的量）无论报告如何以
+事实口吻陈述，都不是 precondition，而是 outcome；(b) P 使用先前状态必须有独立
+片段在动作开始前确立它，否则移出 P 并在 ambiguities 记录时点循环。输出前的逐条
+自审也加入"引用片段的观测时点"检查。规则有守护测试
+（`test_prompt_live.py::test_live_element_prompt_keeps_p_temporal_role_mandate`）。
+该改动已于 2026-10-06 在全新冻结批次
+[`prompt_live1_blind_01`](../evaluation/prompt_live1_blind_01/REPORT.md)上测量
+（5 份未见报告，排除全部历史 case/报告/输入哈希，DeepSeek 直连 18 次调用，
+经用户授权）。结果：**目标缺陷未复现**——5/5 案例的 P 全部为动作前状态，
+后置观察量进 P 为 0 例；先前状态缺乏动作前片段时模型改为在 ambiguities 如实
+记录而非断言（SukukFi、Hybra 均可见此行为）。要素层 P/I/V 5/5 通过。工程
+完成率 2/5 候选，两例均通过零调用离线 verify 且**首次走 `prompt_snapshots`
+快照重放路径**（活 prompt 政策的可验证性契约端到端成立）。3 例拒绝全部在
+形式化阶段且与要素层无关：2 例为数值保真门误伤叙事性 assumption（数字已在
+P 中编码），1 例为单位门正确拦截 `expected_rate = total × 1` 伪造定义（根因
+是 DSL 缺除法、rate 类量无法表达）。唯一公式缺陷（SukukFi 的 I）为形式化
+阶段引入的适用范围收窄。该批 n=5 且与 blind_03 报告集不相交，比例不可跨批
+比较，只用于归因。
+
+2026-10-06 按该批归因完成三项修复（合称 `semantic-live-2`）：
+
+1. **数值门 assumption 豁免**（代码）：`check_numeric_plan` 新增
+   `relax_assumptions` 门（feature `assumption_numeric_relief`，live 为
+   True、全部冻结版本为 False）。含字面量但未编码的叙事性 assumption
+   不再强制进 P；**已编码语句的字面量保真检查与 precondition 严格行为
+   完全不变**。零模型调用的离线
+   [probe](../evaluation/prompt_live1_blind_01/PROBE_ASSUMPTION_RELIEF.json)
+   证明 Kinetiq/Intuition 已保存的重试计划在新门下通过且可合成，冻结 run
+   结果不被改写；live1 两个候选的 verify 重放不受影响（旧
+   `prompt_features` 无新键，回放按严格门执行）。
+2. **rate 类量规则**（live prompt）：QEXPR 无除法，禁止乘 1 等常数硬凑
+   单位相等；须改写为 amount 层不变量或交叉相乘，确无重述时返回
+   blocking `unsupported_relation`。**不新增 DSL 除法**：整数除法的截断
+   语义会使 rate 相等产生更弱的 I，违背数值保真原则；单位组合依赖命名
+   约定且给 `mul` 加单位消除会威胁冻结 run 的确定性重放。
+3. **I 适用条件规则**（live prompt）：I 的 condition 须承载 intent 陈述的
+   全部适用限定词（caller≠owner、任意未授权 caller 等），不得收窄到具体
+   事件子场景；报告只确立子场景时保留窄形并在 limitations 记录。输出前
+   自审清单新增第 7 条逐项核对。
+
+live-2 的 prompt 规则（第 2、3 项）有守护测试
+（`test_prompt_live.py::test_live_formal_prompt_keeps_rate_and_i_applicability_mandates`），
+其效果已于同日在全新冻结批次
+[`prompt_live2_blind_01`](../evaluation/prompt_live2_blind_01/REPORT.md)上测量
+（5 份未见报告，排除含 live1 的全部历史 102 case/104 报告/108 输入哈希，
+DeepSeek 直连 16 次调用，经用户授权）。结果：
+
+- **工程完成率 3/5 候选**（live1 为 2/5），三例均通过零调用离线 verify
+  （`prompt_snapshots`）；要素层 5/5 P/I/V、后置观察量 0 例。
+- **`assumption_numeric_relief` 验证**：叙事性 assumption 误拒 0 例
+  （live1 为 2 例）；本批数值门两次触发均为正确拦截（自比较占位符、
+  界被布尔化）。
+- **I 适用条件规则成立**：三例候选的 condition 均承载报告一般性限定，
+  无子场景收窄。rate 规则未被本批行使（无 rate 案例）。
+- 候选公式严格全通过 2/3（GTE 的 I 为可观测弱化 partial，报告无更强
+  编码依据）。
+- 2 例拒绝同属一个新的形式化阶段族：首次缺陷被门正确拦截，修复方向
+  正确但 (a) 修复须改 `pattern`（field-scoped 冻结字段）被丢弃，(b) 离线
+  复核证明修复后的计划仍不满足数值门——显式界被写成非文本字面量常量
+  （2^12 vs bits [36:48)）或符号常量（`cl_gauge_type_constant` vs 常量 1）。
+  下一优先级因此是"界须用报告字面量常量表达"的 prompt/修复反馈层改进，
+  其次才是放行 `pattern`。
+
+全量本地回归 342 例，失败 10 例均为既有基线（冻结 run 哈希漂移与未提交
+加固遗留），无一由本次改动引入。
+
+2026-10-06 晚按 live2 归因完成 `semantic-live-3`（第三轮原地修改），并冻结
+反过拟合纪律：
+
+- **终局保留批** `final_holdout_01`（10 例、两个 manifest）冻结于本轮任何
+  修改与选样之前：永不进迭代、迭代期间不做任何语义查看；循环停止后用
+  当时的 live prompt 跑一次（n=10），是整个迭代循环的唯一无偏测量。所有
+  后续迭代批的 select.py 经 SELECTION.json 扫描自动排除这 10 例。
+- **停止规则**：最多再迭代 2 轮（live-3、live-4）；任一轮相对上一盲批无
+  实测改善即提前停。**记分口径是忠实结局**（正确通过 + 诚实的未编码/
+  拒绝），不是原始候选率——目标是无损翻译，门把伪造常量拦下来是忠实行为。
+- live-3 三项修改（归因：live2 两例拒绝同族，满足"≥2 独立失败案例"规则
+  吝啬门槛）：
+  1. formal prompt 新增显式界常量规则：界的常量必须是所引报告文本中出现的
+     字面量（`right:{"const":N}`）；禁止用计算值表达（"12-bit"/bits [36:48)
+     绑定 12，绝不写 2^12/4096/掩码）；枚举界（`type == 1`）用常量而非命名
+     符号；文本无字面量时该界转 unresolved，不得发明常量。
+  2. 修复反馈（`formal_retry_hint` 的 numeric P 分支）给出同样的常量形式
+     处方，此前反馈只报错不给药。
+  3. `formal_repair_fields` 的 numeric P 分支加入 `pattern`：数值门修复本就
+     常须重写出问题的比较谓词本身，此前该字段被冻结导致方向正确的修复被
+     机械丢弃（live2 两例的最终死因之一）。
+- 守护测试：`test_prompt_live.py` 新增常量规则短语锁定与 numeric 修复字段
+  含 `pattern` 断言。live1/live2 全部 5 个候选 run 在改动后仍
+  `offline_verified: true`（快照重放不受 prompt 原地修改影响，重放契约
+  继续成立）。全量回归 344 例，失败 10 例仍为既有基线，零新增。
+- 盲测批次 `prompt_live3_blind_01`（10 例，两个 manifest，盐排序冻结、
+  排除含保留批的全部历史）结果记录于其 REPORT.md（跑完后回填）。
+
 - 阶段二可独立从 `report.json` 的描述与影响建立证据编号，提取 P（前提）、I（报告声称应满足的性质）、V（直接违反 I 的行为/结果），生成形式计划、SMT 和交接用 `stage3-spec.json`，并运行本地 Z3 一致性查询。没有执行 PoC 或改变阶段一、三。
 - 程序拒绝未知证据编号和不合法的形式计划；`auto-triage.json` 区分候选、待审、弃权和流水线故障。`review` 不等于已证实漏洞。
 - 可选的前提审查 v5 同时检查 `precondition` 和 `assumption` 的证据支持及前提/动作/结果时序。受约束修复仅能改动被标记的 P 项，修复后必须重审，且不能自动认证覆盖完整。

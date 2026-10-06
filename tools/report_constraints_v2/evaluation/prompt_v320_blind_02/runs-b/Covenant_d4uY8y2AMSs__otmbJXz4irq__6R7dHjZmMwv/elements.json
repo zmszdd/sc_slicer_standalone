@@ -1,0 +1,285 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "mint cap enforcement in _checkMintCap for small markets",
+    "environment": "protocol with small markets where marketBaseTokenSupply <= 2^noCapLimit",
+    "evidence": [
+      "The `_checkMintCap` function uses `&&` (AND) instead of `||` (OR) in the small market branch, allowing mint amounts up to 2^96 (~7.9×10²⁸) to bypass intended caps when minting more than the market's total supply.",
+      "The `_checkMintCap` function enforces different restrictions based on market size. For small markets (where `marketBaseTokenSupply <= 2^noCapLimit`), the code attempts to cap mint amounts to prevent destabilization:",
+      "**The Flaw:** The condition uses `&&` requiring **both** conditions to be true for a revert:",
+      "1. `mintAmount > Q96` (where Q96 = 2^96 = 79,228,162,514,264,337,593,543,950,336)",
+      "2. `mintAmount > marketBaseTokenSupply`",
+      "This creates a bypass: if either condition is false, the check passes. Since Q96 is astronomically large (10²⁸), practically all real-world mint amounts will be below it, making the first condition false and allowing the entire check to pass regardless of the second condition.",
+      "1. Market has `baseSupply = 1 ETH` (considered \"small\" with default `noCapLimit = 60`)",
+      "2. Attacker mints `100 ETH` (100x the market size)",
+      "3. Check evaluates: `(100e18 > Q96) && (100e18 > 1e18)` → `false && true` → `false`",
+      "4. Transaction succeeds, bypassing the intended cap",
+      "The comment states: *\"for small markets we can mint up to 2^96\"* - but the intent was clearly to limit mints to `min(Q96, marketBaseTokenSupply)`, not allow anything below Q96 regardless of market size.",
+      "Every mint operation calls `_calcMint`, which invokes `_checkMintCap`. The flawed logic allows small markets to accept disproportionately large mints that should be rejected.",
+      "- No special privileges required - any user can exploit this"
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "attacker",
+      "role": "attacker",
+      "evidence": [
+        "2. Attacker mints `100 ETH` (100x the market size)",
+        "- No special privileges required - any user can exploit this"
+      ]
+    },
+    {
+      "id": "small_market",
+      "name": "small market",
+      "role": "contract",
+      "evidence": [
+        "The `_checkMintCap` function enforces different restrictions based on market size. For small markets (where `marketBaseTokenSupply <= 2^noCapLimit`), the code attempts to cap mint amounts to prevent destabilization:",
+        "1. Market has `baseSupply = 1 ETH` (considered \"small\" with default `noCapLimit = 60`)"
+      ]
+    },
+    {
+      "id": "check_mint_cap",
+      "name": "_checkMintCap function",
+      "role": "contract",
+      "evidence": [
+        "The `_checkMintCap` function uses `&&` (AND) instead of `||` (OR) in the small market branch, allowing mint amounts up to 2^96 (~7.9×10²⁸) to bypass intended caps when minting more than the market's total supply.",
+        "The `_checkMintCap` function enforces different restrictions based on market size. For small markets (where `marketBaseTokenSupply <= 2^noCapLimit`), the code attempts to cap mint amounts to prevent destabilization:",
+        "**The Flaw:** The condition uses `&&` requiring **both** conditions to be true for a revert:"
+      ]
+    },
+    {
+      "id": "mint_amount",
+      "name": "mint amount",
+      "role": "asset",
+      "evidence": [
+        "1. `mintAmount > Q96` (where Q96 = 2^96 = 79,228,162,514,264,337,593,543,950,336)",
+        "2. Attacker mints `100 ETH` (100x the market size)"
+      ]
+    },
+    {
+      "id": "market_base_token_supply",
+      "name": "marketBaseTokenSupply",
+      "role": "asset",
+      "evidence": [
+        "The `_checkMintCap` function enforces different restrictions based on market size. For small markets (where `marketBaseTokenSupply <= 2^noCapLimit`), the code attempts to cap mint amounts to prevent destabilization:",
+        "2. `mintAmount > marketBaseTokenSupply`",
+        "1. Market has `baseSupply = 1 ETH` (considered \"small\" with default `noCapLimit = 60`)"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_small_market",
+      "kind": "precondition",
+      "text": "The market is a small market, meaning marketBaseTokenSupply <= 2^noCapLimit.",
+      "modality": "asserted",
+      "entity_ids": [
+        "small_market",
+        "market_base_token_supply"
+      ],
+      "evidence": [
+        "The `_checkMintCap` function enforces different restrictions based on market size. For small markets (where `marketBaseTokenSupply <= 2^noCapLimit`), the code attempts to cap mint amounts to prevent destabilization:",
+        "1. Market has `baseSupply = 1 ETH` (considered \"small\" with default `noCapLimit = 60`)"
+      ]
+    },
+    {
+      "id": "p_market_base_supply_1eth",
+      "kind": "precondition",
+      "text": "The market has baseSupply = 1 ETH.",
+      "modality": "asserted",
+      "entity_ids": [
+        "small_market",
+        "market_base_token_supply"
+      ],
+      "evidence": [
+        "1. Market has `baseSupply = 1 ETH` (considered \"small\" with default `noCapLimit = 60`)"
+      ]
+    },
+    {
+      "id": "p_mint_amount_100eth",
+      "kind": "precondition",
+      "text": "The mint amount is 100 ETH, which is 100x the market size.",
+      "modality": "asserted",
+      "entity_ids": [
+        "mint_amount",
+        "small_market"
+      ],
+      "evidence": [
+        "2. Attacker mints `100 ETH` (100x the market size)"
+      ]
+    },
+    {
+      "id": "p_mint_amount_below_q96",
+      "kind": "precondition",
+      "text": "The mint amount is below Q96 = 2^96, so the first condition mintAmount > Q96 is false.",
+      "modality": "asserted",
+      "entity_ids": [
+        "mint_amount"
+      ],
+      "evidence": [
+        "1. `mintAmount > Q96` (where Q96 = 2^96 = 79,228,162,514,264,337,593,543,950,336)",
+        "This creates a bypass: if either condition is false, the check passes. Since Q96 is astronomically large (10²⁸), practically all real-world mint amounts will be below it, making the first condition false and allowing the entire check to pass regardless of the second condition.",
+        "3. Check evaluates: `(100e18 > Q96) && (100e18 > 1e18)` → `false && true` → `false`"
+      ]
+    },
+    {
+      "id": "p_mint_amount_above_supply",
+      "kind": "precondition",
+      "text": "The mint amount is greater than marketBaseTokenSupply, so the second condition mintAmount > marketBaseTokenSupply is true.",
+      "modality": "asserted",
+      "entity_ids": [
+        "mint_amount",
+        "market_base_token_supply"
+      ],
+      "evidence": [
+        "2. `mintAmount > marketBaseTokenSupply`",
+        "3. Check evaluates: `(100e18 > Q96) && (100e18 > 1e18)` → `false && true` → `false`"
+      ]
+    },
+    {
+      "id": "p_no_special_privileges",
+      "kind": "precondition",
+      "text": "No special privileges are required; any user can exploit this.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker"
+      ],
+      "evidence": [
+        "- No special privileges required - any user can exploit this"
+      ]
+    },
+    {
+      "id": "a_call_mint",
+      "kind": "action",
+      "text": "The attacker calls the mint operation, which invokes _calcMint and then _checkMintCap.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "check_mint_cap"
+      ],
+      "evidence": [
+        "2. Attacker mints `100 ETH` (100x the market size)",
+        "Every mint operation calls `_calcMint`, which invokes `_checkMintCap`. The flawed logic allows small markets to accept disproportionately large mints that should be rejected."
+      ]
+    },
+    {
+      "id": "a_check_evaluates_and",
+      "kind": "action",
+      "text": "The check evaluates (100e18 > Q96) && (100e18 > 1e18) as false && true, resulting in false.",
+      "modality": "asserted",
+      "entity_ids": [
+        "check_mint_cap",
+        "mint_amount",
+        "market_base_token_supply"
+      ],
+      "evidence": [
+        "3. Check evaluates: `(100e18 > Q96) && (100e18 > 1e18)` → `false && true` → `false`"
+      ]
+    },
+    {
+      "id": "a_transaction_succeeds",
+      "kind": "action",
+      "text": "The transaction succeeds, bypassing the intended cap.",
+      "modality": "asserted",
+      "entity_ids": [
+        "check_mint_cap",
+        "attacker"
+      ],
+      "evidence": [
+        "4. Transaction succeeds, bypassing the intended cap"
+      ]
+    },
+    {
+      "id": "rc_and_instead_of_or",
+      "kind": "root_cause",
+      "text": "_checkMintCap uses && (AND) instead of || (OR) in the small market branch, so the revert requires both mintAmount > Q96 and mintAmount > marketBaseTokenSupply to be true.",
+      "modality": "asserted",
+      "entity_ids": [
+        "check_mint_cap"
+      ],
+      "evidence": [
+        "The `_checkMintCap` function uses `&&` (AND) instead of `||` (OR) in the small market branch, allowing mint amounts up to 2^96 (~7.9×10²⁸) to bypass intended caps when minting more than the market's total supply.",
+        "**The Flaw:** The condition uses `&&` requiring **both** conditions to be true for a revert:",
+        "1. `mintAmount > Q96` (where Q96 = 2^96 = 79,228,162,514,264,337,593,543,950,336)",
+        "2. `mintAmount > marketBaseTokenSupply`",
+        "This creates a bypass: if either condition is false, the check passes. Since Q96 is astronomically large (10²⁸), practically all real-world mint amounts will be below it, making the first condition false and allowing the entire check to pass regardless of the second condition."
+      ]
+    },
+    {
+      "id": "i_cap_mints_to_min",
+      "kind": "security_intent",
+      "text": "For small markets, mint amounts should be limited to min(Q96, marketBaseTokenSupply), so a mint larger than marketBaseTokenSupply should be rejected.",
+      "modality": "inferred",
+      "entity_ids": [
+        "check_mint_cap",
+        "mint_amount",
+        "market_base_token_supply"
+      ],
+      "evidence": [
+        "The comment states: *\"for small markets we can mint up to 2^96\"* - but the intent was clearly to limit mints to `min(Q96, marketBaseTokenSupply)`, not allow anything below Q96 regardless of market size."
+      ]
+    },
+    {
+      "id": "imp_bypass_cap",
+      "kind": "impact",
+      "text": "Mint amounts up to 2^96 (~7.9×10²⁸) bypass the intended caps when minting more than the market's total supply.",
+      "modality": "asserted",
+      "entity_ids": [
+        "check_mint_cap",
+        "mint_amount"
+      ],
+      "evidence": [
+        "The `_checkMintCap` function uses `&&` (AND) instead of `||` (OR) in the small market branch, allowing mint amounts up to 2^96 (~7.9×10²⁸) to bypass intended caps when minting more than the market's total supply.",
+        "4. Transaction succeeds, bypassing the intended cap"
+      ]
+    },
+    {
+      "id": "imp_disproportionate_mints",
+      "kind": "impact",
+      "text": "Small markets accept disproportionately large mints that should be rejected.",
+      "modality": "asserted",
+      "entity_ids": [
+        "small_market",
+        "mint_amount"
+      ],
+      "evidence": [
+        "Every mint operation calls `_calcMint`, which invokes `_checkMintCap`. The flawed logic allows small markets to accept disproportionately large mints that should be rejected."
+      ]
+    },
+    {
+      "id": "imp_etwap_bypass",
+      "kind": "impact",
+      "text": "The ETWAP flow control is circumvented because mints do not respect the gradual growth constraints.",
+      "modality": "asserted",
+      "entity_ids": [
+        "small_market"
+      ],
+      "evidence": [
+        "2. **ETWAP Bypass:** The Exponential Time-Weighted Average Price (ETWAP) flow control is circumvented, as mints don't respect the gradual growth constraints"
+      ]
+    },
+    {
+      "id": "assumption_any_user",
+      "kind": "assumption",
+      "text": "Any user can exploit this because no special privileges are required.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker"
+      ],
+      "evidence": [
+        "- No special privileges required - any user can exploit this"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_call_mint",
+    "a_check_evaluates_and",
+    "a_transaction_succeeds"
+  ],
+  "ambiguities": [
+    "Whether the attack scenario was actually executed on-chain or is only a hypothetical example is not stated.",
+    "The exact value of noCapLimit and the threshold 2^noCapLimit are not fully specified beyond the default 60.",
+    "The report does not specify whether the attacker's mint amount of 100 ETH is within the protocol's other limits or if additional checks apply."
+  ]
+}

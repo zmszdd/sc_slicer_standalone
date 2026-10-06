@@ -1,0 +1,15 @@
+Max order-book price levels exceeded when duplicate worst-level orders present
+
+## Summary
+Posting a new, more competitive limit order can grow the order-book beyond `maxNumLimitsPerSide` if the worst price level already holds more than one order.
+
+## Finding Description  
+The invariant that each side of the order book must never exceed `maxNumLimitsPerSide` unique price levels is enforced in [`CLOB._executeBidLimitOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L574-L604) and [`CLOB._executeAskLimitOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L607-L637). When the tree is full these functions attempt to free one slot:
+https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L592-L597
+
+[`_removeNonCompetitiveOrder()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L875-L896) deletes **only one** order from the worst price level and calls [`BookLib.removeOrderFromBook()`](https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/types/Book.sol#L157-L160).  That helper removes the price node *only when the limit becomes empty*.  If multiple orders existed at the worst price, the price level remains in the red-black tree, so its size is unchanged.  The subsequent `addOrderToBook()` inserts a brand-new price, increasing the tree size to **`maxNumLimitsPerSide + 1`**.  Repeating this process allows unbounded growth, leading to excessive gas, out-of-gas reverts, and a permanently unmanageable order book.
+
+Highest-impact scenario: an attacker fills each worst-price limit with two tiny orders, then continuously posts better-priced orders.  The tree expands indefinitely, causing DoS and potentially locking funds.
+
+## Impact Explanation  
+High.  The bug breaks a core invariant, enables unbounded storage/gas growth, and can freeze trading or funds.
