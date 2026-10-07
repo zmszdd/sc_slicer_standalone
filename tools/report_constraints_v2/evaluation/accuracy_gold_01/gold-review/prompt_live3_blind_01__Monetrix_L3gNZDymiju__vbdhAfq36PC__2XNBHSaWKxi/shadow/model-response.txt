@@ -1,0 +1,22 @@
+{
+  "case_id": "PrecompileReader.suppliedBalance() discards 0x811 borrow liabilities",
+  "before_conditions": [
+    "The Hyperliquid 0x811 precompile returns a BorrowLendUserTokenState struct with four uint64 fields: borrow.basis, borrow.value, supply.basis, supply.value.",
+    "PrecompileReader.suppliedBalance() decodes only the fourth field (supply.value) and discards the borrow fields.",
+    "MonetrixAccountant._readL1Backing() iterates over all registered SuppliedAssets and accumulates supply values into total via suppliedUsdcEvm() or suppliedNotionalUsdcFromPerp(), without subtracting borrow values.",
+    "PM is a fully planned and implemented feature path in the protocol, with setPmEnabled(), notifyVaultSupply(), PM branches in _sendL1Bridge(), and the entire 0x811 read pipeline.",
+    "Governor enabling PM via setPmEnabled(true) is an expected governance operation.",
+    "Once PM is enabled, the Vault automatically registers 0x811 supplied slots in the Accountant when executing hedges and BLP operations, through executeHedge() and supplyToBlp().",
+    "After PM is enabled, the Hyperliquid PM engine automatically manages the Vault's L1 account borrowing based on market conditions (funding rate changes, collateral value fluctuations, margin requirement adjustments).",
+    "The Vault contract only has sendSupply (op=0) and sendWithdrawSupply (op=1) operations, with no explicit borrow operation.",
+    "The Operator calls settle(proposedYield) as part of normal duties.",
+    "Gate 3 checks proposedYield <= distributableSurplus().",
+    "Gate 4's annualized APR cap (default 1200bps = 12%) only limits the extraction rate per settlement.",
+    "With 10M USDM supply, each 21-hour settlement cycle extracts approximately 6,904 USDC of phantom yield.",
+    "Over 30 days across approximately 34 settlement cycles, this accumulates to roughly 234,000 USDC of real funds extracted.",
+    "There is no on-chain alerting mechanism that can detect the inflated surplus, because totalBackingSigned() itself is the on-chain 'source of truth'.",
+    "yieldShortfall() also uses the inflated surplus to determine how much yield to bridge from L1."
+  ],
+  "required_property": "The protocol's solvency invariant INV-1 (backing >= totalSupply) should hold, protecting the protocol and its users from insolvency, at all times, including after PM is enabled and during settlement cycles.",
+  "bad_outcome": "totalBackingSigned() is permanently inflated because borrow liabilities are ignored; surplus() and distributableSurplus() inherit this inflated value; Gate 3 does not block yield distributions that should not have passed; settle() transfers real EVM USDC into YieldEscrow and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund, and Foundation; this constitutes direct loss of real funds, automatically repeating every settlement cycle without human intervention, cumulatively eroding protocol solvency and trending toward insolvency (backing < totalSupply) within months, violating INV-1."
+}
