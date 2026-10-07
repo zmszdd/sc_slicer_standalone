@@ -120,7 +120,17 @@
 ## 双复核（同模型异构 prompt）
 
 见 `DUAL_REVIEW.json`（deepseek-flash，审计口径 prompt）。结果与主复核的
-分歧点将逐条列出。
+分歧点：
+
+- **收敛**：Hybra 公式 P partial（重复谓词，双复核同判）、Panoptic__Next_Core
+  公式 P/I partial（双复核再加 V partial）、Intuition 公式 I partial（弱化，
+  双复核同判）、4 例拒绝 formal 三项 not_evaluable 一致。
+- **双复核更严**：Ekubo 公式 V partial（主复核 pass）、Merkl 公式 V
+  partial、Panoptic_Hypovault 三项 partial（主复核全过，双复核指认
+  first_fulfill_total_assets==1 的条件收窄）——分歧集中于范围收窄的
+  严格度。
+- **主复核更严**：无。
+- 两套复核均无 fail 评级；无任何案例在两套口径下互换通过/拒绝。
 
 ## 停止规则判定与终局
 

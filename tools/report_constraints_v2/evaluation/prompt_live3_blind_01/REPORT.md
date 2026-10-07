@@ -117,7 +117,19 @@
 ## 双复核（同模型异构 prompt）
 
 见 `DUAL_REVIEW.json`（deepseek-flash，审计口径 prompt，与生成 prompt 结构
-不同）。结果与主复核的分歧点将逐条列出。
+不同）。结果与主复核的分歧点：
+
+- **收敛**：两个 Panoptic 候选的谓词塌缩被双复核独立抓到（formal P 均
+  partial，与主复核同判）；GTE_Perps、SukukFi、Merrl/Brix 全过判定一致；
+  4 例拒绝的 formal 三项均 not_evaluable 判定一致；Kinetiq 全
+  not_evaluable 一致。
+- **双复核更严**：Merkl 要素层 I partial（适用范围）、SukukFi 公式 V
+  partial、Panoptic_Hypovault 公式 I/V partial（主复核仅 P partial）、
+  Intuition 要素层 I partial——分歧集中于适用范围收窄的严格度，主复核
+  以"收窄已记录于 unresolved/limitations"为通过口径。
+- **主复核更严**：无（主复核的重复谓词 partial 双复核均给出同等或更严
+  判定）。
+- 两套复核均无 fail 评级；无任何案例在两套口径下互换通过/拒绝。
 
 ## 下一步（按本批归因排序）
 

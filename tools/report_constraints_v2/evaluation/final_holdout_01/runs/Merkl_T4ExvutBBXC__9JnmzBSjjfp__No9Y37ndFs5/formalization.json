@@ -1,0 +1,332 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "physical_balance": {
+      "sort": "int",
+      "unit": "tokens",
+      "meaning": "contract's total physical token balance after both deposits",
+      "checkpoint": "after both deposits",
+      "entity_ids": [
+        "distribution_creator"
+      ],
+      "evidence": "3.  **Total Physical Balance:** 1,990. **Total Liabilities:** 2,000."
+    },
+    "total_liabilities": {
+      "sort": "int",
+      "unit": "tokens",
+      "meaning": "sum of creatorBalance ledgers after both deposits",
+      "checkpoint": "after both deposits",
+      "entity_ids": [
+        "distribution_creator",
+        "user_a",
+        "user_b"
+      ],
+      "evidence": "3.  **Total Physical Balance:** 1,990. **Total Liabilities:** 2,000."
+    },
+    "fot_deposit_received": {
+      "sort": "int",
+      "unit": "tokens",
+      "meaning": "tokens actually received by the contract from User A's FoT deposit",
+      "checkpoint": "after User A deposit",
+      "entity_ids": [
+        "user_a",
+        "fot_token",
+        "distribution_creator"
+      ],
+      "evidence": "1.  User A deposits 1,000 FoT tokens (1% fee). The contract receives 990, but credits User A with 1,000."
+    },
+    "standard_deposit_received": {
+      "sort": "int",
+      "unit": "tokens",
+      "meaning": "tokens actually received by the contract from User B's standard deposit",
+      "checkpoint": "after User B deposit",
+      "entity_ids": [
+        "user_b",
+        "standard_token",
+        "distribution_creator"
+      ],
+      "evidence": "2.  User B deposits 1,000 standard tokens. The contract receives 1,000, credits User B with 1,000."
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "DistributionCreator reward distribution accounting for fee-on-transfer tokens",
+      "modality": "asserted",
+      "impact_ids": [
+        "i_system_insolvency"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "User A deposits 1,000 FoT tokens with a 1% fee, so the contract receives 990 tokens.; User B deposits 1,000 standard tokens, and the contract receives 1,000 tokens.; After both deposits, the contract's total physical balance is 1,990 tokens.; After both deposits, the total recorded liabilities (sum of creatorBalance ledgers) are 2,000 tokens.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "fot_deposit_received"
+                  },
+                  {
+                    "const": 990
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "standard_deposit_received"
+                  },
+                  {
+                    "const": 1000
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "physical_balance"
+                  },
+                  {
+                    "const": 1990
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "total_liabilities"
+                  },
+                  {
+                    "const": 2000
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_fot_deposit",
+            "p_standard_deposit",
+            "p_physical_balance",
+            "p_total_liabilities"
+          ],
+          "evidence": [
+            "1.  User A deposits 1,000 FoT tokens (1% fee). The contract receives 990, but credits User A with 1,000.",
+            "2.  User B deposits 1,000 standard tokens. The contract receives 1,000, credits User B with 1,000.",
+            "3.  **Total Physical Balance:** 1,990. **Total Liabilities:** 2,000."
+          ]
+        },
+        "safety": {
+          "text": "The internal creatorBalance ledger should be credited by the actual number of tokens received by the contract, so recorded liabilities never exceed the physical token balance.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "fot_deposit_received"
+                      },
+                      {
+                        "const": 990
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "standard_deposit_received"
+                      },
+                      {
+                        "const": 1000
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "le",
+                "args": [
+                  {
+                    "var": "total_liabilities"
+                  },
+                  {
+                    "var": "physical_balance"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_ledger_matches_received"
+          ],
+          "evidence": [
+            "The `DistributionCreator` contract accepts arbitrary ERC20 tokens for reward distribution. However, the system's internal accounting logic in `increaseTokenBalance` assumes that the balance increase in the contract exactly matches the input `amount` parameter. This assumption fails for **Fee-on-Transfer (FoT)** tokens or tokens with transfer inaccuracies (e.g., rounding loss in **stETH**).",
+            "The `increaseTokenBalance` function updates the user's internal ledger (`creatorBalance`) using the input `amount` parameter, ignoring the actual number of tokens received by the contract.",
+            "Because the contract physically holds fewer tokens than the sum of all `creatorBalance` ledgers, any user depositing FoT tokens (or tokens with slight rounding loss like stETH) effectively creates a system-wide deficit."
+          ]
+        },
+        "effects": {
+          "text": "The contract is system-wide insolvent because it physically holds fewer tokens than the sum of all creatorBalance ledgers.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "fot_deposit_received"
+                      },
+                      {
+                        "const": 990
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "standard_deposit_received"
+                      },
+                      {
+                        "const": 1000
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "le",
+                    "args": [
+                      {
+                        "var": "total_liabilities"
+                      },
+                      {
+                        "var": "physical_balance"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_system_insolvency"
+          ],
+          "evidence": [
+            "Because the contract physically holds fewer tokens than the sum of all `creatorBalance` ledgers, any user depositing FoT tokens (or tokens with slight rounding loss like stETH) effectively creates a system-wide deficit.",
+            "This discrepancy creates a system-wide **insolvency**."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_fot_deposit",
+            "p_standard_deposit",
+            "p_physical_balance",
+            "p_total_liabilities"
+          ],
+          "args.0": [
+            "p_fot_deposit",
+            "p_standard_deposit",
+            "p_physical_balance",
+            "p_total_liabilities"
+          ],
+          "args.1": [
+            "p_fot_deposit",
+            "p_standard_deposit",
+            "p_physical_balance",
+            "p_total_liabilities"
+          ],
+          "args.2": [
+            "p_fot_deposit",
+            "p_standard_deposit",
+            "p_physical_balance",
+            "p_total_liabilities"
+          ],
+          "args.3": [
+            "p_fot_deposit",
+            "p_standard_deposit",
+            "p_physical_balance",
+            "p_total_liabilities"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_ledger_matches_received"
+          ],
+          "args.0": [
+            "si_ledger_matches_received"
+          ],
+          "args.0.args.0": [
+            "si_ledger_matches_received"
+          ],
+          "args.0.args.1": [
+            "si_ledger_matches_received"
+          ],
+          "args.1": [
+            "si_ledger_matches_received"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_system_insolvency"
+          ],
+          "args.0": [
+            "i_system_insolvency"
+          ],
+          "args.0.args.0": [
+            "i_system_insolvency"
+          ],
+          "args.0.args.1": [
+            "i_system_insolvency"
+          ],
+          "args.1": [
+            "i_system_insolvency"
+          ],
+          "args.1.args.0": [
+            "i_system_insolvency"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_system_insolvency",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The DistributionCreator contract accepts arbitrary ERC20 tokens, including fee-on-transfer tokens, for reward distribution.",
+        "The FoT deposit and standard deposit are treated as completed prior deposits establishing the stated balances."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Only the system-wide insolvency impact is formalized; the inflated solvency check, User B revert, and permanent DoS/fund loss impacts are deferred to future claims.",
+    "The plan models the ledger-vs-physical-balance correspondence at the stated post-deposit checkpoint and does not encode the createCampaign execution path.",
+    "The report does not specify transaction ordering between User A's createCampaign and User B's attempt, so no temporal ordering is encoded.",
+    "Deferred report impact: i_solvency_check_inflated",
+    "Deferred report impact: i_user_b_revert",
+    "Deferred report impact: i_dos_fund_loss"
+  ]
+}

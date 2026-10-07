@@ -1,0 +1,201 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "value_relation",
+  "precondition_ids": [
+    "p_in_range_high_fee",
+    "p_out_of_range_low_fee",
+    "p_current_tick_spot",
+    "p_spot_manipulable",
+    "p_safe_mode_threshold"
+  ],
+  "intent_id": "si_fee_reflects_range",
+  "impact_ids": [
+    "i_fee_evasion"
+  ],
+  "symbols": {
+    "position_in_range": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "position's true In-Range status (underlying price close to strike)",
+      "checkpoint": "before force exercise fee determination",
+      "entity_ids": [
+        "position",
+        "risk_engine"
+      ],
+      "source_ids": [
+        "p_in_range_high_fee",
+        "p_out_of_range_low_fee",
+        "si_fee_reflects_range"
+      ]
+    },
+    "fee_charged_high": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "force exercise fee charged equals the high FORCE_EXERCISE_COST (~1.024% of notional)",
+      "checkpoint": "after force exercise fee determination",
+      "entity_ids": [
+        "risk_engine",
+        "attacker"
+      ],
+      "source_ids": [
+        "p_in_range_high_fee",
+        "i_fee_evasion",
+        "si_fee_reflects_range"
+      ]
+    },
+    "fee_charged_nominal": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "force exercise fee charged equals the nominal ONE_BPS (~0.01% of notional)",
+      "checkpoint": "after force exercise fee determination",
+      "entity_ids": [
+        "risk_engine",
+        "attacker"
+      ],
+      "source_ids": [
+        "p_out_of_range_low_fee",
+        "i_fee_evasion",
+        "si_fee_reflects_range"
+      ]
+    },
+    "current_tick_manipulated": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "currentTick (instantaneous Uniswap spot) has been atomically manipulated via flash swap",
+      "checkpoint": "before force exercise fee determination",
+      "entity_ids": [
+        "uniswap_pool",
+        "attacker"
+      ],
+      "source_ids": [
+        "p_spot_manipulable",
+        "p_current_tick_spot"
+      ]
+    },
+    "within_safe_mode": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "tick deviation stays within protocol Safe Mode thresholds (MAX_TICKS_DELTA)",
+      "checkpoint": "before force exercise fee determination",
+      "entity_ids": [
+        "risk_engine",
+        "uniswap_pool"
+      ],
+      "source_ids": [
+        "p_safe_mode_threshold"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_in_range_high_fee",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "position_in_range",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_out_of_range_low_fee",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "position_in_range",
+        "value": false
+      }
+    },
+    {
+      "source_id": "p_current_tick_spot",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "current_tick_manipulated",
+        "value": false
+      }
+    },
+    {
+      "source_id": "p_spot_manipulable",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "current_tick_manipulated",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_safe_mode_threshold",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "within_safe_mode",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "position_in_range",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "current_tick_manipulated",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "within_safe_mode",
+          "value": true
+        }
+      ]
+    },
+    "relation": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "fee_charged_high",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "fee_charged_nominal",
+          "value": false
+        }
+      ]
+    }
+  },
+  "assumptions": [
+    "The attacker can perform the manipulate-forceExercise-reverse sequence atomically in a single transaction (as_atomic_sandwich).",
+    "The victim position was genuinely In-Range before manipulation, so the true In-Range status is true.",
+    "The attacker is permissionlessly able to call PanopticPool.forceExercise()."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "Report does not quantify the exact numeric relationship between tick deviation and MAX_TICKS_DELTA, so the Safe Mode threshold bound cannot be encoded as a numeric comparison.",
+      "source_ids": [
+        "p_safe_mode_threshold"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "missing_report_definition",
+      "description": "Report gives fee magnitudes only as approximate percentages (~1.024% and ~0.01% of notional) without a defined notional symbol or exact integer amounts, so fee values are represented as grounded Boolean outcomes rather than numeric comparisons.",
+      "source_ids": [
+        "p_in_range_high_fee",
+        "p_out_of_range_low_fee",
+        "i_fee_evasion"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Only the direct fee-evasion impact (i_fee_evasion) is formalized; i_yield_theft and i_invariant_bypass are deferred to future claims.",
+    "The condition narrows to the manipulated-tick subcase because the report establishes the manipulation scenario; the general requirement is that the fee reflect true In-Range status.",
+    "Fee amounts are encoded as Boolean high/nominal outcomes because the report provides only approximate percentages without a defined notional quantity.",
+    "Runtime binding of currentTick manipulation and Safe Mode threshold to concrete code is deferred."
+  ]
+}

