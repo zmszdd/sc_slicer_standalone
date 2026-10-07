@@ -14,5 +14,5 @@ for MANIFEST in manifest_a.json manifest_b.json; do
     --allow-report-upload \
     --prompt-version semantic-live \
     --readiness-retries 1 --element-retries 1 --formal-retries 1 \
-    --lean-formal-input --continue-on-review
+    --lean-formal-input --continue-on-review --resume
 done

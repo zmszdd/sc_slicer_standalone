@@ -1,0 +1,302 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "recipient_set": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Alice has set a recipient contract implementing IClaimRecipient as her claim recipient",
+      "checkpoint": "before claim",
+      "entity_ids": [
+        "alice",
+        "claim_recipient"
+      ],
+      "evidence": "1. Alice sets RateLimitedRecipient as her claim recipient"
+    },
+    "recipient_validation_reverts": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the recipient's onClaim() validation logic reverts for the attempted claim",
+      "checkpoint": "during callback",
+      "entity_ids": [
+        "claim_recipient"
+      ],
+      "evidence": "Consider a recipient contract that implements daily claim limits to prevent abuse:"
+    },
+    "operator_claim_called": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "an operator or authorized claimer calls claimWithRecipient() with non-empty data for Alice",
+      "checkpoint": "before claim",
+      "entity_ids": [
+        "operator",
+        "alice"
+      ],
+      "evidence": "2. Malicious operator attempts to claim 2000 tokens for Alice"
+    },
+    "claim_amount": {
+      "sort": "int",
+      "unit": "tokens",
+      "meaning": "attempted claim amount for Alice",
+      "checkpoint": "before claim",
+      "entity_ids": [
+        "alice",
+        "tokens"
+      ],
+      "evidence": "3. Callback executes: `dailyClaimed[alice] + 2000 > 1000` → reverts"
+    },
+    "daily_limit": {
+      "sort": "int",
+      "unit": "tokens",
+      "meaning": "recipient's daily claim limit",
+      "checkpoint": "before claim",
+      "entity_ids": [
+        "claim_recipient"
+      ],
+      "evidence": "3. Callback executes: `dailyClaimed[alice] + 2000 > 1000` → reverts"
+    },
+    "claim_succeeds": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the claim completes and tokens are transferred to Alice despite the recipient validation revert",
+      "checkpoint": "after claim",
+      "entity_ids": [
+        "distributor",
+        "alice",
+        "tokens"
+      ],
+      "evidence": "This finding demonstrates the **opposite vulnerability**: when the callback itself reverts (before returning a value), the empty catch block silently swallows the error, allowing the claim to succeed even when validation should have prevented it."
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "Distributor._claim() invokes IClaimRecipient.onClaim() callback inside a try-catch; a reverting callback is swallowed by the empty catch block and the claim proceeds",
+      "modality": "asserted",
+      "impact_ids": [
+        "i_validation_bypassed"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "Alice has set a recipient contract implementing IClaimRecipient as her claim recipient via setClaimRecipient().; The recipient's onClaim() implements validation logic (e.g., a daily claim limit) that reverts when the claim exceeds the allowed bound.; An operator or authorized claimer calls claimWithRecipient() with non-empty data for Alice.; The attempted claim amount exceeds the recipient's daily limit, e.g., dailyClaimed[alice] + 2000 > 1000.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "recipient_set"
+              },
+              {
+                "var": "recipient_validation_reverts"
+              },
+              {
+                "var": "operator_claim_called"
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "claim_amount"
+                  },
+                  {
+                    "const": 1000
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_recipient_set",
+            "p_recipient_validation",
+            "p_operator_claim",
+            "p_limit_exceeded"
+          ],
+          "evidence": [
+            "1. Alice sets RateLimitedRecipient as her claim recipient",
+            "2. User sets this recipient via `setClaimRecipient()`",
+            "Consider a recipient contract that implements daily claim limits to prevent abuse:",
+            "1. User implements `IClaimRecipient` with access control/validation in `onClaim()`:",
+            "4. `onClaim()` reverts due to failed validation",
+            "2. Malicious operator attempts to claim 2000 tokens for Alice",
+            "3. Malicious operator calls `claimWithRecipient()` with non-empty `data`",
+            "- Any operator or authorized claimer can bypass recipient validation",
+            "3. Callback executes: `dailyClaimed[alice] + 2000 > 1000` → reverts"
+          ]
+        },
+        "safety": {
+          "text": "A revert from the recipient's onClaim() callback should abort the claim rather than being silently ignored, so recipient-enforced validation and access control remain effective.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "recipient_set"
+                  },
+                  {
+                    "var": "recipient_validation_reverts"
+                  },
+                  {
+                    "var": "operator_claim_called"
+                  },
+                  {
+                    "op": "gt",
+                    "args": [
+                      {
+                        "var": "claim_amount"
+                      },
+                      {
+                        "const": 1000
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "claim_succeeds"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_callback_revert_aborts"
+          ],
+          "evidence": [
+            "The `_claim()` function in Distributor.sol uses a try-catch block to handle callbacks to `IClaimRecipient.onClaim()`. However, the catch block is empty, causing all reverts from the callback to be silently ignored. This allows claim recipients to bypass intended validation logic or access control checks that should be enforced through the callback mechanism.",
+            "This finding demonstrates the **opposite vulnerability**: when the callback itself reverts (before returning a value), the empty catch block silently swallows the error, allowing the claim to succeed even when validation should have prevented it.",
+            "1. **Callback Validation Bypass**: Recipients cannot reliably enforce access control or validation logic",
+            "2. **Protocol Invariant Undermined**: The callback mechanism exists to allow recipients to perform custom logic and validation, but it can be completely bypassed"
+          ]
+        },
+        "effects": {
+          "text": "The recipient's intended validation/access control is bypassed and the claim succeeds when it should have failed.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "recipient_set"
+                  },
+                  {
+                    "var": "recipient_validation_reverts"
+                  },
+                  {
+                    "var": "operator_claim_called"
+                  },
+                  {
+                    "op": "gt",
+                    "args": [
+                      {
+                        "var": "claim_amount"
+                      },
+                      {
+                        "const": 1000
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "claim_succeeds"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_validation_bypassed"
+          ],
+          "evidence": [
+            "This finding demonstrates the **opposite vulnerability**: when the callback itself reverts (before returning a value), the empty catch block silently swallows the error, allowing the claim to succeed even when validation should have prevented it.",
+            "7. Intended validation/access control is bypassed",
+            "1. **Callback Validation Bypass**: Recipients cannot reliably enforce access control or validation logic"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_recipient_set",
+            "p_recipient_validation",
+            "p_operator_claim",
+            "p_limit_exceeded"
+          ],
+          "args.3": [
+            "p_recipient_set",
+            "p_recipient_validation",
+            "p_operator_claim",
+            "p_limit_exceeded"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_callback_revert_aborts"
+          ],
+          "args.0": [
+            "si_callback_revert_aborts"
+          ],
+          "args.0.args.3": [
+            "si_callback_revert_aborts"
+          ],
+          "args.1": [
+            "si_callback_revert_aborts"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_validation_bypassed"
+          ],
+          "args.0": [
+            "i_validation_bypassed"
+          ],
+          "args.0.args.3": [
+            "i_validation_bypassed"
+          ],
+          "args.1": [
+            "i_validation_bypassed"
+          ],
+          "args.1.args.0": [
+            "i_validation_bypassed"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_validation_bypassed",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The caller is an operator or otherwise authorized claimer, not an arbitrary unprivileged account (ass_operator_authorized).",
+        "The recipient's onClaim() validation logic is intended to be authoritative for the claim.",
+        "The 2000/1000 inequality is illustrative of exceeding the daily limit; the formal relation uses claim_amount > 1000."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Only the direct validation-bypass impact i_validation_bypassed is formalized; i_limit_exceeded and i_silent_failure are deferred to future claims.",
+    "The condition is narrowed to the described scenario where the recipient validation reverts; the general requirement that any reverting callback aborts the claim is not separately encoded.",
+    "Whether the operator is malicious or merely authorized is not established; the plan assumes an authorized claimer per ass_operator_authorized.",
+    "No concrete on-chain transaction or observed incident is provided; runtime binding is deferred.",
+    "Deferred report impact: i_limit_exceeded",
+    "Deferred report impact: i_silent_failure"
+  ]
+}

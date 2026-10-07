@@ -1,0 +1,297 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "PrecompileReader.suppliedBalance() reads 0x811 supplied balance, MonetrixAccountant._readL1Backing() accumulates it into totalBackingSigned(), and settle() distributes inflated surplus as yield",
+    "environment": "Hyperliquid PM-enabled protocol with 0x811 precompile, MonetrixAccountant, Vault, YieldEscrow, Operator settlement",
+    "evidence": [
+      "PrecompileReader.suppliedBalance() discards 0x811 borrow liabilities, causing each settlement cycle to silently extract real USDC as phantom yield after PM is enabled, cumulatively eroding protocol solvency",
+      "Hyperliquid's 0x811 precompile (PRECOMPILE_SUPPLIED_BALANCE) returns the full BorrowLendUserTokenState struct containing four uint64 fields: borrow.basis, borrow.value, supply.basis, supply.value. PrecompileReader.suppliedBalance() only extracts the fourth field (supply.value) when decoding, completely discarding the borrow information in the first two fields.",
+      "MonetrixAccountant._readL1Backing() iterates over all registered SuppliedAssets, accumulating supply values into total via suppliedUsdcEvm() or suppliedNotionalUsdcFromPerp(), without ever subtracting borrow values at any point.",
+      "PM is a fully planned and implemented feature path in the protocol, not a hypothetical scenario. The contracts contain setPmEnabled(), notifyVaultSupply(), PM branches in _sendL1Bridge(), and the entire 0x811 read pipeline, all specifically written for PM mode. Governor enabling PM via setPmEnabled(true) is an expected governance operation. Once PM is enabled, the Vault automatically registers 0x811 supplied slots in the Accountant when executing hedges and BLP operations, through executeHedge() and supplyToBlp().",
+      "After PM is enabled, auto-borrow requires no attacker to trigger. The Hyperliquid PM engine automatically manages the Vault's L1 account borrowing based on market conditions (funding rate changes, collateral value fluctuations, margin requirement adjustments). This is a core PM mechanism, not an edge case. The Vault contract only has sendSupply (op=0) and sendWithdrawSupply (op=1) operations, with no explicit borrow operation, suggesting the protocol developers may not have anticipated that PM would produce borrow liabilities, which explains why PrecompileReader completely ignores the borrow fields.",
+      "totalBackingSigned() is therefore permanently inflated: suppose the Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, the net value should be 300,000 USDC, but the Accountant counts the full 500,000 USDC. surplus() and distributableSurplus() inherit this inflated value. When the Operator calls settle(proposedYield) as part of normal duties, Gate 3 checks proposedYield <= distributableSurplus(). Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block this yield distribution that should not have passed. settle() then transfers real EVM USDC into YieldEscrow, and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund,",
+      "This loss automatically repeats every settlement cycle without any human intervention. Gate 4's annualized APR cap (default 1200bps = 12%) only limits the extraction rate per settlement, it does not prevent cumulative losses. With 10M USDM supply, each 21-hour settlement cycle extracts approximately 6,904 USDC of phantom yield. Over 30 days across approximately 34 settlement cycles, this accumulates to roughly 234,000 USDC of real funds extracted. If the borrow persists or grows, the protocol will trend toward insolvency (backing < totalSupply) within months, violating the INV-1 solvency invariant. There is no on-chain alerting mechanism that can detect the inflated surplus, because totalBac"
+    ]
+  },
+  "entities": [
+    {
+      "id": "precompile_reader",
+      "name": "PrecompileReader",
+      "role": "contract",
+      "evidence": [
+        "PrecompileReader.suppliedBalance() discards 0x811 borrow liabilities, causing each settlement cycle to silently extract real USDC as phantom yield after PM is enabled, cumulatively eroding protocol solvency",
+        "Hyperliquid's 0x811 precompile (PRECOMPILE_SUPPLIED_BALANCE) returns the full BorrowLendUserTokenState struct containing four uint64 fields: borrow.basis, borrow.value, supply.basis, supply.value. PrecompileReader.suppliedBalance() only extracts the fourth field (supply.value) when decoding, completely discarding the borrow information in the first two fields."
+      ]
+    },
+    {
+      "id": "monetrix_accountant",
+      "name": "MonetrixAccountant",
+      "role": "contract",
+      "evidence": [
+        "MonetrixAccountant._readL1Backing() iterates over all registered SuppliedAssets, accumulating supply values into total via suppliedUsdcEvm() or suppliedNotionalUsdcFromPerp(), without ever subtracting borrow values at any point.",
+        "totalBackingSigned() is therefore permanently inflated: suppose the Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, the net value should be 300,000 USDC, but the Accountant counts the full 500,000 USDC. surplus() and distributableSurplus() inherit this inflated value. When the Operator calls settle(proposedYield) as part of normal duties, Gate 3 checks proposedYield <= distributableSurplus(). Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block this yield distribution that should not have passed. settle() then transfers real EVM USDC into YieldEscrow, and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund,"
+      ]
+    },
+    {
+      "id": "vault",
+      "name": "Vault",
+      "role": "contract",
+      "evidence": [
+        "PM is a fully planned and implemented feature path in the protocol, not a hypothetical scenario. The contracts contain setPmEnabled(), notifyVaultSupply(), PM branches in _sendL1Bridge(), and the entire 0x811 read pipeline, all specifically written for PM mode. Governor enabling PM via setPmEnabled(true) is an expected governance operation. Once PM is enabled, the Vault automatically registers 0x811 supplied slots in the Accountant when executing hedges and BLP operations, through executeHedge() and supplyToBlp().",
+        "After PM is enabled, auto-borrow requires no attacker to trigger. The Hyperliquid PM engine automatically manages the Vault's L1 account borrowing based on market conditions (funding rate changes, collateral value fluctuations, margin requirement adjustments). This is a core PM mechanism, not an edge case. The Vault contract only has sendSupply (op=0) and sendWithdrawSupply (op=1) operations, with no explicit borrow operation, suggesting the protocol developers may not have anticipated that PM would produce borrow liabilities, which explains why PrecompileReader completely ignores the borrow fields."
+      ]
+    },
+    {
+      "id": "operator",
+      "name": "Operator",
+      "role": "authority",
+      "evidence": [
+        "totalBackingSigned() is therefore permanently inflated: suppose the Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, the net value should be 300,000 USDC, but the Accountant counts the full 500,000 USDC. surplus() and distributableSurplus() inherit this inflated value. When the Operator calls settle(proposedYield) as part of normal duties, Gate 3 checks proposedYield <= distributableSurplus(). Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block this yield distribution that should not have passed. settle() then transfers real EVM USDC into YieldEscrow, and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund,",
+        "The attack path of this vulnerability does not depend on any hypothetical external conditions. PM enablement is a planned governance operation on the protocol roadmap, auto-borrow is an inherent PM mechanism, and the Operator calls settle() as part of normal duties. No step in the entire chain requires malicious behavior or unreasonable assumptions. Per the C4 High definition \"Assets can be stolen/lost/compromised directly (or indirectly if there is a valid attack path that does not have hand-wavy hypotheticals)\", the real USDC extracted from the protocol each settlement cycle constitutes direct fund loss, and no hand-wavy hypotheticals exist in the attack path."
+      ]
+    },
+    {
+      "id": "governor",
+      "name": "Governor",
+      "role": "authority",
+      "evidence": [
+        "PM is a fully planned and implemented feature path in the protocol, not a hypothetical scenario. The contracts contain setPmEnabled(), notifyVaultSupply(), PM branches in _sendL1Bridge(), and the entire 0x811 read pipeline, all specifically written for PM mode. Governor enabling PM via setPmEnabled(true) is an expected governance operation. Once PM is enabled, the Vault automatically registers 0x811 supplied slots in the Accountant when executing hedges and BLP operations, through executeHedge() and supplyToBlp()."
+      ]
+    },
+    {
+      "id": "hyperliquid_pm",
+      "name": "Hyperliquid PM engine",
+      "role": "other",
+      "evidence": [
+        "After PM is enabled, auto-borrow requires no attacker to trigger. The Hyperliquid PM engine automatically manages the Vault's L1 account borrowing based on market conditions (funding rate changes, collateral value fluctuations, margin requirement adjustments). This is a core PM mechanism, not an edge case. The Vault contract only has sendSupply (op=0) and sendWithdrawSupply (op=1) operations, with no explicit borrow operation, suggesting the protocol developers may not have anticipated that PM would produce borrow liabilities, which explains why PrecompileReader completely ignores the borrow fields."
+      ]
+    },
+    {
+      "id": "usdc",
+      "name": "USDC",
+      "role": "asset",
+      "evidence": [
+        "PrecompileReader.suppliedBalance() discards 0x811 borrow liabilities, causing each settlement cycle to silently extract real USDC as phantom yield after PM is enabled, cumulatively eroding protocol solvency",
+        "totalBackingSigned() is therefore permanently inflated: suppose the Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, the net value should be 300,000 USDC, but the Accountant counts the full 500,000 USDC. surplus() and distributableSurplus() inherit this inflated value. When the Operator calls settle(proposedYield) as part of normal duties, Gate 3 checks proposedYield <= distributableSurplus(). Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block this yield distribution that should not have passed. settle() then transfers real EVM USDC into YieldEscrow, and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund,"
+      ]
+    },
+    {
+      "id": "susdm_holders",
+      "name": "sUSDM holders",
+      "role": "victim",
+      "evidence": [
+        "totalBackingSigned() is therefore permanently inflated: suppose the Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, the net value should be 300,000 USDC, but the Accountant counts the full 500,000 USDC. surplus() and distributableSurplus() inherit this inflated value. When the Operator calls settle(proposedYield) as part of normal duties, Gate 3 checks proposedYield <= distributableSurplus(). Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block this yield distribution that should not have passed. settle() then transfers real EVM USDC into YieldEscrow, and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund,"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "pm_enabled_by_governor",
+      "kind": "precondition",
+      "text": "Governor enables PM via setPmEnabled(true), an expected governance operation.",
+      "modality": "potential",
+      "entity_ids": [
+        "governor"
+      ],
+      "evidence": [
+        "PM is a fully planned and implemented feature path in the protocol, not a hypothetical scenario. The contracts contain setPmEnabled(), notifyVaultSupply(), PM branches in _sendL1Bridge(), and the entire 0x811 read pipeline, all specifically written for PM mode. Governor enabling PM via setPmEnabled(true) is an expected governance operation. Once PM is enabled, the Vault automatically registers 0x811 supplied slots in the Accountant when executing hedges and BLP operations, through executeHedge() and supplyToBlp()."
+      ]
+    },
+    {
+      "id": "vault_registers_supplied_slots",
+      "kind": "precondition",
+      "text": "Once PM is enabled, the Vault automatically registers 0x811 supplied slots in the Accountant when executing hedges and BLP operations through executeHedge() and supplyToBlp().",
+      "modality": "potential",
+      "entity_ids": [
+        "vault",
+        "monetrix_accountant"
+      ],
+      "evidence": [
+        "PM is a fully planned and implemented feature path in the protocol, not a hypothetical scenario. The contracts contain setPmEnabled(), notifyVaultSupply(), PM branches in _sendL1Bridge(), and the entire 0x811 read pipeline, all specifically written for PM mode. Governor enabling PM via setPmEnabled(true) is an expected governance operation. Once PM is enabled, the Vault automatically registers 0x811 supplied slots in the Accountant when executing hedges and BLP operations, through executeHedge() and supplyToBlp()."
+      ]
+    },
+    {
+      "id": "pm_auto_borrow",
+      "kind": "precondition",
+      "text": "After PM is enabled, the Hyperliquid PM engine automatically manages the Vault's L1 account borrowing based on market conditions, requiring no attacker to trigger.",
+      "modality": "potential",
+      "entity_ids": [
+        "hyperliquid_pm",
+        "vault"
+      ],
+      "evidence": [
+        "After PM is enabled, auto-borrow requires no attacker to trigger. The Hyperliquid PM engine automatically manages the Vault's L1 account borrowing based on market conditions (funding rate changes, collateral value fluctuations, margin requirement adjustments). This is a core PM mechanism, not an edge case. The Vault contract only has sendSupply (op=0) and sendWithdrawSupply (op=1) operations, with no explicit borrow operation, suggesting the protocol developers may not have anticipated that PM would produce borrow liabilities, which explains why PrecompileReader completely ignores the borrow fields."
+      ]
+    },
+    {
+      "id": "vault_supplies_500k_borrows_200k",
+      "kind": "precondition",
+      "text": "The Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, so the net value should be 300,000 USDC.",
+      "modality": "potential",
+      "entity_ids": [
+        "vault",
+        "usdc",
+        "hyperliquid_pm"
+      ],
+      "evidence": [
+        "totalBackingSigned() is therefore permanently inflated: suppose the Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, the net value should be 300,000 USDC, but the Accountant counts the full 500,000 USDC. surplus() and distributableSurplus() inherit this inflated value. When the Operator calls settle(proposedYield) as part of normal duties, Gate 3 checks proposedYield <= distributableSurplus(). Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block this yield distribution that should not have passed. settle() then transfers real EVM USDC into YieldEscrow, and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund,"
+      ]
+    },
+    {
+      "id": "operator_calls_settle",
+      "kind": "action",
+      "text": "The Operator calls settle(proposedYield) as part of normal duties.",
+      "modality": "potential",
+      "entity_ids": [
+        "operator"
+      ],
+      "evidence": [
+        "totalBackingSigned() is therefore permanently inflated: suppose the Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, the net value should be 300,000 USDC, but the Accountant counts the full 500,000 USDC. surplus() and distributableSurplus() inherit this inflated value. When the Operator calls settle(proposedYield) as part of normal duties, Gate 3 checks proposedYield <= distributableSurplus(). Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block this yield distribution that should not have passed. settle() then transfers real EVM USDC into YieldEscrow, and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund,",
+        "The attack path of this vulnerability does not depend on any hypothetical external conditions. PM enablement is a planned governance operation on the protocol roadmap, auto-borrow is an inherent PM mechanism, and the Operator calls settle() as part of normal duties. No step in the entire chain requires malicious behavior or unreasonable assumptions. Per the C4 High definition \"Assets can be stolen/lost/compromised directly (or indirectly if there is a valid attack path that does not have hand-wavy hypotheticals)\", the real USDC extracted from the protocol each settlement cycle constitutes direct fund loss, and no hand-wavy hypotheticals exist in the attack path."
+      ]
+    },
+    {
+      "id": "settle_transfers_usdc_to_escrow",
+      "kind": "action",
+      "text": "settle() transfers real EVM USDC into YieldEscrow.",
+      "modality": "potential",
+      "entity_ids": [
+        "monetrix_accountant",
+        "usdc"
+      ],
+      "evidence": [
+        "totalBackingSigned() is therefore permanently inflated: suppose the Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, the net value should be 300,000 USDC, but the Accountant counts the full 500,000 USDC. surplus() and distributableSurplus() inherit this inflated value. When the Operator calls settle(proposedYield) as part of normal duties, Gate 3 checks proposedYield <= distributableSurplus(). Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block this yield distribution that should not have passed. settle() then transfers real EVM USDC into YieldEscrow, and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund,"
+      ]
+    },
+    {
+      "id": "operator_distributes_yield",
+      "kind": "action",
+      "text": "The Operator distributes the yield via distributeYield() to sUSDM holders, InsuranceFund, and Foundation.",
+      "modality": "potential",
+      "entity_ids": [
+        "operator",
+        "susdm_holders"
+      ],
+      "evidence": [
+        "totalBackingSigned() is therefore permanently inflated: suppose the Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, the net value should be 300,000 USDC, but the Accountant counts the full 500,000 USDC. surplus() and distributableSurplus() inherit this inflated value. When the Operator calls settle(proposedYield) as part of normal duties, Gate 3 checks proposedYield <= distributableSurplus(). Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block this yield distribution that should not have passed. settle() then transfers real EVM USDC into YieldEscrow, and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund,"
+      ]
+    },
+    {
+      "id": "supplied_balance_discards_borrow",
+      "kind": "root_cause",
+      "text": "PrecompileReader.suppliedBalance() only extracts the fourth field (supply.value) when decoding the 0x811 BorrowLendUserTokenState struct, completely discarding the borrow.basis and borrow.value fields.",
+      "modality": "asserted",
+      "entity_ids": [
+        "precompile_reader"
+      ],
+      "evidence": [
+        "Hyperliquid's 0x811 precompile (PRECOMPILE_SUPPLIED_BALANCE) returns the full BorrowLendUserTokenState struct containing four uint64 fields: borrow.basis, borrow.value, supply.basis, supply.value. PrecompileReader.suppliedBalance() only extracts the fourth field (supply.value) when decoding, completely discarding the borrow information in the first two fields."
+      ]
+    },
+    {
+      "id": "read_l1_backing_never_subtracts_borrow",
+      "kind": "root_cause",
+      "text": "MonetrixAccountant._readL1Backing() accumulates supply values into total via suppliedUsdcEvm() or suppliedNotionalUsdcFromPerp() without ever subtracting borrow values.",
+      "modality": "asserted",
+      "entity_ids": [
+        "monetrix_accountant"
+      ],
+      "evidence": [
+        "MonetrixAccountant._readL1Backing() iterates over all registered SuppliedAssets, accumulating supply values into total via suppliedUsdcEvm() or suppliedNotionalUsdcFromPerp(), without ever subtracting borrow values at any point."
+      ]
+    },
+    {
+      "id": "total_backing_inflated",
+      "kind": "impact",
+      "text": "totalBackingSigned() is permanently inflated: with 500,000 USDC supplied and 200,000 USDC auto-borrowed, the Accountant counts the full 500,000 USDC instead of the net 300,000 USDC.",
+      "modality": "potential",
+      "entity_ids": [
+        "monetrix_accountant",
+        "usdc"
+      ],
+      "evidence": [
+        "totalBackingSigned() is therefore permanently inflated: suppose the Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, the net value should be 300,000 USDC, but the Accountant counts the full 500,000 USDC. surplus() and distributableSurplus() inherit this inflated value. When the Operator calls settle(proposedYield) as part of normal duties, Gate 3 checks proposedYield <= distributableSurplus(). Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block this yield distribution that should not have passed. settle() then transfers real EVM USDC into YieldEscrow, and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund,"
+      ]
+    },
+    {
+      "id": "gate3_passes_phantom_surplus",
+      "kind": "impact",
+      "text": "Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block the yield distribution that should not have passed.",
+      "modality": "potential",
+      "entity_ids": [
+        "monetrix_accountant",
+        "operator"
+      ],
+      "evidence": [
+        "totalBackingSigned() is therefore permanently inflated: suppose the Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, the net value should be 300,000 USDC, but the Accountant counts the full 500,000 USDC. surplus() and distributableSurplus() inherit this inflated value. When the Operator calls settle(proposedYield) as part of normal duties, Gate 3 checks proposedYield <= distributableSurplus(). Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block this yield distribution that should not have passed. settle() then transfers real EVM USDC into YieldEscrow, and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund,"
+      ]
+    },
+    {
+      "id": "real_usdc_extracted",
+      "kind": "impact",
+      "text": "Real USDC is extracted from the protocol each settlement cycle as phantom yield, cumulatively eroding protocol solvency.",
+      "modality": "potential",
+      "entity_ids": [
+        "usdc",
+        "susdm_holders"
+      ],
+      "evidence": [
+        "PrecompileReader.suppliedBalance() discards 0x811 borrow liabilities, causing each settlement cycle to silently extract real USDC as phantom yield after PM is enabled, cumulatively eroding protocol solvency",
+        "and Foundation. This constitutes direct loss of real funds, not merely functional impairment or availability issues."
+      ]
+    },
+    {
+      "id": "cumulative_extraction_234k",
+      "kind": "impact",
+      "text": "With 10M USDM supply, each 21-hour settlement cycle extracts approximately 6,904 USDC of phantom yield, accumulating to roughly 234,000 USDC over 30 days across approximately 34 settlement cycles.",
+      "modality": "potential",
+      "entity_ids": [
+        "usdc",
+        "susdm_holders"
+      ],
+      "evidence": [
+        "This loss automatically repeats every settlement cycle without any human intervention. Gate 4's annualized APR cap (default 1200bps = 12%) only limits the extraction rate per settlement, it does not prevent cumulative losses. With 10M USDM supply, each 21-hour settlement cycle extracts approximately 6,904 USDC of phantom yield. Over 30 days across approximately 34 settlement cycles, this accumulates to roughly 234,000 USDC of real funds extracted. If the borrow persists or grows, the protocol will trend toward insolvency (backing < totalSupply) within months, violating the INV-1 solvency invariant. There is no on-chain alerting mechanism that can detect the inflated surplus, because totalBac"
+      ]
+    },
+    {
+      "id": "solvency_invariant_intent",
+      "kind": "security_intent",
+      "text": "Inferred: totalBackingSigned() must reflect net L1 backing (supply minus borrow), so that distributableSurplus and Gate 3 only permit yield distributions backed by real net assets, preserving the INV-1 solvency invariant (backing >= totalSupply).",
+      "modality": "inferred",
+      "entity_ids": [
+        "monetrix_accountant",
+        "usdc"
+      ],
+      "evidence": [
+        "totalBackingSigned() is therefore permanently inflated: suppose the Vault supplies 500,000 USDC and 200,000 USDC is auto-borrowed, the net value should be 300,000 USDC, but the Accountant counts the full 500,000 USDC. surplus() and distributableSurplus() inherit this inflated value. When the Operator calls settle(proposedYield) as part of normal duties, Gate 3 checks proposedYield <= distributableSurplus(). Because distributableSurplus includes 200,000 USDC of phantom surplus, Gate 3 does not block this yield distribution that should not have passed. settle() then transfers real EVM USDC into YieldEscrow, and the Operator distributes it via distributeYield() to sUSDM holders, InsuranceFund,",
+        "This loss automatically repeats every settlement cycle without any human intervention. Gate 4's annualized APR cap (default 1200bps = 12%) only limits the extraction rate per settlement, it does not prevent cumulative losses. With 10M USDM supply, each 21-hour settlement cycle extracts approximately 6,904 USDC of phantom yield. Over 30 days across approximately 34 settlement cycles, this accumulates to roughly 234,000 USDC of real funds extracted. If the borrow persists or grows, the protocol will trend toward insolvency (backing < totalSupply) within months, violating the INV-1 solvency invariant. There is no on-chain alerting mechanism that can detect the inflated surplus, because totalBac"
+      ]
+    },
+    {
+      "id": "no_malicious_behavior_needed",
+      "kind": "assumption",
+      "text": "No step in the chain requires malicious behavior or unreasonable assumptions; PM enablement, auto-borrow, and Operator settle() are normal protocol operations.",
+      "modality": "asserted",
+      "entity_ids": [
+        "governor",
+        "operator",
+        "hyperliquid_pm"
+      ],
+      "evidence": [
+        "The attack path of this vulnerability does not depend on any hypothetical external conditions. PM enablement is a planned governance operation on the protocol roadmap, auto-borrow is an inherent PM mechanism, and the Operator calls settle() as part of normal duties. No step in the entire chain requires malicious behavior or unreasonable assumptions. Per the C4 High definition \"Assets can be stolen/lost/compromised directly (or indirectly if there is a valid attack path that does not have hand-wavy hypotheticals)\", the real USDC extracted from the protocol each settlement cycle constitutes direct fund loss, and no hand-wavy hypotheticals exist in the attack path."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "operator_calls_settle",
+    "settle_transfers_usdc_to_escrow",
+    "operator_distributes_yield"
+  ],
+  "ambiguities": [
+    "Report does not establish that PM was actually enabled or that auto-borrow occurred in a real transaction; scenario is conditional on planned governance operation.",
+    "The 500,000/200,000 USDC figures are a hypothetical illustration ('suppose'), not observed on-chain values.",
+    "No explicit statement that anyone can call settle(); Operator is described as acting in normal duties.",
+    "Timing of borrow relative to settlement cycle is not specified beyond 'after PM is enabled'.",
+    "Whether the borrow persists or grows is stated as conditional ('If the borrow persists or grows')."
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "kHtEXWfSqnK",
+    "requested_finding_uid": "B42T4SMoQbi",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "kHtEXWfSqnK",
+    "source_finding_uid": "B42T4SMoQbi",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\medium_valid_kHtEXWfSqnK.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "kHtEXWfSqnK",
+  "finding_uid": "B42T4SMoQbi",
+  "finding_number": "8",
+  "title": "Incorrect Reward Distribution on Token Transfers Post-Graduation Causes Reward Loss",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "roccomania",
+  "body": "## Summary\nThe launchpad rewards system distributes earned fees to users when they unbond or claim. However, after token graduation, when users transfer tokens (triggering unstaking), the rewards are incorrectly sent to the launchpad contract instead of the user.\n\nIn `LaunchToken._decreaseFeeShares()`, token transfers post-graduation call `launchpad.decreaseStake(account, amount)`, which invokes `Distributor.decreaseStake()`. This function unstakes the user and calls `_distributeAssets()` to transfer rewards, but `_distributeAssets()` sends tokens to `msg.sender`, which is the launchpad (as `decreaseStake()` is restricted to `onlyLaunchpad`).\n\nConsequently, users lose access to their rewards, which accumulate in the launchpad contract.\n\n## Root cause\nThe root cause is that `_distributeAssets()` assumes `msg.sender` is the reward recipient, but when called from `decreaseStake()`, `msg.sender` is the launchpad, not the user.\n\n```\n    function decreaseStake(address launchAsset, address account, uint96 shares)\n        external\n@>        onlyLaunchpad\n        returns (uint256 baseAmount, uint256 quoteAmount)\n    {\n        RewardPoolData storage rs = RewardsTrackerStorage.getRewardPool(launchAsset);\n\n        (baseAmount, quoteAmount) = rs.unstake(account, uint96(shares));\n        // (baseAmount, quoteAmount) = rs.claim(account);\n\n        console.log(baseAmount, quoteAmount);\n@>        _distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount);\n    }\n\n    function _distributeAssets(address base, uint256 baseAmount, address quote, uint256 quoteAmount) internal {\n        if (baseAmount > 0) {\n            _decreaseTotalPending(base, baseAmount);\n@>            base.safeTransfer(msg.sender, baseAmount); \n        }\n\n        if (quoteAmount > 0) {\n            _decreaseTotalPending(quote, quoteAmount);\n@>            quote.safeTransfer(msg.sender, quoteAmount);\n        }\n    }\n```\n\n## Impact\nUsers cannot receive rewards earned during bonding when transferring tokens after graduation, leading to loss of funds.\n\n> [!NOTE]\n> `claimRewards()` correctly sends to `msg.sender`, but automatic unstaking on transfer does not.\n\n## Proof of Concept\n\n1. Token graduates, unlocking transfers in `LaunchToken.unlock()`.\n2. User transfers tokens, triggering `_decreaseFeeShares(account, amount)` in `LaunchToken.sol`.\n3. `_decreaseFeeShares()` calls `ILaunchpad(launchpad).decreaseStake(account, uint96(amount))`.\n4. `Launchpad.decreaseStake()` calls `distributor.decreaseStake(launchAsset, account, shares)`.\n5. `Distributor.decreaseStake()` executes `rs.unstake(account, shares)`, calculating reward amounts, then calls `_distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount)`.\n6. `_distributeAssets()` performs `base.safeTransfer(msg.sender, baseAmount)`, where `msg.sender` is the launchpad, sending rewards to the launchpad instead of the user.\n\n## Recommended mitigation steps\n\nUpdate `_distributeAssets()` in `contracts/launchpad/Distributor.sol` to accept a `recipient` parameter and transfer rewards to the specified address.\n\nModify the function signature and calls as follows:\n\n```solidity\nfunction _distributeAssets(address base, uint256 baseAmount, address quote, uint256 quoteAmount, address recipient) internal {\n    if (baseAmount > 0) {\n        _decreaseTotalPending(base, baseAmount);\n        base.safeTransfer(recipient, baseAmount);\n    }\n\n    if (quoteAmount > 0) {\n        _decreaseTotalPending(quote, quoteAmount);\n        quote.safeTransfer(recipient, quoteAmount);\n    }\n}\n```\n\nUpdate `decreaseStake()` to pass the `account` as recipient:\n\n```solidity\nfunction decreaseStake(address launchAsset, address account, uint96 shares)\n    external\n    onlyLaunchpad\n    returns (uint256 baseAmount, uint256 quoteAmount)\n{\n    RewardPoolData storage rs = RewardsTrackerStorage.getRewardPool(launchAsset);\n\n    (baseAmount, quoteAmount) = rs.unstake(account, uint96(shares));\n    _distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount, account);\n}\n```\n\nUpdate `claimRewards()` to pass `msg.sender` as recipient:\n\n```solidity\nfunction claimRewards(address launchAsset) external returns (uint256 baseAmount, uint256 quoteAmount) {\n    RewardPoolData storage rs = RewardsTrackerStorage.getRewardPool(launchAsset);\n\n    (baseAmount, quoteAmount) = rs.claim(msg.sender);\n    _distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount, msg.sender);\n}\n```",
+  "proof_of_concept": "Import this to `test/c4-poc/PoCLaunchpad.t.sol`\n```solidity\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IDistributor} from \"contracts/launchpad/interfaces/IDistributor.sol\";\nimport {LaunchToken} from \"contracts/launchpad/LaunchToken.sol\";\n```\n\nThen run the test below\n```solidity\n    function test_submissionValidity() external {\n\n        uint256 requiredUSDC = curve.quoteQuoteForBase(token, curve.bondingSupply(token), true);\n\n        deal(address(quoteToken), user, requiredUSDC);\n        vm.prank(user);\n        quoteToken.approve(address(launchpad), type(uint256).max);\n\n        uint256 amountOutBase = curve.bondingSupply(token);\n\n        // Make tokens graduate\n        vm.startPrank(user);\n        launchpad.buy(\n            ILaunchpad.BuyData({\n                account: user,\n                token: token,\n                recipient: user,\n                amountOutBase: amountOutBase,\n                maxAmountInQuote: requiredUSDC\n            })\n        );\n        vm.stopPrank();\n\n        // Add reward for the pair in Distributor contract\n        deal(address(quoteToken), address(this), requiredUSDC);\n        quoteToken.approve(address(distributor), type(uint256).max);\n\n        IDistributor(distributor).addRewards(token, address(quoteToken), 0, uint128(requiredUSDC));\n\n        // Check launchpad contract balance before transfer\n        uint256 launchpadQuoteTokenBalanceBefore = quoteToken.balanceOf(address(launchpad));\n\n        // Try to tansfer token after graduation\n        vm.startPrank(user);\n        LaunchToken(token).transfer(address(owner), 100e18);\n        vm.stopPrank();\n\n        // Check launchpad contract balance after transfer\n        uint256 launchpadQuoteTokenBalanceAfter = quoteToken.balanceOf(address(launchpad));\n\n        // This proves rewards are transferred to Launchpad and not to user\n        assertGt(launchpadQuoteTokenBalanceAfter, launchpadQuoteTokenBalanceBefore);\n\n    }\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/main/contracts/launchpad/Distributor.sol#L167-L177"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "1368",
+    "api_submission_id": "",
+    "uid": "kHtEXWfSqnK",
+    "number": "1368",
+    "title": "Incorrect Reward Distribution on Token Transfers Post-Graduation Causes Reward Loss",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "roccomania",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/main/contracts/launchpad/Distributor.sol#L167-L177"
+    ],
+    "body": "## Summary\nThe launchpad rewards system distributes earned fees to users when they unbond or claim. However, after token graduation, when users transfer tokens (triggering unstaking), the rewards are incorrectly sent to the launchpad contract instead of the user.\n\nIn `LaunchToken._decreaseFeeShares()`, token transfers post-graduation call `launchpad.decreaseStake(account, amount)`, which invokes `Distributor.decreaseStake()`. This function unstakes the user and calls `_distributeAssets()` to transfer rewards, but `_distributeAssets()` sends tokens to `msg.sender`, which is the launchpad (as `decreaseStake()` is restricted to `onlyLaunchpad`).\n\nConsequently, users lose access to their rewards, which accumulate in the launchpad contract.\n\n## Root cause\nThe root cause is that `_distributeAssets()` assumes `msg.sender` is the reward recipient, but when called from `decreaseStake()`, `msg.sender` is the launchpad, not the user.\n\n```\n    function decreaseStake(address launchAsset, address account, uint96 shares)\n        external\n@>        onlyLaunchpad\n        returns (uint256 baseAmount, uint256 quoteAmount)\n    {\n        RewardPoolData storage rs = RewardsTrackerStorage.getRewardPool(launchAsset);\n\n        (baseAmount, quoteAmount) = rs.unstake(account, uint96(shares));\n        // (baseAmount, quoteAmount) = rs.claim(account);\n\n        console.log(baseAmount, quoteAmount);\n@>        _distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount);\n    }\n\n    function _distributeAssets(address base, uint256 baseAmount, address quote, uint256 quoteAmount) internal {\n        if (baseAmount > 0) {\n            _decreaseTotalPending(base, baseAmount);\n@>            base.safeTransfer(msg.sender, baseAmount); \n        }\n\n        if (quoteAmount > 0) {\n            _decreaseTotalPending(quote, quoteAmount);\n@>            quote.safeTransfer(msg.sender, quoteAmount);\n        }\n    }\n```\n\n## Impact\nUsers cannot receive rewards earned during bonding when transferring tokens after graduation, leading to loss of funds.\n\n> [!NOTE]\n> `claimRewards()` correctly sends to `msg.sender`, but automatic unstaking on transfer does not.\n\n## Proof of Concept\n\n1. Token graduates, unlocking transfers in `LaunchToken.unlock()`.\n2. User transfers tokens, triggering `_decreaseFeeShares(account, amount)` in `LaunchToken.sol`.\n3. `_decreaseFeeShares()` calls `ILaunchpad(launchpad).decreaseStake(account, uint96(amount))`.\n4. `Launchpad.decreaseStake()` calls `distributor.decreaseStake(launchAsset, account, shares)`.\n5. `Distributor.decreaseStake()` executes `rs.unstake(account, shares)`, calculating reward amounts, then calls `_distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount)`.\n6. `_distributeAssets()` performs `base.safeTransfer(msg.sender, baseAmount)`, where `msg.sender` is the launchpad, sending rewards to the launchpad instead of the user.\n\n## Recommended mitigation steps\n\nUpdate `_distributeAssets()` in `contracts/launchpad/Distributor.sol` to accept a `recipient` parameter and transfer rewards to the specified address.\n\nModify the function signature and calls as follows:\n\n```solidity\nfunction _distributeAssets(address base, uint256 baseAmount, address quote, uint256 quoteAmount, address recipient) internal {\n    if (baseAmount > 0) {\n        _decreaseTotalPending(base, baseAmount);\n        base.safeTransfer(recipient, baseAmount);\n    }\n\n    if (quoteAmount > 0) {\n        _decreaseTotalPending(quote, quoteAmount);\n        quote.safeTransfer(recipient, quoteAmount);\n    }\n}\n```\n\nUpdate `decreaseStake()` to pass the `account` as recipient:\n\n```solidity\nfunction decreaseStake(address launchAsset, address account, uint96 shares)\n    external\n    onlyLaunchpad\n    returns (uint256 baseAmount, uint256 quoteAmount)\n{\n    RewardPoolData storage rs = RewardsTrackerStorage.getRewardPool(launchAsset);\n\n    (baseAmount, quoteAmount) = rs.unstake(account, uint96(shares));\n    _distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount, account);\n}\n```\n\nUpdate `claimRewards()` to pass `msg.sender` as recipient:\n\n```solidity\nfunction claimRewards(address launchAsset) external returns (uint256 baseAmount, uint256 quoteAmount) {\n    RewardPoolData storage rs = RewardsTrackerStorage.getRewardPool(launchAsset);\n\n    (baseAmount, quoteAmount) = rs.claim(msg.sender);\n    _distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount, msg.sender);\n}\n```",
+    "proof_of_concept": "Import this to `test/c4-poc/PoCLaunchpad.t.sol`\n```solidity\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IDistributor} from \"contracts/launchpad/interfaces/IDistributor.sol\";\nimport {LaunchToken} from \"contracts/launchpad/LaunchToken.sol\";\n```\n\nThen run the test below\n```solidity\n    function test_submissionValidity() external {\n\n        uint256 requiredUSDC = curve.quoteQuoteForBase(token, curve.bondingSupply(token), true);\n\n        deal(address(quoteToken), user, requiredUSDC);\n        vm.prank(user);\n        quoteToken.approve(address(launchpad), type(uint256).max);\n\n        uint256 amountOutBase = curve.bondingSupply(token);\n\n        // Make tokens graduate\n        vm.startPrank(user);\n        launchpad.buy(\n            ILaunchpad.BuyData({\n                account: user,\n                token: token,\n                recipient: user,\n                amountOutBase: amountOutBase,\n                maxAmountInQuote: requiredUSDC\n            })\n        );\n        vm.stopPrank();\n\n        // Add reward for the pair in Distributor contract\n        deal(address(quoteToken), address(this), requiredUSDC);\n        quoteToken.approve(address(distributor), type(uint256).max);\n\n        IDistributor(distributor).addRewards(token, address(quoteToken), 0, uint128(requiredUSDC));\n\n        // Check launchpad contract balance before transfer\n        uint256 launchpadQuoteTokenBalanceBefore = quoteToken.balanceOf(address(launchpad));\n\n        // Try to tansfer token after graduation\n        vm.startPrank(user);\n        LaunchToken(token).transfer(address(owner), 100e18);\n        vm.stopPrank();\n\n        // Check launchpad contract balance after transfer\n        uint256 launchpadQuoteTokenBalanceAfter = quoteToken.balanceOf(address(launchpad));\n\n        // This proves rewards are transferred to Launchpad and not to user\n        assertGt(launchpadQuoteTokenBalanceAfter, launchpadQuoteTokenBalanceBefore);\n\n    }\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/1368",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-25T16:45:44.552Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "v5ECBHCqf8Q",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:58:59.254Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "B42T4SMoQbi"
+        },
+        {
+          "uid": "acBG9hHzVuv",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:59:00.479Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "B42T4SMoQbi"
+        },
+        {
+          "uid": "Fhz6VKPtDxn",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-06T21:22:09.630Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "B42T4SMoQbi"
+        },
+        {
+          "uid": "NbZAuvuTF7L",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-27T00:45:43.936Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "kHtEXWfSqnK",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "B42T4SMoQbi",
+        "number": 8,
+        "duplicates": 75
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-11-02T21:31:39.271Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Incorrect Reward Distribution on Token Transfers Post-Graduation Causes Reward Loss",
+      "uid": "kHtEXWfSqnK",
+      "updatedAt": "2025-09-25T16:45:44.552Z",
+      "user": {
+        "uid": "XRYsq8Hh2aL",
+        "handle": "roccomania"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Summary\nThe launchpad rewards system distributes earned fees to users when they unbond or claim. However, after token graduation, when users transfer tokens (triggering unstaking), the rewards are incorrectly sent to the launchpad contract instead of the user.\n\nIn `LaunchToken._decreaseFeeShares()`, token transfers post-graduation call `launchpad.decreaseStake(account, amount)`, which invokes `Distributor.decreaseStake()`. This function unstakes the user and calls `_distributeAssets()` to transfer rewards, but `_distributeAssets()` sends tokens to `msg.sender`, which is the launchpad (as `decreaseStake()` is restricted to `onlyLaunchpad`).\n\nConsequently, users lose access to their rewards, which accumulate in the launchpad contract.\n\n## Root cause\nThe root cause is that `_distributeAssets()` assumes `msg.sender` is the reward recipient, but when called from `decreaseStake()`, `msg.sender` is the launchpad, not the user.\n\n```\n    function decreaseStake(address launchAsset, address account, uint96 shares)\n        external\n@>        onlyLaunchpad\n        returns (uint256 baseAmount, uint256 quoteAmount)\n    {\n        RewardPoolData storage rs = RewardsTrackerStorage.getRewardPool(launchAsset);\n\n        (baseAmount, quoteAmount) = rs.unstake(account, uint96(shares));\n        // (baseAmount, quoteAmount) = rs.claim(account);\n\n        console.log(baseAmount, quoteAmount);\n@>        _distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount);\n    }\n\n    function _distributeAssets(address base, uint256 baseAmount, address quote, uint256 quoteAmount) internal {\n        if (baseAmount > 0) {\n            _decreaseTotalPending(base, baseAmount);\n@>            base.safeTransfer(msg.sender, baseAmount); \n        }\n\n        if (quoteAmount > 0) {\n            _decreaseTotalPending(quote, quoteAmount);\n@>            quote.safeTransfer(msg.sender, quoteAmount);\n        }\n    }\n```\n\n## Impact\nUsers cannot receive rewards earned during bonding when transferring tokens after graduation, leading to loss of funds.\n\n> [!NOTE]\n> `claimRewards()` correctly sends to `msg.sender`, but automatic unstaking on transfer does not.\n\n## Proof of Concept\n\n1. Token graduates, unlocking transfers in `LaunchToken.unlock()`.\n2. User transfers tokens, triggering `_decreaseFeeShares(account, amount)` in `LaunchToken.sol`.\n3. `_decreaseFeeShares()` calls `ILaunchpad(launchpad).decreaseStake(account, uint96(amount))`.\n4. `Launchpad.decreaseStake()` calls `distributor.decreaseStake(launchAsset, account, shares)`.\n5. `Distributor.decreaseStake()` executes `rs.unstake(account, shares)`, calculating reward amounts, then calls `_distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount)`.\n6. `_distributeAssets()` performs `base.safeTransfer(msg.sender, baseAmount)`, where `msg.sender` is the launchpad, sending rewards to the launchpad instead of the user.\n\n## Recommended mitigation steps\n\nUpdate `_distributeAssets()` in `contracts/launchpad/Distributor.sol` to accept a `recipient` parameter and transfer rewards to the specified address.\n\nModify the function signature and calls as follows:\n\n```solidity\nfunction _distributeAssets(address base, uint256 baseAmount, address quote, uint256 quoteAmount, address recipient) internal {\n    if (baseAmount > 0) {\n        _decreaseTotalPending(base, baseAmount);\n        base.safeTransfer(recipient, baseAmount);\n    }\n\n    if (quoteAmount > 0) {\n        _decreaseTotalPending(quote, quoteAmount);\n        quote.safeTransfer(recipient, quoteAmount);\n    }\n}\n```\n\nUpdate `decreaseStake()` to pass the `account` as recipient:\n\n```solidity\nfunction decreaseStake(address launchAsset, address account, uint96 shares)\n    external\n    onlyLaunchpad\n    returns (uint256 baseAmount, uint256 quoteAmount)\n{\n    RewardPoolData storage rs = RewardsTrackerStorage.getRewardPool(launchAsset);\n\n    (baseAmount, quoteAmount) = rs.unstake(account, uint96(shares));\n    _distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount, account);\n}\n```\n\nUpdate `claimRewards()` to pass `msg.sender` as recipient:\n\n```solidity\nfunction claimRewards(address launchAsset) external returns (uint256 baseAmount, uint256 quoteAmount) {\n    RewardPoolData storage rs = RewardsTrackerStorage.getRewardPool(launchAsset);\n\n    (baseAmount, quoteAmount) = rs.claim(msg.sender);\n    _distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount, msg.sender);\n}\n```",
+      "proofOfConcept": "Import this to `test/c4-poc/PoCLaunchpad.t.sol`\n```solidity\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IDistributor} from \"contracts/launchpad/interfaces/IDistributor.sol\";\nimport {LaunchToken} from \"contracts/launchpad/LaunchToken.sol\";\n```\n\nThen run the test below\n```solidity\n    function test_submissionValidity() external {\n\n        uint256 requiredUSDC = curve.quoteQuoteForBase(token, curve.bondingSupply(token), true);\n\n        deal(address(quoteToken), user, requiredUSDC);\n        vm.prank(user);\n        quoteToken.approve(address(launchpad), type(uint256).max);\n\n        uint256 amountOutBase = curve.bondingSupply(token);\n\n        // Make tokens graduate\n        vm.startPrank(user);\n        launchpad.buy(\n            ILaunchpad.BuyData({\n                account: user,\n                token: token,\n                recipient: user,\n                amountOutBase: amountOutBase,\n                maxAmountInQuote: requiredUSDC\n            })\n        );\n        vm.stopPrank();\n\n        // Add reward for the pair in Distributor contract\n        deal(address(quoteToken), address(this), requiredUSDC);\n        quoteToken.approve(address(distributor), type(uint256).max);\n\n        IDistributor(distributor).addRewards(token, address(quoteToken), 0, uint128(requiredUSDC));\n\n        // Check launchpad contract balance before transfer\n        uint256 launchpadQuoteTokenBalanceBefore = quoteToken.balanceOf(address(launchpad));\n\n        // Try to tansfer token after graduation\n        vm.startPrank(user);\n        LaunchToken(token).transfer(address(owner), 100e18);\n        vm.stopPrank();\n\n        // Check launchpad contract balance after transfer\n        uint256 launchpadQuoteTokenBalanceAfter = quoteToken.balanceOf(address(launchpad));\n\n        // This proves rewards are transferred to Launchpad and not to user\n        assertGt(launchpadQuoteTokenBalanceAfter, launchpadQuoteTokenBalanceBefore);\n\n    }\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/main/contracts/launchpad/Distributor.sol#L167-L177",
+      "number": 1368,
+      "aiExplanation": null,
+      "_index": 1368
+    }
+  }
+}

@@ -1,0 +1,148 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Kinetiq_k8aVPPVguSE",
+    "audit_uid": "k8aVPPVguSE",
+    "requested_submission_uid": "eRx6RdN6ipj",
+    "requested_finding_uid": "NcLiSxr4kBa",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Kinetiq_k8aVPPVguSE/20260618_143339/findings.json",
+    "source_submission_uid": "eRx6RdN6ipj",
+    "source_finding_uid": "NcLiSxr4kBa",
+    "original_report_path": "Kinetiq_k8aVPPVguSE\\high_valid_eRx6RdN6ipj.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "eRx6RdN6ipj",
+  "finding_uid": "NcLiSxr4kBa",
+  "finding_number": "36",
+  "title": "StakingManager.sol#redelegateWithdrawnHYPE() could revert due to incorrect _cancelledWithdrawalAmount calculation",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "zhanmingjing",
+  "body": "## Finding description and impact\n\ncancelled withdraw amount will be recorded to _cancelledWithdrawalAmount, then manager role could redelegate withdrawn HYPE that was previously cancelled, amount is _cancelledWithdrawalAmount. It should be noted that, one stake could be withdrawn and then cancel, for multiple times, which make _cancelledWithdrawalAmount greater than the actual cancelled amount. This could cause address(this).balance < _cancelledWithdrawalAmount, then redelegateWithdrawnHYPE() will revert.\nBesides, there are fees in cancelled request, which should also be redelegated.\n\n## Recommended mitigation steps\n\nIt is a little hard to record the actual cancelled amount, since the cancelled withdraw request will be deleted form _withdrawalRequests.\nBoth cancelWithdrawal() and redelegateWithdrawnHYPE() need manager role, it is better to redelegate cancelled amount just in function cancelWithdrawal().\nIt should be noted that, fee in the cancelled request should also be redelegated.\n\n    function cancelWithdrawal(address user, uint256 withdrawalId) external onlyRole(MANAGER_ROLE) whenNotPaused {\n        WithdrawalRequest storage request = _withdrawalRequests[user][withdrawalId];\n        require(request.hypeAmount > 0, \"No such withdrawal request\");\n\n        uint256 hypeAmount = request.hypeAmount;\n        uint256 kHYPEAmount = request.kHYPEAmount;\n        uint256 kHYPEFee = request.kHYPEFee;\n\n        // Check kHYPE balances\n        require(kHYPE.balanceOf(address(this)) >= kHYPEAmount + kHYPEFee, \"Insufficient kHYPE balance\");\n\n        // Clear the withdrawal request\n        delete _withdrawalRequests[user][withdrawalId];\n        totalQueuedWithdrawals -= hypeAmount;\n\n        // Return kHYPE tokens to user (including fees)\n        kHYPE.transfer(user, kHYPEAmount + kHYPEFee);\n\n        --// Track cancelled amount for future redelegation\n        --_cancelledWithdrawalAmount += hypeAmount;\n        ++uint256 amount = stakingAccountant.kHYPEToHYPE(kHYPEAmount + kHYPEFee);\n        ++if(address(this).balance >= amount){\n        ++    _distributeStake(amount, OperationType.SpotDeposit);\n        ++}\n\n        emit WithdrawalCancelled(user, withdrawalId, hypeAmount, _cancelledWithdrawalAmount);\n    }",
+  "proof_of_concept": "Please refer to the following steps to make redelegateWithdrawnHYPE() revert.\n1, Alice stake hype assets, and get kHYPE tokens with amountA.\n2, Alice  withdraw his kHYPE tokens, and then the manger cancel the withdraw.\n3, repeat step 2 for several times, make _cancelledWithdrawalAmount > address(this).balance.\n4, manager role call redelegateWithdrawnHYPE() to redelegate withdrawn HYPE that was previously cancelled, will revert.\n\nPlease add the following code to test/StakingManager.t.sol\n    \n    import {console} from \"forge-std/console.sol\";\n    function test_QueueWithdrawal_Cancel_Multiple() public {\n        uint256 amount = 1 ether;\n\n        // Setup validator and delegation\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        // Setup initial stake\n        vm.deal(user, amount);\n        vm.deal(address(stakingManager), amount);\n        vm.prank(user);\n        stakingManager.stake{value: amount}();\n\n        // Approve StakingManager to spend kHYPE tokens\n        vm.prank(user);\n        kHYPE.approve(address(stakingManager), amount);\n\n        // Queue withdrawal\n        vm.prank(user);\n        stakingManager.queueWithdrawal(amount);\n        vm.stopPrank();\n\n        // manager cancel the withdrawal\n        vm.startPrank(manager);\n        stakingManager.cancelWithdrawal(user, 0);\n        vm.stopPrank();\n\n        // Queue withdraw again\n        vm.prank(user);\n        kHYPE.approve(address(stakingManager), amount);\n\n        vm.prank(user);\n        stakingManager.queueWithdrawal(amount);\n        vm.stopPrank();\n\n        // manager cancel the withdrawal again\n        vm.startPrank(manager);\n        stakingManager.cancelWithdrawal(user, 1);\n        vm.stopPrank();\n        \n        console.log(kHYPE.balanceOf(manager));\n        console.log(address(stakingManager).balance);\n        vm.startPrank(manager);\n        \n        vm.expectRevert(\"Insufficient HYPE balance\");\n        stakingManager.redelegateWithdrawnHYPE();\n        vm.stopPrank();\n    }\n\nand run the test:\n\n    forge test --match-path test/StakingManager.t.sol --match-contract StakingManagerTest --match-test test_QueueWithdrawal_Cancel_Multiple",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L946-L957"
+  ],
+  "source_record": {
+    "project_id": "k8aVPPVguSE",
+    "submission_index": "52",
+    "api_submission_id": "",
+    "uid": "eRx6RdN6ipj",
+    "number": "52",
+    "title": "StakingManager.sol#redelegateWithdrawnHYPE() could revert due to incorrect _cancelledWithdrawalAmount calculation",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "zhanmingjing",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L946-L957"
+    ],
+    "body": "## Finding description and impact\n\ncancelled withdraw amount will be recorded to _cancelledWithdrawalAmount, then manager role could redelegate withdrawn HYPE that was previously cancelled, amount is _cancelledWithdrawalAmount. It should be noted that, one stake could be withdrawn and then cancel, for multiple times, which make _cancelledWithdrawalAmount greater than the actual cancelled amount. This could cause address(this).balance < _cancelledWithdrawalAmount, then redelegateWithdrawnHYPE() will revert.\nBesides, there are fees in cancelled request, which should also be redelegated.\n\n## Recommended mitigation steps\n\nIt is a little hard to record the actual cancelled amount, since the cancelled withdraw request will be deleted form _withdrawalRequests.\nBoth cancelWithdrawal() and redelegateWithdrawnHYPE() need manager role, it is better to redelegate cancelled amount just in function cancelWithdrawal().\nIt should be noted that, fee in the cancelled request should also be redelegated.\n\n    function cancelWithdrawal(address user, uint256 withdrawalId) external onlyRole(MANAGER_ROLE) whenNotPaused {\n        WithdrawalRequest storage request = _withdrawalRequests[user][withdrawalId];\n        require(request.hypeAmount > 0, \"No such withdrawal request\");\n\n        uint256 hypeAmount = request.hypeAmount;\n        uint256 kHYPEAmount = request.kHYPEAmount;\n        uint256 kHYPEFee = request.kHYPEFee;\n\n        // Check kHYPE balances\n        require(kHYPE.balanceOf(address(this)) >= kHYPEAmount + kHYPEFee, \"Insufficient kHYPE balance\");\n\n        // Clear the withdrawal request\n        delete _withdrawalRequests[user][withdrawalId];\n        totalQueuedWithdrawals -= hypeAmount;\n\n        // Return kHYPE tokens to user (including fees)\n        kHYPE.transfer(user, kHYPEAmount + kHYPEFee);\n\n        --// Track cancelled amount for future redelegation\n        --_cancelledWithdrawalAmount += hypeAmount;\n        ++uint256 amount = stakingAccountant.kHYPEToHYPE(kHYPEAmount + kHYPEFee);\n        ++if(address(this).balance >= amount){\n        ++    _distributeStake(amount, OperationType.SpotDeposit);\n        ++}\n\n        emit WithdrawalCancelled(user, withdrawalId, hypeAmount, _cancelledWithdrawalAmount);\n    }",
+    "proof_of_concept": "Please refer to the following steps to make redelegateWithdrawnHYPE() revert.\n1, Alice stake hype assets, and get kHYPE tokens with amountA.\n2, Alice  withdraw his kHYPE tokens, and then the manger cancel the withdraw.\n3, repeat step 2 for several times, make _cancelledWithdrawalAmount > address(this).balance.\n4, manager role call redelegateWithdrawnHYPE() to redelegate withdrawn HYPE that was previously cancelled, will revert.\n\nPlease add the following code to test/StakingManager.t.sol\n    \n    import {console} from \"forge-std/console.sol\";\n    function test_QueueWithdrawal_Cancel_Multiple() public {\n        uint256 amount = 1 ether;\n\n        // Setup validator and delegation\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        // Setup initial stake\n        vm.deal(user, amount);\n        vm.deal(address(stakingManager), amount);\n        vm.prank(user);\n        stakingManager.stake{value: amount}();\n\n        // Approve StakingManager to spend kHYPE tokens\n        vm.prank(user);\n        kHYPE.approve(address(stakingManager), amount);\n\n        // Queue withdrawal\n        vm.prank(user);\n        stakingManager.queueWithdrawal(amount);\n        vm.stopPrank();\n\n        // manager cancel the withdrawal\n        vm.startPrank(manager);\n        stakingManager.cancelWithdrawal(user, 0);\n        vm.stopPrank();\n\n        // Queue withdraw again\n        vm.prank(user);\n        kHYPE.approve(address(stakingManager), amount);\n\n        vm.prank(user);\n        stakingManager.queueWithdrawal(amount);\n        vm.stopPrank();\n\n        // manager cancel the withdrawal again\n        vm.startPrank(manager);\n        stakingManager.cancelWithdrawal(user, 1);\n        vm.stopPrank();\n        \n        console.log(kHYPE.balanceOf(manager));\n        console.log(address(stakingManager).balance);\n        vm.startPrank(manager);\n        \n        vm.expectRevert(\"Insufficient HYPE balance\");\n        stakingManager.redelegateWithdrawnHYPE();\n        vm.stopPrank();\n    }\n\nand run the test:\n\n    forge test --match-path test/StakingManager.t.sol --match-contract StakingManagerTest --match-test test_QueueWithdrawal_Cancel_Multiple",
+    "detail_url": "https://code4rena.com/api/v1/audits/k8aVPPVguSE/submissions/52",
+    "raw": {
+      "auditUid": "k8aVPPVguSE",
+      "createdAt": "2025-04-09T06:44:45.930Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "X8NhEsWSzsW",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "NcLiSxr4kBa"
+        },
+        {
+          "uid": "zPdsydA2rjH",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "NcLiSxr4kBa"
+        },
+        {
+          "uid": "3XiPh4KmaZQ",
+          "userUid": "tZ7iSgbTXG2",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-04-18T02:03:17.346Z",
+          "type": "validity",
+          "value": "invalid",
+          "submissionUid": null,
+          "findingUid": "NcLiSxr4kBa"
+        },
+        {
+          "uid": "XoxRX9Ro8MY",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-22T12:52:18.423Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "eRx6RdN6ipj",
+          "findingUid": null
+        },
+        {
+          "uid": "Tb2msSMjZht",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-28T20:24:28.573Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "NcLiSxr4kBa"
+        },
+        {
+          "uid": "BSDcUUkp5Jy",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-28T20:25:06.089Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "eRx6RdN6ipj",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "NcLiSxr4kBa",
+        "number": 36,
+        "duplicates": 21
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-05-13T15:17:04.973Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "StakingManager.sol#redelegateWithdrawnHYPE() could revert due to incorrect _cancelledWithdrawalAmount calculation",
+      "uid": "eRx6RdN6ipj",
+      "updatedAt": "2025-04-10T08:17:30.445Z",
+      "user": {
+        "uid": "yXfLNJojAHu",
+        "handle": "zhanmingjing"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\ncancelled withdraw amount will be recorded to _cancelledWithdrawalAmount, then manager role could redelegate withdrawn HYPE that was previously cancelled, amount is _cancelledWithdrawalAmount. It should be noted that, one stake could be withdrawn and then cancel, for multiple times, which make _cancelledWithdrawalAmount greater than the actual cancelled amount. This could cause address(this).balance < _cancelledWithdrawalAmount, then redelegateWithdrawnHYPE() will revert.\nBesides, there are fees in cancelled request, which should also be redelegated.\n\n## Recommended mitigation steps\n\nIt is a little hard to record the actual cancelled amount, since the cancelled withdraw request will be deleted form _withdrawalRequests.\nBoth cancelWithdrawal() and redelegateWithdrawnHYPE() need manager role, it is better to redelegate cancelled amount just in function cancelWithdrawal().\nIt should be noted that, fee in the cancelled request should also be redelegated.\n\n    function cancelWithdrawal(address user, uint256 withdrawalId) external onlyRole(MANAGER_ROLE) whenNotPaused {\n        WithdrawalRequest storage request = _withdrawalRequests[user][withdrawalId];\n        require(request.hypeAmount > 0, \"No such withdrawal request\");\n\n        uint256 hypeAmount = request.hypeAmount;\n        uint256 kHYPEAmount = request.kHYPEAmount;\n        uint256 kHYPEFee = request.kHYPEFee;\n\n        // Check kHYPE balances\n        require(kHYPE.balanceOf(address(this)) >= kHYPEAmount + kHYPEFee, \"Insufficient kHYPE balance\");\n\n        // Clear the withdrawal request\n        delete _withdrawalRequests[user][withdrawalId];\n        totalQueuedWithdrawals -= hypeAmount;\n\n        // Return kHYPE tokens to user (including fees)\n        kHYPE.transfer(user, kHYPEAmount + kHYPEFee);\n\n        --// Track cancelled amount for future redelegation\n        --_cancelledWithdrawalAmount += hypeAmount;\n        ++uint256 amount = stakingAccountant.kHYPEToHYPE(kHYPEAmount + kHYPEFee);\n        ++if(address(this).balance >= amount){\n        ++    _distributeStake(amount, OperationType.SpotDeposit);\n        ++}\n\n        emit WithdrawalCancelled(user, withdrawalId, hypeAmount, _cancelledWithdrawalAmount);\n    }",
+      "proofOfConcept": "Please refer to the following steps to make redelegateWithdrawnHYPE() revert.\n1, Alice stake hype assets, and get kHYPE tokens with amountA.\n2, Alice  withdraw his kHYPE tokens, and then the manger cancel the withdraw.\n3, repeat step 2 for several times, make _cancelledWithdrawalAmount > address(this).balance.\n4, manager role call redelegateWithdrawnHYPE() to redelegate withdrawn HYPE that was previously cancelled, will revert.\n\nPlease add the following code to test/StakingManager.t.sol\n    \n    import {console} from \"forge-std/console.sol\";\n    function test_QueueWithdrawal_Cancel_Multiple() public {\n        uint256 amount = 1 ether;\n\n        // Setup validator and delegation\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        // Setup initial stake\n        vm.deal(user, amount);\n        vm.deal(address(stakingManager), amount);\n        vm.prank(user);\n        stakingManager.stake{value: amount}();\n\n        // Approve StakingManager to spend kHYPE tokens\n        vm.prank(user);\n        kHYPE.approve(address(stakingManager), amount);\n\n        // Queue withdrawal\n        vm.prank(user);\n        stakingManager.queueWithdrawal(amount);\n        vm.stopPrank();\n\n        // manager cancel the withdrawal\n        vm.startPrank(manager);\n        stakingManager.cancelWithdrawal(user, 0);\n        vm.stopPrank();\n\n        // Queue withdraw again\n        vm.prank(user);\n        kHYPE.approve(address(stakingManager), amount);\n\n        vm.prank(user);\n        stakingManager.queueWithdrawal(amount);\n        vm.stopPrank();\n\n        // manager cancel the withdrawal again\n        vm.startPrank(manager);\n        stakingManager.cancelWithdrawal(user, 1);\n        vm.stopPrank();\n        \n        console.log(kHYPE.balanceOf(manager));\n        console.log(address(stakingManager).balance);\n        vm.startPrank(manager);\n        \n        vm.expectRevert(\"Insufficient HYPE balance\");\n        stakingManager.redelegateWithdrawnHYPE();\n        vm.stopPrank();\n    }\n\nand run the test:\n\n    forge test --match-path test/StakingManager.t.sol --match-contract StakingManagerTest --match-test test_QueueWithdrawal_Cancel_Multiple",
+      "linesOfCode": "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L946-L957",
+      "number": 52,
+      "aiExplanation": null,
+      "_index": 52
+    }
+  }
+}

@@ -379,9 +379,16 @@ def verify(directory):
     if provenance['candidate_origin'] == 'external_model':
         raw_elements = json.loads((directory / ('elements-ids.json' if (directory / 'elements-ids.json').exists() else 'elements.json')).read_text())
         raw_formal = json.loads((directory / ('formalization-ids.json' if (directory / 'formalization-ids.json').exists() else 'formalization.json')).read_text())
-        if (directory / 'neural-elements/model-claim.json').exists():
-            neural_elements = json.loads(
-                (directory / 'neural-elements/model-claim.json').read_text())
+        # An element retry overwrites elements-ids.json with the LAST attempt's
+        # claim, so the replay comparison must read that same attempt rather
+        # than always the first one.
+        element_retry_dirs = sorted(
+            directory.glob('neural-elements-retry-*'),
+            key=lambda path: int(path.name.rsplit('-', 1)[-1]))
+        element_claim = ((element_retry_dirs[-1] if element_retry_dirs
+                          else directory / 'neural-elements') / 'model-claim.json')
+        if element_claim.is_file():
+            neural_elements = json.loads(element_claim.read_text())
             if (directory / 'element-format-normalization.json').exists():
                 changes = []
                 if features['id_normalization']:
