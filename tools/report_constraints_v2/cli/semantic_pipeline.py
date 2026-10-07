@@ -269,7 +269,12 @@ def formal_retry_hint(exc):
             'proportional relation type/unit mismatch'):
         return ('\nRETRY FEEDBACK: The selected quantities have incompatible units. '
                 'Do not relabel units or define a quotient with multiplication. Keep '
-                'intent_id and impact_ids fixed. If the current relation_class cannot '
+                'intent_id and impact_ids fixed. For share/price proportionality, '
+                'express the invariant as the cross-multiplied relation (for example '
+                'shares_received * total_assets <= deposit_amount * total_supply) '
+                'and never define a derived symbol whose product units are then '
+                'compared against a plain share quantity. If the current '
+                'relation_class cannot '
                 'express the report relation with add/sub/mul and matching units, this '
                 'bounded repair may choose a more suitable relation_class and its '
                 'compiler-fixed template, or return blocking unsupported_relation.\n')
@@ -290,6 +295,15 @@ def formal_retry_hint(exc):
                 'the corresponding symbol metadata. Definitions must target declared '
                 'int symbols, be acyclic, preserve units, and use report-grounded '
                 'base symbols and selected source IDs.\n')
+    if str(exc) == 'local repair made no change':
+        return ('\nRETRY FEEDBACK: The previous repair attempt returned a plan '
+                'byte-identical to previous_plan, which repairs nothing. Produce a '
+                'concrete, visible difference inside mutable_top_level_fields that '
+                'answers repair_error: rewrite the offending predicate, term, or '
+                'definition -- not its wording elsewhere. If you cannot repair it, '
+                'change the plan so the unrepairable part is honestly relocated '
+                '(move the fact to assumptions, or add a blocking unresolved item) '
+                'instead of resubmitting the same object.\n')
     if str(exc).startswith('local repair '):
         return ('\nRETRY FEEDBACK: This is a local repair. Return the complete plan '
                 'but change only mutable_top_level_fields. All frozen fields must '

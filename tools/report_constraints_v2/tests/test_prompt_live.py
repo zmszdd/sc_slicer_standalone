@@ -74,7 +74,7 @@ class LivePromptTests(unittest.TestCase):
         # direction-correct repairs.  Guards keep the live-3 constant-form rule
         # from silently disappearing in a later in-place edit.
         formal = current.FORMAL_PLAN_PROMPT
-        self.assertIn('TASK VERSION: semantic-live-3', formal)
+        self.assertIn('TASK VERSION: semantic-live-4', formal)
         for phrase in ('Every explicit bound constant must be a literal',
                        'appears in the cited report text',
                        'never 2^12, 4096, or a',
@@ -82,6 +82,32 @@ class LivePromptTests(unittest.TestCase):
                        'record that bound in unresolved',
                        'instead of inventing a'):
             self.assertIn(phrase, formal)
+
+    def test_live_formal_prompt_keeps_duplicate_predicate_mandate(self):
+        # prompt_live3_blind_01 attribution: both Panoptic candidates collapsed
+        # two distinct extracted facts onto one repeated truth predicate, so one
+        # fact stopped being represented.  Guards keep the live-4 audit-list
+        # extension from silently disappearing in a later in-place edit.
+        formal = current.FORMAL_PLAN_PROMPT
+        # Phrases avoid the prompt's mid-phrase line breaks.
+        for phrase in ('Two different precondition sources must never share one',
+                       'identical predicate',
+                       'the conjunction collapses to a single fact',
+                       'move it to assumptions instead of repeating the',
+                       "first fact's predicate"):
+            self.assertIn(phrase, formal)
+
+    def test_repair_feedback_prescribes_concrete_changes(self):
+        # prompt_live3_blind_01 / live1 attribution: repairs that resubmitted the
+        # previous plan byte-identically repaired nothing, and type/unit
+        # rejections lacked the cross-multiplication recipe.
+        from semantic_pipeline import formal_retry_hint
+        no_change = formal_retry_hint(ValueError('local repair made no change'))
+        self.assertIn('repairs nothing', no_change)
+        self.assertIn('Produce a', no_change)
+        unit = formal_retry_hint(ValueError('type/unit mismatch'))
+        self.assertIn('cross-multiplied relation', unit)
+        self.assertIn('never define a derived symbol', unit)
 
     def test_numeric_repair_fields_allow_pattern(self):
         # prompt_live2_blind_01 attribution: both constant-expression rejections

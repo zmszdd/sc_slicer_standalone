@@ -204,6 +204,19 @@ DeepSeek 直连 16 次调用，经用户授权）。结果：
     全部生效；**live-4 为最后一轮迭代**（目标：重复谓词塌缩、修复纪律），
     之后进终局保留批 n=10 终测。
 
+2026-10-07 完成最后一轮原地修改 `semantic-live-4`（归因：live3 两例重复谓词
+partial 同族 + live1/live3 修复通道原样返回同族，满足"≥2 独立失败案例"规则；
+hex 0x811 误伤 n=1 继续暂缓）：
+- 自审第 3 条扩为禁重复谓词：两个不同前置来源不得共用同一条谓词（合取
+  塌缩 = 一条事实失表达）；第二条事实无独立约束时移入 assumptions。
+- 修复反馈新增 `local repair made no change` 专属分支（原样返回即"什么都没
+  修"，须改出可见差异或如实迁移），type/unit 反馈补交叉相乘处方并禁止
+  再定义单位乘积符号。
+- 守护测试 15/15；全量回归失败集 = 已知 10 例基线的严格同集（4× element
+  prompt hash mismatch、1× evidence catalog missing、1× PilotReplay、
+  2× triage、1× batch retry_count、1× BOUNDARY）；live1/live2/live3 全部
+  11 个候选 run 离线 verify 重放不变。live-4 盲测批见后续条目。
+
 - 阶段二可独立从 `report.json` 的描述与影响建立证据编号，提取 P（前提）、I（报告声称应满足的性质）、V（直接违反 I 的行为/结果），生成形式计划、SMT 和交接用 `stage3-spec.json`，并运行本地 Z3 一致性查询。没有执行 PoC 或改变阶段一、三。
 - 程序拒绝未知证据编号和不合法的形式计划；`auto-triage.json` 区分候选、待审、弃权和流水线故障。`review` 不等于已证实漏洞。
 - 可选的前提审查 v5 同时检查 `precondition` 和 `assumption` 的证据支持及前提/动作/结果时序。受约束修复仅能改动被标记的 P 项，修复后必须重审，且不能自动认证覆盖完整。
