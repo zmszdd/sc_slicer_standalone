@@ -1,0 +1,31 @@
+You are a conservative INPUT-SUFFICIENCY gate for vulnerability reports.
+Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
+whether the supplied numbered report fragments contain enough information for a later
+model to derive a report-grounded P/I/V candidate.
+
+Required dimensions:
+1. affected_subject: identifiable affected component, function, state, asset, or actor.
+2. trigger_or_action: a concrete triggering condition, operation, call, or state transition.
+3. direct_effect: an immediate unauthorized behavior, state/value change, failed guarantee,
+   or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
+4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
+   numeric, temporal, conservation, or state-transition safety relationship can be derived.
+   The report need not explicitly say "invariant", but the relation must not be invented.
+
+Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
+Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
+dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
+list every dimension whose status is missing OR uncertain, in the required dimension
+order. decision is ready only when all four dimensions are present; otherwise decision
+is insufficient. Do not treat
+PoC availability, code availability, severity labels, or a proposed fix as substitutes.
+Return JSON only with exactly:
+{"schema_version":"report-readiness/1","decision":"ready|insufficient",
+ "dimensions":{
+  "affected_subject":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "trigger_or_action":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "direct_effect":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "safety_relation_basis":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"}},
+ "missing_dimensions":[],"summary":"short explanation"}
+REPORT FRAGMENTS:
+{"schema_version":"report-evidence/1","source_sha256":"7051ff8bcf23f669cbaba259a100e003d5304bc4f2937e06ff6b2f03141006e0","fragments":[{"id":"e_7051ff8bcf23_0001","text":"Donation attack will break the share's decimal accounting leading to uncapped loss of funds over several epochs"},{"id":"e_7051ff8bcf23_0002","text":"## Finding description"},{"id":"e_7051ff8bcf23_0003","text":"The [`PanopticVaultAccountant::computeNAV`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/accountants/PanopticVaultAccountant.sol#L94) is used in order to compute the NAV of the portfolio contained in `vault` in terms of its underlying token (which considers the balance of underlying tokens present in the vault as well)."},{"id":"e_7051ff8bcf23_0004","text":"This is used inside the [`HypoVault::fulfillDeposits`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/HypoVault.sol#L472) and [`HypoVault::fulfillWithdrawals`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/HypoVault.sol#L516) to calculte the total assets, calculate the shares and update the total supply accordingly:"},{"id":"e_7051ff8bcf23_0005","text":"However, directly reading the contract's underlying balance will lead to serious consequences:"},{"id":"e_7051ff8bcf23_0006","text":"1. First ever `fulfillDeposits` will naturally have `totalAssets` to be calculated as 1 as there are no funds deposited / managed yet."},{"id":"e_7051ff8bcf23_0007","text":"This can be confirmed from the tests as well where it clearly shows `totalAssets` being 1 as well as if we apply common sense."},{"id":"e_7051ff8bcf23_0008","text":"2. However, if an attacker frontruns the `fulfillDeposits` call and donates `underlyingToken` here, it would change the `sharesReceived` drastically:"},{"id":"e_7051ff8bcf23_0009","text":"3. As `sharesReceived` are calculated to be with 6 decimals, it would not increase the `totalSupply` much."},{"id":"e_7051ff8bcf23_0010","text":"However, the ideal scaling which we would've achieved without donation is now missing and will always stay missing as the denominator is now no longer 1."},{"id":"e_7051ff8bcf23_0011","text":"Hence, everytime a deposit arrives, the shares received calculation would be scaled similarly:"},{"id":"e_7051ff8bcf23_0012","text":"As total assets keep increasing, a point would arrive where `assetsToFulfill * _totalSupply` < `totalAssets`."},{"id":"e_7051ff8bcf23_0013","text":"This would lead to `0` sharesReceived."},{"id":"e_7051ff8bcf23_0014","text":"This would not allow deposits to mint any shares:"},{"id":"e_7051ff8bcf23_0015","text":"Hence, we would see unprecedented loss of funds here."},{"id":"e_7051ff8bcf23_0016","text":"BONUS FACTOR:"},{"id":"e_7051ff8bcf23_0017","text":"One more thing to consider here is that the amount donated is not fully lost, we can consider the donated amount to being proportionately split between the users:"},{"id":"e_7051ff8bcf23_0018","text":"The `assetsReceived` here would be higher as the `totalAssets` is inflated in nature due to donated funds."},{"id":"e_7051ff8bcf23_0019","text":"An attacker can simply use the next epoch's `fulfillDeposits` with a very huge deposit, this would allow the attacker to request a withdrawal right before fulfilling withdrawals in the next epoch ( this can be frontran as well )."},{"id":"e_7051ff8bcf23_0020","text":"Hence, allowing attacker to regain back some of his funds."},{"id":"e_7051ff8bcf23_0021","text":"## Impact"},{"id":"e_7051ff8bcf23_0022","text":"1. The intended scaling of shares will get broken beyond repair irrespective of the deciamals of the underlying (attack above works for both 18 and 6 decimal ~ USDT / USDC tokens)."},{"id":"e_7051ff8bcf23_0023","text":"2. Loss of funds over several epochs."}]}

@@ -1,0 +1,229 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "HypoVault deposit fulfillment share accounting via PanopticVaultAccountant::computeNAV",
+    "environment": "Panoptic HypoVault / PanopticVaultAccountant on-chain vault accounting",
+    "evidence": [
+      "The [`PanopticVaultAccountant::computeNAV`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/accountants/PanopticVaultAccountant.sol#L94) is used in order to compute the NAV of the portfolio contained in `vault` in terms of its underlying token (which considers the balance of underlying tokens present in the vault as well).",
+      "This is used inside the [`HypoVault::fulfillDeposits`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/HypoVault.sol#L472) and [`HypoVault::fulfillWithdrawals`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/HypoVault.sol#L516) to calculte the total assets, calculate the shares and update the total supply accordingly:",
+      "However, directly reading the contract's underlying balance will lead to serious consequences:",
+      "2. However, if an attacker frontruns the `fulfillDeposits` call and donates `underlyingToken` here, it would change the `sharesReceived` drastically:",
+      "3. As `sharesReceived` are calculated to be with 6 decimals, it would not increase the `totalSupply` much.",
+      "However, the ideal scaling which we would've achieved without donation is now missing and will always stay missing as the denominator is now no longer 1.",
+      "Hence, everytime a deposit arrives, the shares received calculation would be scaled similarly:",
+      "As total assets keep increasing, a point would arrive where `assetsToFulfill * _totalSupply` < `totalAssets`.",
+      "This would lead to `0` sharesReceived.",
+      "This would not allow deposits to mint any shares:",
+      "Hence, we would see unprecedented loss of funds here.",
+      "The `assetsReceived` here would be higher as the `totalAssets` is inflated in nature due to donated funds.",
+      "An attacker can simply use the next epoch's `fulfillDeposits` with a very huge deposit, this would allow the attacker to request a withdrawal right before fulfilling withdrawals in the next epoch ( this can be frontran as well ).",
+      "Hence, allowing attacker to regain back some of his funds.",
+      "1. The intended scaling of shares will get broken beyond repair irrespective of the deciamals of the underlying (attack above works for both 18 and 6 decimal ~ USDT / USDC tokens).",
+      "2. Loss of funds over several epochs."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "attacker",
+      "role": "attacker",
+      "evidence": [
+        "2. However, if an attacker frontruns the `fulfillDeposits` call and donates `underlyingToken` here, it would change the `sharesReceived` drastically:",
+        "An attacker can simply use the next epoch's `fulfillDeposits` with a very huge deposit, this would allow the attacker to request a withdrawal right before fulfilling withdrawals in the next epoch ( this can be frontran as well )."
+      ]
+    },
+    {
+      "id": "vault",
+      "name": "HypoVault",
+      "role": "contract",
+      "evidence": [
+        "This is used inside the [`HypoVault::fulfillDeposits`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/HypoVault.sol#L472) and [`HypoVault::fulfillWithdrawals`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/HypoVault.sol#L516) to calculte the total assets, calculate the shares and update the total supply accordingly:"
+      ]
+    },
+    {
+      "id": "accountant",
+      "name": "PanopticVaultAccountant",
+      "role": "contract",
+      "evidence": [
+        "The [`PanopticVaultAccountant::computeNAV`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/accountants/PanopticVaultAccountant.sol#L94) is used in order to compute the NAV of the portfolio contained in `vault` in terms of its underlying token (which considers the balance of underlying tokens present in the vault as well)."
+      ]
+    },
+    {
+      "id": "underlying_token",
+      "name": "underlying token",
+      "role": "asset",
+      "evidence": [
+        "The [`PanopticVaultAccountant::computeNAV`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/accountants/PanopticVaultAccountant.sol#L94) is used in order to compute the NAV of the portfolio contained in `vault` in terms of its underlying token (which considers the balance of underlying tokens present in the vault as well).",
+        "2. However, if an attacker frontruns the `fulfillDeposits` call and donates `underlyingToken` here, it would change the `sharesReceived` drastically:"
+      ]
+    },
+    {
+      "id": "depositors",
+      "name": "depositors",
+      "role": "victim",
+      "evidence": [
+        "This would not allow deposits to mint any shares:",
+        "Hence, we would see unprecedented loss of funds here.",
+        "2. Loss of funds over several epochs."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "first_fulfill_total_assets_one",
+      "kind": "precondition",
+      "text": "Before any funds are deposited or managed, the first fulfillDeposits computes totalAssets as 1.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "accountant"
+      ],
+      "evidence": [
+        "1. First ever `fulfillDeposits` will naturally have `totalAssets` to be calculated as 1 as there are no funds deposited / managed yet.",
+        "This can be confirmed from the tests as well where it clearly shows `totalAssets` being 1 as well as if we apply common sense."
+      ]
+    },
+    {
+      "id": "attacker_frontruns_donation",
+      "kind": "action",
+      "text": "An attacker frontruns the fulfillDeposits call and donates underlyingToken to the vault.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "vault",
+        "underlying_token"
+      ],
+      "evidence": [
+        "2. However, if an attacker frontruns the `fulfillDeposits` call and donates `underlyingToken` here, it would change the `sharesReceived` drastically:"
+      ]
+    },
+    {
+      "id": "fulfill_deposits_computes_shares",
+      "kind": "action",
+      "text": "fulfillDeposits computes total assets, calculates sharesReceived, and updates totalSupply using computeNAV.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "accountant"
+      ],
+      "evidence": [
+        "The [`PanopticVaultAccountant::computeNAV`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/accountants/PanopticVaultAccountant.sol#L94) is used in order to compute the NAV of the portfolio contained in `vault` in terms of its underlying token (which considers the balance of underlying tokens present in the vault as well).",
+        "This is used inside the [`HypoVault::fulfillDeposits`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/HypoVault.sol#L472) and [`HypoVault::fulfillWithdrawals`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/HypoVault.sol#L516) to calculte the total assets, calculate the shares and update the total supply accordingly:"
+      ]
+    },
+    {
+      "id": "donation_inflates_total_assets",
+      "kind": "root_cause",
+      "text": "computeNAV reads the vault's underlying token balance directly, so a frontrun donation inflates totalAssets and changes the sharesReceived denominator away from 1.",
+      "modality": "inferred",
+      "entity_ids": [
+        "accountant",
+        "vault",
+        "underlying_token",
+        "attacker"
+      ],
+      "evidence": [
+        "The [`PanopticVaultAccountant::computeNAV`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/accountants/PanopticVaultAccountant.sol#L94) is used in order to compute the NAV of the portfolio contained in `vault` in terms of its underlying token (which considers the balance of underlying tokens present in the vault as well).",
+        "However, directly reading the contract's underlying balance will lead to serious consequences:",
+        "2. However, if an attacker frontruns the `fulfillDeposits` call and donates `underlyingToken` here, it would change the `sharesReceived` drastically:",
+        "However, the ideal scaling which we would've achieved without donation is now missing and will always stay missing as the denominator is now no longer 1."
+      ]
+    },
+    {
+      "id": "shares_scaled_six_decimals",
+      "kind": "impact",
+      "text": "sharesReceived is calculated with 6 decimals, so the donation does not increase totalSupply much.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "accountant"
+      ],
+      "evidence": [
+        "3. As `sharesReceived` are calculated to be with 6 decimals, it would not increase the `totalSupply` much."
+      ]
+    },
+    {
+      "id": "zero_shares_when_assets_exceed_supply",
+      "kind": "impact",
+      "text": "As totalAssets keeps increasing, a point arrives where assetsToFulfill * _totalSupply < totalAssets, leading to 0 sharesReceived.",
+      "modality": "potential",
+      "entity_ids": [
+        "vault",
+        "accountant"
+      ],
+      "evidence": [
+        "As total assets keep increasing, a point would arrive where `assetsToFulfill * _totalSupply` < `totalAssets`.",
+        "This would lead to `0` sharesReceived."
+      ]
+    },
+    {
+      "id": "deposits_mint_no_shares",
+      "kind": "impact",
+      "text": "Deposits are not allowed to mint any shares.",
+      "modality": "potential",
+      "entity_ids": [
+        "vault",
+        "depositors"
+      ],
+      "evidence": [
+        "This would not allow deposits to mint any shares:"
+      ]
+    },
+    {
+      "id": "loss_of_funds_over_epochs",
+      "kind": "impact",
+      "text": "Loss of funds occurs over several epochs.",
+      "modality": "potential",
+      "entity_ids": [
+        "depositors",
+        "vault"
+      ],
+      "evidence": [
+        "Hence, we would see unprecedented loss of funds here.",
+        "2. Loss of funds over several epochs."
+      ]
+    },
+    {
+      "id": "intended_share_scaling_preserved",
+      "kind": "security_intent",
+      "text": "Deposit fulfillment should compute sharesReceived from a totalAssets denominator that preserves the intended share scaling, so deposits continue to mint shares rather than reaching 0 sharesReceived.",
+      "modality": "inferred",
+      "entity_ids": [
+        "vault",
+        "accountant",
+        "depositors"
+      ],
+      "evidence": [
+        "However, the ideal scaling which we would've achieved without donation is now missing and will always stay missing as the denominator is now no longer 1.",
+        "Hence, everytime a deposit arrives, the shares received calculation would be scaled similarly:",
+        "This would not allow deposits to mint any shares:",
+        "1. The intended scaling of shares will get broken beyond repair irrespective of the deciamals of the underlying (attack above works for both 18 and 6 decimal ~ USDT / USDC tokens)."
+      ]
+    },
+    {
+      "id": "attacker_regains_funds",
+      "kind": "assumption",
+      "text": "An attacker can use the next epoch's fulfillDeposits with a very huge deposit and request a withdrawal right before fulfilling withdrawals in the next epoch to regain back some funds.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "vault"
+      ],
+      "evidence": [
+        "An attacker can simply use the next epoch's `fulfillDeposits` with a very huge deposit, this would allow the attacker to request a withdrawal right before fulfilling withdrawals in the next epoch ( this can be frontran as well ).",
+        "Hence, allowing attacker to regain back some of his funds."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "attacker_frontruns_donation",
+    "fulfill_deposits_computes_shares"
+  ],
+  "ambiguities": [
+    "No fragment establishes the attacker's authorization or permission status; the donation is described only as a frontrun action.",
+    "The report does not state whether the first fulfillDeposits totalAssets=1 state is observed before or after the attacker's donation.",
+    "The exact epoch timing and whether the attacker's next-epoch deposit/withdrawal sequence is executed are not established.",
+    "The report does not specify the underlying token decimals for the concrete scenario, only that the attack works for both 18 and 6 decimals.",
+    "No fragment gives the numeric values of assetsToFulfill, _totalSupply, or totalAssets at the point where sharesReceived becomes 0."
+  ]
+}

@@ -1,0 +1,40 @@
+# Incorrect tuple destructuring in RiskEngine.twapEMA produces wrong TWAP
+- Severity: High
+
+## Targets
+- `RiskEngine.twapEMA`
+- `OraclePack.getEMAs`
+
+## Summary
+
+`RiskEngine.twapEMA` destructures the tuple returned by `oraclePack.getEMAs()` in the wrong order. `getEMAs()` returns `(spotEMA, fastEMA, slowEMA, eonsEMA, medianTick)`, but `twapEMA` binds the first three values as `(eonsEMA, slowEMA, fastEMA, , )`. This swaps the EMA components and drops the real eons EMA, producing an incorrect time-weighted price signal.
+
+## Vulnerability details
+
+`OraclePack.getEMAs()` returns (in-order):
+- `spotEMA`
+- `fastEMA`
+- `slowEMA`
+- `eonsEMA`
+- `medianTick`
+
+But `twapEMA` does:
+- `eonsEMA <- spotEMA`
+- `slowEMA <- fastEMA`
+- `fastEMA <- slowEMA`
+- (drops the real `eonsEMA`)
+
+The returned blended tick is therefore effectively computed from the wrong inputs.
+
+## Code references (original)
+
+- Wrong destructuring in `twapEMA`: [contracts/RiskEngine.sol](../contracts/RiskEngine.sol#L836-L841)
+- Correct return order in `getEMAs`: [contracts/types/OraclePack.sol](../contracts/types/OraclePack.sol#L210-L223)
+
+## Root cause
+
+Fragile positional tuple destructuring: the caller assumes a different return order than the callee.
+
+## Impact
+
+High — `twapEMA` returns an incorrect price signal. Any downstream component using this TWAP for pricing, risk, margin, safe-mode gating, or liquidation decisions can be distorted. This can lead to mispriced risk, wrongful liquidations, missed liquidations, or systemic solvency issues.

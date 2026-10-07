@@ -217,6 +217,30 @@ hex 0x811 误伤 n=1 继续暂缓）：
   2× triage、1× batch retry_count、1× BOUNDARY）；live1/live2/live3 全部
   11 个候选 run 离线 verify 重放不变。live-4 盲测批见后续条目。
 
+2026-10-07 `semantic-live-4` 盲测批（`prompt_live4_blind_01`，10 例全新报告，
+排除全部历史含保留批）当日跑完并测量，
+[REPORT](../evaluation/prompt_live4_blind_01/REPORT.md)结果：
+- **工程完成 6/10 候选**（连续第三批 60%），六例全部离线 verify 通过；
+  公式 V 6/6，P/I 各 4/6；要素层 10/10 可评，I/V 全过，P 一例捆绑动作+
+  状态 partial。
+- **live-3 最大拒绝族（type/unit 伪造定义）清零**：Hybra/Intuition 新实例
+  全成候选；Intuition 首试 type/unit 拒绝经交叉相乘处方修复通过——live-4
+  处方生效。重复谓词禁令未生效（Hybra 同形塌缩复现）；no-change 专属反馈
+  在 `--formal-retries 1` 下机械不可达（最后一次尝试校验中抛出，重试已
+  耗尽），两例确认。
+- 拒绝 4 例 = 1 误伤（`0x811` hex 族第二独立案例，门槛凑满）+ 2 正确拦截
+  （修复方向正确但单次重试耗尽；`source missing` 反馈不点名缺失源）+
+  1 修复纪律失败。
+- **预注册 hex 修复已应用**（`HEX_IDENTIFIER` 掩码：`0x` 前缀常量按协议/
+  槽位标识处理，不计入字面量扫描；bounds 路径不受影响，真十六进制界仍
+  强制）：守护测试 + Monetrix 离线解锁证明（HEX_UNLOCK_PROBE.json）+ 全量
+  回归基线同集 + live1–4 全部 17 候选重放不变。方向与触发条件均在 live-3
+  报告预注册，非事后调参。
+- **停止规则触发：prompt 迭代到此停止**（live-1..4 共 4 轮原地修改 + 1 次
+  预注册门修复）。未预注册项只披露不实施：no-change 反馈可达性（需
+  retries ≥ 2）、`source missing` 反馈点名缺失源、重复谓词拒绝化。下一步
+  是终局保留批 final_holdout_01 一次性终测（n=10，冻结于全部迭代前）。
+
 - 阶段二可独立从 `report.json` 的描述与影响建立证据编号，提取 P（前提）、I（报告声称应满足的性质）、V（直接违反 I 的行为/结果），生成形式计划、SMT 和交接用 `stage3-spec.json`，并运行本地 Z3 一致性查询。没有执行 PoC 或改变阶段一、三。
 - 程序拒绝未知证据编号和不合法的形式计划；`auto-triage.json` 区分候选、待审、弃权和流水线故障。`review` 不等于已证实漏洞。
 - 可选的前提审查 v5 同时检查 `precondition` 和 `assumption` 的证据支持及前提/动作/结果时序。受约束修复仅能改动被标记的 P 项，修复后必须重审，且不能自动认证覆盖完整。

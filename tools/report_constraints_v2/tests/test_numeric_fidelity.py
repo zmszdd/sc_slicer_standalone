@@ -92,6 +92,29 @@ class NumericFidelityTests(unittest.TestCase):
         candidate = {'precondition_terms': []}
         check_numeric_plan(candidate, elements, exclude_protocol_identifiers=True)
 
+    def test_hex_slot_identifiers_are_not_numeric_bounds(self):
+        # prompt_live3/live4_blind_01 Monetrix: the storage-slot identifier
+        # 0x811 was parsed as the literal 2065, so direction-correct ge-0
+        # predicates were rejected as "numeric P literal changed".  A 0x
+        # prefix marks a protocol/slot identifier, not a semantic bound;
+        # the fix direction was pre-registered in the live-3 report and the
+        # family threshold (>= 2 independent cases) was met in live-4.
+        text = 'The 0x811 user state holds supply.value and borrow.value.'
+        self.assertEqual(explicit_numbers(text), set())
+        self.assertEqual(explicit_bounds(text), set())
+        # A real hex bound stated with a comparator is still enforced.
+        self.assertEqual(explicit_bounds('The cap is >= 0x1000.'),
+                         {('ge', Decimal(4096))})
+        elements = {'statements': [{
+            'id': 'p_slot', 'kind': 'precondition', 'text': text,
+        }]}
+        candidate = {'precondition_terms': [
+            {'source_id': 'p_slot',
+             'predicate': {'kind': 'comparison', 'left': 'borrow_value',
+                           'operator': 'ge', 'right': {'const': 0}}},
+        ]}
+        check_numeric_plan(candidate, elements)
+
     def test_relax_assumptions_exempts_unencoded_assumption_numbers(self):
         # prompt_live1_blind_01: Kinetiq/Intuition were rejected because a
         # narrative assumption restating numbers (or naming a chain constant)

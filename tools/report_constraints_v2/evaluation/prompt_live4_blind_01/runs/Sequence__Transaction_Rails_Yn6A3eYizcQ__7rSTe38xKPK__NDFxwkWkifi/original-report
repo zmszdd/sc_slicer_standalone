@@ -1,0 +1,108 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Sequence_ Transaction Rails_Yn6A3eYizcQ",
+    "audit_uid": "Yn6A3eYizcQ",
+    "requested_submission_uid": "NDFxwkWkifi",
+    "requested_finding_uid": "7rSTe38xKPK",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Sequence_Transaction_Rails_Yn6A3eYizcQ/20260618_145131/findings.json",
+    "source_submission_uid": "NDFxwkWkifi",
+    "source_finding_uid": "7rSTe38xKPK",
+    "original_report_path": "Sequence_ Transaction Rails_Yn6A3eYizcQ\\low_valid_NDFxwkWkifi.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "NDFxwkWkifi",
+  "finding_uid": "7rSTe38xKPK",
+  "finding_number": "75",
+  "title": "execute and pull* can accumulate residual ETH/tokens on the router",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "nathan47",
+  "body": "execute forwards msg.value into a delegatecall to Multicall3 without ensuring that the sum of per-call values equals msg.value. Any surplus remains on the router. pullAndExecute and pullAmountAndExecute transfer tokens from the caller to the router up front but do not guarantee those tokens are fully spent during the multicall; any leftovers remain on the router. There is no automatic refund path in these public functions.\n\nRelevant code\n```solidity\nfunction execute(bytes calldata data) public payable returns (IMulticall3.Result[] memory returnResults) {\n    _validateRouterCall(data);\n    (bool success, bytes memory returnData) = MULTICALL3.delegatecall(data);\n    if (!success) revert TargetCallFailed(returnData);\n    return abi.decode(returnData, (IMulticall3.Result[]));\n}\n\nfunction pullAndExecute(address token, bytes calldata data) public payable returns (IMulticall3.Result[] memory) {\n    uint256 amount;\n    if (token == address(0)) {\n        if (msg.value == 0) revert NoEthSent();\n        amount = msg.value;\n    } else {\n        amount = _getBalance(token, msg.sender);\n        if (amount == 0) revert NoTokensToPull();\n    }\n    return pullAmountAndExecute(token, amount, data);\n}\n\nfunction pullAmountAndExecute(address token, uint256 amount, bytes calldata data) public payable returns (...) {\n    _validateRouterCall(data);\n    if (token == address(0)) {\n        if (msg.value < amount) revert InsufficientEth(amount, msg.value);\n    } else {\n        _safeTransferFrom(token, msg.sender, address(this), amount);\n    }\n    (bool success, bytes memory returnData) = MULTICALL3.delegatecall(data);\n    if (!success) revert TargetCallFailed(returnData);\n    return abi.decode(returnData, (IMulticall3.Result[]));\n}\n```\n- **Attack Path**:\n  1. User or integrator overfunds `execute` or `pull*` relative to batch consumption.\n  2. Leftover ETH/tokens remain parked on the router.\n  3. Residual balances can later be expropriated (see Finding 1 and 3).\n- **Impact**: Stranded ETH/tokens on the router that increase blast radius when combined with public draining vectors; user funds may be unintentionally exposed.\n- **Proof of code**:",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {TrailsRouter} from \"src/TrailsRouter.sol\";\nimport {IMulticall3} from \"src/interfaces/IMulticall3.sol\";\nimport {MockMulticall3} from \"test/mocks/MockMulticall3.sol\";\nimport {ERC20Mock} from \"@openzeppelin/contracts/mocks/token/ERC20Mock.sol\";\n\ncontract NoopTarget_V1 {\n    function ping() external pure returns (uint256) { return 1; }\n}\n\ncontract Router_Residuals_Test is Test {\n    TrailsRouter internal router;\n    NoopTarget_V1 internal noop;\n    ERC20Mock internal token;\n\n    function setUp() public {\n        MockMulticall3 mm = new MockMulticall3();\n        vm.etch(0xcA11bde05977b3631167028862bE2a173976CA11, address(mm).code);\n        router = new TrailsRouter();\n        noop = new NoopTarget_V1();\n        token = new ERC20Mock();\n    }\n\n    function test_Residual_execute_ETH() public {\n        IMulticall3.Call3Value[] memory calls = new IMulticall3.Call3Value[](1);\n        calls[0] = IMulticall3.Call3Value({\n            target: address(noop),\n            allowFailure: false,\n            value: 0,\n            callData: abi.encodeWithSignature(\"ping()\")\n        });\n        bytes memory data = abi.encodeWithSignature(\"aggregate3Value((address,bool,uint256,bytes)[])\", calls);\n        router.execute{value: 1 ether}(data);\n        assertEq(address(router).balance, 1 ether);\n    }\n\n    function test_Residual_pullAmountAndExecute_ETH() public {\n        IMulticall3.Call3Value[] memory calls = new IMulticall3.Call3Value[](1);\n        calls[0] = IMulticall3.Call3Value({\n            target: address(noop),\n            allowFailure: false,\n            value: 0,\n            callData: abi.encodeWithSignature(\"ping()\")\n        });\n        bytes memory data = abi.encodeWithSignature(\"aggregate3Value((address,bool,uint256,bytes)[])\", calls);\n        router.pullAmountAndExecute{value: 2 ether}(address(0), 2 ether, data);\n        assertEq(address(router).balance, 2 ether);\n    }\n\n    function test_Residual_pullAmountAndExecute_Token() public {\n        token.mint(address(this), 300 ether);\n        token.approve(address(router), 300 ether);\n        IMulticall3.Call3Value[] memory calls = new IMulticall3.Call3Value[](1);\n        calls[0] = IMulticall3.Call3Value({\n            target: address(noop),\n            allowFailure: false,\n            value: 0,\n            callData: abi.encodeWithSignature(\"ping()\")\n        });\n        bytes memory data = abi.encodeWithSignature(\"aggregate3Value((address,bool,uint256,bytes)[])\", calls);\n        router.pullAmountAndExecute(address(token), 300 ether, data);\n        assertEq(token.balanceOf(address(router)), 300 ether);\n    }\n}\n```\n\n- **Mitigation**:\n  - Enforce exact value semantics in `execute`: require sum(calls[i].value) == msg.value.\n  - For `pull*`, implement post-exec auto-sweep/refund back to `msg.sender` (or designated recipient) for any unused balances of the pulled assets.\n  - Alternatively, run batches through an ephemeral execution context that cannot retain balances upon completion.",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sequence/blob/593987c2b569f3212d2cadb31fc8d14b84bc30a9/src/TrailsRouter.sol#L67"
+  ],
+  "source_record": {
+    "project_id": "Yn6A3eYizcQ",
+    "submission_index": "364",
+    "api_submission_id": "",
+    "uid": "NDFxwkWkifi",
+    "number": "364",
+    "title": "execute and pull* can accumulate residual ETH/tokens on the router",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "",
+    "handle": "nathan47",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sequence/blob/593987c2b569f3212d2cadb31fc8d14b84bc30a9/src/TrailsRouter.sol#L67"
+    ],
+    "body": "execute forwards msg.value into a delegatecall to Multicall3 without ensuring that the sum of per-call values equals msg.value. Any surplus remains on the router. pullAndExecute and pullAmountAndExecute transfer tokens from the caller to the router up front but do not guarantee those tokens are fully spent during the multicall; any leftovers remain on the router. There is no automatic refund path in these public functions.\n\nRelevant code\n```solidity\nfunction execute(bytes calldata data) public payable returns (IMulticall3.Result[] memory returnResults) {\n    _validateRouterCall(data);\n    (bool success, bytes memory returnData) = MULTICALL3.delegatecall(data);\n    if (!success) revert TargetCallFailed(returnData);\n    return abi.decode(returnData, (IMulticall3.Result[]));\n}\n\nfunction pullAndExecute(address token, bytes calldata data) public payable returns (IMulticall3.Result[] memory) {\n    uint256 amount;\n    if (token == address(0)) {\n        if (msg.value == 0) revert NoEthSent();\n        amount = msg.value;\n    } else {\n        amount = _getBalance(token, msg.sender);\n        if (amount == 0) revert NoTokensToPull();\n    }\n    return pullAmountAndExecute(token, amount, data);\n}\n\nfunction pullAmountAndExecute(address token, uint256 amount, bytes calldata data) public payable returns (...) {\n    _validateRouterCall(data);\n    if (token == address(0)) {\n        if (msg.value < amount) revert InsufficientEth(amount, msg.value);\n    } else {\n        _safeTransferFrom(token, msg.sender, address(this), amount);\n    }\n    (bool success, bytes memory returnData) = MULTICALL3.delegatecall(data);\n    if (!success) revert TargetCallFailed(returnData);\n    return abi.decode(returnData, (IMulticall3.Result[]));\n}\n```\n- **Attack Path**:\n  1. User or integrator overfunds `execute` or `pull*` relative to batch consumption.\n  2. Leftover ETH/tokens remain parked on the router.\n  3. Residual balances can later be expropriated (see Finding 1 and 3).\n- **Impact**: Stranded ETH/tokens on the router that increase blast radius when combined with public draining vectors; user funds may be unintentionally exposed.\n- **Proof of code**:",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {TrailsRouter} from \"src/TrailsRouter.sol\";\nimport {IMulticall3} from \"src/interfaces/IMulticall3.sol\";\nimport {MockMulticall3} from \"test/mocks/MockMulticall3.sol\";\nimport {ERC20Mock} from \"@openzeppelin/contracts/mocks/token/ERC20Mock.sol\";\n\ncontract NoopTarget_V1 {\n    function ping() external pure returns (uint256) { return 1; }\n}\n\ncontract Router_Residuals_Test is Test {\n    TrailsRouter internal router;\n    NoopTarget_V1 internal noop;\n    ERC20Mock internal token;\n\n    function setUp() public {\n        MockMulticall3 mm = new MockMulticall3();\n        vm.etch(0xcA11bde05977b3631167028862bE2a173976CA11, address(mm).code);\n        router = new TrailsRouter();\n        noop = new NoopTarget_V1();\n        token = new ERC20Mock();\n    }\n\n    function test_Residual_execute_ETH() public {\n        IMulticall3.Call3Value[] memory calls = new IMulticall3.Call3Value[](1);\n        calls[0] = IMulticall3.Call3Value({\n            target: address(noop),\n            allowFailure: false,\n            value: 0,\n            callData: abi.encodeWithSignature(\"ping()\")\n        });\n        bytes memory data = abi.encodeWithSignature(\"aggregate3Value((address,bool,uint256,bytes)[])\", calls);\n        router.execute{value: 1 ether}(data);\n        assertEq(address(router).balance, 1 ether);\n    }\n\n    function test_Residual_pullAmountAndExecute_ETH() public {\n        IMulticall3.Call3Value[] memory calls = new IMulticall3.Call3Value[](1);\n        calls[0] = IMulticall3.Call3Value({\n            target: address(noop),\n            allowFailure: false,\n            value: 0,\n            callData: abi.encodeWithSignature(\"ping()\")\n        });\n        bytes memory data = abi.encodeWithSignature(\"aggregate3Value((address,bool,uint256,bytes)[])\", calls);\n        router.pullAmountAndExecute{value: 2 ether}(address(0), 2 ether, data);\n        assertEq(address(router).balance, 2 ether);\n    }\n\n    function test_Residual_pullAmountAndExecute_Token() public {\n        token.mint(address(this), 300 ether);\n        token.approve(address(router), 300 ether);\n        IMulticall3.Call3Value[] memory calls = new IMulticall3.Call3Value[](1);\n        calls[0] = IMulticall3.Call3Value({\n            target: address(noop),\n            allowFailure: false,\n            value: 0,\n            callData: abi.encodeWithSignature(\"ping()\")\n        });\n        bytes memory data = abi.encodeWithSignature(\"aggregate3Value((address,bool,uint256,bytes)[])\", calls);\n        router.pullAmountAndExecute(address(token), 300 ether, data);\n        assertEq(token.balanceOf(address(router)), 300 ether);\n    }\n}\n```\n\n- **Mitigation**:\n  - Enforce exact value semantics in `execute`: require sum(calls[i].value) == msg.value.\n  - For `pull*`, implement post-exec auto-sweep/refund back to `msg.sender` (or designated recipient) for any unused balances of the pulled assets.\n  - Alternatively, run batches through an ephemeral execution context that cannot retain balances upon completion.",
+    "detail_url": "https://code4rena.com/api/v1/audits/Yn6A3eYizcQ/submissions/364",
+    "raw": {
+      "auditUid": "Yn6A3eYizcQ",
+      "createdAt": "2025-11-16T16:40:17.976Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "gLcftRTm5KB",
+          "userUid": "FtdUe6YkFxN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-17T15:26:57.031Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "7rSTe38xKPK"
+        },
+        {
+          "uid": "h5ukgr9L8vQ",
+          "userUid": "FtdUe6YkFxN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-19T09:58:07.091Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "7rSTe38xKPK"
+        }
+      ],
+      "finding": {
+        "uid": "7rSTe38xKPK",
+        "number": 75,
+        "duplicates": 71
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-11-25T16:51:37.665Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "execute and pull* can accumulate residual ETH/tokens on the router",
+      "uid": "NDFxwkWkifi",
+      "updatedAt": "2025-11-16T16:40:17.976Z",
+      "user": {
+        "uid": "qxsL2MZRQXe",
+        "handle": "nathan47"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "execute forwards msg.value into a delegatecall to Multicall3 without ensuring that the sum of per-call values equals msg.value. Any surplus remains on the router. pullAndExecute and pullAmountAndExecute transfer tokens from the caller to the router up front but do not guarantee those tokens are fully spent during the multicall; any leftovers remain on the router. There is no automatic refund path in these public functions.\n\nRelevant code\n```solidity\nfunction execute(bytes calldata data) public payable returns (IMulticall3.Result[] memory returnResults) {\n    _validateRouterCall(data);\n    (bool success, bytes memory returnData) = MULTICALL3.delegatecall(data);\n    if (!success) revert TargetCallFailed(returnData);\n    return abi.decode(returnData, (IMulticall3.Result[]));\n}\n\nfunction pullAndExecute(address token, bytes calldata data) public payable returns (IMulticall3.Result[] memory) {\n    uint256 amount;\n    if (token == address(0)) {\n        if (msg.value == 0) revert NoEthSent();\n        amount = msg.value;\n    } else {\n        amount = _getBalance(token, msg.sender);\n        if (amount == 0) revert NoTokensToPull();\n    }\n    return pullAmountAndExecute(token, amount, data);\n}\n\nfunction pullAmountAndExecute(address token, uint256 amount, bytes calldata data) public payable returns (...) {\n    _validateRouterCall(data);\n    if (token == address(0)) {\n        if (msg.value < amount) revert InsufficientEth(amount, msg.value);\n    } else {\n        _safeTransferFrom(token, msg.sender, address(this), amount);\n    }\n    (bool success, bytes memory returnData) = MULTICALL3.delegatecall(data);\n    if (!success) revert TargetCallFailed(returnData);\n    return abi.decode(returnData, (IMulticall3.Result[]));\n}\n```\n- **Attack Path**:\n  1. User or integrator overfunds `execute` or `pull*` relative to batch consumption.\n  2. Leftover ETH/tokens remain parked on the router.\n  3. Residual balances can later be expropriated (see Finding 1 and 3).\n- **Impact**: Stranded ETH/tokens on the router that increase blast radius when combined with public draining vectors; user funds may be unintentionally exposed.\n- **Proof of code**:",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {TrailsRouter} from \"src/TrailsRouter.sol\";\nimport {IMulticall3} from \"src/interfaces/IMulticall3.sol\";\nimport {MockMulticall3} from \"test/mocks/MockMulticall3.sol\";\nimport {ERC20Mock} from \"@openzeppelin/contracts/mocks/token/ERC20Mock.sol\";\n\ncontract NoopTarget_V1 {\n    function ping() external pure returns (uint256) { return 1; }\n}\n\ncontract Router_Residuals_Test is Test {\n    TrailsRouter internal router;\n    NoopTarget_V1 internal noop;\n    ERC20Mock internal token;\n\n    function setUp() public {\n        MockMulticall3 mm = new MockMulticall3();\n        vm.etch(0xcA11bde05977b3631167028862bE2a173976CA11, address(mm).code);\n        router = new TrailsRouter();\n        noop = new NoopTarget_V1();\n        token = new ERC20Mock();\n    }\n\n    function test_Residual_execute_ETH() public {\n        IMulticall3.Call3Value[] memory calls = new IMulticall3.Call3Value[](1);\n        calls[0] = IMulticall3.Call3Value({\n            target: address(noop),\n            allowFailure: false,\n            value: 0,\n            callData: abi.encodeWithSignature(\"ping()\")\n        });\n        bytes memory data = abi.encodeWithSignature(\"aggregate3Value((address,bool,uint256,bytes)[])\", calls);\n        router.execute{value: 1 ether}(data);\n        assertEq(address(router).balance, 1 ether);\n    }\n\n    function test_Residual_pullAmountAndExecute_ETH() public {\n        IMulticall3.Call3Value[] memory calls = new IMulticall3.Call3Value[](1);\n        calls[0] = IMulticall3.Call3Value({\n            target: address(noop),\n            allowFailure: false,\n            value: 0,\n            callData: abi.encodeWithSignature(\"ping()\")\n        });\n        bytes memory data = abi.encodeWithSignature(\"aggregate3Value((address,bool,uint256,bytes)[])\", calls);\n        router.pullAmountAndExecute{value: 2 ether}(address(0), 2 ether, data);\n        assertEq(address(router).balance, 2 ether);\n    }\n\n    function test_Residual_pullAmountAndExecute_Token() public {\n        token.mint(address(this), 300 ether);\n        token.approve(address(router), 300 ether);\n        IMulticall3.Call3Value[] memory calls = new IMulticall3.Call3Value[](1);\n        calls[0] = IMulticall3.Call3Value({\n            target: address(noop),\n            allowFailure: false,\n            value: 0,\n            callData: abi.encodeWithSignature(\"ping()\")\n        });\n        bytes memory data = abi.encodeWithSignature(\"aggregate3Value((address,bool,uint256,bytes)[])\", calls);\n        router.pullAmountAndExecute(address(token), 300 ether, data);\n        assertEq(token.balanceOf(address(router)), 300 ether);\n    }\n}\n```\n\n- **Mitigation**:\n  - Enforce exact value semantics in `execute`: require sum(calls[i].value) == msg.value.\n  - For `pull*`, implement post-exec auto-sweep/refund back to `msg.sender` (or designated recipient) for any unused balances of the pulled assets.\n  - Alternatively, run batches through an ephemeral execution context that cannot retain balances upon completion.",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sequence/blob/593987c2b569f3212d2cadb31fc8d14b84bc30a9/src/TrailsRouter.sol#L67",
+      "number": 364,
+      "aiExplanation": null,
+      "_index": 364
+    }
+  }
+}

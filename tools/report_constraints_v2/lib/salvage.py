@@ -98,10 +98,17 @@ def predicate_bound(predicate):
     return None
 
 
+HEX_IDENTIFIER = re.compile(r'(?<![A-Za-z0-9_])-?0[xX][0-9a-fA-F]+(?![A-Za-z0-9_])')
+
+
 def explicit_numbers(text, exclude_protocol_identifiers=False):
     """All explicit numeric literals, used only to prevent invented P constants."""
     if exclude_protocol_identifiers:
         text = PROTOCOL_IDENTIFIER.sub(lambda match: ' ' * len(match.group(0)), text)
+    # A 0x-prefixed constant is a storage-slot or protocol identifier (live-3 and
+    # live-4 Monetrix: slot 0x811), never a semantic bound the plan must echo.
+    # Real hex bounds stay enforced: explicit_bounds still parses them.
+    text = HEX_IDENTIFIER.sub(lambda match: ' ' * len(match.group(0)), text)
     return {number(match.group(0)) for match in PLAIN_NUMBER.finditer(text)}
 
 

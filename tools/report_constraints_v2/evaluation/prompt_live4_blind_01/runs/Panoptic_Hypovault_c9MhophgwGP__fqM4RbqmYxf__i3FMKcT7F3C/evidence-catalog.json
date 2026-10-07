@@ -1,0 +1,167 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "7051ff8bcf23f669cbaba259a100e003d5304bc4f2937e06ff6b2f03141006e0",
+  "fragments": [
+    {
+      "id": "e_7051ff8bcf23_0001",
+      "text": "Donation attack will break the share's decimal accounting leading to uncapped loss of funds over several epochs",
+      "start": 0,
+      "end": 111,
+      "line": 1
+    },
+    {
+      "id": "e_7051ff8bcf23_0002",
+      "text": "## Finding description",
+      "start": 113,
+      "end": 135,
+      "line": 3
+    },
+    {
+      "id": "e_7051ff8bcf23_0003",
+      "text": "The [`PanopticVaultAccountant::computeNAV`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/accountants/PanopticVaultAccountant.sol#L94) is used in order to compute the NAV of the portfolio contained in `vault` in terms of its underlying token (which considers the balance of underlying tokens present in the vault as well).",
+      "start": 137,
+      "end": 510,
+      "line": 5
+    },
+    {
+      "id": "e_7051ff8bcf23_0004",
+      "text": "This is used inside the [`HypoVault::fulfillDeposits`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/HypoVault.sol#L472) and [`HypoVault::fulfillWithdrawals`](https://github.com/code-423n4/2025-06-panoptic/blob/8ef6d867a5fb6ffd1a6cc479a2380a611d452b4a/src/HypoVault.sol#L516) to calculte the total assets, calculate the shares and update the total supply accordingly:",
+      "start": 512,
+      "end": 930,
+      "line": 7
+    },
+    {
+      "id": "e_7051ff8bcf23_0005",
+      "text": "However, directly reading the contract's underlying balance will lead to serious consequences:",
+      "start": 933,
+      "end": 1027,
+      "line": 10
+    },
+    {
+      "id": "e_7051ff8bcf23_0006",
+      "text": "1. First ever `fulfillDeposits` will naturally have `totalAssets` to be calculated as 1 as there are no funds deposited / managed yet.",
+      "start": 1029,
+      "end": 1163,
+      "line": 12
+    },
+    {
+      "id": "e_7051ff8bcf23_0007",
+      "text": "This can be confirmed from the tests as well where it clearly shows `totalAssets` being 1 as well as if we apply common sense.",
+      "start": 1164,
+      "end": 1290,
+      "line": 13
+    },
+    {
+      "id": "e_7051ff8bcf23_0008",
+      "text": "2. However, if an attacker frontruns the `fulfillDeposits` call and donates `underlyingToken` here, it would change the `sharesReceived` drastically:",
+      "start": 1292,
+      "end": 1441,
+      "line": 15
+    },
+    {
+      "id": "e_7051ff8bcf23_0009",
+      "text": "3. As `sharesReceived` are calculated to be with 6 decimals, it would not increase the `totalSupply` much.",
+      "start": 1444,
+      "end": 1550,
+      "line": 17
+    },
+    {
+      "id": "e_7051ff8bcf23_0010",
+      "text": "However, the ideal scaling which we would've achieved without donation is now missing and will always stay missing as the denominator is now no longer 1.",
+      "start": 1551,
+      "end": 1704,
+      "line": 18
+    },
+    {
+      "id": "e_7051ff8bcf23_0011",
+      "text": "Hence, everytime a deposit arrives, the shares received calculation would be scaled similarly:",
+      "start": 1706,
+      "end": 1800,
+      "line": 20
+    },
+    {
+      "id": "e_7051ff8bcf23_0012",
+      "text": "As total assets keep increasing, a point would arrive where `assetsToFulfill * _totalSupply` < `totalAssets`.",
+      "start": 1802,
+      "end": 1911,
+      "line": 22
+    },
+    {
+      "id": "e_7051ff8bcf23_0013",
+      "text": "This would lead to `0` sharesReceived.",
+      "start": 1912,
+      "end": 1950,
+      "line": 23
+    },
+    {
+      "id": "e_7051ff8bcf23_0014",
+      "text": "This would not allow deposits to mint any shares:",
+      "start": 1953,
+      "end": 2002,
+      "line": 26
+    },
+    {
+      "id": "e_7051ff8bcf23_0015",
+      "text": "Hence, we would see unprecedented loss of funds here.",
+      "start": 2006,
+      "end": 2059,
+      "line": 30
+    },
+    {
+      "id": "e_7051ff8bcf23_0016",
+      "text": "BONUS FACTOR:",
+      "start": 2064,
+      "end": 2077,
+      "line": 35
+    },
+    {
+      "id": "e_7051ff8bcf23_0017",
+      "text": "One more thing to consider here is that the amount donated is not fully lost, we can consider the donated amount to being proportionately split between the users:",
+      "start": 2078,
+      "end": 2240,
+      "line": 36
+    },
+    {
+      "id": "e_7051ff8bcf23_0018",
+      "text": "The `assetsReceived` here would be higher as the `totalAssets` is inflated in nature due to donated funds.",
+      "start": 2242,
+      "end": 2348,
+      "line": 38
+    },
+    {
+      "id": "e_7051ff8bcf23_0019",
+      "text": "An attacker can simply use the next epoch's `fulfillDeposits` with a very huge deposit, this would allow the attacker to request a withdrawal right before fulfilling withdrawals in the next epoch ( this can be frontran as well ).",
+      "start": 2350,
+      "end": 2579,
+      "line": 40
+    },
+    {
+      "id": "e_7051ff8bcf23_0020",
+      "text": "Hence, allowing attacker to regain back some of his funds.",
+      "start": 2581,
+      "end": 2639,
+      "line": 42
+    },
+    {
+      "id": "e_7051ff8bcf23_0021",
+      "text": "## Impact",
+      "start": 2642,
+      "end": 2651,
+      "line": 45
+    },
+    {
+      "id": "e_7051ff8bcf23_0022",
+      "text": "1. The intended scaling of shares will get broken beyond repair irrespective of the deciamals of the underlying (attack above works for both 18 and 6 decimal ~ USDT / USDC tokens).",
+      "start": 2653,
+      "end": 2833,
+      "line": 47
+    },
+    {
+      "id": "e_7051ff8bcf23_0023",
+      "text": "2. Loss of funds over several epochs.",
+      "start": 2834,
+      "end": 2871,
+      "line": 48
+    }
+  ]
+}
