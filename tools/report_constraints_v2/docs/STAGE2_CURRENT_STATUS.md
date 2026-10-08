@@ -373,6 +373,25 @@ live4/终局，共 30 次 deepseek-flash 异构审计调用）与终局批主复
 冒烟零模型调用。**final_holdout_02 的 9/10 不再代表当前代码**，投产
 测量前须冻结并终测 final_holdout_03（选样逻辑自动排除全部 147 例）。
 
+2026-10-08 深夜（二） **new-SC 注入原型（方案①，`new_sc_injection_01`，
+[REPORT 见目录 README](../evaluation/new_sc_injection_01/README.md)）：
+阶段二公式 + 阶段一切片 → 新 SC → forge 机械裁决 → stage3 ingest 闭环
+一例打通**。Ekubo（live4 候选）：
+- 确定性注入器（`inject.py`，零模型调用）把 constraints.json 的
+  P/I/V 表达式（与 Z3 查询同源、未再推导）翻译成 Solidity，连同手写
+  绑定映射（`bindings/ekubo.json`，stage-3 侧绑定工作的原型输入，
+  已披露）生成 guard 测试合约——继承 PoC 测试合约复用全套场景。
+- guard 输出 `STAGE2_VERDICT {"p":true,"i":false,"v":true}`，按预注册
+  四分支判读表裁决 **violation_reproduced**：报告主张（Transfer 事件
+  source 应为 from）在代码层机械证实；guard 只在绑定不可能时失败
+  （I 被违反是发现不是失败），原 PoC 测试在新 SC 中原样通过。
+- 经既有 `stage3-feedback` 通路在 run 副本上 ingest，落盘
+  `stage3-consistency.json`（`violation_reproduced`，符号全 bound），
+  冻结 run 未被触碰。阶段一完全未动（切片只读复制，sha256 记入
+  sc-spec）。注入 + 运行 + 裁决 + ingest 全程 0 次模型调用。
+- 边界（如实）：绑定映射手工提供（自动绑定是后续工作）；数值单位
+  缩放未处理（本例全 address/bool）；P 时序简化为动作后取值。
+
 - 阶段二可独立从 `report.json` 的描述与影响建立证据编号，提取 P（前提）、I（报告声称应满足的性质）、V（直接违反 I 的行为/结果），生成形式计划、SMT 和交接用 `stage3-spec.json`，并运行本地 Z3 一致性查询。没有执行 PoC 或改变阶段一、三。
 - 程序拒绝未知证据编号和不合法的形式计划；`auto-triage.json` 区分候选、待审、弃权和流水线故障。`review` 不等于已证实漏洞。
 - 可选的前提审查 v5 同时检查 `precondition` 和 `assumption` 的证据支持及前提/动作/结果时序。受约束修复仅能改动被标记的 P 项，修复后必须重审，且不能自动认证覆盖完整。
