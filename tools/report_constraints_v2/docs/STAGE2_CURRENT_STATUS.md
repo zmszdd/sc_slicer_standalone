@@ -392,6 +392,20 @@ live4/终局，共 30 次 deepseek-flash 异构审计调用）与终局批主复
 - 边界（如实）：绑定映射手工提供（自动绑定是后续工作）；数值单位
   缩放未处理（本例全 address/bool）；P 时序简化为动作后取值。
 
+2026-10-08 深夜（三） **new-SC 单文件管线（`new_sc_injection_02`，
+[REPORT 见目录 README](../evaluation/new_sc_injection_02/README.md)）：
+01 原型的"注入器 + 运行脚本"收成**一个文件一条命令**（`new_sc.py <case_key>`，
+零模型调用，逐案例输入只有 stage-2 run、切片、绑定映射三样数据）**。
+- 新 SC 是**一个 Solidity 文件** `new_sc.t.sol`：切片原文逐字节前缀 +
+  追加的 guard 合约（切片绝不编辑，`sc-spec.json` 记录切片长度/双 sha256
+  可机械复核；Ekubo 实测前缀 1,377,342 字节核对通过）。
+- 01 的手工错误（选错同 finding 提交）已机械化：case_id / report_path /
+  report_sha256 / declared_code_sha256 四项来源对齐门，不符即拒绝。
+- forge 跑全量：原 PoC 测试 PASS = 切片完整性现场验证；guard 输出
+  STAGE2_VERDICT。Ekubo 重跑与 01 逐项一致（`{"p":true,"i":false,"v":true}`
+  → violation_reproduced → ingest 副本落盘同判，unbound 0 个）。
+- 边界与 01 相同：绑定映射手工、数值单位缩放未处理、P 时序简化。
+
 - 阶段二可独立从 `report.json` 的描述与影响建立证据编号，提取 P（前提）、I（报告声称应满足的性质）、V（直接违反 I 的行为/结果），生成形式计划、SMT 和交接用 `stage3-spec.json`，并运行本地 Z3 一致性查询。没有执行 PoC 或改变阶段一、三。
 - 程序拒绝未知证据编号和不合法的形式计划；`auto-triage.json` 区分候选、待审、弃权和流水线故障。`review` 不等于已证实漏洞。
 - 可选的前提审查 v5 同时检查 `precondition` 和 `assumption` 的证据支持及前提/动作/结果时序。受约束修复仅能改动被标记的 P 项，修复后必须重审，且不能自动认证覆盖完整。

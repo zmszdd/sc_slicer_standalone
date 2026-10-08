@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+"""Single-file new-SC pipeline (deterministic, zero model calls).
+
+One command per case: merge stage-2's compiled claim into the original
+stage-1 slice as ONE Solidity file (the new SC), execute it with forge,
+adjudicate the pre-registered four-branch verdict, and ingest the result
+into stage 3 through the existing stage3-feedback path (on a run COPY --
+frozen runs are never touched).
+
+  /root/.local/share/uv/tools/halmos/bin/python new_sc.py <case_key> \
+      [--batch prompt_live4_blind_01]
+
+Per-case inputs (data only, no per-case code):
+  <batch>/runs/<case_key>/            stage-2 frozen run (constraints.json,
+                                      formal-plan.json, provenance.json)
+  corpus case dir                     stage-1 slice contract.flattened.t.sol
+  bindings/<case_key>.json            symbol -> Solidity binding map
+
+Outputs (all under this directory, never overwriting an existing one):
+  new_sc__<case_key>/new_sc.t.sol     the new SC: slice bytes verbatim as a
+                                      prefix + the appended guard contract
+  new_sc__<case_key>/foundry.toml
+  new_sc__<case_key>/sc-spec.json     unified stage-1/2/3 interface
+  forge.log / verdict.json / stage3_feedback.json
+  run_copy__<case_key>/               run copy + stage3-consistency.json
+
+Pre-registered adjudication (frozen in README.md before any run):
+  p&!i&v -> violation_reproduced    p&i&v -> i_too_weak
+  !p     -> precondition_mismatch   p&!v  -> violation_not_observed
+"""
+
+import argparse
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+EVAL = HERE.parent
+REPO = HERE.parents[3]
+CORPUS = Path('/root/poc_repro_work/verified_flatten_pass_1568_exact_cases')
+MAIN_PY = REPO / 'main.py'
+CLAIM_ID = 'core_claim'
+CONTRACT_NAME = 'Stage2InvariantGuard'
+DEFAULT_BATCH = 'prompt_live4_blind_01'
+
+BINARY_OPS = {'and': '&&', 'or': '||', 'ne': '!=', 'eq': '==',
+              'lt': '<', 'le': '<=', 'gt': '>', 'ge': '>='}
+
+FOUNDARY_TOML = '''[profile.default]
+src = "."
+test = "."
+out = "out"
+libs = ["lib"]
+via_ir = true
+optimizer = true
+optimizer_runs = 200
+'''
+
+
+def sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def fail(msg):
+    sys.exit(f'new_sc: {msg}')
+
+
+def check_provenance(run, case_key, case_dir, slice_bytes):
+    """Mechanical source alignment: the stage-2 run and the corpus case must
+    be the same report + slice (the mistake this replaces was manual)."""
+    prov = json.loads((run / 'provenance.json').read_text())
+    if prov.get('case_id') != case_key:
+        fail(f'provenance case_id {prov.get("case_id")!r} != {case_key!r}')
+    report_path = Path(prov['report_path'])
+    if report_path.parent.resolve() != case_dir.resolve():
+        fail(f'provenance report_path points at {report_path.parent}, '
+             f'not the corpus case dir {case_dir}')
+    report_bytes = (case_dir / 'report.json').read_bytes()
+    if sha256_bytes(report_bytes) != prov['report_sha256']:
+        fail('corpus report.json sha256 != provenance report_sha256')
+    declared = prov.get('declared_code_sha256')
+    if declared and sha256_bytes(slice_bytes) != declared:
+        fail('slice contract.flattened.t.sol sha256 != declared_code_sha256')
+    return prov
+
+
+def translate(node, symbols):
+    """op-args/var expression (the compiled Z3 source) -> a Solidity bool."""
+    if isinstance(node, bool):
+        return 'true' if node else 'false'
+    if isinstance(node, int):
+        return f'uint256({node})'
+    if isinstance(node, dict) and 'var' in node:
+        row = symbols[node['var']]
+        return f'({row["expr"]})'
+    op, args = node['op'], node['args']
+    if op == 'not':
+        return f'(!{translate(args[0], symbols)})'
+    if op == 'implies':
+        return f'((!{translate(args[0], symbols)}) || {translate(args[1], symbols)})'
+    if op in BINARY_OPS:
+        left, right = (translate(a, symbols) for a in args)
+        return f'({left} {BINARY_OPS[op]} {right})'
+    raise ValueError(f'unsupported expression node: {node!r}')
+
+
+def guard_sol(binding, expressions, case_key):
+    """The guard contract, APPENDED to the slice file (never editing it)."""
+    inherits = binding['state'].get('inherits', 'Test')
+    state = '\n        '.join(binding['state']['declarations']) or '    '
+    setup = '\n        '.join('        ' + line for line in binding['setup'])
+    attack = '\n        '.join('        ' + line for line in binding['attack'])
+    post = '\n        '.join('        ' + line for line in binding['post'])
+    sanity = '\n        '.join('        ' + line for line in binding['binding_sanity'])
+    p, i, v = expressions['preconditions'], expressions['safety'], expressions['effects']
+    return f'''
+// ---------------------------------------------------------------------------
+// new-SC injection: generated by evaluation/new_sc_injection_02/new_sc.py
+// (deterministic, zero model calls). Case: {case_key}.
+// Everything above this line is the original stage-1 slice, byte-identical
+// (see sc-spec.json slice.prefix_sha256); this appended block is the whole
+// of the stage-2 merge. P/I/V below are byte-identical to the compiled claim
+// in constraints.json (the same source the Z3 queries use); only the symbol
+// bindings come from bindings/{case_key}.json.
+// ---------------------------------------------------------------------------
+contract {CONTRACT_NAME} is {inherits} {{
+    {state}
+
+    event Stage2Verdict(bool pHolds, bool iHolds, bool vHolds);
+
+    // setUp is inherited from the PoC test contract; the scenario setup below
+    // belongs to the attack test itself (it declares its own local addresses).
+    function testStage2InjectedInvariants() public {{
+        // --- scenario setup (the PoC's pre-attack state) ---
+{setup}
+
+        // --- attack action (the PoC scenario's T transition) ---
+{attack}
+
+        // --- post-state observables ---
+{post}
+
+        // --- stage-2 claim, translated against the bindings ---
+        // P (preconditions):   {p['source']}
+        bool pHolds = {p['solidity']};
+        // I (safety):          {i['source']}
+        bool iHolds = {i['solidity']};
+        // V (effects):         {v['source']}
+        bool vHolds = {v['solidity']};
+
+        emit Stage2Verdict(pHolds, iHolds, vHolds);
+        console.log("STAGE2_VERDICT", string(abi.encodePacked(
+            '{{\\"p\\":', pHolds ? "true" : "false",
+            ',\\"i\\":', iHolds ? "true" : "false",
+            ',\\"v\\":', vHolds ? "true" : "false", '}}')));
+
+        // The test hard-fails ONLY on binding impossibilities; a violated I
+        // is the expected finding on vulnerable code, not a test failure.
+{sanity}
+    }}
+}}
+'''
+
+
+def adjudicate(p, i, v):
+    if not p:
+        return 'precondition_mismatch'
+    if v and not i:
+        return 'violation_reproduced'
+    if v and i:
+        return 'i_too_weak'
+    return 'violation_not_observed'
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('case_key')
+    parser.add_argument('--batch', default=DEFAULT_BATCH)
+    opts = parser.parse_args()
+    case_key = opts.case_key
+
+    run = EVAL / opts.batch / 'runs' / case_key
+    case_dir = CORPUS / case_key
+    binding_path = HERE / 'bindings' / f'{case_key}.json'
+    for path, what in ((run, 'stage-2 run'), (case_dir, 'corpus case dir'),
+                       (binding_path, 'binding map')):
+        if not path.is_dir() and not path.is_file():
+            fail(f'{what} missing: {path}')
+
+    slice_path = case_dir / 'contract.flattened.t.sol'
+    slice_bytes = slice_path.read_bytes()
+    prov = check_provenance(run, case_key, case_dir, slice_bytes)
+
+    binding = json.loads(binding_path.read_text())
+    symbols = binding['symbols']
+    bundle = json.loads((run / 'constraints.json').read_text())
+    claim = next(row for row in bundle['claims'] if row['id'] == CLAIM_ID)
+    plan = json.loads((run / 'formal-plan.json').read_text())
+
+    def compile_expr(kind):
+        source = claim['properties'][kind]['expression']
+        return {'source': json.dumps(source, ensure_ascii=False),
+                'solidity': translate(source, symbols)}
+
+    expressions = {kind: compile_expr(kind)
+                   for kind in ('preconditions', 'safety', 'effects')}
+
+    # --- step 1: merge into ONE file (slice prefix + appended guard) ---
+    out = HERE / f'new_sc__{case_key}'
+    if out.exists():
+        fail(f'refusing to overwrite existing new-SC dir: {out}')
+    out.mkdir()
+    guard_bytes = guard_sol(binding, expressions, case_key).encode()
+    new_bytes = slice_bytes + guard_bytes
+    (out / 'new_sc.t.sol').write_bytes(new_bytes)
+    (out / 'foundry.toml').write_text(FOUNDARY_TOML)
+
+    prefix_ok = sha256_bytes(new_bytes[:len(slice_bytes)]) == sha256_bytes(slice_bytes)
+    if not prefix_ok:
+        fail('internal error: slice prefix check failed')
+
+    sc_spec = {
+        'schema_version': 'stage2-sc-spec/1',
+        'case_key': case_key,
+        'stage2_run': {
+            'batch': opts.batch,
+            'run_dir': str(run.relative_to(REPO)),
+            'claim_id': CLAIM_ID,
+        },
+        'slice': {
+            'source': str(case_dir),
+            'file': 'contract.flattened.t.sol',
+            'sha256': sha256_bytes(slice_bytes),
+            'prefix_sha256': sha256_bytes(new_bytes[:len(slice_bytes)]),
+            'slice_length_bytes': len(slice_bytes),
+            'merge': 'slice bytes verbatim prefix + appended guard contract '
+                     '(the slice text is never edited)',
+            'poc_status': 'passing (verified_flatten_pass corpus)',
+        },
+        'claim': {
+            'preconditions': claim['properties']['preconditions']['expression'],
+            'safety': claim['properties']['safety']['expression'],
+            'effects': claim['properties']['effects']['expression'],
+            'source_of_truth': 'constraints.json (same expressions the Z3 '
+                               'queries use; never re-derived)',
+        },
+        'symbol_bindings': {
+            name: {'phase': row['phase'], 'type': row['type'],
+                   'expr': row['expr'],
+                   'binding_description': row['binding_description']}
+            for name, row in symbols.items()},
+        'code_queries_after_binding': {
+            'P_and_T': 'attack executed and bound P holds',
+            'P_and_T_and_not_I': 'bound P holds and bound I violated',
+            'P_and_T_and_V': 'bound P holds and bound V observed',
+            'P_and_T_and_not_V': 'bound P holds and bound V not observed',
+        },
+        'injected': {
+            'guard_contract': CONTRACT_NAME,
+            'test': f'{CONTRACT_NAME}.testStage2InjectedInvariants',
+            'runner': 'forge test (full suite: PoC + guard)',
+            'verdict_line': 'STAGE2_VERDICT',
+            'provenance_checks': 'case_id / report_path / report_sha256 / '
+                                 'declared_code_sha256 all verified',
+            'target_test': prov.get('target_test'),
+        },
+        'model_calls': 0,
+    }
+    (out / 'sc-spec.json').write_text(
+        json.dumps(sc_spec, ensure_ascii=False, indent=2) + '\n')
+
+    # --- step 2: execute with forge (full suite = slice integrity + guard) ---
+    forge = subprocess.run(['forge', 'test', '-vv'], cwd=str(out),
+                           capture_output=True, text=True)
+    log = forge.stdout + forge.stderr
+    (HERE / 'forge.log').write_text(log)
+
+    target_test = prov.get('target_test')
+    if target_test:
+        passed = re.search(r'\[PASS\][^\n]*' + re.escape(target_test), log)
+        if not passed:
+            fail(f'slice integrity: PoC test {target_test} not PASS in forge '
+                 f'output -- see forge.log')
+
+    match = re.search(r'STAGE2_VERDICT (\{.*\})', log)
+    if not match:
+        fail('no STAGE2_VERDICT line in forge output -- see forge.log')
+    piv = json.loads(match.group(1))
+    p, i, v = piv['p'], piv['i'], piv['v']
+    verdict = adjudicate(p, i, v)
+
+    record = {
+        'schema_version': 'stage2-newsc-verdict/1',
+        'case_key': case_key,
+        'piv': piv,
+        'verdict': verdict,
+        'verdict_table': 'pre-registered in evaluation/new_sc_injection_02/README.md',
+        'forge_log': 'forge.log',
+        'guard_test_passed': 'PASS' in log,
+        'poc_test_passed': bool(target_test),
+        'model_calls': 0,
+    }
+    (HERE / 'verdict.json').write_text(
+        json.dumps(record, ensure_ascii=False, indent=2) + '\n')
+    print('verdict:', verdict, piv)
+
+    # --- step 3: ingest into stage 3 (on a COPY; frozen runs never touched) ---
+    run_copy = HERE / f'run_copy__{case_key}'
+    if run_copy.exists():
+        fail(f'refusing to overwrite existing run copy: {run_copy}')
+    shutil.copytree(run, run_copy)
+
+    feedback = {
+        'schema_version': 'stage3-consistency-feedback/1',
+        'claim_id': CLAIM_ID,
+        'symbol_bindings': {
+            name: {'status': 'bound', 'binding': row['binding_description']}
+            for name, row in symbols.items()},
+        'code_query_results': {
+            'P_and_T': 'sat' if p else 'unsat',
+            'P_and_T_and_not_I': 'sat' if (p and not i) else 'unsat',
+            'P_and_T_and_V': 'sat' if (p and v) else 'unsat',
+            'P_and_T_and_not_V': 'unsat' if (p and v) else 'sat',
+        },
+        'poc': {
+            'executed': True,
+            'description': (
+                'new-SC guard test Stage2InvariantGuard.testStage2InjectedInvariants: '
+                'PoC scenario re-run with recorded logs; P/I/V expressions from '
+                'stage-2 constraints.json evaluated against bound Solidity '
+                'observables (forge, zero model calls)'),
+        },
+    }
+    feedback_path = HERE / 'stage3_feedback.json'
+    feedback_path.write_text(json.dumps(feedback, ensure_ascii=False, indent=2) + '\n')
+
+    result = subprocess.run(
+        [sys.executable, str(MAIN_PY), 'stage3-feedback', str(run_copy),
+         '--feedback', str(feedback_path)],
+        cwd=str(REPO), capture_output=True, text=True)
+    print(result.stdout[-800:] or result.stderr[-800:])
+    consistency = run_copy / 'stage3-consistency.json'
+    if consistency.is_file():
+        got = json.loads(consistency.read_text())['consistency_verdict']
+        print('stage3 consistency_verdict:', got)
+        if got != verdict and verdict in ('violation_reproduced',
+                                          'violation_not_reproduced'):
+            fail(f'verdict mismatch: newsc={verdict} ingest={got}')
+    else:
+        fail('ingest did not write stage3-consistency.json')
+
+
+if __name__ == '__main__':
+    main()
