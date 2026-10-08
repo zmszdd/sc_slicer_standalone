@@ -8,8 +8,11 @@
 
 旧名字仍被 cli/、lib/、tests/ 以及若干历史脚本使用，因此在这里用
 ``sys.meta_path`` finder **延迟**解析：只有当某个旧名字真的被 import 时，
-才去加载它指向的模块，不会在启动时把 14 个模块（含 z3 与 53KB 的
-semantic_pipeline）全部拉进来。
+才去加载它指向的模块，不会在启动时把 16 个模块（含 z3 与 53KB 的
+semantic_pipeline）全部拉进来。表里还有两个非历史名字
+``stage3_consistency`` 与 ``deepseek``：它们是新模块，但 ``cli/`` 里的
+裸名 import 在 ``-m cli.<x>`` 子进程中没有 lib/ 前置 sys.path，走同一条
+延迟解析路径。
 
 为什么必须 ``sys.meta_path.insert(0, ...)`` 而不能 append：删掉旧文件名之后
 cli/ 与 lib/ 都在 ``sys.path`` 上，若让 PathFinder 先跑，``import report_only``
@@ -38,6 +41,11 @@ ALIASES = {
     # 因移动而改变位置的名字
     'semantic_core': 'lib.semantic_core',
     'plan_synthesizer': 'lib.plan_synthesizer',
+    # semantic-live-5：cli/ 内的裸名 import（`from stage3_consistency import ...`）
+    # 在 `-m cli.<x>` 子进程里没有 lib/ 前置 sys.path，走同一延迟解析路径。
+    'stage3_consistency': 'lib.stage3_consistency',
+    # DeepSeek 连接唯一定义处：cli/ 对它的裸名 import 同理。
+    'deepseek': 'lib.deepseek',
     'report_only': 'lib.report_only',
     'semantic_pipeline': 'cli.semantic_pipeline',
     'preview': 'cli.preview',

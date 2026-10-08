@@ -74,7 +74,7 @@ class LivePromptTests(unittest.TestCase):
         # direction-correct repairs.  Guards keep the live-3 constant-form rule
         # from silently disappearing in a later in-place edit.
         formal = current.FORMAL_PLAN_PROMPT
-        self.assertIn('TASK VERSION: semantic-live-4', formal)
+        self.assertIn('TASK VERSION: semantic-live-5', formal)
         for phrase in ('Every explicit bound constant must be a literal',
                        'appears in the cited report text',
                        'never 2^12, 4096, or a',
@@ -95,6 +95,22 @@ class LivePromptTests(unittest.TestCase):
                        'the conjunction collapses to a single fact',
                        'move it to assumptions instead of repeating the',
                        "first fact's predicate"):
+            self.assertIn(phrase, formal)
+
+    def test_live_formal_prompt_keeps_partial_formalization_mandate(self):
+        # Post-closure semantic-live-5 rule (goal-directed, disclosed as an
+        # iteration outside the closed blind-batch cycle): a rate relation the
+        # DSL cannot express gets ONE declared bool symbol standing for the
+        # whole relation plus a NONBLOCKING unsupported_relation item, instead
+        # of a blocking rejection that discards the derived invariant.
+        # Attributed to the disclosed blocking family: live1 Hybra
+        # expected_rate fabrication and the SukukFi/Monetrix decimal-binding
+        # rejections.
+        formal = current.FORMAL_PLAN_PROMPT
+        for phrase in ('represent that whole rate relation as ONE declared',
+                       'Record\nthe missing numeric definition as a NONBLOCKING',
+                       'never leave the rate',
+                       'relation both unrepresented and nonblocking'):
             self.assertIn(phrase, formal)
 
     def test_repair_feedback_prescribes_concrete_changes(self):
@@ -137,8 +153,11 @@ class FeatureDecouplingTests(unittest.TestCase):
         # the default switch changed only the prompt text.  Live features added
         # after the switch are asserted explicitly instead.  Recorded per run
         # via provenance.prompt_features.
+        post_baseline = {'assumption_numeric_relief', 'duplicate_predicate_gate',
+                         'requirement_source_review', 'intent_scope_review',
+                         'partial_formalization', 'example_pinning_review'}
         inherited = [name for name in registry.FEATURE_NAMES
-                     if name != 'assumption_numeric_relief']
+                     if name not in post_baseline]
         for version in ('semantic-v3.16', 'semantic-v3.20'):
             self.assertEqual({name: registry.feature_enabled('semantic-live', name)
                               for name in inherited},
@@ -152,6 +171,22 @@ class FeatureDecouplingTests(unittest.TestCase):
                                                   'assumption_numeric_relief'))
         self.assertFalse(registry.feature_enabled('semantic-v3.20',
                                                   'assumption_numeric_relief'))
+        # semantic-live-5 (post-closure): the four structural additions are
+        # live-only; every frozen version keeps the behaviour it shipped with,
+        # so recorded runs replay under their own feature decisions.
+        for name in ('duplicate_predicate_gate', 'requirement_source_review',
+                     'intent_scope_review', 'partial_formalization'):
+            with self.subTest(feature=name):
+                self.assertTrue(registry.feature_enabled('semantic-live', name))
+                self.assertFalse(registry.feature_enabled('semantic-v3.16', name))
+                self.assertFalse(registry.feature_enabled('semantic-v3.20', name))
+        # live-6 (post-holdout defect-side): same rule for the advisory added
+        # from the final_holdout_02 findings.
+        self.assertTrue(registry.feature_enabled('semantic-live',
+                                                 'example_pinning_review'))
+        for version in registry.VERSIONS:
+            self.assertFalse(registry.feature_enabled(version,
+                                                      'example_pinning_review'))
 
     def test_frozen_versions_keep_their_legacy_sets(self):
         self.assertTrue(registry.feature_enabled('semantic-v3.5', 'strict_piv'))

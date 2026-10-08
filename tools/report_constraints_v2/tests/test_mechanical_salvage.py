@@ -1,6 +1,6 @@
 import copy
 import json
-from fidelity import check_numeric_plan
+from fidelity import check_numeric_plan, example_pinning_review
 from pathlib import Path
 import tempfile
 import unittest
@@ -140,6 +140,102 @@ class MechanicalSalvageTests(unittest.TestCase):
             self.assertEqual(formal['schema_version'], 'report-formalization/2')
             audit = json.loads((output / 'neural-formalization/mechanical-salvage.json').read_text())
             self.assertEqual(audit[0]['symbol'], 'zero_address')
+
+
+
+    def test_numeric_gate_message_names_source_and_literals(self):
+        """final_holdout_02 (Kinetiq): the rejection must point at the
+        source and literals so the retry repairs THAT source."""
+        elements = {'statements': [
+            {'id': 'p_protocol_holds', 'kind': 'precondition',
+             'text': 'The protocol holds 50 HYPE instead of 100.'}]}
+        plan = {'precondition_terms': []}
+        with self.assertRaises(ValueError) as caught:
+            check_numeric_plan(plan, elements)
+        message = str(caught.exception)
+        self.assertTrue(message.startswith('numeric P source missing from plan'))
+        self.assertIn('p_protocol_holds', message)
+        self.assertIn('50', message)
+        self.assertIn('100', message)
+
+    def test_example_pinning_review_flags_impact_only_constants(self):
+        """final_holdout_02 (Hybra): P pinned 10000/5000 straight from the
+        impact's worked example -- advisory, never auto-rejecting."""
+        elements = {'statements': [
+            {'id': 'p_deposit', 'kind': 'precondition',
+             'text': 'A user deposits into the vault.'},
+            {'id': 'p_balance', 'kind': 'precondition',
+             'text': 'The vault holds assets before the deposit.'},
+            {'id': 'i_dilution', 'kind': 'impact',
+             'text': 'With vault assets of 10000 and a deposit of 5000, the '
+                     'depositor receives fewer shares than a fair mint.'}]}
+        plan = {'precondition_terms': [
+            {'source_id': 'p_balance',
+             'predicate': {'kind': 'comparison', 'operator': 'eq',
+                           'left': 'vault_assets_before',
+                           'right': {'const': 10000}}},
+            {'source_id': 'p_deposit',
+             'predicate': {'kind': 'comparison', 'operator': 'eq',
+                           'left': 'deposit', 'right': {'const': 5000}}},
+        ]}
+        review = example_pinning_review(plan, elements)
+        self.assertTrue(review['advisory_only'])
+        self.assertFalse(review['blocks_candidate_acceptance'])
+        self.assertEqual(review['flagged_count'], 2)
+        self.assertEqual({row['statement_id'] for row in review['flagged']},
+                         {'p_balance', 'p_deposit'})
+
+    def test_example_pinning_review_passes_own_source_constants(self):
+        elements = {'statements': [
+            {'id': 'p_threshold', 'kind': 'precondition',
+             'text': 'The minimum stake is 100 tokens.'},
+            {'id': 'i_loss', 'kind': 'impact',
+             'text': 'Users lose 100 tokens.'}]}
+        plan = {'precondition_terms': [
+            {'source_id': 'p_threshold',
+             'predicate': {'kind': 'comparison', 'operator': 'ge',
+                           'left': 'stake', 'right': {'const': 100}}}]}
+        review = example_pinning_review(plan, elements)
+        self.assertEqual(review['flagged_count'], 0)
+
+    def test_example_pinning_review_flags_restated_example_sources(self):
+        """The real Hybra shape: the model restated the worked example AS
+        precondition sources, so every constant is 'in its own source' -- the
+        tell is several distinct P pins tracing to one impact example."""
+        elements = {'statements': [
+            {'id': 'p_vault', 'kind': 'precondition',
+             'text': 'The vault holds 10000 tokens.'},
+            {'id': 'p_deposit', 'kind': 'precondition',
+             'text': 'The deposit is 5000 tokens.'},
+            {'id': 'i_dilution', 'kind': 'impact',
+             'text': 'Depositing 5000 into a vault holding 10000 yields only '
+                     '~33.33% of the vault instead of 50%.'}]}
+        plan = {'precondition_terms': [
+            {'source_id': 'p_vault',
+             'predicate': {'kind': 'comparison', 'operator': 'eq',
+                           'left': 'vault_assets_before',
+                           'right': {'const': 10000}}},
+            {'source_id': 'p_deposit',
+             'predicate': {'kind': 'comparison', 'operator': 'eq',
+                           'left': 'deposit', 'right': {'const': 5000}}},
+        ]}
+        review = example_pinning_review(plan, elements)
+        self.assertEqual(review['flagged_count'], 2)
+
+    def test_example_pinning_review_allows_a_single_incident_constant(self):
+        """Precision: one genuine incident equality whose number is also
+        quoted in the impact is not a worked example."""
+        elements = {'statements': [
+            {'id': 'p_supply', 'kind': 'precondition',
+             'text': 'The token supply is 1000000 tokens.'},
+            {'id': 'i_drain', 'kind': 'impact',
+             'text': 'The attacker drained value equal to 1000000 tokens.'}]}
+        plan = {'precondition_terms': [
+            {'source_id': 'p_supply',
+             'predicate': {'kind': 'comparison', 'operator': 'eq',
+                           'left': 'token_supply', 'right': {'const': 1000000}}}]}
+        review = example_pinning_review(plan, elements)
+        self.assertEqual(review['flagged_count'], 0)
 
 
 if __name__ == '__main__':

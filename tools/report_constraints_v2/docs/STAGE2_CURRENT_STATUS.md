@@ -282,6 +282,97 @@ live4/终局，共 30 次 deepseek-flash 异构审计调用）与终局批主复
 - 既有"仍未解决"第 1 条（无独立核实的准确率）就此部分补足：同模型
   盲金已测，人类金标准仍未获得。
 
+2026-10-08 **收口后按任务目标补充一次结构性迭代（`semantic-live-5`）**。
+依据用户的任务定位（从自然语言报告**推导**声称的不变量，再形式化为
+第三阶段可用的约束——不变量不是给定规则而是要被推导出来的），在
+不回改任何冻结产物的前提下完成五项修改，全部经 feature 门与
+`semantic-v3.16`/`semantic-v3.20` 冻结集解耦（四个新 feature：
+`duplicate_predicate_gate` / `requirement_source_review` /
+`intent_scope_review` / `partial_formalization`，live=True、冻结=False，
+历史 run 按自身 `prompt_features` 回放）：
+1. **阶段三绑定契约 + 反馈闭环**（新模块 `lib/stage3_consistency.py` +
+   命令 `stage3-feedback`）：每次 run 的 `stage3-spec.json` 附带
+   `binding_contract`（P/I/V 每个符号的 `appears_in` 角色与
+   binding_kind：boolean_predicate / address_value / numeric_value），
+   第三阶段代码侧执行后回填 `stage3-consistency-feedback/1`，程序
+   落盘**真实** `consistency_verdict`（partial_binding /
+   preconditions_infeasible_on_code / violation_reproduced /
+   violation_not_reproduced / inconclusive）。落盘一次性、拒绝覆写
+   （replay 不改判定）。这补上"金标准只能来自代码执行"缺的环：
+   此前 `poc_consistency_verdict` 恒为 `not_evaluated`。
+2. **重复谓词门收口**（`check_distinct_p_predicates`，生成期拒绝）：
+   终局 GTE_Perps 的"可见不拒绝"缺陷（两个 P 来源共用同一 truth
+   谓词）此前只有 prompt 自审约束，live-4 已证无效；现在机械拒绝，
+   消息与 v5 schema 同串（修复通道与 BOUNDARY 表路由不变）。
+3. **来源混入 advisory**（`requirement_source_review` →
+   `requirement-source-review.json`）：P 来源文本引用文档/规范
+   要求（终局 SukukFi 缺陷族）时列出但不拦截——n=1，按阈值纪律
+   只披露不设门。
+4. **意图范围 advisory**（`intent_scope_review` →
+   `intent-scope-review.json`）：intent 含全称线索（for any 等）而
+   condition 符号只被 impact 证据支撑时标记 scope_narrowing_risk，
+   同为 advisory。
+5. **部分形式化通道**（`partial_formalization`）：DSL 无法表达的
+   rate 类关系（live1 Hybra `expected_rate = total × 1` 伪造同根因）
+   改为允许**一个**声明的 bool 符号代表整个关系（source_ids 须覆盖
+   关系全部来源），同时把缺失的数值定义记为**非阻塞**
+   unsupported_relation 交阶段三绑定——机械降级仅在计划已表示该
+   关系时发生，不发明语义；审计落 `partial-formalization.json` 并
+   进 verify 重放（含"审计缺失即失败"的反向门）。
+两项 advisory 与绑定契约哈希均链入 interface 指纹（verify 校验）。
+**测量边界如实声明**：本迭代只有本地回归测量——新增 19 项测试
+（`tests/test_stage3_contract.py`）全过，守护/快照 39/39，全量回归
+失败集与已知 10 例基线严格同集，live1–4 + 终局批共 25 个候选 run
+离线 verify 重放全部不变（中途发现并修复 `-m cli.*` 子进程的
+`stage3_consistency` 裸名 import 缺失，compat ALIASES 15 名）。
+
+2026-10-08 当晚 **final_holdout_02 终测完成**（判据预注册的
+[REPORT](../evaluation/final_holdout_02/REPORT.md)，n=10 全新报告实例、
+46 次模型调用、经用户授权）。semantic-live-5 的测量结论：
+- **工程完成 5/10 候选**（全部离线 verify 通过）；**五例拒绝全部为
+  正确拦截、误伤 0**（退化谓词、模板形状错误、数值字面量替换、定义
+  混入 P、数值来源丢失——全部是既有门拦下真实缺陷，Z3 一致性拦截 0）。
+- **H1 重复谓词门：零误伤、零触发**（本批无塌缩尝试，门的必要性未
+  被演示）；**H2 部分形式化通道：零使用**（空转，价值待阶段三）；
+  **H3 完成率 ≥6/10：不满足**（5/10，但缺口全在缺陷侧）。
+- **忠实结果 9/10**（严格 4 + 正确拦截 5）；唯一漏网缺陷为 Hybra
+  候选的交叉相乘配对歧义（`total_shares_after` 的声明语义与配对
+  不可同真，公平实现也可能被该不变量误判违规），主/双复核均判
+  partial，未被机械拦截——与终局批 GTE_Perps 同为"可见不拒绝"型。
+- 双复核与主复核收敛模式同终局批：核心缺陷两边独立抓到，分歧仍在
+  适用范围收窄的严格度，无通过/拒绝互换；`independent_gold: false`
+  局限不变。
+- 测后即停，不再迭代。
+
+2026-10-08 深夜 **semantic-live-6（缺陷侧收口，final_holdout_02 发现
+的三项复发/漏网缺陷的机械层修复 + 阶段三冒烟）**。背景：终测后用户
+批准按发现改进；本条即按 README 披露纪律记录的"测后改动"，**改动使
+9/10 数字失效，重新测量需冻结 final_holdout_03**（尚未冻结、未跑）。
+四项改动（全部零模型调用验证）：
+1. **数值门反馈点名缺失来源**（`lib/salvage.py`）：`numeric P source
+   missing from plan` 等四条消息现在携带 `<source_id> states <字面量>`
+   尾巴，重试提示同转述——终测 Kinetiq 的复发缺陷是模型拿到"缺"却
+   不知道缺哪个，重试换掉而非补上。
+2. **空响应免费重问一次**（`cli/semantic_pipeline.py`）：修复通道的
+   字节级原样重交（终测 GTE_Perps 复发）不再消耗最后一次尝试——
+   空响应未产生任何新内容，判定其为 null 并追加恰好一次携带
+   no-change 处方的重问（仅一次，二次原样重交仍终止运行）。
+3. **示例钉死 advisory**（`example_pinning_review` →
+   `example-pinning-review.json`，feature `example_pinning_review`，
+   所有冻结版本关闭）：P 等值钉死的常量若只在 impact/PoC 演算示例
+   出现、或多个钉死常量同源于一条 impact 的示例（终测 Hybra：P 钉死
+   10000/5000，把示例复述成了前提源），标记但不拦截。在全部可用的
+   真实 run 上验证：仅 Hybra 被标红（真实缺陷），其余零误报。
+4. **阶段三冒烟发现并修复查询命名断裂**（`lib/stage3_consistency.py`）：
+   `stage3-spec.json` 声明的查询名是空格式（`"P AND T"`），而判决逻辑
+   读下划线格式——真实反馈即使过校验也永远判 `inconclusive`（测试用
+   合成 spec 恰为下划线格式故未暴露）。ingest 现在归一化两种命名，
+   新增回归测试；真实候选冒烟（复制 Panoptic run + 手写反馈）走通
+   全链路，判决 `violation_reproduced` 正确落盘。
+测量：新增 8 项测试（379 全过，失败集 = 已知 10 例基线严格同集）；
+冒烟零模型调用。**final_holdout_02 的 9/10 不再代表当前代码**，投产
+测量前须冻结并终测 final_holdout_03（选样逻辑自动排除全部 147 例）。
+
 - 阶段二可独立从 `report.json` 的描述与影响建立证据编号，提取 P（前提）、I（报告声称应满足的性质）、V（直接违反 I 的行为/结果），生成形式计划、SMT 和交接用 `stage3-spec.json`，并运行本地 Z3 一致性查询。没有执行 PoC 或改变阶段一、三。
 - 程序拒绝未知证据编号和不合法的形式计划；`auto-triage.json` 区分候选、待审、弃权和流水线故障。`review` 不等于已证实漏洞。
 - 可选的前提审查 v5 同时检查 `precondition` 和 `assumption` 的证据支持及前提/动作/结果时序。受约束修复仅能改动被标记的 P 项，修复后必须重审，且不能自动认证覆盖完整。

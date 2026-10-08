@@ -51,7 +51,9 @@ python main.py run \
   --output tools/report_constraints_v2/results/semantic/new-run-id
 ```
 
-`main.py run` 默认使用官方 DeepSeek `deepseek-flash`。真实运行会发送筛选后的标题、描述、
+`main.py run` 默认使用官方 DeepSeek `deepseek-flash`。DeepSeek 连接的全部定义
+（模型选择、白名单、端点、密钥路径、解码参数、代理、传输）集中在
+[lib/deepseek.py](lib/deepseek.py) 一处（连接、密钥、代理、传输都在那里）。真实运行会发送筛选后的标题、描述、
 影响以及流程生成的结构化要素；不会发送合约代码。输出目录必须不存在，避免覆盖历史结果。
 
 批量运行：

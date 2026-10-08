@@ -10,6 +10,7 @@ from unittest.mock import patch
 from urllib import request as urlrequest
 from urllib.error import HTTPError
 
+import deepseek
 import report_only as report
 import semantic_pipeline as pipeline
 
@@ -37,11 +38,11 @@ class DeepSeekDirectTests(unittest.TestCase):
             root = Path(dirname)
             key = self.make_key(root, '')
             with self.assertRaisesRegex(RuntimeError, 'missing or malformed'):
-                report.load_deepseek_key(key)
+                deepseek.load_deepseek_key(key)
             self.make_key(root)
             os.chmod(key, 0o644)
             with self.assertRaisesRegex(RuntimeError, 'chmod 600'):
-                report.load_deepseek_key(key)
+                deepseek.load_deepseek_key(key)
 
     def test_json_request_and_sanitized_artifacts(self):
         with tempfile.TemporaryDirectory() as dirname:
@@ -53,11 +54,11 @@ class DeepSeekDirectTests(unittest.TestCase):
                     'message': {'content': '{"ok":true}'}}],
                 'usage': {'prompt_tokens': 10, 'completion_tokens': 5},
             })
-            result = report.extract_deepseek('report fragment', root,
+            result = deepseek.extract_deepseek('report fragment', root,
                                              'deepseek-flash', 'Return JSON:',
                                              key_path=key, opener=opener)
             self.assertEqual(result, {'ok': True})
-            self.assertEqual(opener.request.full_url, report.DEEPSEEK_CHAT_URL)
+            self.assertEqual(opener.request.full_url, deepseek.DEEPSEEK_CHAT_URL)
             self.assertEqual(opener.timeout, 240)
             self.assertEqual(opener.request.get_header('Authorization'),
                              'Bearer sk-test-only')
@@ -65,6 +66,8 @@ class DeepSeekDirectTests(unittest.TestCase):
             self.assertEqual(sent['messages'][1]['content'], 'report fragment')
             self.assertEqual(sent['response_format'], {'type': 'json_object'})
             self.assertEqual(sent['thinking'], {'type': 'disabled'})
+            self.assertEqual(sent['temperature'], deepseek.DEEPSEEK_TEMPERATURE)
+            self.assertEqual(sent['max_tokens'], deepseek.DEEPSEEK_MAX_TOKENS)
             for name in ('model-response.txt', 'model-usage.json', 'model-claim.json'):
                 self.assertNotIn('sk-test-only', (root / name).read_text())
 
@@ -75,11 +78,11 @@ class DeepSeekDirectTests(unittest.TestCase):
 
             class ErrorOpener:
                 def open(self, *_args, **_kwargs):
-                    raise HTTPError(report.DEEPSEEK_CHAT_URL, 401, 'unauthorized',
+                    raise HTTPError(deepseek.DEEPSEEK_CHAT_URL, 401, 'unauthorized',
                                     {}, io.BytesIO(b'SECRET SERVER BODY'))
 
             with self.assertRaisesRegex(RuntimeError, 'HTTP 401'):
-                report.extract_deepseek('text', root, 'deepseek-flash', 'JSON:',
+                deepseek.extract_deepseek('text', root, 'deepseek-flash', 'JSON:',
                                         key_path=key, opener=ErrorOpener())
             diagnostic = (root / 'model-runtime-diagnostic.json').read_text()
             self.assertNotIn('SECRET', diagnostic)
@@ -93,7 +96,7 @@ class DeepSeekDirectTests(unittest.TestCase):
             opener = FakeOpener({'choices': [{
                 'finish_reason': 'length', 'message': {'content': '{"partial":'}}]})
             with self.assertRaisesRegex(RuntimeError, 'did not finish normally'):
-                report.extract_deepseek('text', root, 'deepseek-flash', 'JSON:',
+                deepseek.extract_deepseek('text', root, 'deepseek-flash', 'JSON:',
                                         key_path=key, opener=opener)
             self.assertFalse((root / 'model-claim.json').exists())
 
@@ -110,9 +113,9 @@ class DeepSeekDirectTests(unittest.TestCase):
                 def open(self, *_args, **_kwargs):
                     return InterruptedBody()
 
-            with self.assertRaisesRegex(report.TransientModelError,
+            with self.assertRaisesRegex(deepseek.TransientModelError,
                                         'response interrupted'):
-                report.extract_deepseek('text', root, 'deepseek-flash', 'JSON:',
+                deepseek.extract_deepseek('text', root, 'deepseek-flash', 'JSON:',
                                         key_path=key, opener=InterruptedOpener())
             diagnostic = json.loads((root / 'model-runtime-diagnostic.json').read_text())
             self.assertEqual(diagnostic['category'], 'incomplete_response')
@@ -144,8 +147,8 @@ class DeepSeekDirectTests(unittest.TestCase):
                             'missing_dimensions': [], 'summary': 'sufficient'}
                 return saved
 
-            with patch('sys.argv', argv), patch.object(pipeline.r, 'load_deepseek_key',
-                    return_value='test-key'), patch.object(pipeline.r, 'extract_deepseek',
+            with patch('sys.argv', argv), patch.object(pipeline, 'load_deepseek_key',
+                    return_value='test-key'), patch.object(pipeline, 'extract_deepseek',
                     side_effect=fake_deepseek) as direct, patch.object(pipeline.r, 'extract') as indirect:
                 status = pipeline.main()
             self.assertEqual(status, 0)
@@ -181,8 +184,8 @@ class DeepSeekDirectTests(unittest.TestCase):
                         'missing_dimensions': ['direct_effect', 'safety_relation_basis'],
                         'summary': 'insufficient'}
 
-            with patch('sys.argv', argv), patch.object(pipeline.r, 'load_deepseek_key',
-                    return_value='test-key'), patch.object(pipeline.r, 'extract_deepseek',
+            with patch('sys.argv', argv), patch.object(pipeline, 'load_deepseek_key',
+                    return_value='test-key'), patch.object(pipeline, 'extract_deepseek',
                     side_effect=insufficient) as direct:
                 self.assertEqual(pipeline.main(), 2)
             direct.assert_called_once()
@@ -211,29 +214,29 @@ class DeepSeekProxyPolicyTest(unittest.TestCase):
 
     def test_direct_ignores_ambient_proxy_variables(self):
         with patch.dict(os.environ, {'https_proxy': 'http://127.0.0.1:9'}, clear=False):
-            self.assertEqual(self._live_handlers(report._deepseek_opener('direct')), [])
+            self.assertEqual(self._live_handlers(deepseek._deepseek_opener('direct')), [])
 
     def test_environment_honours_ambient_proxy_variables(self):
         """Negative proof: if the switch were ignored this would also be empty."""
         with patch.dict(os.environ, {'https_proxy': 'http://127.0.0.1:9'}, clear=False):
             self.assertNotEqual(
-                self._live_handlers(report._deepseek_opener('environment')), [])
+                self._live_handlers(deepseek._deepseek_opener('environment')), [])
 
     def test_explicit_url_overrides_the_environment(self):
         with patch.dict(os.environ, {'https_proxy': 'http://127.0.0.1:9'}, clear=False):
-            live = self._live_handlers(report._deepseek_opener('http://proxy.internal:3128'))
+            live = self._live_handlers(deepseek._deepseek_opener('http://proxy.internal:3128'))
             self.assertEqual(len(live), 1)
             self.assertEqual(live[0].proxies['https'], 'http://proxy.internal:3128')
 
     def test_socks5_is_rejected_up_front(self):
         """urllib cannot speak SOCKS; failing here beats an opaque network error."""
         with self.assertRaisesRegex(ValueError, 'no SOCKS support'):
-            report.proxy_policy('socks5://127.0.0.1:7897')
+            deepseek.proxy_policy('socks5://127.0.0.1:7897')
 
     def test_recorded_endpoint_is_redacted(self):
-        self.assertEqual(report._redacted_proxy('http://u:p@proxy:3128'),
+        self.assertEqual(deepseek._redacted_proxy('http://u:p@proxy:3128'),
                          'http://proxy:3128')
-        self.assertIsNone(report.proxy_in_effect('direct'))
+        self.assertIsNone(deepseek.proxy_in_effect('direct'))
 
     def test_pipeline_binds_the_proxy_policy_through_to_the_transport(self):
         """The switch is only real if cli/semantic_pipeline.py binds it through.
@@ -256,9 +259,9 @@ class DeepSeekProxyPolicyTest(unittest.TestCase):
                 raise RuntimeError('stop after the first transport call')
 
             with patch('sys.argv', argv), \
-                    patch.object(pipeline.r, 'load_deepseek_key',
+                    patch.object(pipeline, 'load_deepseek_key',
                                  return_value='test-key'), \
-                    patch.object(pipeline.r, 'extract_deepseek', side_effect=fake):
+                    patch.object(pipeline, 'extract_deepseek', side_effect=fake):
                 pipeline.main()
         self.assertTrue(seen, 'the transport was never reached')
         self.assertEqual(seen[0], {'proxy': 'direct'})
@@ -274,7 +277,7 @@ class DeepSeekProxyPolicyTest(unittest.TestCase):
 
             policy = 'http://proxy.example:3128'
             with self.assertRaisesRegex(RuntimeError, 'network failure'):
-                report.extract_deepseek('text', root, 'deepseek-flash', 'JSON:',
+                deepseek.extract_deepseek('text', root, 'deepseek-flash', 'JSON:',
                                         key_path=key, opener=RefusingOpener(),
                                         proxy=policy)
             diagnostic = json.loads(
@@ -282,6 +285,36 @@ class DeepSeekProxyPolicyTest(unittest.TestCase):
             self.assertEqual(diagnostic['category'], 'network')
             self.assertEqual(diagnostic['proxy_in_effect'], policy)
 
+
+
+class DeepSeekSingleSourceTests(unittest.TestCase):
+    """lib/deepseek.py 是 DeepSeek 连接的唯一定义处。
+
+    回归防线：若有人把连接函数或常量复制回 report_only / semantic_pipeline
+    出现第二份副本，两处会悄悄分叉（一边改了另一边没改），直到某次调用
+    用到过期副本才暴露。这里断言连接代码只在 lib/deepseek.py。
+    """
+
+    def test_report_only_no_longer_carries_deepseek_symbols(self):
+        for name in ('extract_deepseek', 'load_deepseek_key', 'proxy_policy',
+                     'proxy_in_effect', 'TransientModelError', 'DEEPSEEK_MODELS',
+                     'DEEPSEEK_CHAT_URL', 'DEEPSEEK_KEY_FILE'):
+            self.assertFalse(hasattr(report, name), name)
+
+    def test_default_model_is_whitelisted(self):
+        self.assertIn(deepseek.DEFAULT_DEEPSEEK_MODEL, deepseek.DEEPSEEK_MODELS)
+        self.assertIn('deepseek-flash', deepseek.DEEPSEEK_MODELS)
+
+    def test_pipeline_binds_the_deepseek_module_functions(self):
+        self.assertIs(pipeline.extract_deepseek, deepseek.extract_deepseek)
+        self.assertIs(pipeline.load_deepseek_key, deepseek.load_deepseek_key)
+        self.assertIs(pipeline.proxy_policy, deepseek.proxy_policy)
+        self.assertIs(pipeline.DEFAULT_DEEPSEEK_MODEL, deepseek.DEFAULT_DEEPSEEK_MODEL)
+        self.assertTrue(callable(pipeline.configured_model))
+
+    def test_decoding_is_deterministic_and_bounded(self):
+        self.assertEqual(deepseek.DEEPSEEK_TEMPERATURE, 0)
+        self.assertEqual(deepseek.DEEPSEEK_MAX_TOKENS, 8192)
 
 
 if __name__ == '__main__':

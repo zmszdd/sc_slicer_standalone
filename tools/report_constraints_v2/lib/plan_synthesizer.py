@@ -562,6 +562,197 @@ def identical_p_predicates(plan):
     return duplicates
 
 
+def check_distinct_p_predicates(plan):
+    """Gate form of ``identical_p_predicates`` for live runs (semantic-live-5).
+
+    The v5 schema already rejects a repeated predicate outright; under v4 the
+    rejection was deliberately withheld because a frozen replay-battery run
+    carries a duplicate.  Feature-gating the same check keeps that run
+    replayable (its recorded features predate the key) while new live runs
+    fail loudly instead of silently dropping one of the report's facts.
+    """
+    duplicates = identical_p_predicates(plan)
+    require(not duplicates, 'distinct P sources reuse identical predicate')
+
+
+#: Cues that a statement's content comes from an external document or spec
+#: rather than the incident narrative.  Advisory only (n=1 observed defect:
+#: SukukFi final-holdout P mixed a documentation requirement into the facts).
+#: Matching the cue never rewrites anything; it surfaces the statement for
+#: review in ``requirement-source-review.json``.
+REQUIREMENT_CUES = (
+    re.compile(r'\b(?:documentation|docs?|spec(?:ification)?s?|whitepaper|'
+               r'readme|standard)\b[^.]{0,120}\b(?:states?|says?|requires?|'
+               r'specifies?|mandates?|dictates?)\b', re.IGNORECASE),
+    re.compile(r'\b(?:per|according to|as per)\s+the\s+(?:documentation|docs?|'
+               r'spec(?:ification)?s?|whitepaper|standard)\b', re.IGNORECASE),
+    re.compile(r'\bthe\s+.{0,40}\b(?:documentation|spec(?:ification)?s?)\b'
+               r'[^.]{0,80}\b(?:should|must|is expected)\b', re.IGNORECASE),
+)
+
+
+def requirement_source_review(elements, plan):
+    """Flag P sources whose text cites documentation requirements.
+
+    A precondition must be a fact of the incident; a statement grounded in
+    what external documentation *should* say is a normative expectation, not
+    an observed before-condition.  The distinction is semantic, so this stays
+    a review (visible, never auto-rejecting): one real defect family is known
+    and the stingy threshold for a gate is not met.
+    """
+    flagged = []
+    for term in plan.get('precondition_terms') or []:
+        source_id = term.get('source_id') if isinstance(term, dict) else None
+        row = next((x for x in elements['statements']
+                    if isinstance(x, dict) and x.get('id') == source_id), None)
+        if row is None:
+            continue
+        matched = [pattern.pattern for pattern in REQUIREMENT_CUES
+                   if pattern.search(row.get('text', ''))]
+        if matched:
+            flagged.append({
+                'statement_id': source_id,
+                'statement_kind': row.get('kind'),
+                'statement_text': row.get('text'),
+                'matched_cue_count': len(matched),
+            })
+    return {
+        'schema_version': 'requirement-source-review/1',
+        'advisory_only': True,
+        'blocks_candidate_acceptance': False,
+        'flagged_count': len(flagged),
+        'flagged': flagged,
+        'note': ('A flagged P source cites documentation/spec requirements; '
+                 'verify it is an incident fact, not a normative expectation. '
+                 'This review never rewrites or rejects the plan.'),
+    }
+
+
+#: Applicability-scope cues in an intent statement.  Advisory only: the dual
+#: reviews disagreed on strictness for this family, so the check surfaces the
+#: narrowing risk instead of enforcing a contested standard.
+INTENT_SCOPE_CUES = re.compile(
+    r'\b(?:any|every|all|whenever|only\s+(?:if|when|by|after)|for\s+any|'
+    r'unauthorized|non-owner|not\s+the\s+owner|arbitrary)\b', re.IGNORECASE)
+
+#: Pattern slot holding the applicability condition ('condition' for the
+#: relation_obligation family, 'trigger' for the monotonicity family).
+_CONDITION_SLOT = {
+    'relation_obligation': 'condition', 'bounded_relation': 'condition',
+    'correspondence': 'condition', 'temporal_order': 'condition',
+    'required_effect': 'condition', 'proportional_relation': 'condition',
+    'monotonicity': 'trigger', 'conservation': 'trigger',
+    'state_preservation': 'trigger',
+}
+
+
+def intent_scope_review(plan, elements):
+    """Flag condition predicates grounded only by impact statements.
+
+    When the intent states a general applicability scope (any/every caller,
+    whenever...), the condition of I must carry that scope, and scope comes
+    from the intent or the preconditions -- never from the impact, which
+    describes only the concrete incident subcase.  A condition whose every
+    symbol is grounded solely by impact statements is the narrowing defect
+    the dual reviews rated partial; this review makes it visible in every
+    new run without enforcing the contested strictness.
+    """
+    statements = {row.get('id'): row for row in elements['statements']
+                  if isinstance(row, dict)}
+    intent = statements.get(plan.get('intent_id')) or {}
+    scope_cues = sorted({match.group(0).lower()
+                         for match in INTENT_SCOPE_CUES.finditer(
+                             intent.get('text', ''))})
+    pattern = plan.get('pattern') or {}
+    slot = _CONDITION_SLOT.get(pattern.get('kind'))
+    condition_symbols = sorted(_predicate_binding_symbols(pattern[slot])) \
+        if slot and isinstance(pattern.get(slot), dict) else []
+    impact_ids = set(plan.get('impact_ids') or [])
+    scope_grounded = []
+    impact_only = []
+    for name in condition_symbols:
+        symbol = (plan.get('symbols') or {}).get(name) or {}
+        sources = set(symbol.get('source_ids') or [])
+        if sources - impact_ids:
+            scope_grounded.append(name)
+        elif sources:
+            impact_only.append(name)
+    narrowed = bool(scope_cues and condition_symbols and impact_only and
+                    not scope_grounded)
+    return {
+        'schema_version': 'intent-scope-review/1',
+        'advisory_only': True,
+        'blocks_candidate_acceptance': False,
+        'intent_id': plan.get('intent_id'),
+        'intent_scope_cues': scope_cues,
+        'condition_symbols': condition_symbols,
+        'condition_symbols_grounded_outside_impacts': scope_grounded,
+        'condition_symbols_grounded_only_by_impacts': impact_only,
+        'scope_narrowing_risk': narrowed,
+        'note': ('Intent declares a general scope but every condition symbol '
+                 'is grounded only by impact statements: the condition may '
+                 'protect only the incident subcase. This review never '
+                 'rewrites or rejects the plan.'),
+    }
+
+
+def relax_unsupported_relation(plan, elements):
+    """Downgrade a blocking unsupported_relation the plan already represents.
+
+    The honest fallback for an inexpressible relation (rates without
+    division) is a declared bool symbol standing for the whole relation.  If
+    the plan BOTH declares such a symbol (its source_ids covering the
+    unresolved item's sources, and it is referenced by the pattern's
+    condition or relation predicate) AND marks that relation blocking, the
+    two declarations contradict each other: the logical skeleton exists, so
+    "no faithful formula can be built" is false.  Resolve the contradiction
+    mechanically toward the representation -- the item becomes nonblocking
+    with a machine-readable note, and the change is audited.  Without the
+    representing symbol the blocking verdict stands unchanged.
+
+    Returns ``(plan, changes)``; ``changes`` is empty when nothing applied.
+    """
+    if not isinstance(plan, dict) or not isinstance(plan.get('unresolved'), list):
+        return plan, []
+    pattern = plan.get('pattern') or {}
+    kind = pattern.get('kind')
+    referenced = set()
+    for slot in ('condition', 'relation', 'effect', 'authorization', 'trigger'):
+        value = pattern.get(slot)
+        if isinstance(value, dict):
+            try:
+                referenced |= _predicate_binding_symbols(value)
+            except ValueError:
+                return plan, []
+    if not referenced:
+        return plan, []
+    symbols = plan.get('symbols') or {}
+    changes = []
+    for item in plan['unresolved']:
+        if not (isinstance(item, dict) and
+                item.get('category') == 'unsupported_relation' and
+                item.get('blocks_formalization') is True):
+            continue
+        sources = set(item.get('source_ids') or [])
+        representing = next((
+            name for name in referenced
+            if isinstance(symbols.get(name), dict) and
+            symbols[name].get('sort') == 'bool' and
+            sources <= set(symbols[name].get('source_ids') or [])), None)
+        if representing is None:
+            continue
+        item['blocks_formalization'] = False
+        changes.append({
+            'kind': 'relax_unsupported_relation',
+            'unresolved': item.get('description'),
+            'representing_symbol': representing,
+            'reason': ('the plan already encodes this relation as the truth '
+                       'predicate of a declared bool symbol, so a faithful '
+                       'logical skeleton exists; binding deferred to stage 3'),
+        })
+    return plan, changes
+
+
 def synthesize_id_formalization(plan, elements):
     base_fields = {
         'schema_version', 'precondition_ids', 'intent_id', 'impact_ids', 'symbols',

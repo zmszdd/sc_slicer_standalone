@@ -17,11 +17,13 @@ tools/report_constraints_v2/
 │   ├── __init__.py
 │   ├── semantic_core.py      # P/I/V schema、类型、编译、基础校验
 │   ├── plan_synthesizer.py   # 形式计划校验与确定性公式合成
+│   ├── deepseek.py           # DeepSeek 连接唯一定义处：配置/密钥/代理/HTTP 传输
 │   ├── report_only.py        # 报告解析、表达式编译、DeepSeek 传输
 │   ├── ingest.py             # evidence_catalog + report_readiness 合并
 │   ├── solving.py            # symbolic_queries + review 合并
 │   ├── salvage.py            # fidelity + mechanical_salvage 合并
-│   └── compat.py             # 历史模块名兼容注册（14 个旧名字，见下）
+│   ├── stage3_consistency.py # stage3-feedback：阶段三绑定反馈与真实一致性判定
+│   └── compat.py             # 历史模块名兼容注册（16 个名字，见下）
 ├── prompts/                  # Prompt 注册表与冻结版本
 │   ├── definitions.py        # P/I/V 集中式语义定义
 │   ├── active.py             # 生产 Prompt 显式解析与哈希
@@ -40,8 +42,8 @@ tools/report_constraints_v2/
 | 层 | 目录 | 内容 | 规则 |
 | --- | --- | --- | --- |
 | 入口层 | `cli/` | 4 个脚本 | 可被 `main.py` 直接调用的脚本放这里；**不要直接 `python cli/x.py`** |
-| 共享库层 | `lib/` | 6 个模块 | 无命令入口，只被 import |
-| 兼容层 | `lib/compat.py` | 14 个旧名字的映射表 | 不是目录层；只做名字解析，不含任何业务逻辑 |
+| 共享库层 | `lib/` | 8 个模块 | 无命令入口，只被 import |
+| 兼容层 | `lib/compat.py` | 16 个名字的映射表 | 不是目录层；只做名字解析，不含任何业务逻辑 |
 
 阶段二根目录**不含任何 `.py`**：实现全部在 `lib/` 或 `cli/`，旧名字的兼容由
 `lib/compat.py` 集中承担。
@@ -93,7 +95,7 @@ python main.py test | versions | doctor | status | frozen
 | 表 | 条数 | 说明 |
 | --- | ---: | --- |
 | `META_COMMANDS` | 5 | 工程命令：`test` / `versions` / `doctor` / `status` / `frozen` |
-| `STAGE2_COMMANDS` | 11 | 映射到 `cli/` 或 `lib/` 中的 4 个脚本 |
+| `STAGE2_COMMANDS` | 12 | 映射到 `cli/` 或 `lib/` 中的 5 个脚本 |
 | `LIBRARY_MODULES` | 3 | 纯库模块：`semantic_core.py` / `plan_synthesizer.py` / `ingest.py` |
 
 脚本解析顺序为 `cli/` → `lib/` → 阶段二根目录，由 `main.py` 的
@@ -130,6 +132,7 @@ python main.py test | versions | doctor | status | frozen
 | `repair-preconditions` | `cli/preconditions.py` | `repair` |
 | `observability` | `lib/solving.py` | — |
 | `salvage-replay` | `lib/salvage.py` | — |
+| `stage3-feedback` | `lib/stage3_consistency.py` | — |
 
 多个命令共用一个脚本时用前导参数区分（`main.py` 的 `STAGE2_ARG_PREFIX`）。
 `lib/solving.py` 和 `lib/salvage.py` 既是库、又各带一个 `__main__` 入口，
@@ -141,8 +144,8 @@ python main.py test | versions | doctor | status | frozen
 
 | 文件 | 行数 | 作用 |
 | --- | ---: | --- |
-| `semantic_pipeline.py` | 865 | 报告筛选、两步模型调用、规则化、Z3 和输出 |
-| `batch_verify.py` | 330 | `batch`（限量并发跑真实报告）+ `verify`（零模型调用重放） |
+| `semantic_pipeline.py` | 1058 | 报告筛选、两步模型调用、规则化、Z3 和输出 |
+| `batch_verify.py` | 528 | `batch`（限量并发跑真实报告）+ `verify`（零模型调用重放） |
 | `preconditions.py` | 368 | 可选 `audit`（P 证据/时序审查）与 `repair`（受约束 P 修复） |
 | `preview.py` | 154 | 本地 `screen` 检查与 `report` / `plan` / `prompt` 预览 |
 
@@ -150,21 +153,31 @@ python main.py test | versions | doctor | status | frozen
 
 | 文件 | 行数 | 作用 | 由哪些文件合并而来 |
 | --- | ---: | --- | --- |
-| `semantic_core.py` | 223 | P/I/V schema、类型、编译与基础校验 | — |
-| `plan_synthesizer.py` | 782 | 形式计划校验和确定性公式合成 | — |
-| `report_only.py` | 532 | 报告解析、表达式编译、DeepSeek 传输 | （含原 `review_semantics.py` 的 `relationship_review`） |
+| `semantic_core.py` | 753 | P/I/V schema、类型、编译与基础校验 | — |
+| `plan_synthesizer.py` | 998 | 形式计划校验和确定性公式合成（含 semantic-live-5 的重复谓词门与三件 advisory/部分形式化审查） | — |
+| `deepseek.py` | 203 | **DeepSeek 连接唯一定义处**：模型白名单与默认模型、官方端点、密钥文件路径、解码参数（temperature 0 / max_tokens 8192）、密钥读取校验、代理三态策略、`extract_deepseek` HTTP 传输 | — |
+| `report_only.py` | 426 | 报告解析、表达式编译、opencode 传输（`extract`） | （含原 `review_semantics.py` 的 `relationship_review`） |
 | `ingest.py` | 164 | 原文片段编号、ID 回填、提取前信息充分性门 | `evidence_catalog.py` + `report_readiness.py` |
-| `solving.py` | 226 | SMT/Z3 查询与 witness 校验、分流与可观察变量审查 | `symbolic_queries.py` + `review.py` |
-| `salvage.py` | 385 | 数值与零地址保真守卫、机械修复 | `fidelity.py`（原 `numeric_fidelity.py` + `address_fidelity.py`）+ `mechanical_salvage.py` |
+| `solving.py` | 233 | SMT/Z3 查询与 witness 校验、分流与可观察变量审查 | `symbolic_queries.py` + `review.py` |
+| `salvage.py` | 517 | 数值与零地址保真守卫（拒绝消息带缺失来源）、机械修复、示例钉死 advisory | `fidelity.py`（原 `numeric_fidelity.py` + `address_fidelity.py`）+ `mechanical_salvage.py` |
+| `stage3_consistency.py` | 224 | stage3-binding-contract 生成、阶段三反馈 ingest 与真实 consistency 判定（semantic-live-5） | — |
 
-`report_only.py` 是唯一不 import 任何同层模块的叶子模块。
+`deepseek.py` 是唯一不 import 任何同层模块的叶子模块（只依赖标准库）。
+DeepSeek 的一切——配置、密钥、代理、传输——都只在它里面；
+`report_only.py` 不再持有任何 DeepSeek 代码（回归测试
+`DeepSeekSingleSourceTests` 守护这一点），`cli/semantic_pipeline.py`
+直接 `from deepseek import ...`。
 
-它保留少量历史 CLI 兼容代码，但当前职责是报告解析、表达式编译和 DeepSeek 传输库。
+`report_only.py` 保留少量历史 CLI 兼容代码，但当前职责是报告解析、表达式编译和 DeepSeek 传输库。
 
 ### 历史模块名兼容层（`lib/compat.py`）
 
 重构前的 14 个模块名不再对应任何文件，它们由**一个**文件集中接管：
-`lib/compat.py` 的 `ALIASES` 表 + 一个 `sys.meta_path` finder。
+`lib/compat.py` 的 `ALIASES` 表 + 一个 `sys.meta_path` finder。表里还有
+两个非历史名字：`stage3_consistency`（semantic-live-5）与
+`deepseek`（DeepSeek 连接显性化）——它们不是历史名，而是 `cli/` 里
+裸名 import（`from deepseek import ...`）的解析路径——`-m cli.<x>` 子进程的 `sys.path` 只有 cwd，没有
+`lib/` 前置，走同一条延迟解析。
 
 | 旧名字 | 现在真正包含该代码的模块 | 来源 |
 | --- | --- | --- |
@@ -174,8 +187,10 @@ python main.py test | versions | doctor | status | frozen
 | `run_semantic_batch` / `verify_semantic` | `cli/batch_verify.py` | 合并（S9） |
 | `semantic_core` / `plan_synthesizer` / `report_only` | `lib/` 下的同名文件 | 移动（S2/S3） |
 | `semantic_pipeline` / `preview` / `preconditions` | `cli/` 下的同名文件 | 移动（S4） |
+| `stage3_consistency` | `lib/stage3_consistency.py` | 新模块的裸名 import（semantic-live-5） |
+| `deepseek` | `lib/deepseek.py` | 新模块的裸名 import（DeepSeek 连接显性化） |
 
-14 个名字对应 **10 个**真实模块（前四行各是两个名字共用一个文件）。
+16 个名字对应 **12 个**真实模块（合并行共用一个文件）。
 
 #### 注册点（每个进程各一次）
 
@@ -188,12 +203,12 @@ python main.py test | versions | doctor | status | frozen
 | `cli/__init__.py` | `python -m cli.<script>` 子进程（3 处 `subprocess` 都走这条） |
 | `lib/__init__.py` | `python -m lib.<script>` |
 
-`python main.py doctor` 有一条专用自检 `历史模块名兼容层(14 个)`，用来发现
+`python main.py doctor` 有一条专用自检 `历史模块名兼容层(len(ALIASES) 个)`，用来发现
 "某个入口忘了注册"。
 
 #### 为什么是延迟解析 + `insert(0)`
 
-finder 只在某个旧名字**真的被 import 时**才加载目标模块，不会在启动时把 14 个模块
+finder 只在某个旧名字**真的被 import 时**才加载目标模块，不会在启动时把 16 个模块
 （含 z3 与 53KB 的 `semantic_pipeline`）全部拉进来。
 
 `sys.meta_path.insert(0, ...)`（**不能**是 `append`）是必需的：`cli/` 与 `lib/` 都在
@@ -263,13 +278,15 @@ graph TD
   subgraph lib["lib/ 共享库层"]
     SC[lib/semantic_core.py]
     PS[lib/plan_synthesizer.py]
-    RO["lib/report_only.py<br/>（叶子，不 import 同层）"]
+    DP["lib/deepseek.py<br/>（DeepSeek 连接唯一定义处，叶子）"]
+    RO[lib/report_only.py]
     IN[lib/ingest.py]
     SO[lib/solving.py]
     SA[lib/salvage.py]
   end
 
   SP --> RO & SC & PS & IN & SO & SA
+  SP --> DP
   BV --> RO & SC & PS & IN & SO & SA
   PC --> SP & RO & SC & IN
   PV --> SP & SC & IN

@@ -369,9 +369,9 @@ class ScreeningNormalizationWiringTest(unittest.TestCase):
             previous = sys.argv
             try:
                 sys.argv = argv
-                with patch.object(pipeline.r, 'load_deepseek_key',
+                with patch.object(pipeline, 'load_deepseek_key',
                                   return_value='test-key'), \
-                        patch.object(pipeline.r, 'extract_deepseek',
+                        patch.object(pipeline, 'extract_deepseek',
                                      side_effect=fake), \
                         patch('sys.stdout', io.StringIO()):
                     pipeline.main()

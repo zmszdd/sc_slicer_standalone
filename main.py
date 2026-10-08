@@ -91,6 +91,8 @@ STAGE2_COMMANDS = {
                       '可观察变量审查提示'),
     'salvage-replay': ('salvage.py',
                        '重放机械修复结果（需显式启用）'),
+    'stage3-feedback': ('stage3_consistency.py',
+                        '导入阶段三绑定/查询反馈，落盘该 run 的真实 consistency 判定'),
 }
 
 PRIMARY_STAGE2_COMMANDS = (
@@ -99,6 +101,7 @@ PRIMARY_STAGE2_COMMANDS = (
 )
 ADVANCED_STAGE2_COMMANDS = (
     'audit-preconditions', 'repair-preconditions', 'observability', 'salvage-replay',
+    'stage3-feedback',
 )
 
 # 阶段二全流程默认走官方 DeepSeek。只在调用者完全没有指定 provider/model 时注入，

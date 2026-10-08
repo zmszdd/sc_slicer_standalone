@@ -1,0 +1,38 @@
+`suppliedBalance()` ignores PM borrow liabilities and overstates backing
+
+## Summary
+`PrecompileReader.suppliedBalance()` reads HyperCore PM supplied balance state from `PRECOMPILE_SUPPLIED_BALANCE`, but it returns only `supply.value` and discards `borrow.value`. When backing is calculated, the corresponding borrow liability is not deducted. Under Portfolio Margin, delayed CoreWriter order execution can create borrow against eligible collateral, so `totalBacking()` and `surplus()` can be overstated and yield can be settled against assets that are not net backing.
+
+## Finding description
+In `suppliedBalance()`, the contract calls `PRECOMPILE_SUPPLIED_BALANCE` to read the account's PM supplied balance:
+
+[PrecompileReader.sol#L85-L91](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/PrecompileReader.sol#L85-L91)
+According to the `L1Read.sol` example linked from Hyperliquid's [HyperCore interaction docs](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/interacting-with-hypercore), this state contains both borrow and supply fields:
+
+Therefore, the decoded tuple corresponds to `borrow.basis`, `borrow.value`, `supply.basis`, and `supply.value`. The current implementation assigns only the fourth value to `supplied`, ignores the second value, and returns a gross supplied amount instead of signed net borrow/lend state.
+
+Under Hyperliquid [Portfolio Margin](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/portfolio-margin), an account placing spot or perp orders with insufficient idle balance can automatically borrow against eligible collateral:
+
+> insufficient balance will automatically borrowed against eligible collateral ...
+
+Because this borrow must be repaid and accrues interest continuously, it is a liability that must reduce net backing.
+
+This can occur even when the EVM side order parameters appear funded, because CoreWriter order actions are not executed immediately after they are enqueued. Hyperliquid's [docs](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/interacting-with-hypercore) state that order actions and vault transfers sent through CoreWriter are delayed onchain for a few seconds. During this delay, the actual HyperCore execution state can differ from the EVM side estimate. For example:
+- USDC can be reserved by other pending or open orders.
+- The spot order can fill while the perp order is delayed or partially filled.
+- Price changes can make the spot purchase require more USDC than estimated on EVM.
+- The vault L1 account can have eligible PM collateral but insufficient idle USDC.
+- Other CoreWriter actions can change balances or margin state during the delay.
+
+One concrete path is `executeHedge()`: a hedge that looked fully funded when the orders were enqueued can later execute with a PM borrow on HyperCore. That borrow must reduce backing, but Monetrix does not read it.
+
+When backing is calculated, `suppliedUsdcEvm()` and `suppliedNotionalUsdcFromPerp()` both rely on `suppliedBalance()`:
+
+[MonetrixAccountant.sol#L138-L172](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/MonetrixAccountant.sol#L138-L172)
+
+Because only the supply side is added and the borrow side is not deducted, PM borrow can make reported backing higher than the account's net assets. The issue is especially visible when the borrow is on USDC, because `_readL1Backing()` only iterates registered supplied slots and does not independently read USDC PM borrow unless USDC itself is registered.
+
+## Impact
+Settlement yield can be calculated from overstated `totalBackingSigned()` and `surplus()` when PM automatically creates a borrow, allowing the protocol to distribute yield that is not backed by net assets.
+
+This causes direct loss to protocol backing and can leave insufficient assets to cover future redemptions.

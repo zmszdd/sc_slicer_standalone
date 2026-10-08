@@ -103,6 +103,11 @@ FEATURE_NAMES = (
     'allowed_statement_ids',
     'protocol_identifier_exclusion',
     'assumption_numeric_relief',
+    'duplicate_predicate_gate',
+    'requirement_source_review',
+    'intent_scope_review',
+    'partial_formalization',
+    'example_pinning_review',
 )
 _LEGACY_FEATURE_SETS = {
     'strict_piv': STRICT_PIV_VERSIONS,
@@ -122,6 +127,17 @@ _LEGACY_FEATURE_SETS = {
     # No frozen version ships the assumption relief: old runs replay with the
     # strict numeric gate they were produced under.
     'assumption_numeric_relief': frozenset(),
+    # Post-closure structural additions (semantic-live-5, 2026-10-08): the same
+    # replay rule applies -- no frozen version enables them, so every recorded
+    # run keeps the behaviour it was produced under.
+    'duplicate_predicate_gate': frozenset(),
+    'requirement_source_review': frozenset(),
+    'intent_scope_review': frozenset(),
+    'partial_formalization': frozenset(),
+    # live-6 (2026-10-08): post-holdout defect-side improvements.  Same replay
+    # rule: no frozen version enables them, recorded runs keep their own
+    # behaviour.
+    'example_pinning_review': frozenset(),
 }
 
 

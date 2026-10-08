@@ -12,6 +12,7 @@
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import copy
 import json
 from pathlib import Path
 import subprocess
@@ -27,7 +28,9 @@ from fidelity import check_numeric_plan, check_address_plan
 from semantic_core import (compile_bundle, normalize_readiness,
                            normalize_truth_binding, require,
                            validate_elements)
-from plan_synthesizer import (classified_relation_alignment, identical_p_predicates,
+from plan_synthesizer import (check_distinct_p_predicates, classified_relation_alignment,
+                              identical_p_predicates, intent_scope_review,
+                              relax_unsupported_relation, requirement_source_review,
                               structured_unresolved_review,
                               synthesize_id_formalization)
 from evidence_catalog import (PROMPT as READINESS_PROMPT, build_catalog,
@@ -418,6 +421,17 @@ def verify(directory):
                 claim, changes = normalize_truth_binding(claim, raw_elements)
                 require(changes == json.loads(normalization_log.read_text())['changes'],
                         'plan normalization audit changed')
+            # semantic-live-5: replay the partial-formalization boundary the
+            # same way -- the saved log is the audited record of the relax.
+            partial_log = claim_path.parent / 'partial-formalization.json'
+            if partial_log.exists():
+                claim, relaxed = relax_unsupported_relation(claim, raw_elements)
+                require(relaxed == json.loads(partial_log.read_text()),
+                        'partial formalization audit changed')
+            elif features.get('partial_formalization', False):
+                require(not relax_unsupported_relation(
+                    copy.deepcopy(claim), raw_elements)[1],
+                    'partial formalization audit missing')
             require(claim == plan, 'neural formal plan changed')
             require(synthesize_id_formalization(plan, raw_elements) == raw_formal,
                     'deterministic formal synthesis changed')
@@ -425,6 +439,14 @@ def verify(directory):
                 require(classified_relation_alignment(plan, raw_elements) ==
                         json.loads((directory / 'relation-alignment.json').read_text()),
                         'classified relation alignment changed')
+            if features.get('requirement_source_review', False):
+                require(requirement_source_review(raw_elements, plan) == json.loads(
+                    (directory / 'requirement-source-review.json').read_text()),
+                    'requirement source review replay mismatch')
+            if features.get('intent_scope_review', False):
+                require(intent_scope_review(plan, raw_elements) == json.loads(
+                    (directory / 'intent-scope-review.json').read_text()),
+                    'intent scope review replay mismatch')
             if features['numeric_guard']:
                 check_numeric_plan(
                     plan, raw_elements,
@@ -435,6 +457,12 @@ def verify(directory):
                     relax_assumptions=features.get('assumption_numeric_relief', False))
             if features['address_guard']:
                 check_address_plan(plan, raw_elements)
+            # semantic-live-5: the duplicate-predicate defect family was
+            # previously visible only in this verifier's output; live runs now
+            # reject it at generation time.  Old runs replay without the gate
+            # (their recorded features predate the key) and stay report-only.
+            if features.get('duplicate_predicate_gate', False):
+                check_distinct_p_predicates(plan)
             if features['structured_unresolved']:
                 require(structured_unresolved_review(plan, raw_elements) ==
                         json.loads((directory / 'unresolved-review.json').read_text()),
@@ -468,6 +496,12 @@ def verify(directory):
         require(interface['solver_results_sha256'] == r.sha((directory / 'solver-results.json').read_bytes()), 'interface solver results hash mismatch')
     require(interface['spec_sha256'] == r.sha((directory / 'constraints.json').read_bytes()), 'interface spec hash mismatch')
     require(interface['elements_sha256'] == r.sha((directory / 'elements.json').read_bytes()), 'interface elements hash mismatch')
+    # semantic-live-5: advisory reviews are hash-chained into the interface.
+    for key in ('requirement_source_review', 'intent_scope_review'):
+        if key + '_path' in interface:
+            require(interface[key + '_sha256'] == r.sha(
+                (directory / interface[key + '_path']).read_bytes()),
+                'interface ' + key + ' hash mismatch')
     for row in interface['claims']:
         require(row['predicates_sha256'] == r.sha((directory / row['predicates_path']).read_bytes()), 'interface SMT hash mismatch')
     require(interface['execution_ready'] is False, 'unexpected execution-ready claim')

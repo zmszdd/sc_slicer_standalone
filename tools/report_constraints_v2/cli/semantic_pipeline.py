@@ -3,6 +3,9 @@
 Offline by default. DeepSeek extraction is consent-gated and first runs a mandatory
 input-sufficiency call; ready reports then use two P/I/V/formalization calls.
 No slicer invocation, code binding, formula repair or report-truth classification.
+
+DeepSeek 连接与模型通路（白名单、端点、密钥、解码参数）唯一定义于
+lib/deepseek.py；opencode 通道回退模型见本文件 configured_model()。
 """
 import argparse
 import copy
@@ -13,19 +16,25 @@ from pathlib import Path
 import subprocess
 
 import report_only as r
+from deepseek import (DEFAULT_DEEPSEEK_MODEL, DEEPSEEK_MODELS, TransientModelError,
+                      extract_deepseek, load_deepseek_key, proxy_in_effect,
+                      proxy_policy)
 from semantic_core import (NORMALIZE, compile_bundle, normalize_readiness,
                            normalize_truth_binding, validate_elements)
 from prompts.registry import (DEFAULT_VERSION, PROMPT_MODULES, SELECTABLE_VERSIONS,
                               features_for)
 from prompts.active import resolve_prompt_set
 from evidence_catalog import build_catalog, hydrate_elements, hydrate_formalization
-from plan_synthesizer import (classified_relation_alignment, structured_unresolved_review,
+from plan_synthesizer import (check_distinct_p_predicates, classified_relation_alignment,
+                              intent_scope_review, relax_unsupported_relation,
+                              requirement_source_review, structured_unresolved_review,
                               synthesize_id_formalization)
 from symbolic_queries import solve_queries
 from review import attach_review
 from review import from_bundle as triage_bundle, from_failure as triage_failure
-from mechanical_salvage import (normalize_attack_step_roles, normalize_element_ids,
-                                drop_unused_invalid_symbols)
+from mechanical_salvage import (example_pinning_review, normalize_attack_step_roles,
+                                normalize_element_ids, drop_unused_invalid_symbols)
+from stage3_consistency import binding_contract
 from report_readiness import PROMPT as READINESS_PROMPT, model_payload, validate_readiness
 
 
@@ -309,6 +318,11 @@ def formal_retry_hint(exc):
                 'but change only mutable_top_level_fields. All frozen fields must '
                 'remain structurally identical to previous_plan.\n')
     if str(exc).startswith('numeric P '):
+        # The gate's message names the offending source and literals
+        # (": <source_id> states 50, 100"); surface it so the retry repairs
+        # THAT source instead of guessing (final_holdout_02: Kinetiq).
+        detail = str(exc).split(': ', 1)[1] if ': ' in str(exc) else ''
+        pointer = f'Failing source: {detail}\n' if detail else ''
         return ('\nRETRY FEEDBACK: Include EVERY extracted P/assumption source ID '
                 'in precondition_terms. If its statement contains an explicit '
                 'numeric comparison, its OWN P predicate must encode the SAME '
@@ -322,7 +336,8 @@ def formal_retry_hint(exc):
                 '+/- K use the exact power_of_two/offset operand, never '
                 'floating point or scientific notation. If the text has no '
                 'plain numeric literal for the bound, record it in unresolved '
-                'instead of inventing a constant. Keep report facts unchanged.\n')
+                'instead of inventing a constant. Keep report facts unchanged.\n'
+                + pointer)
     if str(exc).startswith('zero-address '):
         return ('\nRETRY FEEDBACK: A report claim explicitly mentions '
                 'address(0)/zero address. Declare zero_address and the relevant '
@@ -400,7 +415,7 @@ def request_readiness(payload, prompt, model, output, retries, catalog,
             write_json(output / 'readiness-attempts.json', attempts)
             return readiness, changes
         except (json.JSONDecodeError, subprocess.TimeoutExpired,
-                r.TransientModelError, ValueError, KeyError, TypeError) as exc:
+                TransientModelError, ValueError, KeyError, TypeError) as exc:
             record.update({'outcome': 'retryable_failure',
                            'error_type': type(exc).__name__,
                            'error': ('model timeout' if isinstance(
@@ -462,7 +477,7 @@ def request_elements(payload, prompt, model, output, retries, extract_fn=None,
             record['outcome'] = 'parsed_json'
             write_json(output / 'element-attempts.json', attempts)
             return result, attempts
-        except (json.JSONDecodeError, subprocess.TimeoutExpired, r.TransientModelError,
+        except (json.JSONDecodeError, subprocess.TimeoutExpired, TransientModelError,
                 ValueError, KeyError, TypeError) as exc:
             record.update({'outcome': 'retryable_failure',
                            'error_type': type(exc).__name__,
@@ -485,7 +500,8 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                           numeric_guard=False, address_guard=False,
                           mechanical_salvage=False, local_repair=False,
                           exclude_protocol_identifiers=False,
-                          relax_assumptions=False, on_attempt=None):
+                          relax_assumptions=False, duplicate_predicate_gate=False,
+                          partial_formalization=False, on_attempt=None):
     """Retry malformed responses or perform a bounded, field-scoped plan repair.
 
     Each attempt keeps its own raw model artifacts. A rejected plan is never
@@ -499,7 +515,9 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
     repair_base = None
     mutable_fields = ()
     repair_error = None
-    for attempt in range(retries + 1):
+    null_reprompts = 0
+    attempt = 0
+    while attempt <= retries:
         call_dir = output / ('neural-formalization' if attempt == 0 else
                              f'neural-formalization-retry-{attempt}')
         call_dir.mkdir(exist_ok=True)
@@ -542,6 +560,13 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                     candidate, repairs = drop_unused_invalid_symbols(candidate)
                     if repairs:
                         write_json(call_dir / 'mechanical-salvage.json', repairs)
+                if partial_formalization:
+                    # Boundary-normalize the unsupported_relation contradiction:
+                    # a plan that already represents the relation as a bool
+                    # symbol cannot honestly also declare it blocking.
+                    candidate, relaxed = relax_unsupported_relation(candidate, elements)
+                    if relaxed:
+                        write_json(call_dir / 'partial-formalization.json', relaxed)
                 formal = synthesize_id_formalization(candidate, elements)
                 if numeric_guard:
                     check_numeric_plan(
@@ -550,6 +575,8 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                         relax_assumptions=relax_assumptions)
                 if address_guard:
                     check_address_plan(candidate, elements)
+                if duplicate_predicate_gate:
+                    check_distinct_p_predicates(candidate)
                 if structured:
                     review = structured_unresolved_review(candidate, elements)
                 else:
@@ -559,14 +586,27 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
             record['outcome'] = 'accepted_for_validation'
             write_json(output / 'formalization-attempts.json', attempts)
             return candidate, formal, review
-        except (json.JSONDecodeError, subprocess.TimeoutExpired, r.TransientModelError, ValueError,
+        except (json.JSONDecodeError, subprocess.TimeoutExpired, TransientModelError, ValueError,
                 KeyError, TypeError) as exc:
             record.update({'outcome': 'retryable_failure', 'error_type': type(exc).__name__,
                            'error': 'model timeout' if isinstance(exc, subprocess.TimeoutExpired)
                            else str(exc)})
             write_json(output / 'formalization-attempts.json', attempts)
             if attempt == retries:
-                raise
+                if (local_repair and null_reprompts == 0 and
+                        str(exc) == 'local repair made no change'):
+                    # A byte-identical resubmission is a null response: it
+                    # consumed a call without producing any new content, so
+                    # granting exactly one reprompt (carrying the no-change
+                    # prescription) stays inside the bounded-effort contract.
+                    # final_holdout_02: GTE_Perps resubmitted identically on
+                    # the final attempt, and the no-change prescription could
+                    # never fire because no next attempt existed.
+                    null_reprompts += 1
+                    retries += 1
+                    record['null_repair_reprompt'] = True
+                else:
+                    raise
             if local_repair and isinstance(candidate, dict):
                 can_promote = repair_base is None
                 if repair_base is not None:
@@ -586,6 +626,7 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                            'error_type': type(exc).__name__, 'error': str(exc)})
             write_json(output / 'formalization-attempts.json', attempts)
             raise
+        attempt += 1
     raise AssertionError('unreachable')
 
 
@@ -713,14 +754,14 @@ def main():
         if args.formalize_only and (not args.elements or args.formalization or args.elements_only):
             parser.error('formalize-only requires --elements and forbids --formalization/--elements-only')
         if args.provider == 'deepseek':
-            if args.model and args.model not in r.DEEPSEEK_MODELS:
+            if args.model and args.model not in DEEPSEEK_MODELS:
                 parser.error('unsupported official DeepSeek model identifier')
             try:
-                r.proxy_policy(args.deepseek_proxy)
+                proxy_policy(args.deepseek_proxy)
             except ValueError as exc:
                 parser.error(str(exc))
             try:
-                r.load_deepseek_key()
+                load_deepseek_key()
             except RuntimeError as exc:
                 parser.error(str(exc))
     elif not args.elements or (not args.elements_only and not args.formalization):
@@ -747,18 +788,18 @@ def main():
                                                             if features['plan_synthesis']
                                                             else 'model_full_formalization'),
                                'reference_answers_provided_to_model': False})
-            model = args.model or ('deepseek-flash' if args.provider == 'deepseek'
+            model = args.model or (DEFAULT_DEEPSEEK_MODEL if args.provider == 'deepseek'
                                    else configured_model())
             # partial keeps the three call sites' positional arity intact while
-            # pinning the transport switch; tests patch report_only.extract_deepseek
+            # pinning the transport switch; tests patch deepseek.extract_deepseek
             # and their fakes must therefore accept the extra keyword.
-            extract_fn = (functools.partial(r.extract_deepseek,
+            extract_fn = (functools.partial(extract_deepseek,
                                             proxy=args.deepseek_proxy)
                           if args.provider == 'deepseek' else r.extract)
             provenance.update({'model_provider': args.provider, 'model_name': model})
             if args.provider == 'deepseek':
                 provenance['deepseek_proxy_policy'] = args.deepseek_proxy
-                endpoint = r.proxy_in_effect(args.deepseek_proxy)
+                endpoint = proxy_in_effect(args.deepseek_proxy)
                 if endpoint:
                     provenance['deepseek_proxy_endpoint'] = endpoint
             resolved_prompts = resolve_prompt_set(
@@ -895,12 +936,23 @@ def main():
                 local_repair=features['local_repair'],
                 exclude_protocol_identifiers=features['protocol_identifier_exclusion'],
                 relax_assumptions=features['assumption_numeric_relief'],
+                duplicate_predicate_gate=features['duplicate_predicate_gate'],
+                partial_formalization=features['partial_formalization'],
                 on_attempt=record_model_attempt)
             if plan_mode:
                 write_json(args.output / 'formal-plan.json', model_candidate)
                 if features['relation_alignment']:
                     write_json(args.output / 'relation-alignment.json',
                                classified_relation_alignment(model_candidate, elements_raw))
+                if features['requirement_source_review']:
+                    write_json(args.output / 'requirement-source-review.json',
+                               requirement_source_review(elements_raw, model_candidate))
+                if features['intent_scope_review']:
+                    write_json(args.output / 'intent-scope-review.json',
+                               intent_scope_review(model_candidate, elements_raw))
+                if features['example_pinning_review']:
+                    write_json(args.output / 'example-pinning-review.json',
+                               example_pinning_review(model_candidate, elements_raw))
                 if unresolved_review is not None:
                     write_json(args.output / 'unresolved-review.json', unresolved_review)
         else:
@@ -945,7 +997,8 @@ def main():
                                  'modality': claim['modality'], 'scope': claim['scope'],
                                  'report_queries': ['P AND V', 'P AND V AND NOT I', 'P AND V AND I'],
                                  'code_queries_after_binding': ['P AND T', 'P AND T AND NOT I',
-                                                               'P AND T AND V', 'P AND T AND NOT V']})
+                                                               'P AND T AND V', 'P AND T AND NOT V'],
+                                 'binding_contract': binding_contract(formal, original)})
         triage = triage_bundle(bundle, unresolved_review)
         write_json(args.output / 'constraints.json', bundle)
         write_json(args.output / 'auto-triage.json', triage)
@@ -973,6 +1026,15 @@ def main():
                 'unresolved_review_sha256': r.sha(
                     (args.output / 'unresolved-review.json').read_bytes()),
             })
+        # semantic-live-5: advisory reviews are referenced the same way as the
+        # unresolved review -- hash-chained into the interface so tampering
+        # with them after the fact breaks verify.
+        for name in ('requirement-source-review.json', 'intent-scope-review.json'):
+            if (args.output / name).is_file():
+                interface[name.replace('-', '_').removesuffix('.json') + '_path'] = name
+                interface[name.replace('-', '_').removesuffix('.json') + '_sha256'] = \
+                    r.sha((args.output / name).read_bytes())
+        interface['stage3_feedback_command'] = 'python main.py stage3-feedback <run-dir> --feedback <feedback.json>'
         write_json(args.output / 'stage3-spec.json', interface)
         status = {key: bundle[key] for key in ('core_formalization_status', 'acceptance_status',
                                               'external_model_invocations', 'consistency_verdict')}

@@ -1,0 +1,130 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Spot CLOB and Router_qa8y3zjgyCn",
+    "audit_uid": "qa8y3zjgyCn",
+    "requested_submission_uid": "kss7K9vaso2",
+    "requested_finding_uid": "4mNBEGcS2Q4",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Spot_CLOB_and_Router_qa8y3zjgyCn/20260618_143057/findings.json",
+    "source_submission_uid": "kss7K9vaso2",
+    "source_finding_uid": "4mNBEGcS2Q4",
+    "original_report_path": "GTE Spot CLOB and Router_qa8y3zjgyCn\\medium_valid_kss7K9vaso2.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "kss7K9vaso2",
+  "finding_uid": "4mNBEGcS2Q4",
+  "finding_number": "13",
+  "title": "Meaningful limit order trades might revert as ZeroCostTrade due to wrong condition check",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "Riceee",
+  "body": "### Description \nIn `_processLimitBidOrder` and `_processLimitAskOrder` there is a check which checks after the execution of the order, if it was partially/completely fulfilled then we need to ensure that the baseTokenAmount sent/received and quoteTokenAmount received/sent are both non-zero, otherwise it should revert as a zero cost trade.\n\nLet's focus on one of the two functions, because the issue logic is same in both. Let's look at `_processLimitBidOrder`, when `_executeBidLimitOrder` is called it does either of the three thing:\n\n1. Fill it compleltely is possible \n2. Fill it partially, then check if leftover is more than min size then push it to the order book\n3. No fill, just directly place it on the order book \n\nNow for the three scenarios this is how the returned values would be like:\n\n| Fill Type     | postAmount | quoteTokenAmountSent | baseTokenAmountReceived |\n|---------------|------------|----------------------|--------------------------|\n| Complete Fill | 0          | some value           | some value               |\n| Partial Fill  | some value | some value           | some value               |\n| No Fill       | some value | 0                    | 0                        |\n\nNow, in a scenario where the quote and base amounts are non-zero, the second `ZeroCostTrade` check ensures that if `quoteTokenAmountSent != baseTokenAmountReceived` then we need to ensure that BOTH of these values are non-zero, and to do that we check `baseTokenAmountReceived & quoteTokenAmountSent == 0`. Therefore this check is implemented: \n\n```solidity \n        // @audit ISSUE this condition is basically meant to check if base received and quote sent\n        // are non zero then check if either one is zero then revert\n        // but this BITWISE AND will fail if bits dont overlap even if they are legit amounts\n\n        if (baseTokenAmountReceived != quoteTokenAmountSent && baseTokenAmountReceived & quoteTokenAmountSent == 0) {\n            revert ZeroCostTrade();\n        }\n```\nBut the problem is the logic applied to check that both must be non-zero, i.e., the bitwise AND operation can give false positives if two non-zero amounts do not have overlapping 1-bits. \n\n### Impact\nA user trade will be DoSed even when its a legit non-zero trade. \n\n\n### Recommendation \nA better way to check for the condition would be:\n```solidity\n        if ((baseReceived > 0 && quoteSent == 0) || (baseReceived == 0 && quoteSent > 0)) {\n            revert ZeroCostTrade();\n        }\n```",
+  "proof_of_concept": "### POC\n\n#### Setup \nImported these paths to `PoC.t.sol`\n```\nimport \"forge-std/console.sol\";\nimport {Side, Order} from \"contracts/clob/types/Order.sol\";\nimport {Limit} from \"contracts/clob/types/Book.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {OperatorRoles} from \"contracts/utils/Operator.sol\";\n```\n\nFor better understanding of the issue added some console.log to the `_processLimitBidOrder` function:\n\n```solidity\n    function _processLimitBidOrder(\n        Book storage ds,\n        address account,\n        Order memory newOrder,\n        PostLimitOrderArgs memory args\n    ) internal returns (PostLimitOrderResult memory) {\n        (uint256 postAmount, uint256 quoteTokenAmountSent, uint256 baseTokenAmountReceived) =\n            _executeBidLimitOrder(ds, newOrder, args.limitOrderType);\n\n        if (postAmount + quoteTokenAmountSent + baseTokenAmountReceived == 0) revert ZeroOrder();\n        console.log(\"======== Process Limit Bid Order ==========\"); //here\n        console.log(\"Post Amount: %s | Quote Sent: %s | Base Received: %s\", postAmount, quoteTokenAmountSent, baseTokenAmountReceived); //here\n\n        if (baseTokenAmountReceived != quoteTokenAmountSent && baseTokenAmountReceived & quoteTokenAmountSent == 0) {\n            console.log(\"AND op: %s\", baseTokenAmountReceived & quoteTokenAmountSent); //here\n            revert ZeroCostTrade();\n        }\n\n        [...]\n    }\n```\n\n#### Code\n```solidity\ncontract PoC is PoCTestBase {\n    // Assume a TokenA/TokenB market both with 18 decimals \n    // TokenA is the base token and TokenB is the quoteToken\n    // These values were chosen arbitarily to prove the issue as these\n    // satisfy the market settings in the test setup\n    // note that this could happen with a lot of other values and price ranges depending on the market settings \n    uint256 constant BASE_TOKEN_AMOUNT = 9007199254740992; // ~ 0.009 ether\n    //price of the base token in terms of quote token\n    uint256 constant PRICE = 2000000000000000000 ; // 2e18 \n\n    function test_process_limit_order_condition_check() external{\n        // A limit sell order is placed at that price range\n        setupOrder(Side.SELL, julien, BASE_TOKEN_AMOUNT, PRICE); // OrderId 1\n\n        // Jb places a limit bid order at that range, we cannot use the setUpOrder because the expectRevert logic\n        // will not work proerly then so lets set it up manually\n        setupTokens(Side.BUY, jb, BASE_TOKEN_AMOUNT, PRICE, true);\n        // Post a limit order\n        ICLOB.PostLimitOrderArgs memory args = ICLOB.PostLimitOrderArgs({\n            amountInBase: BASE_TOKEN_AMOUNT,\n            clientOrderId: 0,\n            price: PRICE,\n            cancelTimestamp: setupOrderExpiry,\n            side: Side.BUY,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        });\n\n        vm.prank(jb);\n        vm.expectRevert(CLOB.ZeroCostTrade.selector);\n        clob.postLimitOrder(jb, args);\n    }\n}\n```\nRUN: `forge test --mt test_process_limit_order_condition_check -vv`\n\nwe will notice even though the limit bid order executes sucessfully it still reverts as a zero cost trade. Looking at the logs:\n```\n[PASS] test_process_limit_order_condition_check() (gas: 627407)\nLogs:\n  ======== Process Limit Bid Order ==========\n  Post Amount: 0 | Quote Sent: 18014398509481984 | Base Received: 9007199254740992\n  AND op: 0\n\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 4.38ms (477.87µs CPU time)\n```\nWe see that the bid order was successfully matched, the user is supposed to receive base tokens and send quote tokens but the trade reverts because the AND operation wrongly results in 0 as these two numbers dont have overlapping 1-bits.",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L503-L505",
+    "https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L544-L546"
+  ],
+  "source_record": {
+    "project_id": "qa8y3zjgyCn",
+    "submission_index": "353",
+    "api_submission_id": "",
+    "uid": "kss7K9vaso2",
+    "number": "353",
+    "title": "Meaningful limit order trades might revert as ZeroCostTrade due to wrong condition check",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "Riceee",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L503-L505",
+      "https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L544-L546"
+    ],
+    "body": "### Description \nIn `_processLimitBidOrder` and `_processLimitAskOrder` there is a check which checks after the execution of the order, if it was partially/completely fulfilled then we need to ensure that the baseTokenAmount sent/received and quoteTokenAmount received/sent are both non-zero, otherwise it should revert as a zero cost trade.\n\nLet's focus on one of the two functions, because the issue logic is same in both. Let's look at `_processLimitBidOrder`, when `_executeBidLimitOrder` is called it does either of the three thing:\n\n1. Fill it compleltely is possible \n2. Fill it partially, then check if leftover is more than min size then push it to the order book\n3. No fill, just directly place it on the order book \n\nNow for the three scenarios this is how the returned values would be like:\n\n| Fill Type     | postAmount | quoteTokenAmountSent | baseTokenAmountReceived |\n|---------------|------------|----------------------|--------------------------|\n| Complete Fill | 0          | some value           | some value               |\n| Partial Fill  | some value | some value           | some value               |\n| No Fill       | some value | 0                    | 0                        |\n\nNow, in a scenario where the quote and base amounts are non-zero, the second `ZeroCostTrade` check ensures that if `quoteTokenAmountSent != baseTokenAmountReceived` then we need to ensure that BOTH of these values are non-zero, and to do that we check `baseTokenAmountReceived & quoteTokenAmountSent == 0`. Therefore this check is implemented: \n\n```solidity \n        // @audit ISSUE this condition is basically meant to check if base received and quote sent\n        // are non zero then check if either one is zero then revert\n        // but this BITWISE AND will fail if bits dont overlap even if they are legit amounts\n\n        if (baseTokenAmountReceived != quoteTokenAmountSent && baseTokenAmountReceived & quoteTokenAmountSent == 0) {\n            revert ZeroCostTrade();\n        }\n```\nBut the problem is the logic applied to check that both must be non-zero, i.e., the bitwise AND operation can give false positives if two non-zero amounts do not have overlapping 1-bits. \n\n### Impact\nA user trade will be DoSed even when its a legit non-zero trade. \n\n\n### Recommendation \nA better way to check for the condition would be:\n```solidity\n        if ((baseReceived > 0 && quoteSent == 0) || (baseReceived == 0 && quoteSent > 0)) {\n            revert ZeroCostTrade();\n        }\n```",
+    "proof_of_concept": "### POC\n\n#### Setup \nImported these paths to `PoC.t.sol`\n```\nimport \"forge-std/console.sol\";\nimport {Side, Order} from \"contracts/clob/types/Order.sol\";\nimport {Limit} from \"contracts/clob/types/Book.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {OperatorRoles} from \"contracts/utils/Operator.sol\";\n```\n\nFor better understanding of the issue added some console.log to the `_processLimitBidOrder` function:\n\n```solidity\n    function _processLimitBidOrder(\n        Book storage ds,\n        address account,\n        Order memory newOrder,\n        PostLimitOrderArgs memory args\n    ) internal returns (PostLimitOrderResult memory) {\n        (uint256 postAmount, uint256 quoteTokenAmountSent, uint256 baseTokenAmountReceived) =\n            _executeBidLimitOrder(ds, newOrder, args.limitOrderType);\n\n        if (postAmount + quoteTokenAmountSent + baseTokenAmountReceived == 0) revert ZeroOrder();\n        console.log(\"======== Process Limit Bid Order ==========\"); //here\n        console.log(\"Post Amount: %s | Quote Sent: %s | Base Received: %s\", postAmount, quoteTokenAmountSent, baseTokenAmountReceived); //here\n\n        if (baseTokenAmountReceived != quoteTokenAmountSent && baseTokenAmountReceived & quoteTokenAmountSent == 0) {\n            console.log(\"AND op: %s\", baseTokenAmountReceived & quoteTokenAmountSent); //here\n            revert ZeroCostTrade();\n        }\n\n        [...]\n    }\n```\n\n#### Code\n```solidity\ncontract PoC is PoCTestBase {\n    // Assume a TokenA/TokenB market both with 18 decimals \n    // TokenA is the base token and TokenB is the quoteToken\n    // These values were chosen arbitarily to prove the issue as these\n    // satisfy the market settings in the test setup\n    // note that this could happen with a lot of other values and price ranges depending on the market settings \n    uint256 constant BASE_TOKEN_AMOUNT = 9007199254740992; // ~ 0.009 ether\n    //price of the base token in terms of quote token\n    uint256 constant PRICE = 2000000000000000000 ; // 2e18 \n\n    function test_process_limit_order_condition_check() external{\n        // A limit sell order is placed at that price range\n        setupOrder(Side.SELL, julien, BASE_TOKEN_AMOUNT, PRICE); // OrderId 1\n\n        // Jb places a limit bid order at that range, we cannot use the setUpOrder because the expectRevert logic\n        // will not work proerly then so lets set it up manually\n        setupTokens(Side.BUY, jb, BASE_TOKEN_AMOUNT, PRICE, true);\n        // Post a limit order\n        ICLOB.PostLimitOrderArgs memory args = ICLOB.PostLimitOrderArgs({\n            amountInBase: BASE_TOKEN_AMOUNT,\n            clientOrderId: 0,\n            price: PRICE,\n            cancelTimestamp: setupOrderExpiry,\n            side: Side.BUY,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        });\n\n        vm.prank(jb);\n        vm.expectRevert(CLOB.ZeroCostTrade.selector);\n        clob.postLimitOrder(jb, args);\n    }\n}\n```\nRUN: `forge test --mt test_process_limit_order_condition_check -vv`\n\nwe will notice even though the limit bid order executes sucessfully it still reverts as a zero cost trade. Looking at the logs:\n```\n[PASS] test_process_limit_order_condition_check() (gas: 627407)\nLogs:\n  ======== Process Limit Bid Order ==========\n  Post Amount: 0 | Quote Sent: 18014398509481984 | Base Received: 9007199254740992\n  AND op: 0\n\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 4.38ms (477.87µs CPU time)\n```\nWe see that the bid order was successfully matched, the user is supposed to receive base tokens and send quote tokens but the trade reverts because the AND operation wrongly results in 0 as these two numbers dont have overlapping 1-bits.",
+    "detail_url": "https://code4rena.com/api/v1/audits/qa8y3zjgyCn/submissions/353",
+    "raw": {
+      "auditUid": "qa8y3zjgyCn",
+      "createdAt": "2025-08-02T07:14:56.386Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "Tn3tyHMakAz",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-25T12:11:03.811Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "4mNBEGcS2Q4"
+        },
+        {
+          "uid": "u8xwEPEHPLh",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-08-07T12:02:18.192Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "4mNBEGcS2Q4"
+        },
+        {
+          "uid": "rB2NdzJ4g2W",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-08-11T12:30:20.012Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "kss7K9vaso2",
+          "findingUid": null
+        },
+        {
+          "uid": "C9kKGhpsa5F",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-08-14T19:36:20.781Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "4mNBEGcS2Q4"
+        }
+      ],
+      "finding": {
+        "uid": "4mNBEGcS2Q4",
+        "number": 13,
+        "duplicates": 52
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-09-03T15:15:38.163Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Meaningful limit order trades might revert as ZeroCostTrade due to wrong condition check",
+      "uid": "kss7K9vaso2",
+      "updatedAt": "2025-08-02T07:14:56.386Z",
+      "user": {
+        "uid": "vzd4cQxTaxt",
+        "handle": "Riceee"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Description \nIn `_processLimitBidOrder` and `_processLimitAskOrder` there is a check which checks after the execution of the order, if it was partially/completely fulfilled then we need to ensure that the baseTokenAmount sent/received and quoteTokenAmount received/sent are both non-zero, otherwise it should revert as a zero cost trade.\n\nLet's focus on one of the two functions, because the issue logic is same in both. Let's look at `_processLimitBidOrder`, when `_executeBidLimitOrder` is called it does either of the three thing:\n\n1. Fill it compleltely is possible \n2. Fill it partially, then check if leftover is more than min size then push it to the order book\n3. No fill, just directly place it on the order book \n\nNow for the three scenarios this is how the returned values would be like:\n\n| Fill Type     | postAmount | quoteTokenAmountSent | baseTokenAmountReceived |\n|---------------|------------|----------------------|--------------------------|\n| Complete Fill | 0          | some value           | some value               |\n| Partial Fill  | some value | some value           | some value               |\n| No Fill       | some value | 0                    | 0                        |\n\nNow, in a scenario where the quote and base amounts are non-zero, the second `ZeroCostTrade` check ensures that if `quoteTokenAmountSent != baseTokenAmountReceived` then we need to ensure that BOTH of these values are non-zero, and to do that we check `baseTokenAmountReceived & quoteTokenAmountSent == 0`. Therefore this check is implemented: \n\n```solidity \n        // @audit ISSUE this condition is basically meant to check if base received and quote sent\n        // are non zero then check if either one is zero then revert\n        // but this BITWISE AND will fail if bits dont overlap even if they are legit amounts\n\n        if (baseTokenAmountReceived != quoteTokenAmountSent && baseTokenAmountReceived & quoteTokenAmountSent == 0) {\n            revert ZeroCostTrade();\n        }\n```\nBut the problem is the logic applied to check that both must be non-zero, i.e., the bitwise AND operation can give false positives if two non-zero amounts do not have overlapping 1-bits. \n\n### Impact\nA user trade will be DoSed even when its a legit non-zero trade. \n\n\n### Recommendation \nA better way to check for the condition would be:\n```solidity\n        if ((baseReceived > 0 && quoteSent == 0) || (baseReceived == 0 && quoteSent > 0)) {\n            revert ZeroCostTrade();\n        }\n```",
+      "proofOfConcept": "### POC\n\n#### Setup \nImported these paths to `PoC.t.sol`\n```\nimport \"forge-std/console.sol\";\nimport {Side, Order} from \"contracts/clob/types/Order.sol\";\nimport {Limit} from \"contracts/clob/types/Book.sol\";\nimport {CLOB} from \"contracts/clob/CLOB.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\nimport {OperatorRoles} from \"contracts/utils/Operator.sol\";\n```\n\nFor better understanding of the issue added some console.log to the `_processLimitBidOrder` function:\n\n```solidity\n    function _processLimitBidOrder(\n        Book storage ds,\n        address account,\n        Order memory newOrder,\n        PostLimitOrderArgs memory args\n    ) internal returns (PostLimitOrderResult memory) {\n        (uint256 postAmount, uint256 quoteTokenAmountSent, uint256 baseTokenAmountReceived) =\n            _executeBidLimitOrder(ds, newOrder, args.limitOrderType);\n\n        if (postAmount + quoteTokenAmountSent + baseTokenAmountReceived == 0) revert ZeroOrder();\n        console.log(\"======== Process Limit Bid Order ==========\"); //here\n        console.log(\"Post Amount: %s | Quote Sent: %s | Base Received: %s\", postAmount, quoteTokenAmountSent, baseTokenAmountReceived); //here\n\n        if (baseTokenAmountReceived != quoteTokenAmountSent && baseTokenAmountReceived & quoteTokenAmountSent == 0) {\n            console.log(\"AND op: %s\", baseTokenAmountReceived & quoteTokenAmountSent); //here\n            revert ZeroCostTrade();\n        }\n\n        [...]\n    }\n```\n\n#### Code\n```solidity\ncontract PoC is PoCTestBase {\n    // Assume a TokenA/TokenB market both with 18 decimals \n    // TokenA is the base token and TokenB is the quoteToken\n    // These values were chosen arbitarily to prove the issue as these\n    // satisfy the market settings in the test setup\n    // note that this could happen with a lot of other values and price ranges depending on the market settings \n    uint256 constant BASE_TOKEN_AMOUNT = 9007199254740992; // ~ 0.009 ether\n    //price of the base token in terms of quote token\n    uint256 constant PRICE = 2000000000000000000 ; // 2e18 \n\n    function test_process_limit_order_condition_check() external{\n        // A limit sell order is placed at that price range\n        setupOrder(Side.SELL, julien, BASE_TOKEN_AMOUNT, PRICE); // OrderId 1\n\n        // Jb places a limit bid order at that range, we cannot use the setUpOrder because the expectRevert logic\n        // will not work proerly then so lets set it up manually\n        setupTokens(Side.BUY, jb, BASE_TOKEN_AMOUNT, PRICE, true);\n        // Post a limit order\n        ICLOB.PostLimitOrderArgs memory args = ICLOB.PostLimitOrderArgs({\n            amountInBase: BASE_TOKEN_AMOUNT,\n            clientOrderId: 0,\n            price: PRICE,\n            cancelTimestamp: setupOrderExpiry,\n            side: Side.BUY,\n            limitOrderType: ICLOB.LimitOrderType.GOOD_TILL_CANCELLED\n        });\n\n        vm.prank(jb);\n        vm.expectRevert(CLOB.ZeroCostTrade.selector);\n        clob.postLimitOrder(jb, args);\n    }\n}\n```\nRUN: `forge test --mt test_process_limit_order_condition_check -vv`\n\nwe will notice even though the limit bid order executes sucessfully it still reverts as a zero cost trade. Looking at the logs:\n```\n[PASS] test_process_limit_order_condition_check() (gas: 627407)\nLogs:\n  ======== Process Limit Bid Order ==========\n  Post Amount: 0 | Quote Sent: 18014398509481984 | Base Received: 9007199254740992\n  AND op: 0\n\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 4.38ms (477.87µs CPU time)\n```\nWe see that the bid order was successfully matched, the user is supposed to receive base tokens and send quote tokens but the trade reverts because the AND operation wrongly results in 0 as these two numbers dont have overlapping 1-bits.",
+      "linesOfCode": "https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L503-L505,https://github.com/code-423n4/2025-07-gte-clob/blob/2783108d14010ae50f2a5f65c3a9c94e2e7845b9/contracts/clob/CLOB.sol#L544-L546",
+      "number": 353,
+      "aiExplanation": null,
+      "_index": 353
+    }
+  }
+}

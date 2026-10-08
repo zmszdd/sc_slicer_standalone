@@ -129,6 +129,23 @@ def predicate_constants(predicate):
     return found
 
 
+def _numeric_detail(source_id, literals=(), bounds=()):
+    """Name the offending source and its literals, for repair feedback.
+
+    The numeric gate's messages used to stop at the family name, so a retry
+    had no pointer to WHICH source or WHICH literals (final_holdout_02:
+    Kinetiq's second attempt replaced the missing source instead of adding
+    it).  The message keeps its declared prefix; only the tail grows.
+    """
+    parts = [source_id]
+    if literals:
+        parts.append('states ' + ', '.join(sorted(str(v) for v in literals)))
+    if bounds:
+        parts.append('bounds ' + ', '.join(
+            f'{op} {value}' for op, value in sorted(bounds, key=str)))
+    return ': ' + '; '.join(parts)
+
+
 def check_numeric_plan(plan, elements, exclude_protocol_identifiers=False,
                        relax_assumptions=False):
     """Assumption statements carry context, not constraints: with
@@ -150,21 +167,25 @@ def check_numeric_plan(plan, elements, exclude_protocol_identifiers=False,
         if not bounds:
             if source_id not in terms:
                 if literals and not unencoded_assumption:
-                    raise ValueError('numeric P source missing from plan')
+                    raise ValueError('numeric P source missing from plan'
+                                     + _numeric_detail(source_id, literals))
                 continue
             constants = predicate_constants(terms[source_id])
             if literals and constants and not constants <= literals:
-                raise ValueError('numeric P literal changed')
+                raise ValueError('numeric P literal changed'
+                                 + _numeric_detail(source_id, literals))
             continue
         if source_id not in terms:
             if not unencoded_assumption:
-                raise ValueError('numeric P source missing from plan')
+                raise ValueError('numeric P source missing from plan'
+                                 + _numeric_detail(source_id, bounds=bounds))
             continue
         bound = predicate_bound(terms[source_id])
         if bound is None:
             raise ValueError('numeric P bound hidden by non-comparison predicate')
         if len(bounds) != 1 or bound not in bounds:
-            raise ValueError('numeric P literal or direction changed')
+            raise ValueError('numeric P literal or direction changed'
+                             + _numeric_detail(source_id, literals, bounds))
 
 
 ZERO = re.compile(r'address\s*\(\s*0\s*\)|\bzero[ -]address\b', re.I)
@@ -214,6 +235,94 @@ def check_address_plan(plan, elements):
         if OWNER_ZERO.search(statements[source_id]['text']):
             if not zero_relation(pattern.get('effect'), symbols):
                 raise ValueError('zero-address V ownership effect not observable')
+
+
+def _eq_pinned_constants(predicate):
+    """Constants an equality comparison pins to a symbol (exact scoping)."""
+    if not isinstance(predicate, dict) or predicate.get('kind') != 'comparison' \
+            or predicate.get('operator') != 'eq':
+        return set()
+    right = predicate.get('right')
+    if isinstance(right, dict) and set(right) == {'const'} \
+            and type(right['const']) is int:
+        return {number(right['const'])}
+    return set()
+
+
+def example_pinning_review(plan, elements):
+    """Flag P predicates whose pinned constants come from the impact example.
+
+    A P equality that binds a symbol to a constant is a scoping decision.  It
+    narrows the claim to the report's worked example when the pinned literal
+    is example arithmetic: either it appears only in impact/PoC evidence (not
+    in the term's own cited source), or -- the shape final_holdout_02's Hybra
+    actually produced -- the model restated the example as precondition
+    sources, so several distinct P terms pin constants that all appear in one
+    impact statement's worked example.  Advisory only: the narrowing is
+    visible and disclosed, never auto-rejected, and it is exactly the
+    artefact stage 3 should see before binding, because an example-scoped P
+    produces example-scoped verdicts.
+    """
+    statements = {row['id']: row for row in elements['statements']}
+    impacts = {row['id']: explicit_numbers(row['text'])
+               for row in elements['statements'] if row['kind'] == 'impact'}
+    evidence_numbers = set().union(*impacts.values()) if impacts else set()
+
+    # impact statements whose example numbers are pinned by >= 2 distinct
+    # terms: the signature of a worked example being replayed as P facts.
+    pinned_by_term = []
+    for term in plan.get('precondition_terms') or []:
+        if not isinstance(term, dict):
+            continue
+        pinned_by_term.append((term, _eq_pinned_constants(term.get('predicate'))))
+    example_statement_hits = {}
+    for term, constants in pinned_by_term:
+        if not constants:
+            continue
+        for impact_id, numbers in impacts.items():
+            overlap = constants & numbers
+            if overlap:
+                example_statement_hits.setdefault(impact_id, set()).update(overlap)
+    multi_pin_impacts = {impact_id for impact_id, values
+                         in example_statement_hits.items()
+                         if len(values) >= 2}
+
+    flagged = []
+    for term, constants in pinned_by_term:
+        if not constants:
+            continue
+        row = statements.get(term.get('source_id'))
+        source_numbers = explicit_numbers(row['text']) if row else set()
+        # (a) the literal is not in the term's own source, or (b) several
+        # pinned example constants trace back to one worked example.
+        foreign = constants - source_numbers
+        if not foreign and not any(constants & impacts[i] for i in multi_pin_impacts):
+            continue
+        pinned = sorted(value for value in constants
+                        if value in evidence_numbers)
+        if not pinned:
+            continue
+        flagged.append({
+            'statement_id': term.get('source_id'),
+            'statement_kind': row.get('kind') if row else None,
+            'pinned_constants': [str(value) for value in pinned],
+            'constant_source': ('impact or PoC example text only'
+                                if foreign else
+                                'also restated as the precondition source; '
+                                'example numbers trace to one impact statement'),
+        })
+    return {
+        'schema_version': 'example-pinning-review/1',
+        'advisory_only': True,
+        'blocks_candidate_acceptance': False,
+        'flagged_count': len(flagged),
+        'flagged': flagged,
+        'note': ('A flagged P equality pins constants that appear in the '
+                 'impact/PoC worked example, narrowing the claim to the '
+                 'example instance. Verify scope, or record the narrowing as '
+                 'an assumption/limitation. This review never rewrites or '
+                 'rejects the plan.'),
+    }
 
 
 # ------------------- 节选自 mechanical_salvage.py -------------------

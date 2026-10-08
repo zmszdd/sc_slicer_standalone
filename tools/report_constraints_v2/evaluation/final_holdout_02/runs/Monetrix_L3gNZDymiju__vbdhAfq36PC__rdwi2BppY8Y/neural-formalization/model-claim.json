@@ -1,0 +1,224 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "value_relation",
+  "precondition_ids": [
+    "pm_borrow_created",
+    "corewriter_delay",
+    "hedge_borrow_path",
+    "borrow_liability_reduces_backing"
+  ],
+  "intent_id": "net_backing_intent",
+  "impact_ids": [
+    "backing_overstated"
+  ],
+  "symbols": {
+    "pm_borrow_liability": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "outstanding Portfolio Margin borrow liability that accrues interest and must be repaid",
+      "checkpoint": "before yield settlement",
+      "entity_ids": [
+        "hypercore_pm",
+        "protocol_backing"
+      ],
+      "source_ids": [
+        "pm_borrow_created",
+        "borrow_liability_reduces_backing"
+      ]
+    },
+    "supplied_balance": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "gross PM supplied balance returned by suppliedBalance() (supply.value only, borrow.value discarded)",
+      "checkpoint": "before yield settlement",
+      "entity_ids": [
+        "precompile_reader",
+        "hypercore_pm"
+      ],
+      "source_ids": [
+        "borrow_value_discarded",
+        "supplied_balance_reads_state"
+      ]
+    },
+    "reported_backing": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "totalBackingSigned()/surplus() backing figure used for yield settlement",
+      "checkpoint": "before yield settlement",
+      "entity_ids": [
+        "monetrix_accountant",
+        "protocol_backing"
+      ],
+      "source_ids": [
+        "backing_overstated",
+        "yield_settled_on_overstated_backing"
+      ]
+    },
+    "net_backing": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "account net assets: supplied balance minus PM borrow liability",
+      "checkpoint": "before yield settlement",
+      "entity_ids": [
+        "protocol_backing",
+        "monetrix_accountant"
+      ],
+      "source_ids": [
+        "net_backing_intent",
+        "borrow_liability_reduces_backing"
+      ]
+    },
+    "execution_state_differs": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "during the CoreWriter delay the actual HyperCore execution state differs from the EVM-side estimate",
+      "checkpoint": "before yield settlement",
+      "entity_ids": [
+        "hypercore_pm"
+      ],
+      "source_ids": [
+        "corewriter_delay"
+      ]
+    },
+    "hedge_executed_with_borrow": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a hedge enqueued as fully funded later executes with a PM borrow on HyperCore",
+      "checkpoint": "before yield settlement",
+      "entity_ids": [
+        "hypercore_pm"
+      ],
+      "source_ids": [
+        "hedge_borrow_path"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "pm_borrow_created",
+      "predicate": {
+        "kind": "comparison",
+        "left": "pm_borrow_liability",
+        "operator": "gt",
+        "right": {
+          "const": 0
+        }
+      }
+    },
+    {
+      "source_id": "corewriter_delay",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "execution_state_differs",
+        "value": true
+      }
+    },
+    {
+      "source_id": "hedge_borrow_path",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "hedge_executed_with_borrow",
+        "value": true
+      }
+    },
+    {
+      "source_id": "borrow_liability_reduces_backing",
+      "predicate": {
+        "kind": "comparison",
+        "left": "net_backing",
+        "operator": "eq",
+        "right": {
+          "op": "sub",
+          "args": [
+            {
+              "symbol": "supplied_balance"
+            },
+            {
+              "symbol": "pm_borrow_liability"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "derived_definitions": [
+    {
+      "symbol": "net_backing",
+      "expression": {
+        "op": "sub",
+        "args": [
+          {
+            "symbol": "supplied_balance"
+          },
+          {
+            "symbol": "pm_borrow_liability"
+          }
+        ]
+      },
+      "source_ids": [
+        "net_backing_intent",
+        "borrow_liability_reduces_backing"
+      ]
+    }
+  ],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "comparison",
+          "left": "pm_borrow_liability",
+          "operator": "gt",
+          "right": {
+            "const": 0
+          }
+        },
+        {
+          "kind": "truth",
+          "symbol": "hedge_executed_with_borrow",
+          "value": true
+        }
+      ]
+    },
+    "relation": {
+      "kind": "comparison",
+      "left": "reported_backing",
+      "operator": "eq",
+      "right": {
+        "symbol": "net_backing"
+      }
+    }
+  },
+  "assumptions": [
+    "A PM borrow is a liability that must reduce net backing (borrow_liability_reduces_backing).",
+    "The borrow scenario is described as possible (can/may); no real transaction is established.",
+    "Caller/authorization for suppliedBalance() and for triggering the borrow is unspecified."
+  ],
+  "unresolved": [
+    {
+      "category": "missing_report_definition",
+      "description": "Exact numeric overstatement of totalBackingSigned() or surplus() is not given; only the symbolic net-asset relation is formalized.",
+      "source_ids": [
+        "backing_overstated",
+        "net_backing_intent"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "Report does not establish that a PM borrow actually occurred in a real transaction; the borrow scenario is only possible.",
+      "source_ids": [
+        "pm_borrow_created",
+        "hedge_borrow_path"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Only the backing_overstated impact is formalized; yield_unbacked and backing_loss_redemption_shortfall are deferred to future claims.",
+    "Whether USDC is registered as a supplied slot (affecting _readL1Backing() coverage) is not stated.",
+    "The relation is stated at the amount level; no rate or per-share quantity is defined.",
+    "Code/PoC binding and concrete model values are deferred."
+  ]
+}

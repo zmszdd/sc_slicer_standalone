@@ -149,6 +149,68 @@ class PromptV316Tests(unittest.TestCase):
             self.assertEqual(attempts[1]['repair_mode'], 'field_scoped')
             self.assertEqual(attempts[1]['changed_top_level_fields'], ['pattern'])
 
+    def test_null_repair_resubmission_gets_exactly_one_extra_reprompt(self):
+        """final_holdout_02 (GTE_Perps): the retry resubmitted the plan
+        byte-identically on the FINAL attempt, so the no-change prescription
+        could never fire -- no next attempt existed.  A null response now
+        grants exactly one reprompt, and only one.
+        """
+        elements, _ = id_inputs()
+        good = fixed_plan()
+        bad = copy.deepcopy(good)
+        bad['pattern'] = {
+            'kind': 'condition_forbids_effect',
+            'condition': good['pattern']['condition'],
+            'effect': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+        }
+        calls = []
+
+        def fake_extract(payload, folder, _model, _prompt):
+            calls.append(json.loads(payload))
+            candidate = bad if len(calls) <= 2 else good
+            (folder / 'model-claim.json').write_text(json.dumps(candidate))
+            return copy.deepcopy(candidate)
+
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            _, formal, _ = request_formalization(
+                '{}', 'PROMPT', 'model', root, 1, True, elements,
+                structured=True, extract_fn=fake_extract, local_repair=True)
+            self.assertEqual(formal['schema_version'], 'report-formalization/2')
+            self.assertEqual(len(calls), 3)
+            attempts = json.loads((root / 'formalization-attempts.json').read_text())
+            self.assertEqual(len(attempts), 3)
+            self.assertTrue(attempts[1]['null_repair_reprompt'])
+            self.assertEqual(attempts[1]['error'], 'local repair made no change')
+            self.assertEqual(attempts[2]['repair_mode'], 'field_scoped')
+
+    def test_second_null_repair_still_ends_the_run(self):
+        """The null-reprompt grant is one-shot: a model that resubmits
+        identically twice must not open an infinite repair loop."""
+        elements, _ = id_inputs()
+        bad = fixed_plan()
+        condition = bad['pattern']['condition']
+        bad['pattern'] = {
+            'kind': 'condition_forbids_effect',
+            'condition': condition,
+            'effect': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+        }
+        calls = []
+
+        def fake_extract(payload, folder, _model, _prompt):
+            calls.append(json.loads(payload))
+            (folder / 'model-claim.json').write_text(json.dumps(bad))
+            return copy.deepcopy(bad)
+
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            with self.assertRaisesRegex(ValueError,
+                                        'local repair made no change'):
+                request_formalization(
+                    '{}', 'PROMPT', 'model', root, 1, True, elements,
+                    structured=True, extract_fn=fake_extract, local_repair=True)
+            self.assertEqual(len(calls), 3)
+
 
 if __name__ == '__main__':
     unittest.main()

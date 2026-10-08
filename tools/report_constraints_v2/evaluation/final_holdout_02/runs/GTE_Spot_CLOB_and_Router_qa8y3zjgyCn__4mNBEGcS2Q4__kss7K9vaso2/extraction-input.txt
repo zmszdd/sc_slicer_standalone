@@ -1,0 +1,25 @@
+Meaningful limit order trades might revert as ZeroCostTrade due to wrong condition check
+
+### Description 
+In `_processLimitBidOrder` and `_processLimitAskOrder` there is a check which checks after the execution of the order, if it was partially/completely fulfilled then we need to ensure that the baseTokenAmount sent/received and quoteTokenAmount received/sent are both non-zero, otherwise it should revert as a zero cost trade.
+
+Let's focus on one of the two functions, because the issue logic is same in both. Let's look at `_processLimitBidOrder`, when `_executeBidLimitOrder` is called it does either of the three thing:
+
+1. Fill it compleltely is possible 
+2. Fill it partially, then check if leftover is more than min size then push it to the order book
+3. No fill, just directly place it on the order book 
+
+Now for the three scenarios this is how the returned values would be like:
+
+| Fill Type     | postAmount | quoteTokenAmountSent | baseTokenAmountReceived |
+|---------------|------------|----------------------|--------------------------|
+| Complete Fill | 0          | some value           | some value               |
+| Partial Fill  | some value | some value           | some value               |
+| No Fill       | some value | 0                    | 0                        |
+
+Now, in a scenario where the quote and base amounts are non-zero, the second `ZeroCostTrade` check ensures that if `quoteTokenAmountSent != baseTokenAmountReceived` then we need to ensure that BOTH of these values are non-zero, and to do that we check `baseTokenAmountReceived & quoteTokenAmountSent == 0`. Therefore this check is implemented: 
+
+But the problem is the logic applied to check that both must be non-zero, i.e., the bitwise AND operation can give false positives if two non-zero amounts do not have overlapping 1-bits. 
+
+### Impact
+A user trade will be DoSed even when its a legit non-zero trade.

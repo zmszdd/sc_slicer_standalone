@@ -1,0 +1,234 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "PrecompileReader.suppliedBalance() reads HyperCore PM supplied balance and Monetrix backing/surplus calculation",
+    "environment": "Hyperliquid HyperEVM with Portfolio Margin and delayed CoreWriter order execution",
+    "evidence_ids": [
+      "e_53afdcd05657_0003",
+      "e_53afdcd05657_0005",
+      "e_53afdcd05657_0008",
+      "e_53afdcd05657_0019",
+      "e_53afdcd05657_0021"
+    ]
+  },
+  "entities": [
+    {
+      "id": "precompile_reader",
+      "name": "PrecompileReader contract",
+      "role": "contract",
+      "evidence_ids": [
+        "e_53afdcd05657_0003",
+        "e_53afdcd05657_0005",
+        "e_53afdcd05657_0008"
+      ]
+    },
+    {
+      "id": "monetrix_accountant",
+      "name": "MonetrixAccountant contract",
+      "role": "contract",
+      "evidence_ids": [
+        "e_53afdcd05657_0019",
+        "e_53afdcd05657_0021"
+      ]
+    },
+    {
+      "id": "hypercore_pm",
+      "name": "HyperCore Portfolio Margin account state",
+      "role": "other",
+      "evidence_ids": [
+        "e_53afdcd05657_0007",
+        "e_53afdcd05657_0009",
+        "e_53afdcd05657_0011"
+      ]
+    },
+    {
+      "id": "protocol_backing",
+      "name": "Protocol backing / net assets",
+      "role": "asset",
+      "evidence_ids": [
+        "e_53afdcd05657_0021",
+        "e_53afdcd05657_0023",
+        "e_53afdcd05657_0024"
+      ]
+    },
+    {
+      "id": "yield_settlement",
+      "name": "Yield settlement",
+      "role": "other",
+      "evidence_ids": [
+        "e_53afdcd05657_0023"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "pm_borrow_created",
+      "kind": "precondition",
+      "text": "Under Portfolio Margin, an account placing spot or perp orders with insufficient idle balance can automatically borrow against eligible collateral, creating a borrow liability that accrues interest and must be repaid.",
+      "modality": "potential",
+      "entity_ids": [
+        "hypercore_pm"
+      ],
+      "evidence_ids": [
+        "e_53afdcd05657_0009",
+        "e_53afdcd05657_0010",
+        "e_53afdcd05657_0011"
+      ]
+    },
+    {
+      "id": "corewriter_delay",
+      "kind": "precondition",
+      "text": "CoreWriter order actions and vault transfers are delayed onchain for a few seconds, so during the delay the actual HyperCore execution state can differ from the EVM side estimate.",
+      "modality": "asserted",
+      "entity_ids": [
+        "hypercore_pm"
+      ],
+      "evidence_ids": [
+        "e_53afdcd05657_0012"
+      ]
+    },
+    {
+      "id": "hedge_borrow_path",
+      "kind": "precondition",
+      "text": "A hedge via executeHedge() that looked fully funded when orders were enqueued can later execute with a PM borrow on HyperCore.",
+      "modality": "potential",
+      "entity_ids": [
+        "hypercore_pm"
+      ],
+      "evidence_ids": [
+        "e_53afdcd05657_0018"
+      ]
+    },
+    {
+      "id": "supplied_balance_reads_state",
+      "kind": "action",
+      "text": "suppliedBalance() calls PRECOMPILE_SUPPLIED_BALANCE to read the account's PM supplied balance state.",
+      "modality": "asserted",
+      "entity_ids": [
+        "precompile_reader",
+        "hypercore_pm"
+      ],
+      "evidence_ids": [
+        "e_53afdcd05657_0005",
+        "e_53afdcd05657_0007"
+      ]
+    },
+    {
+      "id": "backing_calculation_uses_supplied",
+      "kind": "action",
+      "text": "When backing is calculated, suppliedUsdcEvm() and suppliedNotionalUsdcFromPerp() both rely on suppliedBalance().",
+      "modality": "asserted",
+      "entity_ids": [
+        "monetrix_accountant",
+        "precompile_reader"
+      ],
+      "evidence_ids": [
+        "e_53afdcd05657_0019"
+      ]
+    },
+    {
+      "id": "yield_settled_on_overstated_backing",
+      "kind": "action",
+      "text": "Settlement yield is calculated from totalBackingSigned() and surplus() when PM automatically creates a borrow.",
+      "modality": "potential",
+      "entity_ids": [
+        "yield_settlement",
+        "monetrix_accountant"
+      ],
+      "evidence_ids": [
+        "e_53afdcd05657_0023"
+      ]
+    },
+    {
+      "id": "borrow_value_discarded",
+      "kind": "root_cause",
+      "text": "suppliedBalance() assigns only supply.value to supplied and discards borrow.value, returning a gross supplied amount instead of signed net borrow/lend state, so the borrow liability is not deducted from backing.",
+      "modality": "asserted",
+      "entity_ids": [
+        "precompile_reader"
+      ],
+      "evidence_ids": [
+        "e_53afdcd05657_0003",
+        "e_53afdcd05657_0008"
+      ]
+    },
+    {
+      "id": "backing_overstated",
+      "kind": "impact",
+      "text": "Because only the supply side is added and the borrow side is not deducted, PM borrow can make reported backing higher than the account's net assets.",
+      "modality": "potential",
+      "entity_ids": [
+        "protocol_backing",
+        "monetrix_accountant"
+      ],
+      "evidence_ids": [
+        "e_53afdcd05657_0021"
+      ]
+    },
+    {
+      "id": "yield_unbacked",
+      "kind": "impact",
+      "text": "Yield can be distributed that is not backed by net assets when settlement is calculated from overstated totalBackingSigned() and surplus().",
+      "modality": "potential",
+      "entity_ids": [
+        "yield_settlement",
+        "protocol_backing"
+      ],
+      "evidence_ids": [
+        "e_53afdcd05657_0023"
+      ]
+    },
+    {
+      "id": "backing_loss_redemption_shortfall",
+      "kind": "impact",
+      "text": "This causes direct loss to protocol backing and can leave insufficient assets to cover future redemptions.",
+      "modality": "potential",
+      "entity_ids": [
+        "protocol_backing"
+      ],
+      "evidence_ids": [
+        "e_53afdcd05657_0024"
+      ]
+    },
+    {
+      "id": "net_backing_intent",
+      "kind": "security_intent",
+      "text": "Backing and surplus used for yield settlement should reflect the account's net assets, deducting PM borrow liabilities from supplied balances.",
+      "modality": "inferred",
+      "entity_ids": [
+        "protocol_backing",
+        "monetrix_accountant"
+      ],
+      "evidence_ids": [
+        "e_53afdcd05657_0003",
+        "e_53afdcd05657_0011",
+        "e_53afdcd05657_0021",
+        "e_53afdcd05657_0023"
+      ]
+    },
+    {
+      "id": "borrow_liability_reduces_backing",
+      "kind": "assumption",
+      "text": "A PM borrow is a liability that must reduce net backing.",
+      "modality": "asserted",
+      "entity_ids": [
+        "hypercore_pm",
+        "protocol_backing"
+      ],
+      "evidence_ids": [
+        "e_53afdcd05657_0011"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "supplied_balance_reads_state",
+    "backing_calculation_uses_supplied",
+    "yield_settled_on_overstated_backing"
+  ],
+  "ambiguities": [
+    "Report does not establish that a PM borrow actually occurred in a real transaction; the borrow scenario is described as possible (can/may).",
+    "No explicit statement that anyone can call suppliedBalance() or trigger the borrow; caller/authorization is unspecified.",
+    "The exact numeric overstatement of totalBackingSigned() or surplus() is not given.",
+    "Whether USDC is registered as a supplied slot (affecting _readL1Backing() coverage) is not stated."
+  ]
+}
