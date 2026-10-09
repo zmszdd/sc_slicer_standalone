@@ -5,9 +5,9 @@ import json
 import unittest
 
 from prompts.versions import semantic_prompts_v317 as prompts
-from plan_synthesizer import (impact_qualifier_types, _pattern_expressions,
+from lib.plan_synthesizer import (impact_qualifier_types, _pattern_expressions,
                               synthesize_id_formalization)
-from semantic_pipeline import formal_repair_fields, local_repair_payload
+from cli.semantic_pipeline import formal_repair_fields, local_repair_payload
 from tests.test_evidence_ids import id_inputs
 from tests.test_prompt_v316 import fixed_plan
 

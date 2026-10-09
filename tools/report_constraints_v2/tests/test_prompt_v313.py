@@ -3,8 +3,8 @@ import unittest
 
 import z3
 
-from plan_synthesizer import _predicate, _pattern_expressions
-import report_only as r
+from lib.plan_synthesizer import _predicate, _pattern_expressions
+from lib import report_only as r
 from prompts.versions import semantic_prompts_v312 as previous
 from prompts.versions import semantic_prompts_v313 as current
 

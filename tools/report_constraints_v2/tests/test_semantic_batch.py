@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import run_semantic_batch as batch
+from cli import batch_verify as batch
 from prompts.registry import DEFAULT_VERSION
 
 

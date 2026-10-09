@@ -16,8 +16,8 @@ from prompts.registry import DEFAULT_VERSION, SELECTABLE_VERSIONS
 
 
 def screen_case(case_dir):
-    from evidence_catalog import build_catalog
-    from semantic_pipeline import load_report
+    from lib.ingest import build_catalog
+    from cli.semantic_pipeline import load_report
 
     case_dir = Path(case_dir)
     result = {
@@ -108,9 +108,9 @@ def preview_main():
         }, ensure_ascii=False), file=sys.stderr)
         print(resolved.text(args.part), end='')
         return 0
-    from evidence_catalog import build_catalog, hydrate_elements
-    from semantic_core import validate_elements
-    from semantic_pipeline import compact_json, lean_formal_input, load_report
+    from lib.ingest import build_catalog, hydrate_elements
+    from lib.semantic_core import validate_elements
+    from cli.semantic_pipeline import compact_json, lean_formal_input, load_report
 
     if args.mode == 'report':
         text, _, provenance = load_report(case_dir=args.case_dir,

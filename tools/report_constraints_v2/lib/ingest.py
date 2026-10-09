@@ -9,8 +9,8 @@
 import copy
 import json
 
-import report_only as r
-from semantic_core import require, strings
+from lib import report_only as r
+from lib.semantic_core import require, strings
 
 
 # ------------------- 节选自 evidence_catalog.py -------------------

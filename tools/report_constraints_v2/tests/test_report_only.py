@@ -3,7 +3,7 @@ import unittest
 
 import z3
 
-import report_only as r
+from lib import report_only as r
 
 TEXT = 'The operation should not fail solely because the supplied fee exceeds the quote.'
 

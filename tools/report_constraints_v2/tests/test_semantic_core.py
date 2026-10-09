@@ -10,13 +10,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import semantic_core as s
-from semantic_core import (BOUNDARY, MAX_PLAN_SYMBOLS, NORMALIZE, REJECT, WARN,
+from lib import semantic_core as s
+from lib.semantic_core import (BOUNDARY, MAX_PLAN_SYMBOLS, NORMALIZE, REJECT, WARN,
                            classify, entry_for, exact_entry_for,
                            normalize_readiness, normalize_truth_binding)
-import plan_synthesizer
-import semantic_pipeline as p
-import verify_semantic
+from lib import plan_synthesizer
+from cli import semantic_pipeline as p
+from cli import batch_verify as verify_semantic
 
 HERE = Path(__file__).resolve().parents[1]
 TEXT = (HERE / 'results/report_only/brix_fee_assistant_final/extraction-input.txt').read_text()
@@ -337,7 +337,7 @@ class ScreeningNormalizationWiringTest(unittest.TestCase):
         import tempfile
         from unittest.mock import patch
 
-        import semantic_pipeline as pipeline
+        from cli import semantic_pipeline as pipeline
 
         reached = {}
 

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import report_only
+from lib import report_only
 
 
 class ModelDiagnosticTests(unittest.TestCase):

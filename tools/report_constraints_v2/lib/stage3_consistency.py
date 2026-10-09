@@ -24,7 +24,7 @@ import argparse
 import json
 from pathlib import Path
 
-import report_only as r
+from lib import report_only as r
 
 #: interface role names, in the order stage 3 meets them in the SMT files.
 ROLES = (('preconditions', 'P'), ('safety', 'I'), ('effects', 'V'))

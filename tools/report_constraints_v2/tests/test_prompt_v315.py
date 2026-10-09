@@ -7,15 +7,15 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import report_only as report_math
-import semantic_pipeline as pipeline
+from lib import report_only as report_math
+from cli import semantic_pipeline as pipeline
 from prompts.versions import semantic_prompts_v314 as previous
 from prompts.versions import semantic_prompts_v315 as current
-from plan_synthesizer import (_pattern_expressions, CLASSIFIED_PLAN_VERSION,
+from lib.plan_synthesizer import (_pattern_expressions, CLASSIFIED_PLAN_VERSION,
                               classified_relation_alignment, synthesize_id_formalization)
 from tests.test_evidence_ids import id_inputs, TEXT
 from tests.test_plan_synthesizer import plan
-import verify_semantic
+from cli import batch_verify as verify_semantic
 
 
 class PromptV315Tests(unittest.TestCase):
@@ -147,7 +147,7 @@ class PromptV315Tests(unittest.TestCase):
             row['id'] = f'impact_branch_{index}'
             elements['statements'].append(row)
             impact_ids.append(row['id'])
-        from evidence_catalog import build_catalog
+        from lib.ingest import build_catalog
         pipeline.validate_core_element_candidate(
             elements, build_catalog(TEXT), TEXT,
             require_core_counts=True, max_core_impacts=4)

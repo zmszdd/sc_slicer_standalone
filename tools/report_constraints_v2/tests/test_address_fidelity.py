@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from fidelity import ZERO_INPUT, check_address_plan, zero_relation
-import semantic_pipeline as pipeline
+from lib.salvage import ZERO_INPUT, check_address_plan, zero_relation
+from cli import semantic_pipeline as pipeline
 from prompts.versions import semantic_prompts_v311 as prompts
 
 

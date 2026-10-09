@@ -12,10 +12,10 @@ import subprocess
 from pathlib import Path
 import sys
 
-import report_only as r
-from evidence_catalog import build_catalog, hydrate_elements
-from semantic_core import validate_elements
-from semantic_pipeline import configured_model
+from lib import report_only as r
+from lib.ingest import build_catalog, hydrate_elements
+from lib.semantic_core import validate_elements
+from cli.semantic_pipeline import configured_model
 
 
 PROMPT = '''TASK VERSION: precondition-support/5.

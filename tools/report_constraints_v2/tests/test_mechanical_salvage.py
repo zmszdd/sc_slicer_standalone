@@ -1,16 +1,16 @@
 import copy
 import json
-from fidelity import check_numeric_plan, example_pinning_review
+from lib.salvage import check_numeric_plan, example_pinning_review
 from pathlib import Path
 import tempfile
 import unittest
 
-from mechanical_salvage import (normalize_attack_step_roles, normalize_element_ids,
+from lib.salvage import (normalize_attack_step_roles, normalize_element_ids,
                                 drop_unused_invalid_symbols)
-from plan_synthesizer import synthesize_id_formalization
-from semantic_core import validate_elements
-from evidence_catalog import build_catalog, hydrate_elements
-from semantic_pipeline import request_formalization
+from lib.plan_synthesizer import synthesize_id_formalization
+from lib.semantic_core import validate_elements
+from lib.ingest import build_catalog, hydrate_elements
+from cli.semantic_pipeline import request_formalization
 
 
 class MechanicalSalvageTests(unittest.TestCase):

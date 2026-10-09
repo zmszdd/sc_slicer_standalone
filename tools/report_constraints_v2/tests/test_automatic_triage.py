@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from review import attach_review, from_bundle, from_failure
-from semantic_pipeline import formal_retry_hint, request_formalization
+from lib.solving import attach_review, from_bundle, from_failure
+from cli.semantic_pipeline import formal_retry_hint, request_formalization
 
 
 class FormalRetryTests(unittest.TestCase):

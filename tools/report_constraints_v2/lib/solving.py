@@ -13,8 +13,8 @@ from pathlib import Path
 
 import z3
 
-import report_only as r
-from semantic_core import require
+from lib import report_only as r
+from lib.semantic_core import require
 
 
 # ------------------- 节选自 symbolic_queries.py -------------------

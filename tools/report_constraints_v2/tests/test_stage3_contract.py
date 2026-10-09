@@ -9,9 +9,9 @@ import shutil
 import tempfile
 import unittest
 
-from plan_synthesizer import (check_distinct_p_predicates, intent_scope_review,
+from lib.plan_synthesizer import (check_distinct_p_predicates, intent_scope_review,
                               relax_unsupported_relation, requirement_source_review)
-from stage3_consistency import (binding_contract, ingest_feedback)
+from lib.stage3_consistency import (binding_contract, ingest_feedback)
 from tests.test_evidence_ids import id_inputs
 
 HERE = Path(__file__).resolve().parents[1]
@@ -88,7 +88,7 @@ class DuplicatePredicateGateTests(unittest.TestCase):
     def test_gate_matches_the_v5_rejection_message(self):
         # The gate reuses the v5 schema's exact message so the repair channel
         # and the boundary table keep routing it identically.
-        from plan_synthesizer import identical_p_predicates
+        from lib.plan_synthesizer import identical_p_predicates
         plan = live_plan()
         self.assertEqual(identical_p_predicates(plan), [])
         plan['precondition_terms'][1]['predicate'] = \

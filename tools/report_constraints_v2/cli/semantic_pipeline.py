@@ -11,31 +11,31 @@ import argparse
 import copy
 import functools
 import json
-from fidelity import check_numeric_plan, check_address_plan
+from lib.salvage import check_numeric_plan, check_address_plan
 from pathlib import Path
 import subprocess
 
-import report_only as r
-from deepseek import (DEFAULT_DEEPSEEK_MODEL, DEEPSEEK_MODELS, TransientModelError,
+from lib import report_only as r
+from lib.deepseek import (DEFAULT_DEEPSEEK_MODEL, DEEPSEEK_MODELS, TransientModelError,
                       extract_deepseek, load_deepseek_key, proxy_in_effect,
                       proxy_policy)
-from semantic_core import (NORMALIZE, compile_bundle, normalize_readiness,
+from lib.semantic_core import (NORMALIZE, compile_bundle, normalize_readiness,
                            normalize_truth_binding, validate_elements)
 from prompts.registry import (DEFAULT_VERSION, PROMPT_MODULES, SELECTABLE_VERSIONS,
                               features_for)
 from prompts.active import resolve_prompt_set
-from evidence_catalog import build_catalog, hydrate_elements, hydrate_formalization
-from plan_synthesizer import (check_distinct_p_predicates, classified_relation_alignment,
+from lib.ingest import build_catalog, hydrate_elements, hydrate_formalization
+from lib.plan_synthesizer import (check_distinct_p_predicates, classified_relation_alignment,
                               intent_scope_review, relax_unsupported_relation,
                               requirement_source_review, structured_unresolved_review,
                               synthesize_id_formalization)
-from symbolic_queries import solve_queries
-from review import attach_review
-from review import from_bundle as triage_bundle, from_failure as triage_failure
-from mechanical_salvage import (example_pinning_review, normalize_attack_step_roles,
+from lib.solving import solve_queries
+from lib.solving import attach_review
+from lib.solving import from_bundle as triage_bundle, from_failure as triage_failure
+from lib.salvage import (example_pinning_review, normalize_attack_step_roles,
                                 normalize_element_ids, drop_unused_invalid_symbols)
-from stage3_consistency import binding_contract
-from report_readiness import PROMPT as READINESS_PROMPT, model_payload, validate_readiness
+from lib.stage3_consistency import binding_contract
+from lib.ingest import PROMPT as READINESS_PROMPT, model_payload, validate_readiness
 
 
 def write_json(path, value):

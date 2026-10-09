@@ -7,11 +7,11 @@ import unittest
 from unittest.mock import patch
 import z3
 
-import report_only as report
-from plan_synthesizer import _pattern_expressions
-from semantic_pipeline import (compact_json, lean_formal_input, model_catalog,
+from lib import report_only as report
+from lib.plan_synthesizer import _pattern_expressions
+from cli.semantic_pipeline import (compact_json, lean_formal_input, model_catalog,
                                referenced_evidence_ids, request_elements)
-from evidence_catalog import build_catalog
+from lib.ingest import build_catalog
 from prompts.versions import semantic_prompts_v311 as previous
 from prompts.versions import semantic_prompts_v312 as current
 

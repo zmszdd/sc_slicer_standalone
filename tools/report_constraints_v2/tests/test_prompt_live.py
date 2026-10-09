@@ -5,7 +5,7 @@ from prompts import current
 from prompts.active import resolve_prompt_set
 from prompts import registry
 from prompts.definitions import ELEMENT_CONTRACT_MARKERS, FORMAL_CONTRACT_MARKERS
-from semantic_pipeline import formal_repair_fields
+from cli.semantic_pipeline import formal_repair_fields
 
 
 class LivePromptTests(unittest.TestCase):
@@ -117,7 +117,7 @@ class LivePromptTests(unittest.TestCase):
         # prompt_live3_blind_01 / live1 attribution: repairs that resubmitted the
         # previous plan byte-identically repaired nothing, and type/unit
         # rejections lacked the cross-multiplication recipe.
-        from semantic_pipeline import formal_retry_hint
+        from cli.semantic_pipeline import formal_retry_hint
         no_change = formal_retry_hint(ValueError('local repair made no change'))
         self.assertIn('repairs nothing', no_change)
         self.assertIn('Produce a', no_change)

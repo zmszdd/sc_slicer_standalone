@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from preview import screen_case
+from cli.preview import screen_case
 
 
 class ScreenCasesTests(unittest.TestCase):

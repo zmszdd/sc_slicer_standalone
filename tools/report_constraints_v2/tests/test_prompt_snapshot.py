@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import semantic_pipeline as p
-import verify_semantic
+from cli import semantic_pipeline as p
+from cli import batch_verify as verify_semantic
 from prompts import current
 
 HERE = Path(__file__).resolve().parents[1]

@@ -8,12 +8,12 @@ import unittest
 from unittest.mock import patch
 
 import z3
-import evidence_catalog as e
-import semantic_pipeline as p
-from semantic_core import validate_elements, validate_formalization
-from symbolic_queries import solve_queries, verify_witness
+from lib import ingest as e
+from cli import semantic_pipeline as p
+from lib.semantic_core import validate_elements, validate_formalization
+from lib.solving import solve_queries, verify_witness
 from tests.test_report_only import fixture, TEXT as CONTROL_TEXT
-import verify_semantic
+from cli import batch_verify as verify_semantic
 
 HERE = Path(__file__).resolve().parents[1]
 TEXT = (HERE / 'results/report_only/brix_fee_assistant_final/extraction-input.txt').read_text()

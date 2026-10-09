@@ -16,8 +16,8 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from semantic_core import identifier, normalize_truth_binding
-from plan_synthesizer import synthesize_id_formalization
+from lib.semantic_core import identifier, normalize_truth_binding
+from lib.plan_synthesizer import synthesize_id_formalization
 # NOTE(S8): `from fidelity import check_address_plan, check_numeric_plan` was DROPPED:
 # both names are defined in THIS file now, so that import became a self-import via the
 # fidelity shim -> "cannot import name ... from partially initialized module".
@@ -456,7 +456,7 @@ def drop_unused_invalid_symbols(raw):
 
 def replay_main():
     # Imported lazily: semantic_pipeline imports this module.
-    from semantic_pipeline import load_report, write_json
+    from cli.semantic_pipeline import load_report, write_json
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--case-dir', type=Path, required=True)
     parser.add_argument('--source-run', type=Path, required=True)

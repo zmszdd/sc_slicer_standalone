@@ -175,9 +175,13 @@ DeepSeek 的一切——配置、密钥、代理、传输——都只在它里�
 重构前的 14 个模块名不再对应任何文件，它们由**一个**文件集中接管：
 `lib/compat.py` 的 `ALIASES` 表 + 一个 `sys.meta_path` finder。表里还有
 两个非历史名字：`stage3_consistency`（semantic-live-5）与
-`deepseek`（DeepSeek 连接显性化）——它们不是历史名，而是 `cli/` 里
-裸名 import（`from deepseek import ...`）的解析路径——`-m cli.<x>` 子进程的 `sys.path` 只有 cwd，没有
-`lib/` 前置，走同一条延迟解析。
+`deepseek`（DeepSeek 连接显性化）——它们早期作为 `cli/` 里的裸名
+import 存在，现在同属历史侧。
+
+2026-10-09 收口：`lib/`、`cli/`、`tests/` 的**活跃代码已零裸名 import**
+（全部点分路径），本层的受众只剩历史侧——`evaluation/` 冻结批次的内部
+脚本（如 `prompt_live1_blind_01/probe_assumption_relief.py`）、归档脚本
+与未来对旧 run 的离线重放片段。
 
 | 旧名字 | 现在真正包含该代码的模块 | 来源 |
 | --- | --- | --- |
@@ -199,7 +203,7 @@ DeepSeek 的一切——配置、密钥、代理、传输——都只在它里�
 | 注册点 | 覆盖 |
 | --- | --- |
 | `main.py`（`_delegate` 内） | `cli/` 与 `lib/` 的全部命令路径 |
-| `tests/__init__.py` | 13 个引用旧名字的测试文件 |
+| `tests/__init__.py` | 历史脚本按进程解析的兜底（活跃测试已点分导入） |
 | `cli/__init__.py` | `python -m cli.<script>` 子进程（3 处 `subprocess` 都走这条） |
 | `lib/__init__.py` | `python -m lib.<script>` |
 

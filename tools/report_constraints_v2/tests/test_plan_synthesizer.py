@@ -7,17 +7,17 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from evidence_catalog import build_catalog, hydrate_elements, hydrate_formalization
-from plan_synthesizer import (_pattern_expressions, structured_unresolved_review,
+from lib.ingest import build_catalog, hydrate_elements, hydrate_formalization
+from lib.plan_synthesizer import (_pattern_expressions, structured_unresolved_review,
                               synthesize_id_formalization)
-import report_only as report_math
-import semantic_core
-import semantic_pipeline as pipeline
+from lib import report_only as report_math
+from lib import semantic_core
+from cli import semantic_pipeline as pipeline
 from prompts.versions import semantic_prompts_v35 as prompts
 from prompts.versions import semantic_prompts_v36 as prompts_v36
 from prompts.versions import semantic_prompts_v37 as prompts_v37
 from tests.test_evidence_ids import id_inputs, TEXT
-import verify_semantic
+from cli import batch_verify as verify_semantic
 
 
 def plan():

@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import preconditions as audit
-from preconditions import (PROMPT, audited_triage, make_payload,
+from cli import preconditions as audit
+from cli.preconditions import (PROMPT, audited_triage, make_payload,
                                         validate_response)
 
 

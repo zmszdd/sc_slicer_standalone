@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from evidence_catalog import build_catalog, hydrate_elements
-import preconditions as repair
-from semantic_core import validate_elements
+from lib.ingest import build_catalog, hydrate_elements
+from cli import preconditions as repair
+from lib.semantic_core import validate_elements
 from tests.test_evidence_ids import TEXT, id_inputs
 
 

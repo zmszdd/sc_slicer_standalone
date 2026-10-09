@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from fidelity import check_numeric_plan, explicit_bounds, explicit_numbers
-import semantic_pipeline as pipeline
+from lib.salvage import check_numeric_plan, explicit_bounds, explicit_numbers
+from cli import semantic_pipeline as pipeline
 from prompts.versions import semantic_prompts_v310 as prompts
 
 

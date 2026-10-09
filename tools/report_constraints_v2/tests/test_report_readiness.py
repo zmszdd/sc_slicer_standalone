@@ -1,7 +1,7 @@
 """Schema tests for the pre-extraction semantic sufficiency gate."""
 import unittest
 
-from report_readiness import DIMENSIONS, validate_readiness
+from lib.ingest import DIMENSIONS, validate_readiness
 
 
 def catalog():

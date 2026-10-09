@@ -2,7 +2,7 @@
 import copy
 import re
 
-import report_only as r
+from lib import report_only as r
 
 ELEMENT_VERSION = 'report-elements/1'
 FORMAL_VERSION = 'report-formalization/1'

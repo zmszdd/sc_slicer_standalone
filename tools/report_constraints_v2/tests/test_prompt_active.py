@@ -10,7 +10,7 @@ from prompts.definitions import PIV_DEFINITIONS, render_definitions
 from prompts.registry import EXPERIMENTAL_VERSION, RECOMMENDED_VERSION
 from prompts.versions import (semantic_prompts_v316, semantic_prompts_v318,
                               semantic_prompts_v319, semantic_prompts_v320)
-import preview
+from cli import preview
 
 
 class CanonicalDefinitionsTest(unittest.TestCase):

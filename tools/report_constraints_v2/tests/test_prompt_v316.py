@@ -7,8 +7,8 @@ import tempfile
 import unittest
 
 from prompts.versions import semantic_prompts_v316 as prompts
-from plan_synthesizer import synthesize_id_formalization
-from semantic_pipeline import request_formalization, validate_local_repair
+from lib.plan_synthesizer import synthesize_id_formalization
+from cli.semantic_pipeline import request_formalization, validate_local_repair
 from tests.test_evidence_ids import id_inputs
 from tests.test_plan_synthesizer import plan
 

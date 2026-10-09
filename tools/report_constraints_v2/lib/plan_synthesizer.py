@@ -2,8 +2,8 @@
 import json
 import re
 
-import report_only as r
-from semantic_core import identifier, predicate_paths, require, strings
+from lib import report_only as r
+from lib.semantic_core import identifier, predicate_paths, require, strings
 
 
 PLAN_VERSION = 'report-formal-plan/1'

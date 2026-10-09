@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 
 from tests.test_report_only import fixture, TEXT
-from report_only import relationship_review
+from lib.report_only import relationship_review
 
 
 class RelationshipTests(unittest.TestCase):

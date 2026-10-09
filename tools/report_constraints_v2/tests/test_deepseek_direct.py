@@ -10,9 +10,9 @@ from unittest.mock import patch
 from urllib import request as urlrequest
 from urllib.error import HTTPError
 
-import deepseek
-import report_only as report
-import semantic_pipeline as pipeline
+from lib import deepseek
+from lib import report_only as report
+from cli import semantic_pipeline as pipeline
 
 
 class FakeOpener:

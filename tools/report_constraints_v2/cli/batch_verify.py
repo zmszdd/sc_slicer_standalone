@@ -23,24 +23,24 @@ from prompts.registry import (DEFAULT_VERSION, FEATURE_NAMES, SELECTABLE_VERSION
                               feature_enabled)
 from prompts.active import resolve_prompt_set
 
-import report_only as r
-from fidelity import check_numeric_plan, check_address_plan
-from semantic_core import (compile_bundle, normalize_readiness,
+from lib import report_only as r
+from lib.salvage import check_numeric_plan, check_address_plan
+from lib.semantic_core import (compile_bundle, normalize_readiness,
                            normalize_truth_binding, require,
                            validate_elements)
-from plan_synthesizer import (check_distinct_p_predicates, classified_relation_alignment,
+from lib.plan_synthesizer import (check_distinct_p_predicates, classified_relation_alignment,
                               identical_p_predicates, intent_scope_review,
                               relax_unsupported_relation, requirement_source_review,
                               structured_unresolved_review,
                               synthesize_id_formalization)
-from evidence_catalog import (PROMPT as READINESS_PROMPT, build_catalog,
+from lib.ingest import (PROMPT as READINESS_PROMPT, build_catalog,
                               hydrate_elements, hydrate_formalization,
                               model_payload as readiness_payload,
                               validate_readiness)
-from symbolic_queries import solve_queries, verify_witness
-from review import attach_review
-from mechanical_salvage import normalize_attack_step_roles, normalize_element_ids
-from semantic_pipeline import validate_core_element_candidate
+from lib.solving import solve_queries, verify_witness
+from lib.solving import attach_review
+from lib.salvage import normalize_attack_step_roles, normalize_element_ids
+from cli.semantic_pipeline import validate_core_element_candidate
 
 
 # ------------------- 节选自 run_semantic_batch.py -------------------
@@ -265,31 +265,39 @@ def verify(directory):
     require(validate_elements(elements, text) == json.loads((directory / 'evidence-spans.json').read_text()), 'evidence spans changed')
     checks_performed.append('report_and_grounded_elements')
     formal = json.loads((directory / 'formalization.json').read_text())
-    # Every pipeline mode writes a catalog.  Missing it is an unverifiable
-    # artifact, never a reason to silently skip ID resolution checks.
-    require((directory / 'evidence-catalog.json').is_file(),
-            'evidence catalog missing; ID grounding cannot be replayed')
-    catalog = json.loads((directory / 'evidence-catalog.json').read_text())
-    require(catalog == build_catalog(text), 'catalog mismatch')
-    checks_performed.append('evidence_catalog')
-    raw_elements = None
-    if (directory / 'elements-ids.json').exists():
-        raw_elements = json.loads((directory / 'elements-ids.json').read_text())
-        require(hydrate_elements(raw_elements, catalog, text) == elements,
-                'ID element resolution mismatch')
-        if features['core_count']:
-            validate_core_element_candidate(
-                raw_elements, catalog, text,
-                normalize_steps=features['step_normalization'],
-                normalize_ids=features['id_normalization'],
-                require_core_counts=True,
-                max_core_impacts=(4 if features['relation_alignment'] else 2))
-            checks_performed.append('core_element_candidate_gate')
-    if (directory / 'formalization-ids.json').exists():
-        require(hydrate_formalization(json.loads(
-            (directory / 'formalization-ids.json').read_text()), catalog, text) == formal,
-            'ID formal resolution mismatch')
-    checks_performed.append('id_hydration')
+    # ID-era runs resolve element/formal IDs through the catalog; every
+    # pipeline mode of that era writes one, so a missing file is an
+    # unverifiable artifact, never a reason to silently skip ID resolution
+    # checks.  Pre-catalog runs carry no *-ids.json artifacts at all, so
+    # they have no ID resolution to replay -- a catalog cannot be demanded
+    # of an era that never wrote one.
+    if ((directory / 'elements-ids.json').exists()
+            or (directory / 'formalization-ids.json').exists()):
+        require((directory / 'evidence-catalog.json').is_file(),
+                'evidence catalog missing; ID grounding cannot be replayed')
+        catalog = json.loads((directory / 'evidence-catalog.json').read_text())
+        require(catalog == build_catalog(text), 'catalog mismatch')
+        checks_performed.append('evidence_catalog')
+        raw_elements = None
+        if (directory / 'elements-ids.json').exists():
+            raw_elements = json.loads((directory / 'elements-ids.json').read_text())
+            require(hydrate_elements(raw_elements, catalog, text) == elements,
+                    'ID element resolution mismatch')
+            if features['core_count']:
+                validate_core_element_candidate(
+                    raw_elements, catalog, text,
+                    normalize_steps=features['step_normalization'],
+                    normalize_ids=features['id_normalization'],
+                    require_core_counts=True,
+                    max_core_impacts=(4 if features['relation_alignment'] else 2))
+                checks_performed.append('core_element_candidate_gate')
+        if (directory / 'formalization-ids.json').exists():
+            require(hydrate_formalization(json.loads(
+                (directory / 'formalization-ids.json').read_text()), catalog, text) == formal,
+                'ID formal resolution mismatch')
+        checks_performed.append('id_hydration')
+    else:
+        catalog = None
 
     if provenance.get('candidate_origin') == 'external_model':
         # Newer runs snapshot the exact prompt text next to their artifacts;
@@ -314,15 +322,53 @@ def verify(directory):
                 require(sent.read_text().startswith(snapshots[0].read_text()),
                         'element prompt snapshot was not the text sent')
             checks_performed.append('prompt_snapshots')
+        elif provenance.get('prompt_version') is None:
+            # Pre-versioning runs (multi-report pilot era) never recorded
+            # which prompt produced them and no frozen module holds their
+            # text.  The exact text sent survives inside the run directory;
+            # replay requires it (deleting it forfeits replay) but cannot
+            # cross-check it against an archive that never contained it.
+            require((accepted_model_claim_path(directory).parent / 'prompt.txt').is_file(),
+                    'sent formal prompt missing; pre-versioning replay forfeited')
+            if (directory / 'neural-elements').is_dir():
+                require((directory / 'neural-elements' / 'prompt.txt').is_file(),
+                        'sent element prompt missing; pre-versioning replay forfeited')
+            checks_performed.append('pre_versioning_sent_prompts')
         else:
             prompts = resolve_prompt_set(
                 provenance['prompt_version'],
                 provenance.get('requested_evidence_mode', 'ids'),
                 provenance.get('requested_formalization_scope', 'core'))
-            require(provenance.get('element_prompt_sha256') == prompts.sha256('element'),
-                    'element prompt hash mismatch')
-            require(provenance.get('formal_prompt_sha256') == prompts.sha256('formal'),
-                    'formal prompt hash mismatch')
+            # Runs of the sha-recording era compare the recorded hash against
+            # the frozen module.  Older versioned runs never recorded hashes,
+            # but the run directory kept the exact text sent to the model:
+            # cross-check that text against the frozen module, which turns
+            # the archive's time-invariance from an assumption into a
+            # verified fact.
+            if provenance.get('element_prompt_sha256') is not None:
+                require(provenance['element_prompt_sha256'] == prompts.sha256('element'),
+                        'element prompt hash mismatch')
+            elif (directory / 'neural-elements').is_dir():
+                # The run performed its own element extraction: the sent
+                # prompt must survive and match the frozen module.  Deleting
+                # it forfeits replay.
+                sent_element = directory / 'neural-elements' / 'prompt.txt'
+                require(sent_element.is_file(),
+                        'sent element prompt missing; replay forfeited')
+                require(sent_element.read_text().startswith(prompts.element_prompt),
+                        'sent element prompt not rendered by frozen module')
+            # else: this run inherited its elements (elements_source) and no
+            # element prompt was sent or recorded here, so there is nothing
+            # to verify.
+            if provenance.get('formal_prompt_sha256') is not None:
+                require(provenance['formal_prompt_sha256'] == prompts.sha256('formal'),
+                        'formal prompt hash mismatch')
+            else:
+                sent_formal = accepted_model_claim_path(directory).parent / 'prompt.txt'
+                require(sent_formal.is_file(),
+                        'formal prompt evidence missing; replay forfeited')
+                require(sent_formal.read_text().startswith(prompts.formal_prompt),
+                        'sent formal prompt not rendered by frozen module')
             checks_performed.append('resolved_prompt_hashes')
 
     if provenance.get('input_screening'):

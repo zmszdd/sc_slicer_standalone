@@ -1,7 +1,7 @@
 """Offline controls for scenario-vs-history prompt refinement."""
 import unittest
 
-import semantic_pipeline as pipeline
+from cli import semantic_pipeline as pipeline
 from prompts.versions import semantic_prompts_v38 as v38
 from prompts.versions import semantic_prompts_v39 as v39
 
