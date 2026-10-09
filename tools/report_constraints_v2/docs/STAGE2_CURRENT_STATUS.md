@@ -4,11 +4,11 @@
 具备受影响对象、触发/行为、直接效果和可推导安全关系依据。明确缺失写入
 `excluded_before_extraction`；仅不确定则写入 `needs_input_review`；两者均不创建 P/I/V。此前基于生成结果的 `screen_cases.py`
 后筛选及独立语义复核已退出活动工作流；其历史结果保留，但不再控制新运行。
-[两份真实报告入口测试](../evaluation/input_gate_01/REPORT.md)确认：信息不足案例经 1 次调用后
+[两份真实报告入口测试](../evaluation/archive/input_gate_01/REPORT.md)确认：信息不足案例经 1 次调用后
 停止且不生成要素；信息充分案例才进入 P/I/V 调用。后者随后可被原有要素合法性检查拒绝，
 说明“可进入”与“生成正确”已分开处理。
 
-最新 [DeepSeek-V4.1-Flash 三份新报告测试](../evaluation/deepseek_v41_fresh_01/REPORT.md)
+最新 [DeepSeek-V4.1-Flash 三份新报告测试](../evaluation/archive/deepseek_v41_fresh_01/REPORT.md)
 得到 3/3 有效要素、2/3 候选公式及 Z3、0 例语义已证实。现在可选
 `--continue-on-review`：核心 P/I/V 公式和直接违反关系齐备时，
 次级影响未覆盖、报告歧义等仅作为警告，不再把 `needs_review` 当作流水线失败；
@@ -23,17 +23,17 @@
 “没有真实付款”的限定，不能报告语义准确率。详见[首次测试报告](../evaluation/fresh_holdout_01/REPORT.md)。
 原批次 v3 输入还误纳入 Morpheus 报告的无标题修复建议；已停止外部调用并在本地修正。
 
-后续[开发复验](../evaluation/recovery_v312_01/REPORT.md)新增首步可选一次重试、超时元数据诊断、轻量第二步输入及保持正常执行限定的 `semantic-v3.12`。Brix 的一次网络环境复验再次在 240 秒处超时，未生成新公式；当时轻量模式的外部调用因衍生语义数据外传范围未获明确授权而被拒绝。现已新增[阶段二 DeepSeek 官方 API 可选直连](DIRECT_DEEPSEEK_SETUP.md)，并在新获授权后进行了[三报告真实开发测试](../evaluation/deepseek_flash_pilot_01/REPORT.md)：首步 JSON 3/3、要素校验 2/3、有效正式计划及 Z3 均 0/3。五次调用均未超时，但三例最终皆为 `pipeline_failure`，没有证明真实流程成功率或语义准确率提高。原 8 例首次结果不变。
+后续[开发复验](../evaluation/archive/recovery_v312_01/REPORT.md)新增首步可选一次重试、超时元数据诊断、轻量第二步输入及保持正常执行限定的 `semantic-v3.12`。Brix 的一次网络环境复验再次在 240 秒处超时，未生成新公式；当时轻量模式的外部调用因衍生语义数据外传范围未获明确授权而被拒绝。现已新增[阶段二 DeepSeek 官方 API 可选直连](DIRECT_DEEPSEEK_SETUP.md)，并在新获授权后进行了[三报告真实开发测试](../evaluation/archive/deepseek_flash_pilot_01/REPORT.md)：首步 JSON 3/3、要素校验 2/3、有效正式计划及 Z3 均 0/3。五次调用均未超时，但三例最终皆为 `pipeline_failure`，没有证明真实流程成功率或语义准确率提高。原 8 例首次结果不变。
 
-[机械修复与部分继续](../evaluation/deepseek_flash_salvage_01/REPORT.md)保留原始成绩，另在新目录离线重放 Kinetiq、规范化 Virtuals ID 后仅补跑其第二步。继续后的 3 例要素可用、2 例有公式/Z3，但两例均 `needs_review`：Kinetiq 缺关键算术关系且 I 可能过强；Virtuals 把“报价错误”反写成 I 要求的效果。Olas 的 `elapsedTime > 0` 被布尔化，仍由数值保真门阻断。**模型响应快与 Z3 互斥均不等于忠于报告**。
+[机械修复与部分继续](../evaluation/archive/deepseek_flash_salvage_01/REPORT.md)保留原始成绩，另在新目录离线重放 Kinetiq、规范化 Virtuals ID 后仅补跑其第二步。继续后的 3 例要素可用、2 例有公式/Z3，但两例均 `needs_review`：Kinetiq 缺关键算术关系且 I 可能过强；Virtuals 把“报价错误”反写成 I 要求的效果。Olas 的 `elapsedTime > 0` 被布尔化，仍由数值保真门阻断。**模型响应快与 Z3 互斥均不等于忠于报告**。
 
-最新 [v3.14 GTE/Hybra 开发复验](../evaluation/prompt_v314_polarity_01/REPORT.md)增加复合限定、
+最新 [v3.14 GTE/Hybra 开发复验](../evaluation/archive/prompt_v314_polarity_01/REPORT.md)增加复合限定、
 乘积关系、定量信息保留和 I/V 极性自检。GTE 现已真实完成形式化与 Z3，I 为“满足条件
 时不应回退”、V 为实际回退；Hybra 已生成 `shares_minted >= fair_shares`，但模型仍把
 `!= 0` 弱化为未约束符号或布尔量，数值保真门正确拒绝。该结果说明工程链和方向控制有
 实质进展，但数值 P 忠实性仍是当前瓶颈。
 
-最新 [v3.14 十份冻结留出集测试](../evaluation/prompt_v314_holdout_01/REPORT.md)已使用
+最新 [v3.14 十份冻结留出集测试](../evaluation/archive/prompt_v314_holdout_01/REPORT.md)已使用
 DeepSeek `deepseek-flash` 完成：8/10 生成合法要素，7/10 生成形式候选和 Z3，6/10 可按
 带警告策略继续。对 7 份候选的证据复核发现，只有 1 份 P/I/V 均无明显核心偏差；该数值
 不是总体准确率，只用于定位问题。8 份合法自然语言要素的核心 P/I/V 均有报告证据，失真
@@ -48,12 +48,12 @@ JSON 格式失败。当前首要瓶颈因此从要素识别转为**关系框架�
 `relation-alignment.json`。v3.14 文件和冻结结果均未改写。
 
 授权后已完成 OLAS、Merkl、Panoptic [v3.15 开发回归](V315_DEVELOPMENT_REPORT.md)，并在
-规则冻结后完成[五份全新报告留出测试](../evaluation/prompt_v315_holdout_01/REPORT.md)。留出集
+规则冻结后完成[五份全新报告留出测试](../evaluation/archive/prompt_v315_holdout_01/REPORT.md)。留出集
 工程完成率 4/5；4 份完整结果的关系分类初评均合理，但严格 P/I/V 公式全通过为 0/4，
 2/4 只能算 partial，2/4 有关键公式错误却被放行；另有 1/5 因就绪响应多出字段被误拒绝。
 因此当前瓶颈已经明确为公式忠实度和独立语义降级门，而不是关系类别数量。
 
-随后又在规则保持冻结的情况下完成[第二批五份全新报告留出测试](../evaluation/prompt_v315_holdout_02/REPORT.md)：
+随后又在规则保持冻结的情况下完成[第二批五份全新报告留出测试](../evaluation/archive/prompt_v315_holdout_02/REPORT.md)：
 5/5 报告均通过输入筛选并生成合法要素，但仅 1/5 生成最终候选。其余 4 份报告信息充分，
 失败分别来自关系模板兼容、来源绑定、P 证据缺失和 JSON 格式问题。唯一候选 Monetrix 的
 关系分类合理，但预期小数位没有绑定为底层小数位与 offset 之和，且 P 混入错误返回值，
@@ -64,7 +64,7 @@ JSON 格式失败。当前首要瓶颈因此从要素识别转为**关系框架�
 在此基础上已实现 `semantic-v3.16`：关系类别固定模板、派生量定义和字段级局部修复。
 [五例开发回归](V316_DEVELOPMENT_REPORT.md)最终 5/5 形成候选，但严格公式初评只有 1/5，
 说明工程完成率提高不能代表准确率。规则冻结后的
-[五份全新报告测试](../evaluation/prompt_v316_holdout_01/REPORT.md)得到 5/5 合法要素、3/5 最终
+[五份全新报告测试](../evaluation/archive/prompt_v316_holdout_01/REPORT.md)得到 5/5 合法要素、3/5 最终
 候选、严格公式 1/3；Sequence 为 partial/pass/pass，SukukFi 为 pass/pass/pass，Merkl 因
 遗漏提现后的余额不足条件而三项公式失真。另有一例把 ERC-4337/EIP-191 误识别为未覆盖
 数值 P 而被机械误拒绝。当前下一优先级是修正数值标识符识别和检查 impact 限定是否进入
@@ -79,7 +79,7 @@ P 符号必须由各自来源支撑且不同来源不能复用同一谓词；协
 部分正确；另外三例暴露影响来源联动、派生定义结构和关系错配问题。该批是开发集，不代表
 泛化准确率，推荐入口暂时仍为 v3.16。详见
 [v3.17 实现报告](V317_IMPLEMENTATION_REPORT.md)和
-[五例开发回归](../evaluation/prompt_v317_development_03/REPORT.md)。
+[五例开发回归](../evaluation/archive/prompt_v317_development_03/REPORT.md)。
 
 ## 已完成
 
@@ -410,7 +410,7 @@ live4/终局，共 30 次 deepseek-flash 异构审计调用）与终局批主复
 - 程序拒绝未知证据编号和不合法的形式计划；`auto-triage.json` 区分候选、待审、弃权和流水线故障。`review` 不等于已证实漏洞。
 - 可选的前提审查 v5 同时检查 `precondition` 和 `assumption` 的证据支持及前提/动作/结果时序。受约束修复仅能改动被标记的 P 项，修复后必须重审，且不能自动认证覆盖完整。
 - 可选的 v3.10 数值保真检查拒绝将显式阈值比较改写成无定义布尔量；v3.11 地址保真检查要求显式 `address(0)` 相关的接收者、所有者性质落到地址相等约束。默认提示版本和历史结果未覆盖。
-- 输入预处理 v3 可在 PoC/修复章节后恢复独立影响段；本地 v4 又补上无 Markdown 标记的修复建议过滤。v2/v3 历史输入仍可精确重放，原八例结果不被 v4 覆盖。[输入覆盖报告](../evaluation/input_coverage_01/REPORT.md)。
+- 输入预处理 v3 可在 PoC/修复章节后恢复独立影响段；本地 v4 又补上无 Markdown 标记的修复建议过滤。v2/v3 历史输入仍可精确重放，原八例结果不被 v4 覆盖。[输入覆盖报告](../evaluation/archive/input_coverage_01/REPORT.md)。
 - 新入口门已有本地测试，覆盖四项均满足后继续、关键项缺失时在 P/I/V 前停止、未知证据 ID 拒绝；关系分类、专用模板、限定分类、来源绑定、协议编号过滤及二次局部修复均有本地回归覆盖。当前准确测试数以 `python main.py test` 的实时结果为准（Halmos Python / Z3 4.12.6），避免文档中的历史计数被误当作最新结论。
 
 ## 真实案例边界

@@ -15,7 +15,7 @@ HERE = Path(__file__).resolve().parents[1]
 TEXT = (HERE / 'results/report_only/brix_fee_assistant_final/extraction-input.txt').read_text()
 # A frozen external-model run predating the snapshot policy; replay of such
 # directories keeps resolving the time-invariant frozen module.
-FROZEN_RUN = (HERE / 'evaluation/prompt_v320_blind_03/runs/'
+FROZEN_RUN = (HERE / 'evaluation/archive/prompt_v320_blind_03/runs/'
               'Olas_j3PRAMM3fVq__9eKVuFn3L2m__h3XmvpYNrWz')
 
 

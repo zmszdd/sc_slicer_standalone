@@ -31,7 +31,7 @@
 - 授权后已用 DeepSeek `deepseek-flash` 完成 OLAS/Merkl/Panoptic 开发回归；详见
   [开发摘要](V315_DEVELOPMENT_REPORT.md)。
 - 冻结五份全新报告后完成真实留出测试：工程 4/5、关系分类初评 4/4，严格公式全通过
-  0/4，另有一例输入结构误拒绝。详见[留出报告](../evaluation/prompt_v315_holdout_01/REPORT.md)。
+  0/4，另有一例输入结构误拒绝。详见[留出报告](../evaluation/archive/prompt_v315_holdout_01/REPORT.md)。
 
 ## 能解决什么
 

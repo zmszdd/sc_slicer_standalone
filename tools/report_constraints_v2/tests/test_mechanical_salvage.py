@@ -14,7 +14,7 @@ from semantic_pipeline import request_formalization
 
 
 class MechanicalSalvageTests(unittest.TestCase):
-    PILOT = Path(__file__).resolve().parents[1] / 'evaluation/deepseek_flash_pilot_01/runs'
+    PILOT = Path(__file__).resolve().parents[1] / 'evaluation/archive/deepseek_flash_pilot_01/runs'
 
     def test_lowercase_id_and_references_only(self):
         raw = {'schema_version': 'report-elements/2',

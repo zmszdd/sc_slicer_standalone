@@ -5,7 +5,7 @@
 当前实现已增加提取前信息充分性调用，因此完整 DeepSeek 路径通常为三次调用：充分性
 筛选、P/I/V 要素提取、形式化。`semantic-v3.14` 还支持有界复合谓词与报告明确给出的
 乘积比较，并强制保留定量事实和检查 I/V 极性；最新开发结果见
-[v3.14 复验报告](../evaluation/prompt_v314_polarity_01/REPORT.md)。
+[v3.14 复验报告](../evaluation/archive/prompt_v314_polarity_01/REPORT.md)。
 
 2026-09-20 新增本地实验版 `semantic-v3.15`。它不覆盖 v3.14，而是在第二步增加
 12 类[通用安全关系分类](SAFETY_RELATION_TAXONOMY.md)，并新增关系义务、单调性和守恒
@@ -24,14 +24,14 @@ v3.15 进一步增加核心观测量对齐门：程序从安全模板提取定�
 为基线，只允许改动校验器指定字段，防止为了通过检查重选意图或关系类别。开发回归工程链
 完成 5/5，但独立留出集只完成 3/5，严格公式 1/3；因此结构稳定性提高不等于语义问题解决。
 详见 [开发报告](V316_DEVELOPMENT_REPORT.md)和
-[独立留出报告](../evaluation/prompt_v316_holdout_01/REPORT.md)。
+[独立留出报告](../evaluation/archive/prompt_v316_holdout_01/REPORT.md)。
 
 2026-09-21 新增实验版 `semantic-v3.17`：在不增加漏洞类别的前提下，将权限、边界、
 比例、状态对应、时序和进度关系改为有类型槽位的专用确定性模板，并在 SMT 前检查影响
 限定、P 来源独立绑定和协议编号误识别。五例授权开发回归得到 2/5 候选，确认限定门有效，
 同时暴露派生定义空真、来源联动修复和关系错配问题，见
 [v3.17 实现报告](V317_IMPLEMENTATION_REPORT.md)及
-[开发回归报告](../evaluation/prompt_v317_development_03/REPORT.md)。
+[开发回归报告](../evaluation/archive/prompt_v317_development_03/REPORT.md)。
 
 后续真实复验记录见 [TWO_STEP_REPORT.md](TWO_STEP_REPORT.md)：第一步已调用但因非精确引文被拒绝，第二步未运行。下文实现与离线结果仍成立，不能据此称真实两步路径成功。
 

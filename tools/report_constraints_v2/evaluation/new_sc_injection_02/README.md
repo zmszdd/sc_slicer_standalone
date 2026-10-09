@@ -86,3 +86,8 @@ guard 只在绑定不可能时硬失败——I 被违反是预期的好消息。
 | 模型调用 | 合并 → 执行 → 判读 → ingest 全程 **0 次** |
 
 一条命令复现：`/root/.local/share/uv/tools/halmos/bin/python new_sc.py <case_key>`。
+
+**2026-10-08 结构优化注**：`new_sc__Ekubo.../` 与 `run_copy__Ekubo.../` 是
+本脚本（零模型调用）的可再生生成物，已按"可再生即删"规则移除；ingest 结果
+留档为 `stage3-consistency__Ekubo....json`（删除后已重跑一次实证复现）。
+重跑上面的命令即完整复原。

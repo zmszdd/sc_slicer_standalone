@@ -57,7 +57,7 @@ flowchart TD
 | 本地自动回归 | 300/300 | 清理退役分支后的主线基线；仅证明实现一致 | 不等于自然语言语义准确率 |
 
 v3.17 开发回归调用 DeepSeek 11 次，共 78,886 tokens，模型响应耗时合计 95.778 秒。详细
-结果见 [开发回归报告](../evaluation/prompt_v317_development_03/REPORT.md)。
+结果见 [开发回归报告](../evaluation/archive/prompt_v317_development_03/REPORT.md)。
 
 ## 五、当前能力边界
 

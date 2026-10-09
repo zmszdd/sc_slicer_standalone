@@ -7,7 +7,7 @@
 
 > 新对话首先完整阅读本文件，再阅读
 > `tools/report_constraints_v2/docs/STAGE2_CURRENT_STATUS.md` 和
-> `tools/report_constraints_v2/evaluation/prompt_v317_development_03/REPORT.md`。
+> `tools/report_constraints_v2/evaluation/archive/prompt_v317_development_03/REPORT.md`。
 > 不要根据旧聊天记忆猜测状态，也不要从头重做已经完成的实验。
 
 ## 1. 当前正在做什么
@@ -345,7 +345,7 @@ I/V 倒置），和模型自报的歧义/局限/未决项。在 72 个可重算 
 - `archives/report_constraints_v1_20260912.zip`：已验证的完整 v1 归档；活动树中的
   `tools/report_constraints/` 已删除，不要恢复为第二套实现。
 - `tools/report_constraints_v2/docs/V317_IMPLEMENTATION_REPORT.md`：v3.17 实现说明。
-- `tools/report_constraints_v2/evaluation/prompt_v317_development_03/REPORT.md`：最新五例结果。
+- `tools/report_constraints_v2/evaluation/archive/prompt_v317_development_03/REPORT.md`：最新五例结果。
 
 ### 5.2 核心实现
 
@@ -472,7 +472,7 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 - 不修改 v3.17 Prompt、schema 和既有产物语义。**已遵守**：v3.18 是新文件，
   v3.5–v3.17 冻结文件一字未改。
 - 确认当前主线测试继续通过：**331/331**（v3.17 时代为 286）。
-- 保留 `evaluation/prompt_v317_development_03/` 原始结果。
+- 保留 `evaluation/archive/prompt_v317_development_03/` 原始结果。
 
 ### 第二步：设计 v3.21/schema v6
 
@@ -616,7 +616,7 @@ cd /root/sc_slicer_standalone
 for c in Monetrix_L3gNZDymiju__XdnQZTBJovh__ckuTxYrFvYX \
          Olas_j3PRAMM3fVq__9eKVuFn3L2m__fvnHZN9Wssa; do
   /root/.local/share/uv/tools/halmos/bin/python main.py verify \
-    "tools/report_constraints_v2/evaluation/prompt_v317_development_03/runs/$c"
+    "tools/report_constraints_v2/evaluation/archive/prompt_v317_development_03/runs/$c"
 done
 ```
 

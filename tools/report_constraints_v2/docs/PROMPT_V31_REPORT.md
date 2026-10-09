@@ -2,9 +2,9 @@
 
 日期：2026-09-15。状态：本地实现与真实新留出集测评完成。
 
-真实结果见 [v3.1 留出集报告](../evaluation/prompt_v31_holdout_01/REPORT.md)：5 份新报告实际调用 9 次，第一步完成 4/5、第二步回答 3/5、正式管线完成 1/5；正式 I 为 0 pass、2 partial、3 fail，完整 P/I/V 为 0/5。v3.1 尚未达到准确提取 P/I/V 的目标。
+真实结果见 [v3.1 留出集报告](../evaluation/archive/prompt_v31_holdout_01/REPORT.md)：5 份新报告实际调用 9 次，第一步完成 4/5、第二步回答 3/5、正式管线完成 1/5；正式 I 为 0 pass、2 partial、3 fail，完整 P/I/V 为 0/5。v3.1 尚未达到准确提取 P/I/V 的目标。
 
-为检查错误一致性，又用不改 Prompt 的[第三批五报告](../evaluation/prompt_v31_consistency_02/REPORT.md)运行 10 次：无超时，正式管线 4/5，正式 I 初评 3/5，但完整 P/I/V 仍只有 1/5。P 缺失/污染、V 不能见证 `not I`、模态升级均重复；schema 缺失与超时未稳定复现。
+为检查错误一致性，又用不改 Prompt 的[第三批五报告](../evaluation/archive/prompt_v31_consistency_02/REPORT.md)运行 10 次：无超时，正式管线 4/5，正式 I 初评 3/5，但完整 P/I/V 仍只有 1/5。P 缺失/污染、V 不能见证 `not I`、模态升级均重复；schema 缺失与超时未稳定复现。
 
 ## 目的
 

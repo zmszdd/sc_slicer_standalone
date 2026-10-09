@@ -33,6 +33,12 @@ guard 测试只输出一行 `STAGE2_VERDICT {"p":..,"i":..,"v":..}`（P/I/V 在
 - `run_copy__Ekubo/`：live4 Ekubo run 的副本（smoke 纪律：ingest 只写副本，
   冻结 run 永不被改写）
 
+**2026-10-08 结构优化注**：`new_sc__Ekubo.../` 与 `run_copy__Ekubo.../` 是
+确定性脚本（零模型调用）的可再生生成物，已按"可再生即删"规则移除；
+ingest 结果留档为 `stage3-consistency__Ekubo....json`。重跑
+`inject.py` + `run_injection.sh` 即完整复原（`new_sc_injection_02` 曾用
+独立脚本逐项复现本批次结果，可重放性已实证）。
+
 ## 预期（Ekubo：Transfer 事件 source 错误）
 
 - P：`spender != from ∧ transferFrom 已调用` → true

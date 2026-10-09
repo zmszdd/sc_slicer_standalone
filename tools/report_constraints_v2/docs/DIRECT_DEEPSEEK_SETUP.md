@@ -1,6 +1,6 @@
 # 阶段二：直连 DeepSeek 官方 API
 
-这是一条 `semantic_pipeline.py` 主流程的**可选**模型传输路径；其他辅助脚本和原有 OpenCode 默认行为、第一阶段、第三阶段均不变。已在用户授权后进行[三报告真实开发测试](../evaluation/deepseek_flash_pilot_01/REPORT.md)；连接与返回 JSON 正常，但三例都被后续本地校验拒绝，尚未形成有效正式计划。
+这是一条 `semantic_pipeline.py` 主流程的**可选**模型传输路径；其他辅助脚本和原有 OpenCode 默认行为、第一阶段、第三阶段均不变。已在用户授权后进行[三报告真实开发测试](../evaluation/archive/deepseek_flash_pilot_01/REPORT.md)；连接与返回 JSON 正常，但三例都被后续本地校验拒绝，尚未形成有效正式计划。
 
 1. 打开项目根目录的 `config/stage2_deepseek.local.env`，在等号后填入自己的官方密钥：
 
