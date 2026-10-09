@@ -11,11 +11,17 @@ JSON），没有任何逐案例代码。
 ## 用法
 
 ```bash
+# 单案例（Ekubo 即默认批次）
 /root/.local/share/uv/tools/halmos/bin/python new_sc.py <case_key> \
     [--batch prompt_live4_blind_01]
+
+# 批判读：批次内所有已编译出 core_claim 的 run 一律执行
+/root/.local/share/uv/tools/halmos/bin/python new_sc.py --all \
+    --batch final_holdout_01
 ```
 
-（Ekubo 即默认批次；换案例 = 换 case_key，脚本同一份。）
+批模式逐案例独立成败：缺绑定映射的案例记为 error 并继续（绝不静默
+跳过），末尾打印汇总表并落盘 `adjudication_summary__<batch>.json`。
 
 ## 单文件新 SC 的构成
 
@@ -57,9 +63,15 @@ guard 只在绑定不可能时硬失败——I 被违反是预期的好消息。
 - `new_sc.py`：唯一脚本（合并 → 生成 → 执行 → 判读 → ingest，确定性）
 - `bindings/<case_key>.json`：逐案例绑定映射（数据）
 - `new_sc__<case_key>/`：新 SC（new_sc.t.sol + foundry.toml + sc-spec.json）
-- `verdict.json` / `stage3_feedback.json` / `forge.log`：判读与证据
+- `verdict__<case_key>.json` / `stage3_feedback__<case_key>.json` /
+  `forge__<case_key>.log`：判读与证据，**逐案例命名**（后跑不覆盖先跑）
+- `stage3-consistency__<case_key>.json`：ingest 结果自动留档（重跑结果
+  不同则拒绝写，防陈旧覆盖；相同则为幂等 no-op）
+- `adjudication_summary__<batch>.json`：批模式汇总
 - `run_copy__<case_key>/`：冻结 run 的副本 + `stage3-consistency.json`
   （smoke 纪律：ingest 只写副本，冻结 run 永不被改写）
+- 翻译器（translate/collect_vars/check_binding_coverage/四分支表）有
+  单元测试钉死：`tests/test_new_sc_injection.py`（17 例，`python main.py test`）
 
 ## 验证案例（Ekubo）
 

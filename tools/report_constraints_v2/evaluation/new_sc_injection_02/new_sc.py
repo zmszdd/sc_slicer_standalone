@@ -9,6 +9,8 @@ frozen runs are never touched).
 
   /root/.local/share/uv/tools/halmos/bin/python new_sc.py <case_key> \
       [--batch prompt_live4_blind_01]
+  /root/.local/share/uv/tools/halmos/bin/python new_sc.py --all \
+      --batch final_holdout_01
 
 Per-case inputs (data only, no per-case code):
   <batch>/runs/<case_key>/            stage-2 frozen run (constraints.json,
@@ -21,8 +23,14 @@ Outputs (all under this directory, never overwriting an existing one):
                                       prefix + the appended guard contract
   new_sc__<case_key>/foundry.toml
   new_sc__<case_key>/sc-spec.json     unified stage-1/2/3 interface
-  forge.log / verdict.json / stage3_feedback.json
+  forge__<case_key>.log               forge evidence for this case
+  verdict__<case_key>.json            four-branch adjudication record
+  stage3_feedback__<case_key>.json    ingest input for this case
+  stage3-consistency__<case_key>.json archived ingest evidence (auto-copied;
+                                      a differing rerun is refused, not silently
+                                      overwritten)
   run_copy__<case_key>/               run copy + stage3-consistency.json
+  adjudication_summary__<batch>.json  --all mode: one row per case + counts
 
 Pre-registered adjudication (frozen in README.md before any run):
   p&!i&v -> violation_reproduced    p&i&v -> i_too_weak
@@ -66,8 +74,13 @@ def sha256_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
 
+class CaseError(Exception):
+    """Per-case failure (missing inputs, binding gaps, verdict mismatch).
+    Raised so batch mode can record the failure and keep going."""
+
+
 def fail(msg):
-    sys.exit(f'new_sc: {msg}')
+    raise CaseError(msg)
 
 
 def check_provenance(run, case_key, case_dir, slice_bytes):
@@ -219,14 +232,9 @@ def adjudicate(p, i, v):
     return 'violation_not_observed'
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('case_key')
-    parser.add_argument('--batch', default=DEFAULT_BATCH)
-    opts = parser.parse_args()
-    case_key = opts.case_key
-
-    run = EVAL / opts.batch / 'runs' / case_key
+def run_case(case_key, batch_name):
+    """One case end-to-end: merge -> execute -> adjudicate -> ingest."""
+    run = EVAL / batch_name / 'runs' / case_key
     case_dir = CORPUS / case_key
     binding_path = HERE / 'bindings' / f'{case_key}.json'
     for path, what in ((run, 'stage-2 run'), (case_dir, 'corpus case dir'),
@@ -272,7 +280,7 @@ def main():
         'schema_version': 'stage2-sc-spec/1',
         'case_key': case_key,
         'stage2_run': {
-            'batch': opts.batch,
+            'batch': batch_name,
             'run_dir': str(run.relative_to(REPO)),
             'claim_id': CLAIM_ID,
         },
@@ -322,18 +330,19 @@ def main():
     forge = subprocess.run(['forge', 'test', '-vv'], cwd=str(out),
                            capture_output=True, text=True)
     log = forge.stdout + forge.stderr
-    (HERE / 'forge.log').write_text(log)
+    forge_log = HERE / f'forge__{case_key}.log'
+    forge_log.write_text(log)
 
     target_test = prov.get('target_test')
     if target_test:
         passed = re.search(r'\[PASS\][^\n]*' + re.escape(target_test), log)
         if not passed:
             fail(f'slice integrity: PoC test {target_test} not PASS in forge '
-                 f'output -- see forge.log')
+                 f'output -- see {forge_log.name}')
 
     match = re.search(r'STAGE2_VERDICT (\{.*\})', log)
     if not match:
-        fail('no STAGE2_VERDICT line in forge output -- see forge.log')
+        fail(f'no STAGE2_VERDICT line in forge output -- see {forge_log.name}')
     piv = json.loads(match.group(1))
     p, i, v = piv['p'], piv['i'], piv['v']
     verdict = adjudicate(p, i, v)
@@ -344,12 +353,13 @@ def main():
         'piv': piv,
         'verdict': verdict,
         'verdict_table': 'pre-registered in evaluation/new_sc_injection_02/README.md',
-        'forge_log': 'forge.log',
+        'forge_log': forge_log.name,
         'guard_test_passed': 'PASS' in log,
         'poc_test_passed': bool(target_test),
         'model_calls': 0,
     }
-    (HERE / 'verdict.json').write_text(
+    verdict_path = HERE / f'verdict__{case_key}.json'
+    verdict_path.write_text(
         json.dumps(record, ensure_ascii=False, indent=2) + '\n')
     print('verdict:', verdict, piv)
 
@@ -380,7 +390,7 @@ def main():
                 'observables (forge, zero model calls)'),
         },
     }
-    feedback_path = HERE / 'stage3_feedback.json'
+    feedback_path = HERE / f'stage3_feedback__{case_key}.json'
     feedback_path.write_text(json.dumps(feedback, ensure_ascii=False, indent=2) + '\n')
 
     result = subprocess.run(
@@ -389,14 +399,104 @@ def main():
         cwd=str(REPO), capture_output=True, text=True)
     print(result.stdout[-800:] or result.stderr[-800:])
     consistency = run_copy / 'stage3-consistency.json'
-    if consistency.is_file():
-        got = json.loads(consistency.read_text())['consistency_verdict']
-        print('stage3 consistency_verdict:', got)
-        if got != verdict and verdict in ('violation_reproduced',
-                                          'violation_not_reproduced'):
-            fail(f'verdict mismatch: newsc={verdict} ingest={got}')
-    else:
+    if not consistency.is_file():
         fail('ingest did not write stage3-consistency.json')
+    got = json.loads(consistency.read_text())['consistency_verdict']
+    print('stage3 consistency_verdict:', got)
+
+    # Archive the ingest evidence; a rerun that produces a DIFFERENT result is
+    # refused (staleness guard), an identical one is a no-op.
+    archive = HERE / f'stage3-consistency__{case_key}.json'
+    if archive.exists() and archive.read_text() != consistency.read_text():
+        fail(f'archived ingest evidence differs from this run: {archive.name}')
+    archive.write_text(consistency.read_text())
+
+    if got != verdict and verdict in ('violation_reproduced',
+                                      'violation_not_reproduced'):
+        fail(f'verdict mismatch: newsc={verdict} ingest={got}')
+    record['stage3_consistency_verdict'] = got
+    verdict_path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + '\n')
+    return record
+
+
+def discover_cases(batch_name):
+    """Every run in the batch whose constraints.json carries the core claim."""
+    for run in sorted((EVAL / batch_name / 'runs').iterdir()):
+        constraints = run / 'constraints.json'
+        if not constraints.is_file():
+            continue
+        try:
+            bundle = json.loads(constraints.read_text())
+        except json.JSONDecodeError:
+            continue
+        if any(row.get('id') == CLAIM_ID for row in bundle.get('claims', [])):
+            yield run.name
+
+
+def summarize(records, batch_name):
+    counts = {}
+    for record in records:
+        key = (record.get('verdict')
+               or 'error: ' + record['error'].split(':', 1)[0])
+        counts[key] = counts.get(key, 0) + 1
+    return {
+        'schema_version': 'stage2-newsc-adjudication-summary/1',
+        'batch': batch_name,
+        'model_calls': 0,
+        'cases': records,
+        'counts': counts,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('case_key', nargs='*',
+                        help='one case key (or omit and use --all)')
+    parser.add_argument('--batch', default=DEFAULT_BATCH)
+    parser.add_argument('--all', action='store_true',
+                        help='adjudicate every case in --batch whose stage-2 '
+                             'run compiled a core claim; cases without a '
+                             'binding map are reported as errors, never '
+                             'silently skipped')
+    opts = parser.parse_args()
+    if opts.all and opts.case_key:
+        parser.error('case_key and --all are mutually exclusive')
+    if not opts.all and len(opts.case_key) != 1:
+        parser.error('exactly one case_key required (or --all)')
+    if opts.all:
+        case_keys = list(discover_cases(opts.batch))
+        if not case_keys:
+            fail(f'no runs with a {CLAIM_ID} in batch {opts.batch!r}')
+    else:
+        case_keys = [opts.case_key[0]]
+
+    records = []
+    for case_key in case_keys:
+        try:
+            record = run_case(case_key, opts.batch)
+        except CaseError as exc:
+            print(f'[{case_key}] ERROR: {exc}')
+            record = {'case_key': case_key, 'error': str(exc)}
+        records.append(record)
+
+    if len(records) > 1:
+        summary = summarize(records, opts.batch)
+        summary_path = HERE / f'adjudication_summary__{opts.batch}.json'
+        summary_path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2) + '\n')
+        print(f'\n== adjudication summary ({opts.batch}) ==')
+        for record in records:
+            if 'verdict' in record:
+                print(f"  {record['piv']}  {record['verdict']:>22}  "
+                      f"{record['case_key']}")
+            else:
+                print(f"  {'--':>9} {'[error]':>22}  {record['case_key']}"
+                      f"  ({record['error'].split(':', 1)[0]})")
+        for key, count in sorted(summary['counts'].items()):
+            print(f'  {count:2d} x {key}')
+        print(f'  written: {summary_path.name}')
+    if any('error' in record for record in records):
+        sys.exit(1)
 
 
 if __name__ == '__main__':
