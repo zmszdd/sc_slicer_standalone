@@ -48,7 +48,8 @@ CONTRACT_NAME = 'Stage2InvariantGuard'
 DEFAULT_BATCH = 'prompt_live4_blind_01'
 
 BINARY_OPS = {'and': '&&', 'or': '||', 'ne': '!=', 'eq': '==',
-              'lt': '<', 'le': '<=', 'gt': '>', 'ge': '>='}
+              'lt': '<', 'le': '<=', 'gt': '>', 'ge': '>=',
+              'add': '+', 'sub': '-', 'mul': '*'}
 
 FOUNDARY_TOML = '''[profile.default]
 src = "."
@@ -93,7 +94,13 @@ def translate(node, symbols):
     if isinstance(node, bool):
         return 'true' if node else 'false'
     if isinstance(node, int):
-        return f'uint256({node})'
+        node = {'const': node}
+    if isinstance(node, dict) and 'const' in node:
+        # Constants may arrive as bare ints or {"const": N} nodes; both get
+        # the same cast. Negative literals cannot be cast to uint256; int256
+        # keeps the compile error at fail-fast level for mixed-sign exprs.
+        node_val = node['const']
+        return f'int256({node_val})' if node_val < 0 else f'uint256({node_val})'
     if isinstance(node, dict) and 'var' in node:
         row = symbols[node['var']]
         return f'({row["expr"]})'
@@ -103,8 +110,13 @@ def translate(node, symbols):
     if op == 'implies':
         return f'((!{translate(args[0], symbols)}) || {translate(args[1], symbols)})'
     if op in BINARY_OPS:
-        left, right = (translate(a, symbols) for a in args)
-        return f'({left} {BINARY_OPS[op]} {right})'
+        # QEXPR ops may be n-ary (e.g. a 4-ary and); fold left to right, which
+        # is identical to the binary form for 2-ary nodes.
+        rendered = [translate(a, symbols) for a in args]
+        expr = rendered[0]
+        for piece in rendered[1:]:
+            expr = f'({expr} {BINARY_OPS[op]} {piece})'
+        return expr
     raise ValueError(f'unsupported expression node: {node!r}')
 
 
@@ -166,6 +178,37 @@ contract {CONTRACT_NAME} is {inherits} {{
 '''
 
 
+def collect_vars(node, acc):
+    """Walk an op-args/var expression collecting every referenced var name."""
+    if isinstance(node, dict):
+        if 'var' in node:
+            acc.add(node['var'])
+        elif 'args' in node:  # {"const": N} leaves carry no vars
+            for arg in node['args']:
+                collect_vars(arg, acc)
+
+
+def check_binding_coverage(symbols, claim, plan):
+    """Pre-flight version of the stage3 binding rule: every symbol the P/I/V
+    expressions actually reference must be bound, and no extra bindings.
+    Catches a missing binding BEFORE any file is written (fail-fast) instead
+    of at ingest time."""
+    required = set()
+    for kind in ('preconditions', 'safety', 'effects'):
+        collect_vars(claim['properties'][kind]['expression'], required)
+    plan_symbols = set(plan['symbols'])
+    unknown = sorted(required - plan_symbols)
+    if unknown:
+        fail(f'P/I/V reference symbols absent from formal-plan: {unknown}')
+    bound = set(symbols)
+    missing = sorted(required - bound)
+    extra = sorted(bound - required)
+    if missing:
+        fail(f'binding map missing symbols referenced by P/I/V: {missing}')
+    if extra:
+        fail(f'binding map has symbols not referenced by P/I/V: {extra}')
+
+
 def adjudicate(p, i, v):
     if not p:
         return 'precondition_mismatch'
@@ -200,6 +243,8 @@ def main():
     bundle = json.loads((run / 'constraints.json').read_text())
     claim = next(row for row in bundle['claims'] if row['id'] == CLAIM_ID)
     plan = json.loads((run / 'formal-plan.json').read_text())
+
+    check_binding_coverage(symbols, claim, plan)
 
     def compile_expr(kind):
         source = claim['properties'][kind]['expression']

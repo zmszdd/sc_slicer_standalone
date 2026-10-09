@@ -73,6 +73,50 @@ guard 只在绑定不可能时硬失败——I 被违反是预期的好消息。
 - 数值单位缩放未处理（Ekubo 全为 address/bool 符号）
 - P 的时序简化：全部符号在动作后取值（含状态突变案例需 pre 捕获段）
 
+2026-10-09 更新：翻译器已支持算术（add/sub/mul）、负常量（int256）、
+`{"const": N}` 节点与 **n 元**布尔/算子（左折叠）；新增绑定覆盖前置校验
+（P/I/V 引用的符号必须在绑定映射中且不得多余，写任何文件前 fail-fast）。
+两处缺陷由 Merkl 数值案例首跑暴露（Ekubo 无常量节点、全 2 元，未触发）：
+const 叶节点无 `args`/`op` 键、`and` 可为 4 元。Ekubo 回归逐项不变。
+
+## 第二案例预注册（Merkl，final_holdout_01，运行前冻结）
+
+数值案例：公式含 int 符号与常量（990/1000/1990/2000）、eq/le 数值比较；
+绑定以 `/1e18` 显式把 wei 观察量换算到报告的 token 单位（显式声明，
+绝不静默缩放）。
+
+**预注册预期**（绑定忠实于 PoC 实际场景——两笔 FoT 存款，无标准代币存款）：
+
+- P：`fot==990` ✓（990）；`std==1000` **✗**（PoC 无标准存款，观察量 0）；
+  `bal==1990` **✗**（实际 1980）；`liab==2000` ✓ → **p = false**
+- I：前件（fot==990 ∧ std==1000）为假 → 空真 → i = true
+- V：前件为假 → v = false
+- 裁决：**precondition_mismatch**——四分支表首次机械抓到"阶段二 P 与
+  PoC 现实不符"：阶段二 P 的常量取自报告的示例算术（一 FoT + 一标准
+  存款人），而 PoC 实例化的是两笔 FoT 存款。I 本身忠于报告的一般主张，
+  PoC 演示的资不抵债（1980 < 2000）由绑定健全性断言记录在案。
+- 附注：final_holdout_01 批次对该例的判定为 rejected；本次机械裁决给出
+  具体原因（P 语义与 PoC 不对齐），与批次结论方向一致。
+
+## 结果（2026-10-09 运行，Merkl）
+
+与上面预注册预期**逐项一致**：
+
+| 项 | 结果 |
+| --- | --- |
+| STAGE2_VERDICT | `{"p":false,"i":true,"v":false}`（p✗ std=0≠1000、bal=1980≠1990；I 空真；V 前件假） |
+| 四分支裁决 | **precondition_mismatch**（该分支首次被实际触发） |
+| forge 全量 | 原 PoC `test_submissionValidity` PASS（切片完整性）+ guard PASS，共 2 passed |
+| 绑定健全性 | 4 项断言全过：fot=990、liab=2000、bal=**1980**、1980<2000（PoC 实际资不抵债记录在案） |
+| ingest | run 副本落盘 `consistency_verdict: preconditions_infeasible_on_code`（阶段三术语，与 precondition_mismatch 语义同向） |
+| 留档 | `verdict__Merkl….json`、`stage3-consistency__Merkl….json` |
+| 模型调用 | **0 次** |
+
+含义：四分支表首次机械抓到"阶段二 P 与 PoC 现实不符"——阶段二 P 的常量
+（990/1000/1990/2000）取自报告的示例算术（一 FoT + 一标准存款），而 PoC
+实例化的是两笔 FoT 存款（990/990/1980/2000）。I 本身忠于报告的一般主张；
+PoC 演示的资不抵债由绑定健全性断言机械记录。
+
 ## 结果（2026-10-08 运行，Ekubo）
 
 | 项 | 结果 |
