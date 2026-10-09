@@ -229,8 +229,14 @@ def formal_retry_hint(exc):
                 'power_of_two, or add/sub/mul with EXACTLY two args. Nest binary '
                 'operations instead of returning three args. For ratios or '
                 'proportional fairness, do not divide: cross-multiply both sides '
-                'so their units match. Change only the malformed expression and '
-                'its directly required symbols/definitions.\n')
+                'so their units match. Pattern slots typed as quantities take '
+                'ONLY a QEXPR: kind="conservation" before/after are the conserved '
+                'QUANTITIES (the invariant is before == after), never comparison '
+                'predicates; an equality between two distinct observables at one '
+                'checkpoint is kind="correspondence" (observed_symbol vs '
+                'expected_symbol) or a relation_obligation relation, not a '
+                'quantity slot. Change only the malformed expression and its '
+                'directly required symbols/definitions.\n')
     if str(exc) == 'relation class and pattern mismatch':
         return ('\nRETRY FEEDBACK: relation_class and pattern must be compatible. '
                 'state_correspondence uses relation_obligation with observable '
@@ -336,7 +342,11 @@ def formal_retry_hint(exc):
                 '+/- K use the exact power_of_two/offset operand, never '
                 'floating point or scientific notation. If the text has no '
                 'plain numeric literal for the bound, record it in unresolved '
-                'instead of inventing a constant. Keep report facts unchanged.\n'
+                'instead of inventing a constant. If the statement compares two '
+                'report quantities (balances exceed reserves), encode that '
+                'symbol-vs-symbol comparison directly with NO constant: a '
+                'constant absent from the cited text is invented even when '
+                'semantically equivalent. Keep report facts unchanged.\n'
                 + pointer)
     if str(exc).startswith('zero-address '):
         return ('\nRETRY FEEDBACK: A report claim explicitly mentions '

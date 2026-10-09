@@ -115,6 +115,45 @@ class NumericFidelityTests(unittest.TestCase):
         ]}
         check_numeric_plan(candidate, elements)
 
+    def test_comparison_word_zero_grounds_const_zero(self):
+        # final_holdout_02 GTE_Perps: "Accrued fees are greater than zero
+        # (fee0=1e16 ...)" -- the statement's comparison constant IS zero, but
+        # explicit_numbers saw only the parenthetical 1e16, so a faithful
+        # "> 0" predicate was rejected as "numeric P literal changed" and the
+        # case died as "local repair made no change". A comparison-context
+        # "zero" must ground a const 0.
+        text = ('Accrued fees are greater than zero '
+                '(fee0=1e16, fee1=1e16 after the swaps).')
+        self.assertEqual(explicit_numbers(text),
+                         {Decimal(0), Decimal('1E+16')})
+        elements = {'statements': [{
+            'id': 'p_fees', 'kind': 'precondition', 'text': text,
+        }]}
+        candidate = {'precondition_terms': [
+            {'source_id': 'p_fees',
+             'predicate': {'kind': 'comparison', 'left': 'accrued_fee0',
+                           'operator': 'gt', 'right': {'const': 0}}},
+        ]}
+        check_numeric_plan(candidate, elements)
+
+    def test_rhetorical_and_address_zero_are_not_numeric_bounds(self):
+        # The word "zero" alone is not always a number: "effectively zero" is
+        # rhetoric (prompt_live4 Intuition), and "zero address" / "address(0)"
+        # name the address sentinel (prompt_live4 Hybra: the 0 inside
+        # address(0) was parsed as a literal and demanded numeric encoding of
+        # an address assumption). Compound words never match either.
+        self.assertEqual(explicit_numbers(
+            'No special privileges are required; the cost is effectively zero.'),
+            set())
+        self.assertEqual(explicit_numbers(
+            'A GaugeCL with rHYBR == address(0).'), set())
+        self.assertEqual(explicit_numbers(
+            'The balance is nonzero; the vault was zeroed.'), set())
+        # An explicit numeric statement of zero stays a fact the plan must
+        # encode (archive prompt_v320 SukukFi: totalAssets() returns zero).
+        self.assertEqual(explicit_numbers(
+            'totalAssets() returns zero by design.'), {Decimal(0)})
+
     def test_relax_assumptions_exempts_unencoded_assumption_numbers(self):
         # prompt_live1_blind_01: Kinetiq/Intuition were rejected because a
         # narrative assumption restating numbers (or naming a chain constant)

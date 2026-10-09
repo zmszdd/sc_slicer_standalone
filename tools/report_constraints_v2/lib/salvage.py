@@ -30,6 +30,15 @@ NUMBER = (r'(?:' + POWER_OF_TWO +
           r'|-?(?:0[xX][0-9a-fA-F]+|(?:\d{1,3}(?:,\d{3})+|\d+)'
           r'(?:\.\d+)?(?:[eE][+-]?\d+)?))')
 PLAIN_NUMBER = re.compile(r'(?<![A-Za-z0-9_])' + NUMBER + r'(?![A-Za-z0-9_])')
+# The word "zero" counts as the numeric literal 0 only inside a comparison
+# context ("greater than zero", "is zero", "returns zero"): rhetorical uses
+# ("the cost is effectively zero" -- Intuition, live-4) and address sentinels
+# (masked separately in explicit_numbers) must NOT demand numeric encoding.
+# Compound words ("non-zero", "zeroed", "zero-day") never match.
+WORD_ZERO = re.compile(
+    r'\b(?:less than|smaller than|below|under|at most|no more than|'
+    r'greater than|more than|above|at least|no less than|equal to|'
+    r'equals|is|are|returns|==|!=|<=|>=|<|>)\s+zero\b', re.IGNORECASE)
 PROTOCOL_IDENTIFIER = re.compile(
     r'\b(?:ERC|EIP|BIP|BEP|CAIP|SIP|SLIP|TIP)-\d+\b', re.IGNORECASE)
 SYMBOLIC = re.compile(r'(?P<op><=|>=|==|!=|<|>)\s*(?P<number>' + NUMBER + r')')
@@ -109,7 +118,16 @@ def explicit_numbers(text, exclude_protocol_identifiers=False):
     # live-4 Monetrix: slot 0x811), never a semantic bound the plan must echo.
     # Real hex bounds stay enforced: explicit_bounds still parses them.
     text = HEX_IDENTIFIER.sub(lambda match: ' ' * len(match.group(0)), text)
-    return {number(match.group(0)) for match in PLAIN_NUMBER.finditer(text)}
+    # "zero address" / "address(0)" name the address sentinel, not a numeric
+    # bound: mask them so the word "zero" below cannot re-trigger inside them.
+    # A comparison-context "zero" IS the statement's number -- "greater than
+    # zero" must ground a const 0 (final_holdout_02 GTE_Perps: the gate
+    # demanded the parenthetical 1e16 instead and rejected a faithful "> 0").
+    text = ZERO.sub(lambda match: ' ' * len(match.group(0)), text)
+    numbers = {number(match.group(0)) for match in PLAIN_NUMBER.finditer(text)}
+    if WORD_ZERO.search(text):
+        numbers.add(number(0))
+    return numbers
 
 
 def predicate_constants(predicate):

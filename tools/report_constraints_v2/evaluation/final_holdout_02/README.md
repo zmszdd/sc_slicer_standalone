@@ -68,3 +68,31 @@ bash run_terminal.sh
 实际执行：生成 36 次调用 + 双复核 10 次 = 46 次，当日跑完。
 结果见 [REPORT.md](REPORT.md)（三假设逐条判定 + 全部 run 离线
 verify + 误伤/假降级逐例归因）。本批已消耗，不再重跑。
+
+## 追记（2026-10-09，事后离线诊断，未重跑本批）
+
+5 例失败的离线重放定位（零模型调用；冻结 run 未动）：
+
+| 案例 | 记录错误 | 离线重放根因 | 归类 |
+| --- | --- | --- | --- |
+| Covenant | invalid quantity binding | conservation 的 before/after 槽要求数量表达式，模型塞了比较谓词（该用 correspondence）；重试 hint 只讲 QEXPR 形状 | hint 缺模板指引 |
+| GTE_Perps | local repair made no change | 数值 gate 不把 "greater than zero" 的 zero 识别为常量 0，反而强索括号里的 1e16；模型忠实拒绝改，被判"无修改" | **gate bug（已修）** |
+| Kinetiq | numeric P source missing | 第 1 次重试已修好 self-comparison，暴露带指针的新错误，但预算只剩 1 次重试 | 重试预算不足 |
+| Monetrix | P symbol not grounded | 两轮各修一处又暴露下一处，未在 1 次重试内收敛 | 重试预算不足 |
+| Olas | trivial self-comparison | 修复压力下退化出 x==x | 重试退化 |
+
+处置（面向 final_holdout_03，本批已消耗不重跑）：
+
+1. **gate 修复**：`explicit_numbers` 把比较语境中的 "zero" 识别为常量 0
+   （"greater than zero" 接地 const 0）；修辞用法（"effectively zero"）与
+   地址哨兵（"zero address"/`address(0)`，后者旧版还会把括号里的 0 当
+   数字——live-4 Hybra 同源误报）不触发。63 个已接受 plan 全量扫描：
+   仅 2 个行为差且均为期望方向（Hybra 误报消除；archive v320 SukukFi
+   "returns zero" 真漏编码被正确拦截）。
+2. **hint 增强**：'invalid quantity binding' 反馈补充 conservation/
+   correspondence 模板区分；'numeric P literal changed' 反馈补充
+   "两数量比较用符号对符号，文本没有的常量即使语义等价也算发明"
+   （GTE_Perps 第二拦截点：模型以 accrued_fee>0 编码"余额超过储备"）。
+3. **重试预算**：final_holdout_03 建议以 `--formal-retries 2` 运行
+   （CLI 已支持；Kinetiq/Monetrix 类一轮修不完的结构错误需要第二次
+   重试，成本 +1 模型调用/失败案例）。
