@@ -40,3 +40,6 @@ Python 源码混放。
 新文档应优先更新当前状态，而不是继续在根目录新增散乱的 `*_REPORT.md`。评测专属报告应
 放在对应 `evaluation/<run-id>/REPORT.md`。
 - [阶段二流程图与文件索引](STAGE2_FLOW.md)：主流程每步调用的文件与产物、检查门一览
+- [新 SC 生成流程图](new_sc_flow.svg)：阶段二 run + 阶一切片 → 单文件新 SC →
+  forge → 四分支判读 → 阶段三 ingest（[stage2_flow.svg](stage2_flow.svg) 的下游延伸；
+  由 [gen_new_sc_flow_svg.py](gen_new_sc_flow_svg.py) 再生）
