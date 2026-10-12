@@ -2,7 +2,9 @@
 
 来源：直接读 `semantic_pipeline.py` 主流程代码，非文档转述。更新于 2026-09-22。
 
-> 本文档止于阶段二主链（报告 → P/I/V → stage3-spec）。**下游**"新 SC 生成"
+> 整管线最高视角（阶段一/二并行 → 新 SC → 阶段三）见
+> [pipeline_overview.svg](pipeline_overview.svg)。本文档止于阶段二主链
+> （报告 → P/I/V → stage3-spec）。**下游**"新 SC 生成"
 > （阶段二 run + 阶一切片 → 单文件新 SC → forge → 四分支判读 → 阶段三
 > ingest）见 [new_sc_flow.svg](new_sc_flow.svg)。
 
