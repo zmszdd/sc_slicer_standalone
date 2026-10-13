@@ -319,3 +319,53 @@ I/V 倒置），和模型自报的歧义/局限/未决项。在 72 个可重算 
 的 `manifest.json`，以及 `prompt_v314/v315×2/v316_holdout_01` 的
 `SELECTION.json`）。`prompts/definitions.py` 不在 `CODE_PATHS` 中，故不在哈希
 约束范围内。
+
+## 2026-10-13：S13 —— 架构收口（新 SC 生成废弃 + 管线/入口简化 + 基线修复）
+
+### 废弃"生成新 SC"工作线
+
+新 SC（smart contract）生成/注入是**纯评测侧**工作：主管线对它零 import，
+废弃不触碰任何运行时代码。按零删除归档惯例执行：
+
+- `evaluation/new_sc_injection_01`、`new_sc_injection_02` 整体 `git mv` 至
+  `evaluation/archive/`（含未提交内容）
+- 删除 `docs/new_sc_flow.svg`、`pipeline_overview.svg` 及两个生成器脚本
+- 库侧在途改动回滚：`lib/solving.py` / `lib/stage3_consistency.py` /
+  `tests/test_stage3_contract.py` 中仅为新 SC 服务的
+  `queries_from_piv` / dsl 引用全部移除（`git diff` 对 HEAD 为空）
+- stage2→stage3 回路由 `stage3-feedback` 承担（见
+  `docs/STAGE2_CURRENT_STATUS.md` 2026-10-12 条目）
+
+### 管线与入口简化（行为逐字节不变）
+
+- `cli/semantic_pipeline.py`：readiness/elements 两段近重复的模型调用重试
+  环合并为共享骨架 `_bounded_model_call`（per-attempt 工件目录名、
+  attempts.json 键序、outcome 标签、可重试异常元组全部保持不变）；
+  两张平行的错误消息表（formal_repair_fields / formal_retry_hint 背后）
+  合并为单一注册表 `_FORMAL_ERROR_RULES`，48 个消息用例逐一比对零失配
+- `main.py`：4 个默认值注入字典 + 3 个包装函数收敛为单一
+  `STAGE2_ARG_DEFAULTS` 表 + `_with_arg_defaults`
+- 死代码清理：`cli/preconditions.py` 两处误缩进的 `main()` 尾随调用
+  （成功 audit/repair 后向 stderr 重打印 usage）、`lib/salvage.py`
+  replay_main 不可达的 `raise SystemExit(main())`
+
+### 基线测试修复（投入工作前提：392 全绿）
+
+四个失败在纯 HEAD 上复现，均为历史遗留而非本次引入：
+
+- `test_automatic_triage` ×2：`from_bundle` 自 416d78a 起路由与
+  continuation gate 对齐（空 claims → abstain），测试包改为携带完整
+  claim（`complete_review_bundle` 同构），`candidate`/`review` 路由照旧覆盖
+- `test_semantic_batch`：416d78a 将三级重试默认值 0→1，`retry_count`
+  期望从 0 更新为 2（opencode 下 readiness 重试被 provider 门控为 0）
+- `test_semantic_core`：`formalization requires at least one claim`
+  补入 `BOUNDARY`（未列出本就默认 REJECT，仅满足 ast 覆盖守卫，分类不变）
+
+### 验证
+
+392 测试全绿；`doctor` 全过；三个时代的冻结 run 重放（live4/live3/
+final_holdout_01 各一例）`offline_verified: true`。
+
+已知且如实上报：`fresh_holdout_01/manifest.json` 的 8 个 `code_sha256`
+在 HEAD 上即已全部漂移（冻结于更早迭代），本次重构进一步远离该基线；
+重设哈希不在本次范围内。

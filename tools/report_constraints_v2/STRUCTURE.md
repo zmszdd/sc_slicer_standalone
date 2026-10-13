@@ -101,15 +101,16 @@ python main.py test | versions | doctor | status | frozen
 脚本解析顺序为 `cli/` → `lib/` → 阶段二根目录，由 `main.py` 的
 `STAGE2_SCRIPT_DIRS` 定义。
 
-`main.py` 还会注入两组默认值，且**只在调用者没有自己指定时**生效：
+`main.py` 还会注入默认值（`STAGE2_ARG_DEFAULTS` 一张表统一描述，且**只在调用者
+没有自己指定时**生效）：
 
-| 表 | 命令 | 生效条件 |
+| 注入 | 命令 | 生效条件 |
 | --- | --- | --- |
-| `STAGE2_DEEPSEEK_DEFAULTS` | `run` / `batch` | `run` 仅当带 `--extract` 或 `--formalize-only`（见 `STAGE2_NEURAL_ONLY_DEFAULTS`）；`batch` 恒生效 |
-| `STAGE2_VERDICT_DEFAULTS` | `run` / `batch` | 恒生效（见"断言策略"一节） |
-| `STAGE2_PROXY_DEFAULTS` | `run` / `batch` | 恒生效；仅对 `--provider deepseek` 有意义 |
+| 前置 `--provider deepseek [--model deepseek-flash]` | `run` / `batch` | `run` 仅当带 `--extract` 或 `--formalize-only`（离线重放不注入）；`batch` 恒生效 |
+| 追加 `--claim-verdict signals` | `run` / `batch` | 恒生效（见"断言策略"一节） |
+| 追加 `--deepseek-proxy direct` | `run` / `batch` | 恒生效；仅对 `--provider deepseek` 有意义 |
 
-`STAGE2_PROXY_DEFAULTS` 注入的是 `--deepseek-proxy direct`。官方传输原本**隐式**继承
+`--deepseek-proxy direct` 注入的原因：官方传输原本**隐式**继承
 `*_proxy` 环境变量，而 `HTTPS_PROXY` 指向不响应 HTTP CONNECT 的端口时，失败信息只有
 `DeepSeek network failure; details not saved`，排查代价很高。需要代理时显式传
 `--deepseek-proxy environment` 或一个 `http(s)://` URL。`opencode` 通道不读这个标志。
@@ -144,22 +145,22 @@ python main.py test | versions | doctor | status | frozen
 
 | 文件 | 行数 | 作用 |
 | --- | ---: | --- |
-| `semantic_pipeline.py` | 1058 | 报告筛选、两步模型调用、规则化、Z3 和输出 |
-| `batch_verify.py` | 528 | `batch`（限量并发跑真实报告）+ `verify`（零模型调用重放） |
-| `preconditions.py` | 368 | 可选 `audit`（P 证据/时序审查）与 `repair`（受约束 P 修复） |
+| `semantic_pipeline.py` | 1078 | 报告筛选、两步模型调用、规则化、Z3 和输出 |
+| `batch_verify.py` | 574 | `batch`（限量并发跑真实报告）+ `verify`（零模型调用重放） |
+| `preconditions.py` | 362 | 可选 `audit`（P 证据/时序审查）与 `repair`（受约束 P 修复） |
 | `preview.py` | 154 | 本地 `screen` 检查与 `report` / `plan` / `prompt` 预览 |
 
 ### `lib/` 共享库层
 
 | 文件 | 行数 | 作用 | 由哪些文件合并而来 |
 | --- | ---: | --- | --- |
-| `semantic_core.py` | 753 | P/I/V schema、类型、编译与基础校验 | — |
+| `semantic_core.py` | 754 | P/I/V schema、类型、编译与基础校验 | — |
 | `plan_synthesizer.py` | 998 | 形式计划校验和确定性公式合成（含 semantic-live-5 的重复谓词门与三件 advisory/部分形式化审查） | — |
 | `deepseek.py` | 203 | **DeepSeek 连接唯一定义处**：模型白名单与默认模型、官方端点、密钥文件路径、解码参数（temperature 0 / max_tokens 8192）、密钥读取校验、代理三态策略、`extract_deepseek` HTTP 传输 | — |
 | `report_only.py` | 426 | 报告解析、表达式编译、opencode 传输（`extract`） | （含原 `review_semantics.py` 的 `relationship_review`） |
 | `ingest.py` | 164 | 原文片段编号、ID 回填、提取前信息充分性门 | `evidence_catalog.py` + `report_readiness.py` |
 | `solving.py` | 233 | SMT/Z3 查询与 witness 校验、分流与可观察变量审查 | `symbolic_queries.py` + `review.py` |
-| `salvage.py` | 517 | 数值与零地址保真守卫（拒绝消息带缺失来源）、机械修复、示例钉死 advisory | `fidelity.py`（原 `numeric_fidelity.py` + `address_fidelity.py`）+ `mechanical_salvage.py` |
+| `salvage.py` | 532 | 数值与零地址保真守卫（拒绝消息带缺失来源）、机械修复、示例钉死 advisory | `fidelity.py`（原 `numeric_fidelity.py` + `address_fidelity.py`）+ `mechanical_salvage.py` |
 | `stage3_consistency.py` | 224 | stage3-binding-contract 生成、阶段三反馈 ingest 与真实 consistency 判定（semantic-live-5） | — |
 
 `deepseek.py` 是唯一不 import 任何同层模块的叶子模块（只依赖标准库）。
