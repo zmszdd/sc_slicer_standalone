@@ -179,7 +179,17 @@ class Stage2OnlyTest(unittest.TestCase):
         self.assertEqual(
             entry._with_arg_defaults('run', ['--extract', '--case-dir', 'x']),
             ['--provider', 'deepseek', '--extract', '--case-dir', 'x',
-             '--deepseek-proxy', 'direct', '--claim-verdict', 'signals'])
+             '--deepseek-proxy', 'direct', '--claim-verdict', 'signals',
+             '--formal-retries', '1', '--element-retries', '1'])
+
+    def test_formalize_only_run_gets_no_element_retry_budget(self):
+        # --element-retries is guarded by the target parser as
+        # "requires --extract"; injecting it into a formalize-only run
+        # would make the child exit 2 before any model call.
+        result = entry._with_arg_defaults(
+            'run', ['--formalize-only', '--case-dir', 'x'])
+        self.assertIn('--formal-retries', result)
+        self.assertNotIn('--element-retries', result)
 
     def test_offline_run_is_not_pinned_to_the_deepseek_transport(self):
         """An offline run replays saved candidates and makes no model call.
@@ -195,9 +205,12 @@ class Stage2OnlyTest(unittest.TestCase):
             with self.subTest(argv=argv):
                 result = entry._with_arg_defaults('run', argv)
                 self.assertNotIn('--provider', result)
-                # proxy/verdict defaults still apply (they are transport-agnostic)
+                # proxy/verdict defaults still apply (transport-agnostic);
+                # retry budgets do not (the parser requires neural flags).
                 self.assertEqual(result[-4:], ['--deepseek-proxy', 'direct',
                                                '--claim-verdict', 'signals'])
+                self.assertNotIn('--formal-retries', result)
+                self.assertNotIn('--element-retries', result)
 
     def test_batch_also_pins_the_official_model_id(self):
         args = entry._with_arg_defaults('batch', ['--reports-root', 'r'])
@@ -208,11 +221,21 @@ class Stage2OnlyTest(unittest.TestCase):
         argv = ['--provider', 'opencode', '--extract', '--case-dir', 'x']
         self.assertEqual(entry._with_arg_defaults('run', argv),
                          [*argv, '--deepseek-proxy', 'direct',
-                          '--claim-verdict', 'signals'])
+                          '--claim-verdict', 'signals',
+                          '--formal-retries', '1', '--element-retries', '1'])
         argv = ['--provider', 'opencode', '--formalize-only', '--case-dir', 'x']
         self.assertEqual(entry._with_arg_defaults('run', argv),
                          [*argv, '--deepseek-proxy', 'direct',
-                          '--claim-verdict', 'signals'])
+                          '--claim-verdict', 'signals',
+                          '--formal-retries', '1'])
+
+    def test_explicit_retry_budget_is_never_overridden(self):
+        argv = ['--extract', '--case-dir', 'x', '--formal-retries', '2']
+        self.assertEqual(entry._with_arg_defaults('run', argv),
+                         ['--provider', 'deepseek', *argv,
+                          '--deepseek-proxy', 'direct',
+                          '--claim-verdict', 'signals',
+                          '--element-retries', '1'])
 
     def test_offline_commands_get_no_model_defaults(self):
         for command in ('verify', 'screen', 'status'):
@@ -250,7 +273,9 @@ class CommandSmokeTest(unittest.TestCase):
         So the invariant is asserted where it is verifiable: the target
         script's own source must declare each injected flag.
         """
-        tables = {command: (*prepend, *(flag for flags, _ in appends for flag in flags))
+        tables = {command: (*prepend,
+                            *(flag for flags, _conflict, _requires in appends
+                              for flag in flags))
                   for command, (prepend, appends, _neural) in
                   entry.STAGE2_ARG_DEFAULTS.items()}
         for command, defaults in sorted(tables.items()):

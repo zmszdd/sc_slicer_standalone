@@ -109,6 +109,8 @@ python main.py test | versions | doctor | status | frozen
 | 前置 `--provider deepseek [--model deepseek-flash]` | `run` / `batch` | `run` 仅当带 `--extract` 或 `--formalize-only`（离线重放不注入）；`batch` 恒生效 |
 | 追加 `--claim-verdict signals` | `run` / `batch` | 恒生效（见"断言策略"一节） |
 | 追加 `--deepseek-proxy direct` | `run` / `batch` | 恒生效；仅对 `--provider deepseek` 有意义 |
+| 追加 `--formal-retries 1` | `run` | 带任一神经标志（`--extract` / `--formalize-only`），与目标脚本 parser 守卫对齐 |
+| 追加 `--element-retries 1` | `run` | 仅 `--extract`（parser 要求 element 重试必须有提取） |
 
 `--deepseek-proxy direct` 注入的原因：官方传输原本**隐式**继承
 `*_proxy` 环境变量，而 `HTTPS_PROXY` 指向不响应 HTTP CONNECT 的端口时，失败信息只有
@@ -117,6 +119,10 @@ python main.py test | versions | doctor | status | frozen
 
 `run` 之所以区分神经/离线：离线 run 只是重放已保存的 candidate，而 DeepSeek
 传输会直接拒绝非神经调用，无条件注入会让每一次离线 `main.py run` 退出码 2。
+重试预算注入的原因：直跑 `run` 的 argparse 默认是 0（离线 run 注入非零会触发
+parser 错误），而 `batch` 一直转发 1——两个入口行为不一致，2026-10-13 冒烟
+实测暴露（同一报告 batch 预算下经 field-scoped 修复转为候选，直跑把可修复
+错误当终局）。
 
 ## 命令到脚本的映射
 

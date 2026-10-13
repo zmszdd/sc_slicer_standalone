@@ -473,3 +473,40 @@ new-SC 专属代码（`stage3_consistency.queries_from_piv`、`lib/dsl.py`
 回归，再冻结规则并运行全新留出集；统计工程完成率、严格核心语义、误放行和误拒绝，不能
 把 `review`、带警告继续或 Z3 通过当作语义通过。展示用总结见
 [阶段二阶段性成果汇报](STAGE2_PRESENTATION_REPORT.md)。
+
+## 2026-10-13：live-6 后首次真实端到端冒烟 + 盲审（单例，测量型记录）
+
+背景：S13 收口（重试环合并、错误注册表合一、run 默认值注入收敛）后做投入性
+冒烟。盲样从 1464 份未用报告随机抽取（种子 20261013）：
+`Sequence__Transaction_Rails_Yn6A3eYizcQ__7rSTe38xKPK__JuBKoErDbar`。
+
+**两轮 run（共 7 次模型调用）**：
+- 直跑默认预算（当时 `--formal-retries` 默认 0）：3 次调用，被重复谓词门
+  拒绝——三条 P 来源全部塌缩到 `direct_call_occurred`，门按设计拦截
+- 评测同款预算（retries=1）：4 次调用，第 1 次同因被拦后 `_FORMAL_ERROR_RULES`
+  开出 field_scoped 处方，模型重试只改 `precondition_terms`+`symbols`，引入
+  按函数区分的符号解开塌缩，**转为候选**；`verify` 离线重放 8 项检查全过
+
+**两阶段盲审**（`evaluation/smoke_e2e_01/`，复用 accuracy_gold_01 冻结协议，
+prompt 原文照抄，裁判 deepseek-flash）：
+- 候选 run：要素/公式的 P、I 两维 faithful；V 维 weakened——V 只编码
+  "直调成功"，资金损失未入 V。核查确认这是 prompt 的**既定取舍**（V 定义
+  优先未授权完成而非下游损失），危害已按设计披露在 limitations；与
+  accuracy_gold_01 "weakened 大量为单主张压缩（设计取舍）"结论同形
+- 被拒 run：同一裁判两次裁定相互矛盾（REJECTED 口径判 misfire/过严，
+  CANDIDATE 口径判该尝试公式 unfaithful）——单例冒烟暴露同模型裁判的
+  prompt 敏感性，不下定论
+
+**修复落地（本条即披露记录）**：
+1. `main.py run` 神经流程现注入 `--formal-retries 1 --element-retries 1`
+   （requires 门槛与目标 parser 守卫对齐；显式传参不被覆盖）——直跑与
+   batch 预算不一致是本轮冒烟暴露的直接缺陷
+2. 五个冻结评测脚本（accuracy_gold_01/gold_review.py + 四批
+   dual_review.py）`from lib.report_only import extract_deepseek` 在
+   DeepSeek 单源化后失效，统一改为 `lib.deepseek`（测量仪器修复，
+   历史产物零改动）
+3. 重复谓词修复提示核验已覆盖盲裁判建议的两条出路（合并来源 / 独立
+   符号），冒烟实测引导出正确修复，不改
+4. V 优先级为既定设计，未经新冻结盲批不改动
+
+**已知局限不变**：单例 n=1；裁判与管线同模型（自偏好）；无独立金标准。

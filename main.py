@@ -104,7 +104,7 @@ ADVANCED_STAGE2_COMMANDS = (
     'stage3-feedback',
 )
 
-# main.py 会为 run/batch 注入三组默认参数，且只在调用者没有自己指定时生效：
+# main.py 会为 run/batch 注入四组默认参数，且只在调用者没有自己指定时生效：
 #
 # 前置（prepend）：阶段二全流程默认走官方 DeepSeek。只有真的走神经流程时才
 # 需要 DeepSeek 传输——纯离线 `run` 只是重放已保存的 candidate，而 deepseek
@@ -123,15 +123,28 @@ ADVANCED_STAGE2_COMMANDS = (
 # 追加（append）其二：S12 acceptance-verdict policy。legacy = 历史行为
 # （报告歧义 / 非断言实现否决该断言）；signals = 记为信息性字段，使正向判定
 # 可达。verify/screen 等不注入，保持逐字节重放。
+#
+# 追加（append）其三：有界修复重试预算。直跑 `run` 的 argparse 默认是 0
+# （offline 重放 run 不带 neural 标志，注入非零重试会触发 parser 的
+# `--formal-retries requires neural formalization`），而 `batch` 一直给子进程
+# 转发 1——两个入口行为不一致，第一次真实冒烟即暴露：同一报告在 batch 预算
+# 下能经 field-scoped 修复转为候选，直跑却把可修复错误当终局。故对神经 run
+# 注入与 batch 相同的预算；requires 门槛与目标脚本的 parser 守卫逐条对齐
+# （`--formal-retries` 要 extract 或 formalize-only，`--element-retries` 只
+# 认 `--extract`）。
 STAGE2_ARG_DEFAULTS = {
-    # command: (前置 flags, ((追加 flags, 冲突检测 flag), ...), 神经标志门槛)
+    # command: (前置 flags,
+    #           ((追加 flags, 冲突检测 flag, 需任一在场 flag（空=无条件）), ...),
+    #           神经标志门槛)
     'run': (('--provider', 'deepseek'),
-            ((('--deepseek-proxy', 'direct'), '--deepseek-proxy'),
-             (('--claim-verdict', 'signals'), '--claim-verdict')),
+            ((('--deepseek-proxy', 'direct'), '--deepseek-proxy', ()),
+             (('--claim-verdict', 'signals'), '--claim-verdict', ()),
+             (('--formal-retries', '1'), '--formal-retries', ('--extract', '--formalize-only')),
+             (('--element-retries', '1'), '--element-retries', ('--extract',))),
             ('--extract', '--formalize-only')),
     'batch': (('--provider', 'deepseek', '--model', 'deepseek-flash'),
-              ((('--deepseek-proxy', 'direct'), '--deepseek-proxy'),
-               (('--claim-verdict', 'signals'), '--claim-verdict')),
+              ((('--deepseek-proxy', 'direct'), '--deepseek-proxy', ()),
+               (('--claim-verdict', 'signals'), '--claim-verdict', ())),
               ()),
 }
 
@@ -428,8 +441,9 @@ def _with_arg_defaults(command, argv):
 
     Prepend the provider/model default unless the caller set provider/model
     itself (and, for ``run``, unless the invocation is actually neural — an
-    offline replay keeps the caller's own model-free transport).  Append the
-    proxy and verdict defaults unless each flag is already present.
+    offline replay keeps the caller's model-free transport).  Append the
+    proxy/verdict defaults unconditionally and the retry-budget defaults only
+    when their ``requires`` flags are present, each unless already set.
     """
     rule = STAGE2_ARG_DEFAULTS.get(command)
     if not rule:
@@ -440,10 +454,14 @@ def _with_arg_defaults(command, argv):
         prepend = ()
     if set(prepend[::2]) & set(argv):
         prepend = ()
-    for flags, conflict in appends:
-        if conflict not in argv:
-            argv = [*argv, *flags]
-    return [*prepend, *argv]
+    full_argv = [*prepend, *argv]
+    for flags, conflict, requires in appends:
+        if conflict in argv:
+            continue
+        if requires and not any(flag in full_argv for flag in requires):
+            continue
+        full_argv = [*full_argv, *flags]
+    return full_argv
 
 
 def _dispatch(argv, prefix=''):
