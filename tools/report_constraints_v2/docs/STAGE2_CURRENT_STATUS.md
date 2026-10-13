@@ -510,3 +510,34 @@ prompt 原文照抄，裁判 deepseek-flash）：
 4. V 优先级为既定设计，未经新冻结盲批不改动
 
 **已知局限不变**：单例 n=1；裁判与管线同模型（自偏好）；无独立金标准。
+
+## 2026-10-13：五例盲测批（生产形态直跑 + 两阶段盲审）
+
+用户要求"多测量几个，记得是盲测"后执行。选样：`random.Random(
+'stage2-blind-batch-2026-10-13-01')` 从 1462 份从未用于任何评测/调规则的
+报告池抽 5 例，选样与运行互不重合历史用例（含当日两例冒烟样）。
+run 形态即生产默认（`main.py run --extract`，S13 注入的重试预算生效），
+产物在 /tmp（不入库）。
+
+**工程链结果：3/5 候选、2/5 按设计拒绝（exit 2）**
+- 3 例候选各 3 次调用（门+提取+形式化，零重试），
+  `verify` 离线重放 8 项检查全过、`redundant_p_predicates []`
+- Kinetiq：第 1 次方案谓词 `exchange_ratio_low == 2`，报告原文为
+  0.2——数值保真门**正确拦截**（常量 {2} ⊄ 字面量 {0.2}）；随后两次
+  field-scoped 修复模型均**原样返回同一 plan**（字节级零改动），触发
+  `local repair made no change` 拒绝。裁判判 misfire，但人工核对确认
+  门没有误报，裁判漏看了数值细节（同模型局限）
+- Intuition：机器把"不应回滚"的安全意图形式化为
+  `preview_withdraw_reverts == false`，而所选 P 恰是报告断言**必然
+  回滚**成立的条件——与报告自相矛盾。裁判判 correct_catch，拒绝正确
+
+**忠实性（两阶段盲审，裁判只见报告原文做影子复述）：**
+3 例候选共 18 项维度评分：faithful 9、weakened 9、unfaithful 0；
+`constants_not_in_report` 与 `collapsed_facts` 三例全空。weakened 均为
+已知设计取舍且计划自身在 limitations 披露：GTE 生命周期前提移入
+assumptions、下游"Dex 永久停摆"推迟；Hybra `(parts-1) wei` 量化界
+推迟；SukukFi 正向授权要求让位于"坏结果不发生"（V 维既定优先级）。
+
+**与前次单例冒烟合并的结论**：无捏造、无塌缩、无误放行；两例拒绝
+均为 fail-closed（一例确属应拒，一例损失在模型修复能力而非门误报）。
+局限不变：n=5；裁判与管线同模型；无独立金标准。
