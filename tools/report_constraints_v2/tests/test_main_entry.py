@@ -177,8 +177,9 @@ class Stage2OnlyTest(unittest.TestCase):
 
     def test_run_injects_deepseek_for_the_neural_flow(self):
         self.assertEqual(
-            entry._with_deepseek_defaults('run', ['--extract', '--case-dir', 'x']),
-            ['--provider', 'deepseek', '--extract', '--case-dir', 'x'])
+            entry._with_arg_defaults('run', ['--extract', '--case-dir', 'x']),
+            ['--provider', 'deepseek', '--extract', '--case-dir', 'x',
+             '--deepseek-proxy', 'direct', '--claim-verdict', 'signals'])
 
     def test_offline_run_is_not_pinned_to_the_deepseek_transport(self):
         """An offline run replays saved candidates and makes no model call.
@@ -192,23 +193,31 @@ class Stage2OnlyTest(unittest.TestCase):
                    ['--report', 'r', '--elements-only', 'e'])
         for argv in offline:
             with self.subTest(argv=argv):
-                self.assertEqual(entry._with_deepseek_defaults('run', argv), argv)
+                result = entry._with_arg_defaults('run', argv)
+                self.assertNotIn('--provider', result)
+                # proxy/verdict defaults still apply (they are transport-agnostic)
+                self.assertEqual(result[-4:], ['--deepseek-proxy', 'direct',
+                                               '--claim-verdict', 'signals'])
 
     def test_batch_also_pins_the_official_model_id(self):
-        args = entry._with_deepseek_defaults('batch', ['--reports-root', 'r'])
+        args = entry._with_arg_defaults('batch', ['--reports-root', 'r'])
         self.assertEqual(args[:4],
                          ['--provider', 'deepseek', '--model', 'deepseek-flash'])
 
     def test_explicit_provider_is_never_overridden(self):
         argv = ['--provider', 'opencode', '--extract', '--case-dir', 'x']
-        self.assertEqual(entry._with_deepseek_defaults('run', argv), argv)
+        self.assertEqual(entry._with_arg_defaults('run', argv),
+                         [*argv, '--deepseek-proxy', 'direct',
+                          '--claim-verdict', 'signals'])
         argv = ['--provider', 'opencode', '--formalize-only', '--case-dir', 'x']
-        self.assertEqual(entry._with_deepseek_defaults('run', argv), argv)
+        self.assertEqual(entry._with_arg_defaults('run', argv),
+                         [*argv, '--deepseek-proxy', 'direct',
+                          '--claim-verdict', 'signals'])
 
     def test_offline_commands_get_no_model_defaults(self):
         for command in ('verify', 'screen', 'status'):
             with self.subTest(command=command):
-                self.assertEqual(entry._with_deepseek_defaults(command, ['d']), ['d'])
+                self.assertEqual(entry._with_arg_defaults(command, ['d']), ['d'])
 
 
 class CommandSmokeTest(unittest.TestCase):
@@ -241,13 +250,13 @@ class CommandSmokeTest(unittest.TestCase):
         So the invariant is asserted where it is verifiable: the target
         script's own source must declare each injected flag.
         """
-        tables = (entry.STAGE2_DEEPSEEK_DEFAULTS, entry.STAGE2_VERDICT_DEFAULTS,
-                  entry.STAGE2_PROXY_DEFAULTS)
-        for table in tables:
-            for command, defaults in sorted(table.items()):
-                script = entry._script_path(entry.STAGE2_COMMANDS[command][0])
-                source = script.read_text(encoding='utf-8')
-                for flag in (item for item in defaults if item.startswith('--')):
+        tables = {command: (*prepend, *(flag for flags, _ in appends for flag in flags))
+                  for command, (prepend, appends, _neural) in
+                  entry.STAGE2_ARG_DEFAULTS.items()}
+        for command, defaults in sorted(tables.items()):
+            script = entry._script_path(entry.STAGE2_COMMANDS[command][0])
+            source = script.read_text(encoding='utf-8')
+            for flag in (item for item in defaults if item.startswith('--')):
                     with self.subTest(command=command, flag=flag):
                         self.assertIn(
                             f"add_argument('{flag}'", source,

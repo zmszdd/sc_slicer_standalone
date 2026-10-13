@@ -104,43 +104,35 @@ ADVANCED_STAGE2_COMMANDS = (
     'stage3-feedback',
 )
 
-# 阶段二全流程默认走官方 DeepSeek。只在调用者完全没有指定 provider/model 时注入，
-# 因此测试与历史命令显式传入的离线传输不受影响。
-STAGE2_DEEPSEEK_DEFAULTS = {
-    'run': ('--provider', 'deepseek'),
-    'batch': ('--provider', 'deepseek', '--model', 'deepseek-flash'),
-}
-
-# 只有真的走神经流程时才需要 DeepSeek 传输。纯离线 `run` 只是重放已保存的
-# candidate，而 deepseek 传输会直接拒绝非神经调用
-# （`--provider deepseek requires neural extraction or formalization`），
-# 导致此前每一次离线 `main.py run` 都以退出码 2 失败，必须显式补
-# `--provider opencode` 才能跑。
-# `batch` 恒为神经流程（其子进程固定带 `--extract`），故不列在这里。
-STAGE2_NEURAL_ONLY_DEFAULTS = {
-    'run': ('--extract', '--formalize-only'),
-}
-
-# 官方 DeepSeek 传输的代理策略。环境里的 HTTPS_PROXY 指向一个不响应 HTTP
-# CONNECT 的端口时，urllib 会隐式把请求交给它并立刻被掐断，而报错只有
-# `DeepSeek network failure; details not saved` —— 完全看不出是代理干的。
-# 因此神经流程默认直连；需要代理时显式传 `--deepseek-proxy environment`
-# （沿用 *_proxy 变量）或一个 http(s):// URL。仅对 `--provider deepseek` 生效。
-STAGE2_PROXY_DEFAULTS = {
-    'run': ('--deepseek-proxy', 'direct'),
-    'batch': ('--deepseek-proxy', 'direct'),
-}
-
-# 多个命令可指向同一个脚本，用前导参数区分（见 _dispatch）。
-# S12: acceptance-verdict policy.  Deliberately kept OUT of
-# STAGE2_DEEPSEEK_DEFAULTS so _with_deepseek_defaults keeps its tested exact-argv
-# contract.  legacy = historical behaviour (report ambiguities / non-asserted
-# realization veto the claim); signals = record them as informational fields so a
-# positive verdict is reachable at all.  verify/screen/etc. get no default and
-# keep replaying byte-for-byte.
-STAGE2_VERDICT_DEFAULTS = {
-    'run': ('--claim-verdict', 'signals'),
-    'batch': ('--claim-verdict', 'signals'),
+# main.py 会为 run/batch 注入三组默认参数，且只在调用者没有自己指定时生效：
+#
+# 前置（prepend）：阶段二全流程默认走官方 DeepSeek。只有真的走神经流程时才
+# 需要 DeepSeek 传输——纯离线 `run` 只是重放已保存的 candidate，而 deepseek
+# 传输会直接拒绝非神经调用（`--provider deepseek requires neural extraction
+# or formalization`），导致此前每一次离线 `main.py run` 都以退出码 2 失败。
+# 因此 `run` 仅当带 neural_flags 之一（`--extract` / `--formalize-only`）时
+# 注入；`batch` 恒为神经流程（其子进程固定带 `--extract`）。
+#
+# 追加（append）其一：官方 DeepSeek 传输的代理策略。环境里的 HTTPS_PROXY
+# 指向一个不响应 HTTP CONNECT 的端口时，urllib 会隐式把请求交给它并立刻被
+# 掐断，而报错只有 `DeepSeek network failure; details not saved`——完全看
+# 不出是代理干的。因此默认直连；需要代理时显式传 `--deepseek-proxy
+# environment`（沿用 *_proxy 变量）或一个 http(s):// URL。仅对
+# `--provider deepseek` 有意义。
+#
+# 追加（append）其二：S12 acceptance-verdict policy。legacy = 历史行为
+# （报告歧义 / 非断言实现否决该断言）；signals = 记为信息性字段，使正向判定
+# 可达。verify/screen 等不注入，保持逐字节重放。
+STAGE2_ARG_DEFAULTS = {
+    # command: (前置 flags, ((追加 flags, 冲突检测 flag), ...), 神经标志门槛)
+    'run': (('--provider', 'deepseek'),
+            ((('--deepseek-proxy', 'direct'), '--deepseek-proxy'),
+             (('--claim-verdict', 'signals'), '--claim-verdict')),
+            ('--extract', '--formalize-only')),
+    'batch': (('--provider', 'deepseek', '--model', 'deepseek-flash'),
+              ((('--deepseek-proxy', 'direct'), '--deepseek-proxy'),
+               (('--claim-verdict', 'signals'), '--claim-verdict')),
+              ()),
 }
 
 STAGE2_ARG_PREFIX = {
@@ -431,38 +423,27 @@ META_HANDLERS = {
 }
 
 
-def _with_deepseek_defaults(command, argv):
-    """Prepend the DeepSeek defaults unless the caller set provider/model itself.
+def _with_arg_defaults(command, argv):
+    """Apply STAGE2_ARG_DEFAULTS for ``command`` unless the caller set its own.
 
-    Commands listed in ``STAGE2_NEURAL_ONLY_DEFAULTS`` are injected only when the
-    invocation actually extracts or formalizes; an offline replay keeps the
-    caller's own (model-free) transport.
+    Prepend the provider/model default unless the caller set provider/model
+    itself (and, for ``run``, unless the invocation is actually neural — an
+    offline replay keeps the caller's own model-free transport).  Append the
+    proxy and verdict defaults unless each flag is already present.
     """
-    defaults = STAGE2_DEEPSEEK_DEFAULTS.get(command)
-    if not defaults:
+    rule = STAGE2_ARG_DEFAULTS.get(command)
+    if not rule:
         return list(argv)
-    required = STAGE2_NEURAL_ONLY_DEFAULTS.get(command)
-    if required and not any(flag in argv for flag in required):
-        return list(argv)
-    if set(defaults[::2]) & set(argv):
-        return list(argv)
-    return [*defaults, *argv]
-
-
-def _with_proxy_defaults(command, argv):
-    """Apply the DeepSeek transport's proxy default without touching the rest."""
-    defaults = STAGE2_PROXY_DEFAULTS.get(command)
-    if not defaults or defaults[0] in argv:
-        return list(argv)
-    return [*argv, *defaults]
-
-
-def _with_verdict_defaults(command, argv):
-    """Apply the acceptance-verdict default without touching model defaults."""
-    defaults = STAGE2_VERDICT_DEFAULTS.get(command)
-    if not defaults or defaults[0] in argv:
-        return list(argv)
-    return [*argv, *defaults]
+    prepend, appends, neural_flags = rule
+    argv = list(argv)
+    if neural_flags and not any(flag in argv for flag in neural_flags):
+        prepend = ()
+    if set(prepend[::2]) & set(argv):
+        prepend = ()
+    for flags, conflict in appends:
+        if conflict not in argv:
+            argv = [*argv, *flags]
+    return [*prepend, *argv]
 
 
 def _dispatch(argv, prefix=''):
@@ -479,12 +460,7 @@ def _dispatch(argv, prefix=''):
     if command in STAGE2_COMMANDS:
         prefix_args = STAGE2_ARG_PREFIX.get(command, ())
         return _delegate(STAGE2_COMMANDS[command][0],
-                         [*prefix_args,
-                          *_with_verdict_defaults(
-                              command,
-                              _with_proxy_defaults(
-                                  command,
-                                  _with_deepseek_defaults(command, rest)))])
+                         [*prefix_args, *_with_arg_defaults(command, rest)])
     print(f'unknown {prefix}command: {command}', file=sys.stderr)
     print(_usage(), file=sys.stderr)
     return 2

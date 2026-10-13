@@ -91,58 +91,262 @@ def compact_json(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
 
 
+
+def _numeric_p_hint(message):
+    # The gate's message names the offending source and literals
+    # (": <source_id> states 50, 100"); surface it so the retry repairs
+    # THAT source instead of guessing (final_holdout_02: Kinetiq).
+    detail = message.split(': ', 1)[1] if ': ' in message else ''
+    pointer = f'Failing source: {detail}\n' if detail else ''
+    return ('\nRETRY FEEDBACK: Include EVERY extracted P/assumption source ID '
+            'in precondition_terms. If its statement contains an explicit '
+            'numeric comparison, its OWN P predicate must encode the SAME '
+            'literal and comparison direction, written as '
+            'right:{"const":N} with N a literal that appears in the cited '
+            'report text. Do not use a Boolean placeholder or weaker '
+            'threshold. Do not compute the constant: a bound stated as a '
+            '12-bit width or bit range binds to 12 (the text literal), '
+            'never 4096 or a mask; an enum bound like type == 1 uses '
+            '{"const":1}, never a named symbol for the constant. For 2^N '
+            '+/- K use the exact power_of_two/offset operand, never '
+            'floating point or scientific notation. If the text has no '
+            'plain numeric literal for the bound, record it in unresolved '
+            'instead of inventing a constant. If the statement compares two '
+            'report quantities (balances exceed reserves), encode that '
+            'symbol-vs-symbol comparison directly with NO constant: a '
+            'constant absent from the cited text is invented even when '
+            'semantically equivalent. Keep report facts unchanged.\n'
+            + pointer)
+
+
+#: 受限修复错误的单一注册表：每行 = (matcher, mutable_fields, retry_hint)。
+#: matcher 为精确字符串、精确字符串元组（任一命中）、('prefix', s) 或
+#: ('contains', s)。mutable_fields 是本次重试允许改动的最小 top-level 计划
+#: 区域；retry_hint 是固定反馈文本（或 message -> str 的可调用），None 表示
+#: 落到默认。同一错误家族的"哪些字段可改"与"重试怎么反馈"**只能**在这里
+#: 同表维护——历史上它们是两张平行表，靠人工保持同步。
+_PATTERN_ONLY = ('pattern',)
+_CANCELLABLE = ('pattern', 'symbols', 'derived_definitions', 'unresolved', 'limitations')
+_DERIVED_DEFS = ('derived_definitions', 'symbols')
+#: Numeric-gate repairs routinely need to rewrite the failing comparison
+#: predicate itself (restore an explicit bound the first attempt hid),
+#: so pattern joins the mutable set here.
+_NUMERIC_P = ('precondition_ids', 'precondition_terms', 'symbols',
+              'assumptions', 'pattern', 'unresolved', 'limitations')
+_IMPACT_CORE = ('impact_ids', 'symbols', 'derived_definitions', 'pattern',
+                'unresolved', 'limitations')
+_IMPACT_CONTEXT = ('impact_context_terms', 'symbols', 'pattern',
+                   'unresolved', 'limitations')
+_TYPE_UNIT = ('relation_class', 'symbols', 'precondition_terms',
+              'derived_definitions', 'impact_context_terms', 'pattern',
+              'assumptions', 'unresolved', 'limitations')
+_SYMBOL_SCOPE = ('symbols', 'precondition_terms', 'derived_definitions',
+                 'pattern', 'unresolved', 'limitations')
+#: Preserve semantic selection/classification even for an unfamiliar local
+#: structural error. A later fresh run, rather than a repair, may reconsider it.
+_SEMANTIC_SCOPE = ('symbols', 'precondition_terms', 'derived_definitions', 'pattern',
+                   'assumptions', 'unresolved', 'limitations')
+_FORMAL_DEFAULT_HINT = (
+    '\nRETRY FEEDBACK: Previous plan failed deterministic schema/type checks. '
+    'Return one valid JSON plan, following the exact schema. '
+    'Do not invent report facts.\n')
+
+_FORMAL_ERROR_RULES = (
+    (('missing plan quantity unit'), _SYMBOL_SCOPE,
+     '\nRETRY FEEDBACK: Every int symbol needs a nonempty unit string. '
+     'For a unitless encoded number use "dimensionless"; '
+     'only bool/address symbols use null. Keep report semantics unchanged.\n'),
+    ('unknown synthesis pattern', _SEMANTIC_SCOPE,
+     '\nRETRY FEEDBACK: pattern must be one object with a top-level '
+     '"kind" field, e.g. {"kind":"condition_forbids_effect", '
+     '"condition":..., "effect":...}. Never nest it in another '
+     '"pattern" object. Keep report semantics unchanged.\n'),
+    ('invalid condition pattern', _SEMANTIC_SCOPE,
+     '\nRETRY FEEDBACK: For kind="condition_forbids_effect" or '
+     '"condition_requires_effect", pattern must contain EXACTLY '
+     'kind, condition, effect. condition and effect must each be a '
+     'complete predicate object. Do not omit either field. '
+     'Keep report semantics unchanged.\n'),
+    ('invalid plan symbol', _SYMBOL_SCOPE,
+     '\nRETRY FEEDBACK: Every symbols key must be lowercase snake_case '
+     '(e.g. epoch_duration_seconds); every symbol object must have '
+     'exactly sort, unit, meaning, checkpoint, entity_ids, source_ids. '
+     'Use the same renamed key in predicates. Keep report semantics unchanged.\n'),
+    (('invalid truth binding', 'truth binding requires bool symbol'), _SYMBOL_SCOPE,
+     '\nRETRY FEEDBACK: Audit every predicate reference before returning. '
+     'Every referenced symbol must be declared in symbols. A '
+     'kind="truth" predicate may reference ONLY a declared sort:"bool" '
+     'symbol and value must be true or false. For int/address symbols use '
+     'comparison or relation with an explicit right operand; never treat '
+     'an integer/address as Boolean. If the cited report fact explicitly '
+     'says an operation/event occurred, declare a separate bool occurrence '
+     'symbol grounded by that source; otherwise omit that P selection '
+     'rather than inventing a trigger. Keep report semantics unchanged.\n'),
+    (('unknown predicate symbol', 'unknown comparison symbol'), _SYMBOL_SCOPE,
+     '\nRETRY FEEDBACK: Every symbol referenced by precondition_terms or '
+     'pattern must be declared in symbols with the exact required object '
+     'fields. Do not refer to an undeclared fair/expected/convenience '
+     'variable. If the report does not ground that quantity, choose a '
+     'narrower report-supported relation or mark unsupported_relation '
+     'blocking. Keep report semantics unchanged.\n'),
+    (('invalid quantity binding', 'invalid quantity expression'), _SYMBOL_SCOPE,
+     '\nRETRY FEEDBACK: A QEXPR is symbol, integer const, exact '
+     'power_of_two, or add/sub/mul with EXACTLY two args. Nest binary '
+     'operations instead of returning three args. For ratios or '
+     'proportional fairness, do not divide: cross-multiply both sides '
+     'so their units match. Pattern slots typed as quantities take '
+     'ONLY a QEXPR: kind="conservation" before/after are the conserved '
+     'QUANTITIES (the invariant is before == after), never comparison '
+     'predicates; an equality between two distinct observables at one '
+     'checkpoint is kind="correspondence" (observed_symbol vs '
+     'expected_symbol) or a relation_obligation relation, not a '
+     'quantity slot. Change only the malformed expression and its '
+     'directly required symbols/definitions.\n'),
+    (('invalid quantity relation', 'invalid predicate binding'), _SYMBOL_SCOPE, None),
+    ('relation class and pattern mismatch', _PATTERN_ONLY,
+     '\nRETRY FEEDBACK: relation_class and pattern must be compatible. '
+     'state_correspondence uses relation_obligation with observable '
+     'equality/inequality; monotonicity uses monotonicity; conservation '
+     'uses conservation or relation_obligation; value/bound/fairness/'
+     'sequence/data/range relations use relation_obligation; access_control '
+     'uses authorization or forbidden-effect; progress_or_liveness uses '
+     'requires/forbids. Keep report semantics unchanged.\n'),
+    ('fixed relation template mismatch', _PATTERN_ONLY,
+     '\nRETRY FEEDBACK: Use the compiler-fixed template for the existing '
+     'relation_class. monotonicity uses kind="monotonicity"; conservation '
+     'uses kind="conservation"; every other class uses '
+     'kind="relation_obligation" with condition and relation. Do not '
+     'change relation_class, intent_id or impact_ids.\n'),
+    ('expanded relation template mismatch', _PATTERN_ONLY,
+     '\nRETRY FEEDBACK: Use the typed template fixed for the existing '
+     'relation_class: authorization_guard, bounded_relation, '
+     'monotonicity, conservation, proportional_relation, '
+     'correspondence, temporal_order, required_effect, or the allowed '
+     'relation_obligation fallback. Do not change intent_id or impact_ids.\n'),
+    ('P predicate symbol not grounded by its own source', _NUMERIC_P,
+     '\nRETRY FEEDBACK: Audit each P term separately. Every symbol used '
+     'by that term must include that exact term source_id in source_ids. '
+     'Add the source only when its report statement truly supports the '
+     'symbol; otherwise declare a source-specific observable or remove '
+     'that P selection. Do not borrow a different P source.\n'),
+    ('distinct P sources reuse identical predicate', _NUMERIC_P,
+     '\nRETRY FEEDBACK: Two different P sources used the same predicate. '
+     'Keep only the clearest source if they express one fact, or encode '
+     'each source with its own report-supported observable.\n'),
+    ('P terms must cover selected preconditions exactly once', _NUMERIC_P, None),
+    ('impact context symbol not grounded by its own source', _IMPACT_CONTEXT,
+     '\nRETRY FEEDBACK: Every symbol in an impact_context_terms predicate '
+     'must cite that exact selected impact ID. Declare an impact-specific '
+     'observable for what the impact text says; add the impact ID to an '
+     'existing symbol only when that impact really supports its meaning.\n'),
+    (('invalid impact context terms', 'invalid impact context term',
+      'impact context source not selected', 'invalid impact qualifier types'),
+     _IMPACT_CONTEXT, None),
+    (('prefix', 'impact qualifier missing from formal plan'), _IMPACT_CONTEXT,
+     '\nRETRY FEEDBACK: impact_context_terms did not cover every explicit '
+     'qualifier type detected in the selected impact. The repair_error '
+     'lists the missing temporal/threshold/state types by impact ID. Add '
+     'report-grounded predicates for those exact types without replacing '
+     'the selected impact or intent.\n'),
+    (('type/unit mismatch', 'bounded relation type/unit mismatch',
+      'correspondence type/unit mismatch', 'proportional relation type/unit mismatch'),
+     _TYPE_UNIT,
+     '\nRETRY FEEDBACK: The selected quantities have incompatible units. '
+     'Do not relabel units or define a quotient with multiplication. Keep '
+     'intent_id and impact_ids fixed. For share/price proportionality, '
+     'express the invariant as the cross-multiplied relation (for example '
+     'shares_received * total_assets <= deposit_amount * total_supply) '
+     'and never define a derived symbol whose product units are then '
+     'compared against a plain share quantity. If the current '
+     'relation_class cannot '
+     'express the report relation with add/sub/mul and matching units, this '
+     'bounded repair may choose a more suitable relation_class and its '
+     'compiler-fixed template, or return blocking unsupported_relation.\n'),
+    ('relation repeats cancellable observable on both sides', _CANCELLABLE,
+     '\nRETRY FEEDBACK: The relation repeats the same unknown '
+     'multiplicative observable on both sides, making the intended '
+     'comparison vacuous or sign-dependent. For proportional fairness, '
+     'compare distinct actual and full/expected quantities, e.g. '
+     'actual_reward * total_duration versus full_reward * '
+     'contributed_duration. Preserve the selected intent and impact.\n'),
+    ('referenced derived symbol lacks definition', _DERIVED_DEFS,
+     '\nRETRY FEEDBACK: Every referenced symbol whose checkpoint starts '
+     'with "derived" needs exactly one derived_definitions entry. Define '
+     'it with a report-grounded add/sub/mul quantity expression and cite '
+     'selected source IDs. Do not replace it with an unconstrained name.\n'),
+    (('contains', 'derived definition'), _DERIVED_DEFS,
+     '\nRETRY FEEDBACK: Repair only derived_definitions and, if required, '
+     'the corresponding symbol metadata. Definitions must target declared '
+     'int symbols, be acyclic, preserve units, and use report-grounded '
+     'base symbols and selected source IDs.\n'),
+    ('local repair made no change', _SEMANTIC_SCOPE,
+     '\nRETRY FEEDBACK: The previous repair attempt returned a plan '
+     'byte-identical to previous_plan, which repairs nothing. Produce a '
+     'concrete, visible difference inside mutable_top_level_fields that '
+     'answers repair_error: rewrite the offending predicate, term, or '
+     'definition -- not its wording elsewhere. If you cannot repair it, '
+     'change the plan so the unrepairable part is honestly relocated '
+     '(move the fact to assumptions, or add a blocking unresolved item) '
+     'instead of resubmitting the same object.\n'),
+    (('prefix', 'local repair '), _SEMANTIC_SCOPE,
+     '\nRETRY FEEDBACK: This is a local repair. Return the complete plan '
+     'but change only mutable_top_level_fields. All frozen fields must '
+     'remain structurally identical to previous_plan.\n'),
+    (('prefix', 'numeric P '), _NUMERIC_P, _numeric_p_hint),
+    (('prefix', 'zero-address '), _SEMANTIC_SCOPE,
+     '\nRETRY FEEDBACK: A report claim explicitly mentions '
+     'address(0)/zero address. Declare zero_address and the relevant '
+     'observable recipient/owner address as sort:address symbols. '
+     'Use a comparison predicate eq/ne with '
+     'right:{"symbol":"zero_address"} for that P, I condition, '
+     'or direct ownership V effect. Do not use a Boolean placeholder. '
+     'Keep report facts unchanged.\n'),
+    ('P predicate symbol not grounded by selected preconditions', _NUMERIC_P,
+     '\nRETRY FEEDBACK: A P predicate used a symbol not grounded by that '
+     'P set. Every symbol referenced by a P predicate must include '
+     'at least one selected precondition_id in its source_ids. Never '
+     'encode a precondition as the absence/presence of the later impact. '
+     'Keep report facts unchanged.\n'),
+    ('trivial self-comparison predicate', _SYMBOL_SCOPE,
+     '\nRETRY FEEDBACK: Never use x==x, x!=x, x<=x, x>=x or an '
+     'equivalent self-comparison as P, trigger, condition, or relation. '
+     'It is tautological/contradictory and does not encode a report fact. '
+     'Compare distinct observable fields, or use a separately declared '
+     'report-grounded bool occurrence symbol for an event/action trigger. '
+     'Keep report semantics unchanged.\n'),
+    ('core relation observables lack intent/impact grounding', _IMPACT_CORE,
+     '\nRETRY FEEDBACK: The core relation observables must collectively '
+     'cite every selected impact_id in their symbol source_ids. The '
+     'selected intent already grounds the I property in fixed-plan v4; '
+     'older schemas may additionally require it on an observable. First '
+     'reselect, from the supplied impact statements, '
+     'the ONE impact that most directly negates the selected intent; '
+     'prefer a failed/passed check or mismatched observable over its '
+     'downstream economic consequence. Do not use trigger-only symbols '
+     'or attach unrelated IDs merely to pass. Defer impacts that do not '
+     'describe the same relation. Keep relation_class/pattern compatible. '
+     'Keep report facts unchanged.\n'),
+)
+
+
+def _match_formal_error(message, matcher):
+    """matcher: 精确串 / 精确串元组（任一） / ('prefix'|'contains', 串)。"""
+    if isinstance(matcher, tuple) and len(matcher) == 2 and \
+            matcher[0] in ('prefix', 'contains') and isinstance(matcher[1], str):
+        return message.startswith(matcher[1]) if matcher[0] == 'prefix' \
+            else matcher[1] in message
+    if isinstance(matcher, tuple):
+        return message in matcher
+    return message == matcher
+
+
 def formal_repair_fields(exc):
     """Return the smallest top-level plan area allowed to change on retry."""
     message = str(exc)
-    if message in ('fixed relation template mismatch',
-                   'expanded relation template mismatch',
-                   'relation class and pattern mismatch'):
-        return ('pattern',)
-    if message == 'relation repeats cancellable observable on both sides':
-        return ('pattern', 'symbols', 'derived_definitions', 'unresolved', 'limitations')
-    if ('derived definition' in message or
-            message == 'referenced derived symbol lacks definition'):
-        return ('derived_definitions', 'symbols')
-    if message in ('P predicate symbol not grounded by selected preconditions',
-                   'P predicate symbol not grounded by its own source',
-                   'distinct P sources reuse identical predicate',
-                   'P terms must cover selected preconditions exactly once') or \
-            message.startswith('numeric P '):
-        # Numeric-gate repairs routinely need to rewrite the failing comparison
-        # predicate itself (restore an explicit bound the first attempt hid),
-        # so pattern joins the mutable set here.
-        return ('precondition_ids', 'precondition_terms', 'symbols',
-                'assumptions', 'pattern', 'unresolved', 'limitations')
-    if message == 'core relation observables lack intent/impact grounding':
-        return ('impact_ids', 'symbols', 'derived_definitions', 'pattern',
-                'unresolved', 'limitations')
-    if (message.startswith('impact qualifier missing from formal plan') or
-            message in ('invalid impact context terms',
-                   'invalid impact context term',
-                   'impact context source not selected',
-                   'invalid impact qualifier types',
-                   'impact context symbol not grounded by its own source')):
-        return ('impact_context_terms', 'symbols', 'pattern',
-                'unresolved', 'limitations')
-    if message == 'type/unit mismatch' or message in (
-            'bounded relation type/unit mismatch',
-            'correspondence type/unit mismatch',
-            'proportional relation type/unit mismatch'):
-        return ('relation_class', 'symbols', 'precondition_terms',
-                'derived_definitions', 'impact_context_terms', 'pattern',
-                'assumptions', 'unresolved', 'limitations')
-    if message in ('invalid truth binding', 'truth binding requires bool symbol',
-                   'unknown predicate symbol', 'unknown comparison symbol',
-                   'invalid plan symbol', 'missing plan quantity unit',
-                   'invalid quantity expression', 'invalid quantity binding',
-                   'invalid quantity relation',
-                   'invalid predicate binding', 'trivial self-comparison predicate'):
-        return ('symbols', 'precondition_terms', 'derived_definitions', 'pattern',
-                'unresolved', 'limitations')
-    # Preserve semantic selection/classification even for an unfamiliar local
-    # structural error. A later fresh run, rather than a repair, may reconsider it.
-    return ('symbols', 'precondition_terms', 'derived_definitions', 'pattern',
-            'assumptions', 'unresolved', 'limitations')
+    for matcher, mutable_fields, _hint in _FORMAL_ERROR_RULES:
+        if _match_formal_error(message, matcher):
+            return mutable_fields
+    return _SEMANTIC_SCOPE
 
 
 def validate_local_repair(previous, repaired, mutable_fields):
@@ -187,203 +391,11 @@ def formal_retry_hint(exc):
         return '\nRETRY FEEDBACK: Previous call timed out. Return only concise valid JSON.\n'
     if isinstance(exc, json.JSONDecodeError):
         return '\nRETRY FEEDBACK: Previous answer was not valid JSON. Return one JSON object only.\n'
-    if str(exc) == 'missing plan quantity unit':
-        return ('\nRETRY FEEDBACK: Every int symbol needs a nonempty unit string. '
-                'For a unitless encoded number use "dimensionless"; '
-                'only bool/address symbols use null. Keep report semantics unchanged.\n')
-    if str(exc) == 'unknown synthesis pattern':
-        return ('\nRETRY FEEDBACK: pattern must be one object with a top-level '
-                '"kind" field, e.g. {"kind":"condition_forbids_effect", '
-                '"condition":..., "effect":...}. Never nest it in another '
-                '"pattern" object. Keep report semantics unchanged.\n')
-    if str(exc) == 'invalid condition pattern':
-        return ('\nRETRY FEEDBACK: For kind="condition_forbids_effect" or '
-                '"condition_requires_effect", pattern must contain EXACTLY '
-                'kind, condition, effect. condition and effect must each be a '
-                'complete predicate object. Do not omit either field. '
-                'Keep report semantics unchanged.\n')
-    if str(exc) == 'invalid plan symbol':
-        return ('\nRETRY FEEDBACK: Every symbols key must be lowercase snake_case '
-                '(e.g. epoch_duration_seconds); every symbol object must have '
-                'exactly sort, unit, meaning, checkpoint, entity_ids, source_ids. '
-                'Use the same renamed key in predicates. Keep report semantics unchanged.\n')
-    if str(exc) in ('invalid truth binding', 'truth binding requires bool symbol'):
-        return ('\nRETRY FEEDBACK: Audit every predicate reference before returning. '
-                'Every referenced symbol must be declared in symbols. A '
-                'kind="truth" predicate may reference ONLY a declared sort:"bool" '
-                'symbol and value must be true or false. For int/address symbols use '
-                'comparison or relation with an explicit right operand; never treat '
-                'an integer/address as Boolean. If the cited report fact explicitly '
-                'says an operation/event occurred, declare a separate bool occurrence '
-                'symbol grounded by that source; otherwise omit that P selection '
-                'rather than inventing a trigger. Keep report semantics unchanged.\n')
-    if str(exc) in ('unknown predicate symbol', 'unknown comparison symbol'):
-        return ('\nRETRY FEEDBACK: Every symbol referenced by precondition_terms or '
-                'pattern must be declared in symbols with the exact required object '
-                'fields. Do not refer to an undeclared fair/expected/convenience '
-                'variable. If the report does not ground that quantity, choose a '
-                'narrower report-supported relation or mark unsupported_relation '
-                'blocking. Keep report semantics unchanged.\n')
-    if str(exc) in ('invalid quantity binding', 'invalid quantity expression'):
-        return ('\nRETRY FEEDBACK: A QEXPR is symbol, integer const, exact '
-                'power_of_two, or add/sub/mul with EXACTLY two args. Nest binary '
-                'operations instead of returning three args. For ratios or '
-                'proportional fairness, do not divide: cross-multiply both sides '
-                'so their units match. Pattern slots typed as quantities take '
-                'ONLY a QEXPR: kind="conservation" before/after are the conserved '
-                'QUANTITIES (the invariant is before == after), never comparison '
-                'predicates; an equality between two distinct observables at one '
-                'checkpoint is kind="correspondence" (observed_symbol vs '
-                'expected_symbol) or a relation_obligation relation, not a '
-                'quantity slot. Change only the malformed expression and its '
-                'directly required symbols/definitions.\n')
-    if str(exc) == 'relation class and pattern mismatch':
-        return ('\nRETRY FEEDBACK: relation_class and pattern must be compatible. '
-                'state_correspondence uses relation_obligation with observable '
-                'equality/inequality; monotonicity uses monotonicity; conservation '
-                'uses conservation or relation_obligation; value/bound/fairness/'
-                'sequence/data/range relations use relation_obligation; access_control '
-                'uses authorization or forbidden-effect; progress_or_liveness uses '
-                'requires/forbids. Keep report semantics unchanged.\n')
-    if str(exc) == 'fixed relation template mismatch':
-        return ('\nRETRY FEEDBACK: Use the compiler-fixed template for the existing '
-                'relation_class. monotonicity uses kind="monotonicity"; conservation '
-                'uses kind="conservation"; every other class uses '
-                'kind="relation_obligation" with condition and relation. Do not '
-                'change relation_class, intent_id or impact_ids.\n')
-    if str(exc) == 'expanded relation template mismatch':
-        return ('\nRETRY FEEDBACK: Use the typed template fixed for the existing '
-                'relation_class: authorization_guard, bounded_relation, '
-                'monotonicity, conservation, proportional_relation, '
-                'correspondence, temporal_order, required_effect, or the allowed '
-                'relation_obligation fallback. Do not change intent_id or impact_ids.\n')
-    if str(exc) == 'P predicate symbol not grounded by its own source':
-        return ('\nRETRY FEEDBACK: Audit each P term separately. Every symbol used '
-                'by that term must include that exact term source_id in source_ids. '
-                'Add the source only when its report statement truly supports the '
-                'symbol; otherwise declare a source-specific observable or remove '
-                'that P selection. Do not borrow a different P source.\n')
-    if str(exc) == 'distinct P sources reuse identical predicate':
-        return ('\nRETRY FEEDBACK: Two different P sources used the same predicate. '
-                'Keep only the clearest source if they express one fact, or encode '
-                'each source with its own report-supported observable.\n')
-    if str(exc) == 'impact context symbol not grounded by its own source':
-        return ('\nRETRY FEEDBACK: Every symbol in an impact_context_terms predicate '
-                'must cite that exact selected impact ID. Declare an impact-specific '
-                'observable for what the impact text says; add the impact ID to an '
-                'existing symbol only when that impact really supports its meaning.\n')
-    if str(exc).startswith('impact qualifier missing from formal plan'):
-        return ('\nRETRY FEEDBACK: impact_context_terms did not cover every explicit '
-                'qualifier type detected in the selected impact. The repair_error '
-                'lists the missing temporal/threshold/state types by impact ID. Add '
-                'report-grounded predicates for those exact types without replacing '
-                'the selected impact or intent.\n')
-    if str(exc) == 'type/unit mismatch' or str(exc) in (
-            'bounded relation type/unit mismatch',
-            'correspondence type/unit mismatch',
-            'proportional relation type/unit mismatch'):
-        return ('\nRETRY FEEDBACK: The selected quantities have incompatible units. '
-                'Do not relabel units or define a quotient with multiplication. Keep '
-                'intent_id and impact_ids fixed. For share/price proportionality, '
-                'express the invariant as the cross-multiplied relation (for example '
-                'shares_received * total_assets <= deposit_amount * total_supply) '
-                'and never define a derived symbol whose product units are then '
-                'compared against a plain share quantity. If the current '
-                'relation_class cannot '
-                'express the report relation with add/sub/mul and matching units, this '
-                'bounded repair may choose a more suitable relation_class and its '
-                'compiler-fixed template, or return blocking unsupported_relation.\n')
-    if str(exc) == 'relation repeats cancellable observable on both sides':
-        return ('\nRETRY FEEDBACK: The relation repeats the same unknown '
-                'multiplicative observable on both sides, making the intended '
-                'comparison vacuous or sign-dependent. For proportional fairness, '
-                'compare distinct actual and full/expected quantities, e.g. '
-                'actual_reward * total_duration versus full_reward * '
-                'contributed_duration. Preserve the selected intent and impact.\n')
-    if str(exc) == 'referenced derived symbol lacks definition':
-        return ('\nRETRY FEEDBACK: Every referenced symbol whose checkpoint starts '
-                'with "derived" needs exactly one derived_definitions entry. Define '
-                'it with a report-grounded add/sub/mul quantity expression and cite '
-                'selected source IDs. Do not replace it with an unconstrained name.\n')
-    if 'derived definition' in str(exc):
-        return ('\nRETRY FEEDBACK: Repair only derived_definitions and, if required, '
-                'the corresponding symbol metadata. Definitions must target declared '
-                'int symbols, be acyclic, preserve units, and use report-grounded '
-                'base symbols and selected source IDs.\n')
-    if str(exc) == 'local repair made no change':
-        return ('\nRETRY FEEDBACK: The previous repair attempt returned a plan '
-                'byte-identical to previous_plan, which repairs nothing. Produce a '
-                'concrete, visible difference inside mutable_top_level_fields that '
-                'answers repair_error: rewrite the offending predicate, term, or '
-                'definition -- not its wording elsewhere. If you cannot repair it, '
-                'change the plan so the unrepairable part is honestly relocated '
-                '(move the fact to assumptions, or add a blocking unresolved item) '
-                'instead of resubmitting the same object.\n')
-    if str(exc).startswith('local repair '):
-        return ('\nRETRY FEEDBACK: This is a local repair. Return the complete plan '
-                'but change only mutable_top_level_fields. All frozen fields must '
-                'remain structurally identical to previous_plan.\n')
-    if str(exc).startswith('numeric P '):
-        # The gate's message names the offending source and literals
-        # (": <source_id> states 50, 100"); surface it so the retry repairs
-        # THAT source instead of guessing (final_holdout_02: Kinetiq).
-        detail = str(exc).split(': ', 1)[1] if ': ' in str(exc) else ''
-        pointer = f'Failing source: {detail}\n' if detail else ''
-        return ('\nRETRY FEEDBACK: Include EVERY extracted P/assumption source ID '
-                'in precondition_terms. If its statement contains an explicit '
-                'numeric comparison, its OWN P predicate must encode the SAME '
-                'literal and comparison direction, written as '
-                'right:{"const":N} with N a literal that appears in the cited '
-                'report text. Do not use a Boolean placeholder or weaker '
-                'threshold. Do not compute the constant: a bound stated as a '
-                '12-bit width or bit range binds to 12 (the text literal), '
-                'never 4096 or a mask; an enum bound like type == 1 uses '
-                '{"const":1}, never a named symbol for the constant. For 2^N '
-                '+/- K use the exact power_of_two/offset operand, never '
-                'floating point or scientific notation. If the text has no '
-                'plain numeric literal for the bound, record it in unresolved '
-                'instead of inventing a constant. If the statement compares two '
-                'report quantities (balances exceed reserves), encode that '
-                'symbol-vs-symbol comparison directly with NO constant: a '
-                'constant absent from the cited text is invented even when '
-                'semantically equivalent. Keep report facts unchanged.\n'
-                + pointer)
-    if str(exc).startswith('zero-address '):
-        return ('\nRETRY FEEDBACK: A report claim explicitly mentions '
-                'address(0)/zero address. Declare zero_address and the relevant '
-                'observable recipient/owner address as sort:address symbols. '
-                'Use a comparison predicate eq/ne with '
-                'right:{"symbol":"zero_address"} for that P, I condition, '
-                'or direct ownership V effect. Do not use a Boolean placeholder. '
-                'Keep report facts unchanged.\n')
-    if str(exc) == 'P predicate symbol not grounded by selected preconditions':
-        return ('\nRETRY FEEDBACK: A P predicate used a symbol not grounded by that '
-                'P set. Every symbol referenced by a P predicate must include at '
-                'least one selected precondition_id in its source_ids. Never '
-                'encode a precondition as the absence/presence of the later impact. '
-                'Keep report facts unchanged.\n')
-    if str(exc) == 'trivial self-comparison predicate':
-        return ('\nRETRY FEEDBACK: Never use x==x, x!=x, x<=x, x>=x or an '
-                'equivalent self-comparison as P, trigger, condition, or relation. '
-                'It is tautological/contradictory and does not encode a report fact. '
-                'Compare distinct observable fields, or use a separately declared '
-                'report-grounded bool occurrence symbol for an event/action trigger. '
-                'Keep report semantics unchanged.\n')
-    if str(exc) == 'core relation observables lack intent/impact grounding':
-        return ('\nRETRY FEEDBACK: The core relation observables must collectively '
-                'cite every selected impact_id in their symbol source_ids. The '
-                'selected intent already grounds the I property in fixed-plan v4; '
-                'older schemas may additionally require it on an observable. First '
-                'reselect, from the supplied impact statements, '
-                'the ONE impact that most directly negates the selected intent; '
-                'prefer a failed/passed check or mismatched observable over its '
-                'downstream economic consequence. Do not use trigger-only symbols '
-                'or attach unrelated IDs merely to pass. Defer impacts that do not '
-                'describe the same relation. Keep relation_class/pattern compatible. '
-                'Keep report facts unchanged.\n')
-    return ('\nRETRY FEEDBACK: Previous plan failed deterministic schema/type checks. '
-            'Return one valid JSON plan, following the exact schema. '
-            'Do not invent report facts.\n')
+    message = str(exc)
+    for matcher, _fields, hint in _FORMAL_ERROR_RULES:
+        if _match_formal_error(message, matcher):
+            return hint(message) if callable(hint) else (hint or _FORMAL_DEFAULT_HINT)
+    return _FORMAL_DEFAULT_HINT
 
 
 def element_retry_hint(_exc):
@@ -395,15 +407,24 @@ def element_retry_hint(_exc):
             'may reference action statements only. Use only supplied evidence IDs.\n')
 
 
-def request_readiness(payload, prompt, model, output, retries, catalog,
-                      extract_fn=None, on_attempt=None):
-    """Run the pre-extraction sufficiency gate with bounded, audited retries."""
+def _bounded_model_call(payload, prompt, model, output, retries, call_prefix,
+                        attempts_file, accept, retry_feedback, accepted_outcome,
+                        extract_fn=None, on_attempt=None):
+    """Shared scaffolding for every bounded, audited model call.
+
+    Each attempt keeps its own artifact directory and one record in
+    ``attempts_file``.  ``accept(raw, call_dir, record)`` validates the raw
+    model answer (raising ValueError/KeyError/TypeError to request a retry)
+    and returns the accepted value.  ``retry_feedback(exc)`` produces the
+    fixed retry prompt suffix; transport/JSON failures are retryable,
+    RuntimeError/OSError are not.
+    """
     extract_fn = extract_fn or r.extract
     attempts = []
     feedback = ''
     for attempt in range(retries + 1):
-        call_dir = output / ('neural-input-screen' if attempt == 0 else
-                             f'neural-input-screen-retry-{attempt}')
+        call_dir = output / (call_prefix if attempt == 0 else
+                             f'{call_prefix}-retry-{attempt}')
         call_dir.mkdir()
         attempt_prompt = prompt + feedback
         (call_dir / 'prompt.txt').write_text(attempt_prompt + payload)
@@ -413,35 +434,52 @@ def request_readiness(payload, prompt, model, output, retries, catalog,
             if on_attempt is not None:
                 on_attempt()
             raw = extract_fn(payload, call_dir, model, attempt_prompt)
-            normalized, changes = normalize_readiness(raw)
-            readiness = validate_readiness(normalized, catalog)
-            if changes:
-                write_json(call_dir / 'normalization-log.json', {
-                    'schema_version': 'stage2-normalization-log/1',
-                    'stage': 'input-screening', 'mode': NORMALIZE,
-                    'changes': changes})
-                record['normalizations'] = changes
-            record['outcome'] = 'accepted_for_validation'
-            write_json(output / 'readiness-attempts.json', attempts)
-            return readiness, changes
+            accepted = accept(raw, call_dir, record)
+            record['outcome'] = accepted_outcome
+            write_json(output / attempts_file, attempts)
+            return accepted, attempts
         except (json.JSONDecodeError, subprocess.TimeoutExpired,
                 TransientModelError, ValueError, KeyError, TypeError) as exc:
             record.update({'outcome': 'retryable_failure',
                            'error_type': type(exc).__name__,
                            'error': ('model timeout' if isinstance(
                                exc, subprocess.TimeoutExpired) else str(exc))})
-            write_json(output / 'readiness-attempts.json', attempts)
+            write_json(output / attempts_file, attempts)
             if attempt == retries:
                 raise
-            feedback = ('\nRETRY FEEDBACK: Previous readiness answer failed '
-                        'deterministic JSON/schema/evidence validation. Return only '
-                        'the requested compact JSON using supplied evidence IDs.\n')
+            feedback = retry_feedback(exc)
         except (RuntimeError, OSError) as exc:
             record.update({'outcome': 'non_retryable_failure',
                            'error_type': type(exc).__name__, 'error': str(exc)})
-            write_json(output / 'readiness-attempts.json', attempts)
+            write_json(output / attempts_file, attempts)
             raise
     raise AssertionError('unreachable')
+
+
+def _readiness_retry_feedback(_exc):
+    return ('\nRETRY FEEDBACK: Previous readiness answer failed '
+            'deterministic JSON/schema/evidence validation. Return only '
+            'the requested compact JSON using supplied evidence IDs.\n')
+
+
+def request_readiness(payload, prompt, model, output, retries, catalog,
+                      extract_fn=None, on_attempt=None):
+    """Run the pre-extraction sufficiency gate with bounded, audited retries."""
+    def accept(raw, call_dir, record):
+        normalized, changes = normalize_readiness(raw)
+        readiness = validate_readiness(normalized, catalog)
+        if changes:
+            write_json(call_dir / 'normalization-log.json', {
+                'schema_version': 'stage2-normalization-log/1',
+                'stage': 'input-screening', 'mode': NORMALIZE,
+                'changes': changes})
+            record['normalizations'] = changes
+        return readiness, changes
+    accepted, _ = _bounded_model_call(
+        payload, prompt, model, output, retries, 'neural-input-screen',
+        'readiness-attempts.json', accept, _readiness_retry_feedback,
+        'accepted_for_validation', extract_fn=extract_fn, on_attempt=on_attempt)
+    return accepted
 
 
 def validate_core_element_candidate(candidate, catalog, text, normalize_steps=False,
@@ -467,42 +505,14 @@ def validate_core_element_candidate(candidate, catalog, text, normalize_steps=Fa
 def request_elements(payload, prompt, model, output, retries, extract_fn=None,
                      validate_fn=None, on_attempt=None):
     """Bounded recovery for transport/JSON failures; preserve every attempt."""
-    extract_fn = extract_fn or r.extract
-    attempts = []
-    feedback = ''
-    for attempt in range(retries + 1):
-        call_dir = output / ('neural-elements' if attempt == 0 else
-                             f'neural-elements-retry-{attempt}')
-        call_dir.mkdir()
-        attempt_prompt = prompt + feedback
-        (call_dir / 'prompt.txt').write_text(attempt_prompt + payload)
-        record = {'attempt': attempt + 1, 'artifact_dir': call_dir.name}
-        attempts.append(record)
-        try:
-            if on_attempt is not None:
-                on_attempt()
-            result = extract_fn(payload, call_dir, model, attempt_prompt)
-            if validate_fn is not None:
-                validate_fn(result)
-            record['outcome'] = 'parsed_json'
-            write_json(output / 'element-attempts.json', attempts)
-            return result, attempts
-        except (json.JSONDecodeError, subprocess.TimeoutExpired, TransientModelError,
-                ValueError, KeyError, TypeError) as exc:
-            record.update({'outcome': 'retryable_failure',
-                           'error_type': type(exc).__name__,
-                           'error': 'model timeout' if isinstance(exc, subprocess.TimeoutExpired)
-                           else str(exc)})
-            write_json(output / 'element-attempts.json', attempts)
-            if attempt == retries:
-                raise
-            feedback = element_retry_hint(exc)
-        except (RuntimeError, OSError) as exc:
-            record.update({'outcome': 'non_retryable_failure',
-                           'error_type': type(exc).__name__, 'error': str(exc)})
-            write_json(output / 'element-attempts.json', attempts)
-            raise
-    raise AssertionError('unreachable')
+    def accept(raw, call_dir, record):
+        if validate_fn is not None:
+            validate_fn(raw)
+        return raw
+    return _bounded_model_call(
+        payload, prompt, model, output, retries, 'neural-elements',
+        'element-attempts.json', accept, element_retry_hint, 'parsed_json',
+        extract_fn=extract_fn, on_attempt=on_attempt)
 
 
 def request_formalization(payload, prompt, model, output, retries, plan_mode,

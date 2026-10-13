@@ -528,8 +528,5 @@ def replay_main():
     return completed.returncode
 
 
-    raise SystemExit(main())
-
-
 if __name__ == '__main__':
     raise SystemExit(replay_main())

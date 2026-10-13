@@ -402,6 +402,7 @@ BOUNDARY = (
     ('fixed relation template mismatch', REJECT),
     ('formal property lacks evidence/derivation', REJECT),
     ('formal property missing source', REJECT),
+    ('formalization requires at least one claim', REJECT),
     ('formula path absent', REJECT),
     ('impact context source not selected', REJECT),
     ('impact context symbol not grounded by its own source', REJECT),

@@ -137,17 +137,26 @@ class TriageTests(unittest.TestCase):
                                 'P_and_V_and_I': 'unsat'}}}]}
 
     def test_candidate_is_not_semantic_truth(self):
-        result = from_bundle({'core_formalization_status': 'formalized_candidate',
-                              'acceptance_status': 'candidate_checks_passed',
-                              'report_warnings': [], 'claims': []})
+        # The route must agree with the continuation gate: only a bundle whose
+        # core P/I/V is complete may be labelled ``candidate`` (a bare status
+        # of candidate_checks_passed no longer suffices since 416d78a).
+        bundle = self.complete_review_bundle()
+        bundle['acceptance_status'] = 'candidate_checks_passed'
+        bundle['report_warnings'] = []
+        bundle['claims'][0]['review_reasons'] = []
+        result = from_bundle(bundle)
         self.assertEqual(result['route'], 'candidate')
         self.assertFalse(result['semantic_truth_verified'])
 
     def test_review_and_abstain_are_distinct(self):
-        base = {'report_warnings': ['ambiguous scope'], 'claims': []}
-        self.assertEqual(from_bundle({**base, 'core_formalization_status': 'formalized_candidate',
-                                      'acceptance_status': 'needs_review'})['route'], 'review')
-        self.assertEqual(from_bundle({**base, 'core_formalization_status': 'partial',
+        # needs_review with a complete core routes to review...
+        review = self.complete_review_bundle()
+        review['report_warnings'] = ['ambiguous scope']
+        self.assertEqual(from_bundle(review)['route'], 'review')
+        # ...while the same acceptance with an incomplete core abstains.
+        self.assertEqual(from_bundle({'report_warnings': ['ambiguous scope'],
+                                      'claims': [],
+                                      'core_formalization_status': 'partial',
                                       'acceptance_status': 'needs_review'})['route'], 'abstain')
         self.assertEqual(from_failure({'error_type': 'TimeoutExpired',
                                        'error': 'model timeout'})['route'], 'pipeline_failure')

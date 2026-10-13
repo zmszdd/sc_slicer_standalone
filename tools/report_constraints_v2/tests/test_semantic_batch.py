@@ -71,7 +71,10 @@ class BatchGuards(unittest.TestCase):
                 self.assertIn('--prompt-version', call.call_args.args[0])
                 self.assertIn(DEFAULT_VERSION, call.call_args.args[0])
             saved = json.loads((output / 'batch-summary.json').read_text())
-            self.assertEqual(saved['retry_count'], 0)
+            # Default argv pins one retry budget per model call stage; with the
+            # default opencode provider the readiness retry is provider-gated
+            # to 0, so the summary counts element + formal retries only.
+            self.assertEqual(saved['retry_count'], 2)
             self.assertEqual(saved['prompt_version'], DEFAULT_VERSION)
             self.assertEqual(saved['results'][0]['exit_code'], 2)
 
