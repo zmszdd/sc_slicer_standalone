@@ -1,0 +1,268 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "DistributionCreator reward distribution accounting for fee-on-transfer tokens",
+    "environment": "DistributionCreator contract accepting arbitrary ERC20 tokens",
+    "evidence": [
+      "Insolvency and Denial of Service due to Fee-on-Transfer Token Support Mismatch",
+      "The `DistributionCreator` contract accepts arbitrary ERC20 tokens for reward distribution. However, the system's internal accounting logic in `increaseTokenBalance` assumes that the balance increase in the contract exactly matches the input `amount` parameter. This assumption fails for **Fee-on-Transfer (FoT)** tokens or tokens with transfer inaccuracies (e.g., rounding loss in **stETH**).",
+      "The `increaseTokenBalance` function updates the user's internal ledger (`creatorBalance`) using the input `amount` parameter, ignoring the actual number of tokens received by the contract.",
+      "When a creator subsequently calls `createCampaign` (which invokes `_pullTokens`), the contract validates solvability against this inflated `creatorBalance`. It then attempts to transfer the full nominal amount to the distributor using the contract's pooled token balance.",
+      "Because the contract physically holds fewer tokens than the sum of all `creatorBalance` ledgers, any user depositing FoT tokens (or tokens with slight rounding loss like stETH) effectively creates a system-wide deficit.",
+      "1.  User A deposits 1,000 FoT tokens (1% fee). The contract receives 990, but credits User A with 1,000.",
+      "2.  User B deposits 1,000 standard tokens. The contract receives 1,000, credits User B with 1,000.",
+      "3.  **Total Physical Balance:** 1,990. **Total Liabilities:** 2,000.",
+      "4.  User A creates a campaign for 1,000. The transfer succeeds by using 10 tokens from User B's deposit.",
+      "5.  User B attempts to use their recorded balance of 1,000. The transaction reverts (`ERC20: transfer amount exceeds balance`) because the contract only has 990 remaining."
+    ]
+  },
+  "entities": [
+    {
+      "id": "distribution_creator",
+      "name": "DistributionCreator contract",
+      "role": "contract",
+      "evidence": [
+        "The `DistributionCreator` contract accepts arbitrary ERC20 tokens for reward distribution. However, the system's internal accounting logic in `increaseTokenBalance` assumes that the balance increase in the contract exactly matches the input `amount` parameter. This assumption fails for **Fee-on-Transfer (FoT)** tokens or tokens with transfer inaccuracies (e.g., rounding loss in **stETH**).",
+        "The `increaseTokenBalance` function updates the user's internal ledger (`creatorBalance`) using the input `amount` parameter, ignoring the actual number of tokens received by the contract.",
+        "When a creator subsequently calls `createCampaign` (which invokes `_pullTokens`), the contract validates solvability against this inflated `creatorBalance`. It then attempts to transfer the full nominal amount to the distributor using the contract's pooled token balance."
+      ]
+    },
+    {
+      "id": "user_a",
+      "name": "User A (FoT token depositor)",
+      "role": "attacker",
+      "evidence": [
+        "1.  User A deposits 1,000 FoT tokens (1% fee). The contract receives 990, but credits User A with 1,000.",
+        "4.  User A creates a campaign for 1,000. The transfer succeeds by using 10 tokens from User B's deposit."
+      ]
+    },
+    {
+      "id": "user_b",
+      "name": "User B (standard token depositor)",
+      "role": "victim",
+      "evidence": [
+        "2.  User B deposits 1,000 standard tokens. The contract receives 1,000, credits User B with 1,000.",
+        "5.  User B attempts to use their recorded balance of 1,000. The transaction reverts (`ERC20: transfer amount exceeds balance`) because the contract only has 990 remaining."
+      ]
+    },
+    {
+      "id": "fot_token",
+      "name": "Fee-on-Transfer ERC20 token",
+      "role": "asset",
+      "evidence": [
+        "The `DistributionCreator` contract accepts arbitrary ERC20 tokens for reward distribution. However, the system's internal accounting logic in `increaseTokenBalance` assumes that the balance increase in the contract exactly matches the input `amount` parameter. This assumption fails for **Fee-on-Transfer (FoT)** tokens or tokens with transfer inaccuracies (e.g., rounding loss in **stETH**).",
+        "1.  User A deposits 1,000 FoT tokens (1% fee). The contract receives 990, but credits User A with 1,000."
+      ]
+    },
+    {
+      "id": "standard_token",
+      "name": "Standard ERC20 token",
+      "role": "asset",
+      "evidence": [
+        "2.  User B deposits 1,000 standard tokens. The contract receives 1,000, credits User B with 1,000."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_fot_deposit",
+      "kind": "precondition",
+      "text": "User A deposits 1,000 FoT tokens with a 1% fee, so the contract receives 990 tokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user_a",
+        "fot_token",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "1.  User A deposits 1,000 FoT tokens (1% fee). The contract receives 990, but credits User A with 1,000."
+      ]
+    },
+    {
+      "id": "p_standard_deposit",
+      "kind": "precondition",
+      "text": "User B deposits 1,000 standard tokens, and the contract receives 1,000 tokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user_b",
+        "standard_token",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "2.  User B deposits 1,000 standard tokens. The contract receives 1,000, credits User B with 1,000."
+      ]
+    },
+    {
+      "id": "p_physical_balance",
+      "kind": "precondition",
+      "text": "After both deposits, the contract's total physical balance is 1,990 tokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distribution_creator"
+      ],
+      "evidence": [
+        "3.  **Total Physical Balance:** 1,990. **Total Liabilities:** 2,000."
+      ]
+    },
+    {
+      "id": "p_total_liabilities",
+      "kind": "precondition",
+      "text": "After both deposits, the total recorded liabilities (sum of creatorBalance ledgers) are 2,000 tokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distribution_creator",
+        "user_a",
+        "user_b"
+      ],
+      "evidence": [
+        "3.  **Total Physical Balance:** 1,990. **Total Liabilities:** 2,000."
+      ]
+    },
+    {
+      "id": "a_increase_balance",
+      "kind": "action",
+      "text": "increaseTokenBalance updates the user's internal creatorBalance ledger using the input amount parameter.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distribution_creator"
+      ],
+      "evidence": [
+        "The `increaseTokenBalance` function updates the user's internal ledger (`creatorBalance`) using the input `amount` parameter, ignoring the actual number of tokens received by the contract."
+      ]
+    },
+    {
+      "id": "a_create_campaign_a",
+      "kind": "action",
+      "text": "User A calls createCampaign for 1,000 tokens, invoking _pullTokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user_a",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "When a creator subsequently calls `createCampaign` (which invokes `_pullTokens`), the contract validates solvability against this inflated `creatorBalance`. It then attempts to transfer the full nominal amount to the distributor using the contract's pooled token balance.",
+        "4.  User A creates a campaign for 1,000. The transfer succeeds by using 10 tokens from User B's deposit."
+      ]
+    },
+    {
+      "id": "a_create_campaign_b",
+      "kind": "action",
+      "text": "User B attempts to use their recorded balance of 1,000 tokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user_b",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "5.  User B attempts to use their recorded balance of 1,000. The transaction reverts (`ERC20: transfer amount exceeds balance`) because the contract only has 990 remaining."
+      ]
+    },
+    {
+      "id": "rc_accounting_mismatch",
+      "kind": "root_cause",
+      "text": "increaseTokenBalance credits the input amount parameter while ignoring the actual number of tokens received, so the ledger exceeds the physical balance for FoT tokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distribution_creator",
+        "fot_token"
+      ],
+      "evidence": [
+        "The `DistributionCreator` contract accepts arbitrary ERC20 tokens for reward distribution. However, the system's internal accounting logic in `increaseTokenBalance` assumes that the balance increase in the contract exactly matches the input `amount` parameter. This assumption fails for **Fee-on-Transfer (FoT)** tokens or tokens with transfer inaccuracies (e.g., rounding loss in **stETH**).",
+        "The `increaseTokenBalance` function updates the user's internal ledger (`creatorBalance`) using the input `amount` parameter, ignoring the actual number of tokens received by the contract.",
+        "Because the contract physically holds fewer tokens than the sum of all `creatorBalance` ledgers, any user depositing FoT tokens (or tokens with slight rounding loss like stETH) effectively creates a system-wide deficit."
+      ]
+    },
+    {
+      "id": "i_solvency_check_inflated",
+      "kind": "impact",
+      "text": "createCampaign validates solvability against the inflated creatorBalance and transfers the full nominal amount using the contract's pooled token balance.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distribution_creator",
+        "user_a"
+      ],
+      "evidence": [
+        "When a creator subsequently calls `createCampaign` (which invokes `_pullTokens`), the contract validates solvability against this inflated `creatorBalance`. It then attempts to transfer the full nominal amount to the distributor using the contract's pooled token balance.",
+        "4.  User A creates a campaign for 1,000. The transfer succeeds by using 10 tokens from User B's deposit."
+      ]
+    },
+    {
+      "id": "i_user_b_revert",
+      "kind": "impact",
+      "text": "User B's transaction reverts with ERC20: transfer amount exceeds balance because the contract only has 990 tokens remaining.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user_b",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "5.  User B attempts to use their recorded balance of 1,000. The transaction reverts (`ERC20: transfer amount exceeds balance`) because the contract only has 990 remaining."
+      ]
+    },
+    {
+      "id": "i_system_insolvency",
+      "kind": "impact",
+      "text": "The contract is system-wide insolvent because it physically holds fewer tokens than the sum of all creatorBalance ledgers.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distribution_creator"
+      ],
+      "evidence": [
+        "Because the contract physically holds fewer tokens than the sum of all `creatorBalance` ledgers, any user depositing FoT tokens (or tokens with slight rounding loss like stETH) effectively creates a system-wide deficit.",
+        "This discrepancy creates a system-wide **insolvency**."
+      ]
+    },
+    {
+      "id": "i_dos_fund_loss",
+      "kind": "impact",
+      "text": "The last user attempting to withdraw or use their balance suffers a permanent denial of service and fund loss.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user_b",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "This results in a permanent DoS and fund loss for the last user attempting to withdraw or use their balance."
+      ]
+    },
+    {
+      "id": "si_ledger_matches_received",
+      "kind": "security_intent",
+      "text": "The internal creatorBalance ledger should be credited by the actual number of tokens received by the contract, so recorded liabilities never exceed the physical token balance.",
+      "modality": "inferred",
+      "entity_ids": [
+        "distribution_creator"
+      ],
+      "evidence": [
+        "The `DistributionCreator` contract accepts arbitrary ERC20 tokens for reward distribution. However, the system's internal accounting logic in `increaseTokenBalance` assumes that the balance increase in the contract exactly matches the input `amount` parameter. This assumption fails for **Fee-on-Transfer (FoT)** tokens or tokens with transfer inaccuracies (e.g., rounding loss in **stETH**).",
+        "The `increaseTokenBalance` function updates the user's internal ledger (`creatorBalance`) using the input `amount` parameter, ignoring the actual number of tokens received by the contract.",
+        "Because the contract physically holds fewer tokens than the sum of all `creatorBalance` ledgers, any user depositing FoT tokens (or tokens with slight rounding loss like stETH) effectively creates a system-wide deficit."
+      ]
+    },
+    {
+      "id": "as_fot_accepted",
+      "kind": "assumption",
+      "text": "The DistributionCreator contract accepts arbitrary ERC20 tokens, including fee-on-transfer tokens, for reward distribution.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distribution_creator",
+        "fot_token"
+      ],
+      "evidence": [
+        "The `DistributionCreator` contract accepts arbitrary ERC20 tokens for reward distribution. However, the system's internal accounting logic in `increaseTokenBalance` assumes that the balance increase in the contract exactly matches the input `amount` parameter. This assumption fails for **Fee-on-Transfer (FoT)** tokens or tokens with transfer inaccuracies (e.g., rounding loss in **stETH**)."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_increase_balance",
+    "a_create_campaign_a",
+    "a_create_campaign_b"
+  ],
+  "ambiguities": [
+    "The report does not state whether the FoT deposit and standard deposit occur in separate prior transactions or in the same transaction sequence.",
+    "The report does not specify whether User A is a malicious actor or merely a user depositing a supported token type.",
+    "The report does not state whether the contract's acceptance of FoT tokens is an explicit design choice or an oversight.",
+    "The report does not specify the exact timing or ordering of User A's createCampaign relative to User B's attempt.",
+    "The report does not state whether the 1% fee is deducted by the token contract before or after the DistributionCreator's balance check."
+  ]
+}

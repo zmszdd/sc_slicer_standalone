@@ -3,7 +3,7 @@
 本目录保存冻结选择、模型原始输出、评分和单次实验报告。目录名中的版本号是实验身份，不能
 因为代码升级而覆盖或改名。
 
-## 布局（2026-10-08 结构优化后）
+## 布局（2026-10-12 新 SC 工作废弃后）
 
 ```text
 evaluation/
@@ -12,9 +12,14 @@ evaluation/
   fresh_holdout_01/          首批八份新报告测试
   accuracy_gold_01/          两阶段盲金裁判准确率测评
   gold_v1/ multi_report_01/  金标准材料 / 多报告实验
-  new_sc_injection_01/ 02/   新 SC 注入（01 原型；02 单文件管线）
-  archive/                   2026-09 v3.x 时代全部批次（只读历史）
+  archive/                   只读历史（v3.x 批次 + new_sc_injection_01/02）
 ```
+
+2026-10-12：**新 SC 生成/注入工作整体废弃**。`new_sc_injection_01/`（原型）
+与 `new_sc_injection_02/`（单文件管线 + bisection 归因实验）均按
+"零删除、git mv 归档"惯例移入 `archive/`。阶段二→阶段三的闭环走
+`main.py stage3-feedback`（`lib/stage3_consistency.py`），与新 SC 无关。
+活跃代码（lib/、cli/、tests/）零依赖这两个目录。
 
 ## 当前优先查看
 
@@ -22,9 +27,8 @@ evaluation/
 | --- | --- |
 | `accuracy_gold_01/` | 准确率测评（两阶段盲金裁判，含可信度边界分析） |
 | `final_holdout_02/` | semantic-live 收口后终测 |
-| `new_sc_injection_02/` | 新 SC 单文件管线：一条命令合并→执行→判读→投阶段三 |
-| `prompt_live4_blind_01/` | 最新盲测批次（accuracy_gold 与 new-SC 的 run 来源） |
-| `archive/` | v3.x 迭代史（含 GENERALIZATION_PROTOCOL.md 等旧索引） |
+| `prompt_live4_blind_01/` | 最新盲测批次（accuracy_gold 的 run 来源） |
+| `archive/` | v3.x 迭代史 + 新 SC 01/02 归档（含 GENERALIZATION_PROTOCOL.md 等旧索引） |
 
 ## archive/ 边界（如实披露）
 
@@ -42,11 +46,11 @@ evaluation/
 | --- | --- | --- |
 | 模型产物（neural-*、prompt、冻结 run 全套） | 不能（模型输出不可复现） | 必须保留 |
 | 结论记录（REPORT/README、verdict、判读表、bindings） | 不能（是当时结论的事实记录） | 保留 |
-| 确定性脚本生成物（new-SC 的 `new_sc__*/`、`run_copy__*/`、forge 产物） | 能（输入+脚本全在仓库，一条命令重跑） | 可删，只留结论留档 |
+| 确定性脚本生成物（如归档 new-SC 的 `new_sc__*/`、`run_copy__*/`、forge 产物） | 能（输入+脚本全在仓库，一条命令重跑） | 可删，只留结论留档 |
 
-例：`new_sc_injection_01/02` 的生成物目录已删除，ingest 结果留档为
-`stage3-consistency__<case>.json`；重跑 `run_injection.sh` / `new_sc.py
-<case_key>` 即复原（02 曾逐项复现 01 的结果，可重放性已实证）。
+例：归档前 `new_sc_injection_02` 的生成物目录已删除，ingest 结果留档为
+`stage3-consistency__<case>.json`（02 曾逐项复现归档的 01 原型结果，
+可重放性已实证；重放需 checkout 归档前的提交）。
 
 ## 命名规则
 

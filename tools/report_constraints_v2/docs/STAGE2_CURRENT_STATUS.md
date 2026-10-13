@@ -374,7 +374,8 @@ live4/终局，共 30 次 deepseek-flash 异构审计调用）与终局批主复
 测量前须冻结并终测 final_holdout_03（选样逻辑自动排除全部 147 例）。
 
 2026-10-08 深夜（二） **new-SC 注入原型（方案①，`new_sc_injection_01`，
-[REPORT 见目录 README](../evaluation/new_sc_injection_01/README.md)）：
+[REPORT 见目录 README](../evaluation/archive/new_sc_injection_01/README.md)；
+2026-10-12 已按惯例 git mv 归档）：
 阶段二公式 + 阶段一切片 → 新 SC → forge 机械裁决 → stage3 ingest 闭环
 一例打通**。Ekubo（live4 候选）：
 - 确定性注入器（`inject.py`，零模型调用）把 constraints.json 的
@@ -393,7 +394,7 @@ live4/终局，共 30 次 deepseek-flash 异构审计调用）与终局批主复
   缩放未处理（本例全 address/bool）；P 时序简化为动作后取值。
 
 2026-10-08 深夜（三） **new-SC 单文件管线（`new_sc_injection_02`，
-[REPORT 见目录 README](../evaluation/new_sc_injection_02/README.md)）：
+[REPORT 见目录 README](../evaluation/archive/new_sc_injection_02/README.md)）：
 01 原型的"注入器 + 运行脚本"收成**一个文件一条命令**（`new_sc.py <case_key>`，
 零模型调用，逐案例输入只有 stage-2 run、切片、绑定映射三样数据）**。
 - 新 SC 是**一个 Solidity 文件** `new_sc.t.sol`：切片原文逐字节前缀 +
@@ -405,6 +406,35 @@ live4/终局，共 30 次 deepseek-flash 异构审计调用）与终局批主复
   STAGE2_VERDICT。Ekubo 重跑与 01 逐项一致（`{"p":true,"i":false,"v":true}`
   → violation_reproduced → ingest 副本落盘同判，unbound 0 个）。
 - 边界与 01 相同：绑定映射手工、数值单位缩放未处理、P 时序简化。
+
+2026-10-12 **判读回流通道（差异重放 + 台账，`new_sc_injection_02`，
+[REPORT 见目录 README](../evaluation/archive/new_sc_injection_02/README.md)）**：
+阶段三判读 → 阶段二规则改进的受控接口建成，首次归因完成。
+- `new_sc.py --experiment bisection/<dir>`（差异重放）：对隔离工作区换件
+  重跑——冻结 run 的**副本**（携带变体）+ 变体绑定，全部输出留在工作区内，
+  冻结批次与入库工件绝不触碰。归因从"读后感"变成可重放的控制变量实验。
+- 回流标准四条（非正向分支 / 差异重放确认阶段二侧 / 可泛化成模式 /
+  修复能落阶梯+回归测试）与六步流水成文于 02 README；登记簿
+  `adjudication_ledger.json`。
+- **首次归因（Merkl，precondition_mismatch）**：预注册预期（EXPERIMENT.md，
+  运行前冻结）逐项命中——同一报告/切片/观测（sanity 4/4），仅把 P/I/V
+  一般化（fot>0 族，不钉 990/1000/1990/2000），判读翻转为
+  `{"p":true,"i":false,"v":true}` → **violation_reproduced**。肇事者 =
+  阶段二表示选择（缺陷族 scenario-pinned-preconditions，报告示例算术为
+  诱因）；对应第 0 层 advisory 记为 open（实现属 live 迭代步骤，须带回归
+  测试与度量卫生）。零模型调用。
+- 附注：归因实验发现一个接口事实——阶段三绑定契约的符号集从
+  formalization.json（而非 constraints.json）推导，变体须两处一致换件，
+  已记入台账。
+
+2026-10-12（晚） **新 SC 生成/注入工作整体废弃**：01/02 两目录连同
+bisection 归因实验一并 git mv 归档至 `evaluation/archive/`；lib 侧
+new-SC 专属代码（`stage3_consistency.queries_from_piv`、`lib/dsl.py`
+双后端遍历层）回退/删除，对应测试移除，两张新 SC 流程图删除。理由：
+方向收敛——阶段二→阶段三闭环由既有 `stage3-feedback` 通路承担
+（`lib/stage3_consistency.py`），新 SC 生成不再属于阶段二工作面。
+上述 01/02/回流三段为历史记录，如实保留。
+
 
 - 阶段二可独立从 `report.json` 的描述与影响建立证据编号，提取 P（前提）、I（报告声称应满足的性质）、V（直接违反 I 的行为/结果），生成形式计划、SMT 和交接用 `stage3-spec.json`，并运行本地 Z3 一致性查询。没有执行 PoC 或改变阶段一、三。
 - 程序拒绝未知证据编号和不合法的形式计划；`auto-triage.json` 区分候选、待审、弃权和流水线故障。`review` 不等于已证实漏洞。
