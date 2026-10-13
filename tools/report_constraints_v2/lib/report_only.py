@@ -191,11 +191,16 @@ def expr_type(expr, symbols, depth=0):
             # Product units are canonicalized so token*share and share*token
             # compare as the same derived unit. No unit cancellation is inferred.
             return 'int', '*'.join(sorted((a[1], b[1])))
-        raise ValueError('unsupported multiplication types')
+        raise ValueError('unsupported multiplication types: '
+                         + ' '.join(map(str, (op, *a, *b))))
     if a[0] == 'literal' and b[0] == 'int': a = b
     if b[0] == 'literal' and a[0] == 'int': b = a
     if a != b:
-        raise ValueError('type/unit mismatch')
+        # Name the operator and BOTH operand types: a bare family name left
+        # the repair model guessing which comparison to rewrite
+        # (blind-batch_02 Kinetiq retry-1 changed symbols blindly and missed).
+        raise ValueError('type/unit mismatch: '
+                         + ' '.join(map(str, (op, *a, *b))))
     if op in ('eq', 'ne'): return boolean
     # A fixed positive divisor avoids the underspecified SMT meaning of mod 0.
     if op == 'mod' and a[0] == 'int' and set(args[1]) == {'const'} and \
@@ -203,7 +208,8 @@ def expr_type(expr, symbols, depth=0):
         return a
     if op in ('add', 'sub', 'lt', 'le', 'gt', 'ge') and a[0] in ('int', 'literal'):
         return a if op in ('add', 'sub') else boolean
-    raise ValueError('unsupported operator/types')
+    raise ValueError('unsupported operator/types: '
+                     + ' '.join(map(str, (op, *a, *b))))
 
 
 def lower(expr, variables):

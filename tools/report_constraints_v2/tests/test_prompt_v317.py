@@ -122,11 +122,15 @@ class PromptV317Tests(unittest.TestCase):
             synthesize_id_formalization(expanded_plan(), elements)
 
     def test_unit_conflict_allows_bounded_reclassification_only(self):
-        fields = formal_repair_fields(ValueError('type/unit mismatch'))
+        # The checker localizes the mismatch (operator + both operand
+        # types); the rule matches by prefix so the localized message keeps
+        # the bounded-reclassification scope.
+        mismatch = ValueError('type/unit mismatch: eq int HYPE int kHYPE')
+        fields = formal_repair_fields(mismatch)
         self.assertIn('relation_class', fields)
         previous = expanded_plan()
         payload = json.loads(local_repair_payload(
-            '{}', previous, ValueError('type/unit mismatch'), fields))
+            '{}', previous, mismatch, fields))
         self.assertEqual(payload['task'], 'replan_relation_locally')
         self.assertIn('Keep intent_id and impact_ids fixed',
                       payload['requirements'][2])

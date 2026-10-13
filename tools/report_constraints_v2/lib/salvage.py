@@ -147,13 +147,16 @@ def predicate_constants(predicate):
     return found
 
 
-def _numeric_detail(source_id, literals=(), bounds=()):
-    """Name the offending source and its literals, for repair feedback.
+def _numeric_detail(source_id, literals=(), bounds=(), plan_constants=()):
+    """Name the offending source, its literals and the plan-side constants.
 
     The numeric gate's messages used to stop at the family name, so a retry
     had no pointer to WHICH source or WHICH literals (final_holdout_02:
     Kinetiq's second attempt replaced the missing source instead of adding
-    it).  The message keeps its declared prefix; only the tail grows.
+    it).  blind-batch-02 (Kinetiq again) showed the other blind side: naming
+    only the report's "states 0.2" left the model unaware that its own
+    predicate used const 2, so it could not see what to rewrite.  The message
+    keeps its declared prefix; only the tail grows.
     """
     parts = [source_id]
     if literals:
@@ -161,6 +164,9 @@ def _numeric_detail(source_id, literals=(), bounds=()):
     if bounds:
         parts.append('bounds ' + ', '.join(
             f'{op} {value}' for op, value in sorted(bounds, key=str)))
+    if plan_constants:
+        parts.append('plan uses ' + ', '.join(
+            sorted(str(v) for v in plan_constants)))
     return ': ' + '; '.join(parts)
 
 
@@ -191,7 +197,9 @@ def check_numeric_plan(plan, elements, exclude_protocol_identifiers=False,
             constants = predicate_constants(terms[source_id])
             if literals and constants and not constants <= literals:
                 raise ValueError('numeric P literal changed'
-                                 + _numeric_detail(source_id, literals))
+                                 + _numeric_detail(source_id, literals,
+                                                   plan_constants=(
+                                                       constants - literals)))
             continue
         if source_id not in terms:
             if not unencoded_assumption:
@@ -203,7 +211,10 @@ def check_numeric_plan(plan, elements, exclude_protocol_identifiers=False,
             raise ValueError('numeric P bound hidden by non-comparison predicate')
         if len(bounds) != 1 or bound not in bounds:
             raise ValueError('numeric P literal or direction changed'
-                             + _numeric_detail(source_id, literals, bounds))
+                             + _numeric_detail(
+                                   source_id, literals, bounds,
+                                   plan_constants=predicate_constants(
+                                       terms[source_id])))
 
 
 ZERO = re.compile(r'address\s*\(\s*0\s*\)|\bzero[ -]address\b', re.I)

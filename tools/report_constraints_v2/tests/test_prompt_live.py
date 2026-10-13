@@ -121,9 +121,13 @@ class LivePromptTests(unittest.TestCase):
         no_change = formal_retry_hint(ValueError('local repair made no change'))
         self.assertIn('repairs nothing', no_change)
         self.assertIn('Produce a', no_change)
-        unit = formal_retry_hint(ValueError('type/unit mismatch'))
+        # blind-batch_02 Kinetiq attribution: the bare family name left the
+        # model guessing; the localized message must carry through the hint.
+        unit = formal_retry_hint(ValueError(
+            'type/unit mismatch: eq int HYPE int kHYPE'))
         self.assertIn('cross-multiplied relation', unit)
         self.assertIn('never define a derived symbol', unit)
+        self.assertIn('Failing comparison: eq int HYPE int kHYPE', unit)
 
     def test_numeric_repair_fields_allow_pattern(self):
         # prompt_live2_blind_01 attribution: both constant-expression rejections

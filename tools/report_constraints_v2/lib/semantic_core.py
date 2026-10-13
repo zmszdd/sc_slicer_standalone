@@ -535,7 +535,7 @@ BOUNDARY = (
     ('tool use/model error; rejected', REJECT),
     ('trivial self-comparison predicate', REJECT),
     ('truth binding requires bool symbol', REJECT),
-    ('type/unit mismatch', REJECT),
+    ('type/unit mismatch: ', REJECT),
     ('unexpected claim fields', REJECT),
     ('unexpected coverage fields', REJECT),
     ('unexpected elements fields', REJECT),
@@ -568,9 +568,9 @@ BOUNDARY = (
     ('unknown report-readiness schema', REJECT),
     ('unknown synthesis pattern', REJECT),
     ('unknown temporal order symbol', REJECT),
-    ('unsupported multiplication types', REJECT),
+    ('unsupported multiplication types: ', REJECT),
     ('unsupported official DeepSeek model identifier', REJECT),
-    ('unsupported operator/types', REJECT),
+    ('unsupported operator/types: ', REJECT),
     ('unsupported proxy : use "environment", "direct", or an http(s):// URL (urllib has no SOCKS support)', REJECT),
 
     # ---- transport failures: not a semantic boundary, still listed for coverage ----

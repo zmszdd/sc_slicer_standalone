@@ -78,6 +78,28 @@ class NumericFidelityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'numeric P literal changed'):
             check_numeric_plan(bad, elements)
 
+    def test_invented_constant_is_named_in_the_error(self):
+        # blind-batch_02 Kinetiq: the report stated 0.2, the plan's predicate
+        # used const 2, and the retry message only said "states 0.2" -- the
+        # model could not see its own offending constant, so it had nothing
+        # concrete to rewrite (both repairs came back byte-identical).  The
+        # message must name BOTH sides of the mismatch.
+        elements = {'statements': [{
+            'id': 'p_ratio', 'kind': 'precondition',
+            'text': 'Before rewards are injected, the exchange ratio is still '
+                    'low (0.2 in the example).',
+        }]}
+        candidate = {'precondition_terms': [{
+            'source_id': 'p_ratio',
+            'predicate': {'kind': 'comparison', 'left': 'exchange_ratio_low',
+                          'operator': 'eq', 'right': {'const': 2}},
+        }]}
+        with self.assertRaisesRegex(
+                ValueError,
+                r'numeric P literal changed: p_ratio; '
+                r'states 0\.2; plan uses 2'):
+            check_numeric_plan(candidate, elements)
+
     def test_comma_separated_literal_is_one_number(self):
         self.assertEqual(explicit_numbers('Epoch length is 1,209,600 seconds.'),
                          {Decimal(1209600)})

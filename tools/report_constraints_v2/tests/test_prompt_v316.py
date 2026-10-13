@@ -211,6 +211,41 @@ class PromptV316Tests(unittest.TestCase):
                     structured=True, extract_fn=fake_extract, local_repair=True)
             self.assertEqual(len(calls), 3)
 
+    def test_null_repair_keeps_the_original_defect_in_the_next_payload(self):
+        """blind-batch_02 (Kinetiq): after a byte-identical resubmission the
+        repair_error was overwritten by "local repair made no change", so the
+        next repair request named NO defect for the model to answer -- only
+        the circular instruction to change something.  The substantive
+        defect must survive null repairs; the no-change prescription itself
+        travels separately, via the retry hint appended to the prompt."""
+        elements, _ = id_inputs()
+        bad = fixed_plan()
+        condition = bad['pattern']['condition']
+        bad['pattern'] = {
+            'kind': 'condition_forbids_effect',
+            'condition': condition,
+            'effect': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+        }
+        calls = []
+
+        def fake_extract(payload, folder, _model, _prompt):
+            calls.append(json.loads(payload))
+            (folder / 'model-claim.json').write_text(json.dumps(bad))
+            return copy.deepcopy(bad)
+
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            with self.assertRaisesRegex(ValueError,
+                                        'local repair made no change'):
+                request_formalization(
+                    '{}', 'PROMPT', 'model', root, 1, True, elements,
+                    structured=True, extract_fn=fake_extract, local_repair=True)
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(calls[1]['repair_error'],
+                             'fixed relation template mismatch')
+            self.assertEqual(calls[2]['repair_error'],
+                             'fixed relation template mismatch')
+
 
 if __name__ == '__main__':
     unittest.main()

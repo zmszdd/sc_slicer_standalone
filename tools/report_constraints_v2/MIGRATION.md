@@ -369,3 +369,30 @@ final_holdout_01 各一例）`offline_verified: true`。
 已知且如实上报：`fresh_holdout_01/manifest.json` 的 8 个 `code_sha256`
 在 HEAD 上即已全部漂移（冻结于更早迭代），本次重构进一步远离该基线；
 重设哈希不在本次范围内。
+
+## 2026-10-13：S14 —— 修复环反馈定位（三处同族缺陷）
+
+五例盲测批（见 `docs/STAGE2_CURRENT_STATUS.md` 同日条目）暴露一个
+共同缺陷家族：**确定性校验的报错只报家族名、不带定位**，修复模型拿
+不到可操作的信息，只能盲改或原样重交。三处修复：
+
+1. 数值保真门 `numeric P literal changed` 补计划侧常量
+   （`_numeric_detail` 增 `plan uses` 段；`constants - literals`
+   即模型实际写错的常量）
+2. 空修复不再顶掉原始缺陷：`repair_error` 在
+   `local repair made no change` 时保持上一次实质错误
+   （此前第三次修复请求里原始数值错误已被覆盖为循环指令）
+3. `expr_type` 的三个裸消息（`type/unit mismatch` /
+   `unsupported multiplication types` / `unsupported operator/types`）
+   补操作符与两侧操作数类型；`_FORMAL_ERROR_RULES` 相应规则改前缀
+   匹配并新增 `_type_unit_hint` 透出 `Failing comparison` 定位
+
+约束保持：报错前缀全部不变（BOUNDARY 三个条目改为带 `: ` 的字面
+前缀，分类仍 REJECT）；frozen run 重放不受影响（重放不跑模型调用，
+错误消息只进新 run 的 attempts 记录）。新增 3 个回归测试，
+全量 396 项通过。
+
+真实验证：Kinetiq（盲批中被拒案例）重跑转 `candidate_checks_passed`
+（3 次调用、零重试——该轮首答即干净，通过本身归因于模型方差，
+修复效果由单测钉死；修复环不再空转已在 refix_02 的 attempts 记录
+中可见：字段确有改动、不再是字节级重交）。

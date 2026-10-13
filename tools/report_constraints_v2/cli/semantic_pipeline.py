@@ -119,6 +119,28 @@ def _numeric_p_hint(message):
             + pointer)
 
 
+def _type_unit_hint(message):
+    # The checker's message names the operator and BOTH operand types
+    # (": eq on int HYPE and int kHYPE"); surface it so the retry rewrites
+    # THAT comparison instead of guessing (blind-batch_02: Kinetiq retry-1
+    # changed symbols blindly and missed the mismatching comparison).
+    detail = message.split(': ', 1)[1] if ': ' in message else ''
+    pointer = f'Failing comparison: {detail}\n' if detail else ''
+    return ('\nRETRY FEEDBACK: The selected quantities have incompatible '
+            'units. Do not relabel units or define a quotient with '
+            'multiplication. Keep intent_id and impact_ids fixed. For '
+            'share/price proportionality, express the invariant as the '
+            'cross-multiplied relation (for example shares_received * '
+            'total_assets <= deposit_amount * total_supply) and never '
+            'define a derived symbol whose product units are then compared '
+            'against a plain share quantity. If the current relation_class '
+            'cannot express the report relation with add/sub/mul and '
+            'matching units, this bounded repair may choose a more '
+            'suitable relation_class and its compiler-fixed template, or '
+            'return blocking unsupported_relation.\n'
+            + pointer)
+
+
 #: 受限修复错误的单一注册表：每行 = (matcher, mutable_fields, retry_hint)。
 #: matcher 为精确字符串、精确字符串元组（任一命中）、('prefix', s) 或
 #: ('contains', s)。mutable_fields 是本次重试允许改动的最小 top-level 计划
@@ -248,20 +270,9 @@ _FORMAL_ERROR_RULES = (
      'lists the missing temporal/threshold/state types by impact ID. Add '
      'report-grounded predicates for those exact types without replacing '
      'the selected impact or intent.\n'),
-    (('type/unit mismatch', 'bounded relation type/unit mismatch',
-      'correspondence type/unit mismatch', 'proportional relation type/unit mismatch'),
-     _TYPE_UNIT,
-     '\nRETRY FEEDBACK: The selected quantities have incompatible units. '
-     'Do not relabel units or define a quotient with multiplication. Keep '
-     'intent_id and impact_ids fixed. For share/price proportionality, '
-     'express the invariant as the cross-multiplied relation (for example '
-     'shares_received * total_assets <= deposit_amount * total_supply) '
-     'and never define a derived symbol whose product units are then '
-     'compared against a plain share quantity. If the current '
-     'relation_class cannot '
-     'express the report relation with add/sub/mul and matching units, this '
-     'bounded repair may choose a more suitable relation_class and its '
-     'compiler-fixed template, or return blocking unsupported_relation.\n'),
+    (('prefix', 'type/unit mismatch'), _TYPE_UNIT, _type_unit_hint),
+    (('bounded relation type/unit mismatch', 'correspondence type/unit mismatch',
+      'proportional relation type/unit mismatch'), _TYPE_UNIT, _type_unit_hint),
     ('relation repeats cancellable observable on both sides', _CANCELLABLE,
      '\nRETRY FEEDBACK: The relation repeats the same unknown '
      'multiplicative observable on both sides, making the intended '
@@ -639,7 +650,14 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                     repair_base = copy.deepcopy(candidate)
                 mutable_fields = tuple(sorted(
                     set(mutable_fields) | set(formal_repair_fields(exc))))
-                repair_error = exc
+                if str(exc) != 'local repair made no change':
+                    repair_error = exc
+                # A null repair must not replace the substantive error: the
+                # next repair request still needs the original defect (the
+                # no-change prescription itself travels via the retry hint).
+                # blind-batch-02 Kinetiq: the numeric error was overwritten by
+                # "local repair made no change" on retry 1, so retry 2 told
+                # the model to "answer repair_error" with no defect named.
             feedback = formal_retry_hint(exc)
         except (RuntimeError, OSError) as exc:
             record.update({'outcome': 'non_retryable_failure',
