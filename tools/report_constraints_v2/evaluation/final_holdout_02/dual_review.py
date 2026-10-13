@@ -28,7 +28,7 @@ sys.path.insert(0, str(STAGE2))
 for directory in (STAGE2 / 'lib', STAGE2 / 'cli'):
     sys.path.insert(0, str(directory))
 
-from lib.report_only import extract_deepseek  # noqa: E402
+from lib.deepseek import extract_deepseek  # noqa: E402
 
 
 REVIEW_PROMPT = '''You audit machine translations of vulnerability reports into formal claims. \
