@@ -655,3 +655,34 @@ unfaithful 0；`constants_not_in_report` 0。完全忠实份额 33%——
 **累计五批（含冒烟）**：102 项维度评分 unfaithful 0（严格失真率
 0%，95% CI 上界 ≈2.9%）；faithful 33 / weakened 69；完成率盲批
 16/25。局限不变。
+
+## 2026-10-14：五例盲测批 06（S16+C 后第二测点）
+
+选样：`random.Random('stage2-blind-batch-2026-10-14-06')`，池 1442 份
+未用报告。批内 SukukFi、Sequence、2×GTE_Perps、Hybra。
+
+**工程链：4/5 候选（调用数 3/3/4/3）、1/5 拒绝**；4 例候选 `verify`
+离线重放全过。S15/S16 防御零触发（P 谓词均独立、无占位旗标）。
+
+**首次出现 unfaithful 判定（2/24 维度），人工核对属实**：GTE
+feLafF5S5sM 把"A launchpad fee is accrued but not distributed
+because timeElapsed == 0"编码为 `undistributed_fee == 0`——报告事实
+是费用存在（>0），机器把属于 time_elapsed 的零常量错安到费用量上，
+**事实反转**。漏检根因：数值保真门只验证常量字面量出现在引文
+（引文确有 == 0）；零界族检查不适用（eq 非 ge/le）。语义级反转在
+现有确定性门的职责之外——S17 候选（需用户裁决：词法启发式对
+"x == 0 且零属他量"易误报，语义判定需模型介入）。
+
+**被拒例判 misfire，人工核实**：报告原文即 "pending × 1e12 <
+totalShares" 跨单位比较，单位门按 DSL 纪律拒收——单位规范与
+报告自身混合单位公式的真实张力（忠实编码需把两侧声明为同量纲
+的原始值），同样记为 S17 候选。
+
+**忠实性（24 项维度评分）**：faithful 4 / weakened 18 /
+unfaithful 2；`constants_not_in_report` 0；`collapsed_facts` 0。
+
+**累计六批（含冒烟）**：126 项维度评分 unfaithful 2（1.6%，严格
+失真率首次非零，95% CI ≈0.2%–5.6%）；faithful 37 / weakened 87；
+完成率盲批 20/30。批 05 的 33% 忠实份额未在本批复现（4/24）——
+单批 n=5 波动大，两批合并 12/48（25%）更接近 S16+C 后的当前水平
+估计。局限不变。
