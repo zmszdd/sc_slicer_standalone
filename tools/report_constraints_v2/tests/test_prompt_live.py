@@ -74,7 +74,7 @@ class LivePromptTests(unittest.TestCase):
         # direction-correct repairs.  Guards keep the live-3 constant-form rule
         # from silently disappearing in a later in-place edit.
         formal = current.FORMAL_PLAN_PROMPT
-        self.assertIn('TASK VERSION: semantic-live-5', formal)
+        self.assertIn('TASK VERSION: semantic-live-6', formal)
         for phrase in ('Every explicit bound constant must be a literal',
                        'appears in the cited report text',
                        'never 2^12, 4096, or a',
@@ -87,14 +87,45 @@ class LivePromptTests(unittest.TestCase):
         # prompt_live3_blind_01 attribution: both Panoptic candidates collapsed
         # two distinct extracted facts onto one repeated truth predicate, so one
         # fact stopped being represented.  Guards keep the live-4 audit-list
-        # extension from silently disappearing in a later in-place edit.
+        # extension (live-6: equivalence-aware wording) from silently
+        # disappearing in a later in-place edit.
         formal = current.FORMAL_PLAN_PROMPT
         # Phrases avoid the prompt's mid-phrase line breaks.
         for phrase in ('Two different precondition sources must never share one',
-                       'identical predicate',
-                       'the conjunction collapses to a single fact',
+                       'predicate',
+                       'the conjunction collapses',
                        'move it to assumptions instead of repeating the',
-                       "first fact's predicate"):
+                       "first fact's",
+                       # live-6 (blind-batch_03/S15): the gate folds mirrors
+                       # and same-symbol zero bounds, so the prompt names them.
+                       'mirrored spelling',
+                       'two zero bounds on the same symbol'):
+            self.assertIn(phrase, formal)
+
+    def test_live_formal_prompt_keeps_anti_placeholder_mandates(self):
+        # blind-batch_03 attribution: structural facts became bare truth
+        # symbols and report facts stood on tautological zero bounds.  The S15
+        # advisory surfaces them; the live-6 prompt rules aim to stop the model
+        # from writing them in the first place.  Guards keep the rules from
+        # silently disappearing in a later in-place edit.
+        formal = current.FORMAL_PLAN_PROMPT
+        for phrase in ('A P predicate must carry',
+                       'report fact, never stand in for one',
+                       'A tautological bound',
+                       'satisfied by default and encodes nothing',
+                       'truth symbol that merely names',
+                       'move the fact to assumptions with its structure stated'):
+            self.assertIn(phrase, formal)
+
+    def test_live_formal_prompt_keeps_compound_term_budget(self):
+        # blind-batch_04 attribution: a faithful 5-fact all_of was rejected
+        # for exceeding the schema's 4-term cap -- the report, not the schema,
+        # must set the fact count.  Guards keep the live-6 raised budget and
+        # the "encode every fact" rule from silently disappearing.
+        formal = current.FORMAL_PLAN_PROMPT
+        for phrase in ('Use 2..8 terms',
+                       'The number of report facts, not the schema, sets the',
+                       'encode every'):
             self.assertIn(phrase, formal)
 
     def test_live_formal_prompt_keeps_partial_formalization_mandate(self):
@@ -128,6 +159,17 @@ class LivePromptTests(unittest.TestCase):
         self.assertIn('cross-multiplied relation', unit)
         self.assertIn('never define a derived symbol', unit)
         self.assertIn('Failing comparison: eq int HYPE int kHYPE', unit)
+        # blind-batch_04 attribution: the repair loop gave no teaching for the
+        # compound bound, so the model had no way to know nesting was the fix.
+        compound = formal_retry_hint(ValueError('invalid compound predicate'))
+        self.assertIn('2..8 complete', compound)
+        self.assertIn('nest one compound inside another', compound)
+        # blind-batch_03/S15 attribution: the extended gate folds mirrors and
+        # zero-bound families, so the hint names what counts as one predicate.
+        duplicate = formal_retry_hint(ValueError(
+            'distinct P sources reuse identical predicate'))
+        self.assertIn('mirrored', duplicate)
+        self.assertIn('same-symbol zero bounds', duplicate)
 
     def test_numeric_repair_fields_allow_pattern(self):
         # prompt_live2_blind_01 attribution: both constant-expression rejections

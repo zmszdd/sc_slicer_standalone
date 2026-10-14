@@ -190,6 +190,12 @@ _FORMAL_ERROR_RULES = (
      'kind, condition, effect. condition and effect must each be a '
      'complete predicate object. Do not omit either field. '
      'Keep report semantics unchanged.\n'),
+    ('invalid compound predicate', _SEMANTIC_SCOPE,
+     '\nRETRY FEEDBACK: all_of/any_of take a terms list of 2..8 complete '
+     'predicates (nesting depth at most 4). The report, not the schema, sets '
+     'the count: encode every selected fact, and when more than 8 simultaneous '
+     'qualifiers are required, nest one compound inside another instead of '
+     'dropping a fact. Keep report semantics unchanged.\n'),
     ('invalid plan symbol', _SYMBOL_SCOPE,
      '\nRETRY FEEDBACK: Every symbols key must be lowercase snake_case '
      '(e.g. epoch_duration_seconds); every symbol object must have '
@@ -253,9 +259,10 @@ _FORMAL_ERROR_RULES = (
      'symbol; otherwise declare a source-specific observable or remove '
      'that P selection. Do not borrow a different P source.\n'),
     ('distinct P sources reuse identical predicate', _NUMERIC_P,
-     '\nRETRY FEEDBACK: Two different P sources used the same predicate. '
-     'Keep only the clearest source if they express one fact, or encode '
-     'each source with its own report-supported observable.\n'),
+     '\nRETRY FEEDBACK: Two different P sources used one predicate -- exact, '
+     'mirrored (a ne b versus b ne a), or same-symbol zero bounds (x > 0 '
+     'versus x != 0). Keep only the clearest source if they express one fact, '
+     'or encode each source with its own report-supported observable.\n'),
     ('P terms must cover selected preconditions exactly once', _NUMERIC_P, None),
     ('impact context symbol not grounded by its own source', _IMPACT_CONTEXT,
      '\nRETRY FEEDBACK: Every symbol in an impact_context_terms predicate '

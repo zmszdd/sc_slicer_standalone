@@ -435,3 +435,34 @@ truth 占位、纯状态事实不标、无字面 zero 的零界、有字面 zero
 Monetrix 真实重跑证明 B 落盘生效（2 个 trivial_zero_bound 旗标），
 该轮 plan 用了不同符号未触发 A、最终因 P∧V 不可行诚实拒绝
 （fail-closed，与占位化无关的家族）；`verify` 重放全过。
+
+## 2026-10-14：S16 —— 复合项预算与修复教学 + 提示层反占位（C）
+
+盲批 04 被拒例的根因：模型为报告的 5 条前提写出 5 项 `all_of`，
+schema 上限 4 项直接拒收——**复合项数与报告事实条数没有因果
+关系**，忠实编码被上限挡在门外。两项修复：
+
+1. **复合项上限 4→8**（`plan_synthesizer._predicate` 的
+   `2 <= len(terms) <= 8`；嵌套深度上限 4 不变）。批内 5 例前提
+   直接可表达；超出 8 的极端情况仍拒收并经修复教学指向嵌套拆分。
+   提示同步（`prompts/current.py`，TASK VERSION 升
+   semantic-live-6）："Use 2..8 terms" + 新增"**报告事实数、而非
+   schema，决定项数：逐条编码，不为凑小复合体而删事实**"
+2. **修复教学**（`cli/semantic_pipeline.py` `_FORMAL_ERROR_RULES`）
+   - 新增 `invalid compound predicate` 规则：2..8 项 + 深度 ≤ 4 +
+     "超过 8 个同时成立限定词时嵌套复合而非删事实"
+   - `distinct P sources reuse identical predicate` 的提示同步 S15
+     等价折叠语义（镜像、同符号零界都算同一谓词）
+
+**C（提示层反占位，随 live-6 落地）**：审计清单加第 8 条——
+"P 谓词必须承载来源的报告事实，不得顶替"：恒真界（≥0/≤0 且原文
+无零比较）禁止作 P；结构推导事实（keccak/CREATE2 盐、派生地址、
+计算公式）不得压成裸 truth 符号——要么声明逐来源可观察量、要么
+记入 unresolved、要么移入 assumptions 并陈述结构。第 3 条的
+"不同谓词"措辞升级为等价感知（镜像、同符号零界同名）。
+
+验证：全量 408 项测试通过（+5：复合预算 5/8/9 三例、
+live-6 反占位与复合预算守卫、修复教学断言）。真实重跑批 04
+被拒例 SukukFi go6WTxic9yS 转 `candidate_checks_passed`、verify
+全过（该轮修复答恰用 4 项复合，通过归因于模型方差；上限放宽
+效果由单测钉死）。

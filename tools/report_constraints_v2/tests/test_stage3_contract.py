@@ -148,6 +148,35 @@ class DuplicatePredicateGateTests(unittest.TestCase):
         check_distinct_p_predicates(plan)
 
 
+class CompoundTermBudgetTests(unittest.TestCase):
+    """blind-batch_04: a faithful 5-fact all_of died on the 4-term cap.
+    The report, not the schema, sets the fact count (S16); the cap only
+    guards against degenerate compounds."""
+
+    @staticmethod
+    def _symbols(count):
+        return {f'flag_{i}': {'sort': 'bool'} for i in range(count)}
+
+    @staticmethod
+    def _compound(count):
+        return {'kind': 'all_of', 'terms': [
+            {'kind': 'truth', 'symbol': f'flag_{i}', 'value': True}
+            for i in range(count)]}
+
+    def test_five_report_facts_fit_the_budget(self):
+        from lib.plan_synthesizer import _predicate
+        _predicate(self._compound(5), self._symbols(5))
+
+    def test_eight_terms_still_fit(self):
+        from lib.plan_synthesizer import _predicate
+        _predicate(self._compound(8), self._symbols(8))
+
+    def test_nine_terms_stay_malformed(self):
+        from lib.plan_synthesizer import _predicate
+        with self.assertRaisesRegex(ValueError, 'invalid compound predicate'):
+            _predicate(self._compound(9), self._symbols(9))
+
+
 class PlaceholderPredicateReviewTests(unittest.TestCase):
     """blind-batch_03: structural facts became truth symbols and trivial
     zero bounds.  Advisory only -- the cues are lexical, so the review

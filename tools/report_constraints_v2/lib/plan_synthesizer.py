@@ -143,7 +143,7 @@ def _predicate(value, symbols, depth=0):
             'invalid predicate binding')
     if value['kind'] in ('all_of', 'any_of'):
         require(set(value) == {'kind', 'terms'} and isinstance(value['terms'], list) and
-                2 <= len(value['terms']) <= 4, 'invalid compound predicate')
+                2 <= len(value['terms']) <= 8, 'invalid compound predicate')
         expressions = [_predicate(item, symbols, depth + 1) for item in value['terms']]
         return _and(expressions) if value['kind'] == 'all_of' else _or(expressions)
     if value['kind'] == 'relation':

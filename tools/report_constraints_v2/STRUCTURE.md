@@ -151,7 +151,7 @@ parser 错误），而 `batch` 一直转发 1——两个入口行为不一致�
 
 | 文件 | 行数 | 作用 |
 | --- | ---: | --- |
-| `semantic_pipeline.py` | 1102 | 报告筛选、两步模型调用、规则化、Z3 和输出 |
+| `semantic_pipeline.py` | 1109 | 报告筛选、两步模型调用、规则化、Z3 和输出 |
 | `batch_verify.py` | 580 | `batch`（限量并发跑真实报告）+ `verify`（零模型调用重放） |
 | `preconditions.py` | 362 | 可选 `audit`（P 证据/时序审查）与 `repair`（受约束 P 修复） |
 | `preview.py` | 154 | 本地 `screen` 检查与 `report` / `plan` / `prompt` 预览 |
