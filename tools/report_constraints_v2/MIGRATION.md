@@ -396,3 +396,42 @@ final_holdout_01 各一例）`offline_verified: true`。
 （3 次调用、零重试——该轮首答即干净，通过本身归因于模型方差，
 修复效果由单测钉死；修复环不再空转已在 refix_02 的 attempts 记录
 中可见：字段确有改动、不再是字节级重交）。
+
+## 2026-10-14：S15 —— 占位化防御（A 等价折叠门 + B advisory 审查）
+
+盲批 03 的忠实性弱点（weakened 28/30、4/5 collapsed_facts）集中在
+占位化家族，其中两类是**机械可查**的，据此做两项修复：
+
+1. **A：重复谓词门升级为等价感知**（`lib/plan_synthesizer.py`）
+   - `identical_p_predicates` 从 JSON 严格相等改为 `predicate_keys`
+     键折叠：谓词两侧操作数规范化（裸字符串与 `{"symbol": ...}` 同键，
+     `_operand_key`）；`eq/ne` 两侧排序折叠；`lt/le` 镜像为 `gt/ge`
+     （`_MIRROR`）后按方向折叠——镜像对 `real ne derived` /
+     `derived ne real` 判同一谓词（GTE 盐值对）
+   - 第二键 `zero` 族：同一符号对 `const 0` 的 `gt/ge/le/ne` 全折叠
+     ——`borrow_value > 0` 与 `borrow_value != 0` 判同一谓词
+     （Monetrix 两条事实实为一条）；不同符号互不影响
+   - **语义注意**：镜像对严格等价；zero 族是"同可观察量的零界
+     至多承载一条报告事实"的近似（>0 与 ≠0 不等价但都不编码
+     原文事实），按门的既有职责（每个 P 来源一条独立谓词）收紧
+2. **B：`placeholder_predicate_review` advisory**（同文件）
+   - `truth_placeholder`：来源文本含结构推导线索
+     （`STRUCTURAL_DERIVATION_CUES`：keccak/create2/salt、hash of、
+     derived from、abi.encode）而谓词是裸 truth 符号
+   - `trivial_zero_bound`：非严格零界（`ge/le` vs `const 0`）且原文
+     无字面 zero——恒真下界不承载事实
+   - 恒不阻断（`blocks_candidate_acceptance: False`）；经
+     `placeholder_predicate_review` 功能键写入
+     `placeholder-predicate-review.json` 并纳入接口哈希链，
+     `verify` 按录制功能键回放
+
+**行为变更披露**：录制时带 `duplicate_predicate_gate=True` 的历史
+run 重放会因新折叠键失败——批 03 的 /tmp run 中 3/5（GTE 镜像对、
+两例 Monetrix）如今 `verify` 被拒，正是该门要拦的塌缩家族；
+仓库内 frozen run 之前已全量扫过（65 verified / 0 failed）不受影响。
+
+验证：全量 403 项测试通过（+7：镜像对、zero 族、异符号零界、
+truth 占位、纯状态事实不标、无字面 zero 的零界、有字面 zero 不标）；
+Monetrix 真实重跑证明 B 落盘生效（2 个 trivial_zero_bound 旗标），
+该轮 plan 用了不同符号未触发 A、最终因 P∧V 不可行诚实拒绝
+（fail-closed，与占位化无关的家族）；`verify` 重放全过。

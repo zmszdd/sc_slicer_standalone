@@ -535,30 +535,88 @@ def _pattern_expressions(pattern, symbols):
     return {'op': 'implies', 'args': [trigger, equal]}, _and([trigger, _not(equal)])
 
 
+#: ``a op b`` is ``b MIRROR[op] a`` for the directional ops; folding direction
+#: makes mirrored comparisons (blind-batch_03 GTE: the two salt facts as
+#: ``real ne derived`` and ``derived ne real``) one predicate.
+_MIRROR = {'lt': 'gt', 'le': 'ge'}
+_COMPARISON_OPS = ('eq', 'ne', 'lt', 'le', 'gt', 'ge')
+
+
+def _operand_key(operand):
+    """One key per logical operand: a symbol may be written either as a bare
+    name or as ``{"symbol": name}``, and the two spellings are the same
+    operand (blind-batch_03 GTE wrote one side of each mirror differently)."""
+    if isinstance(operand, str):
+        return json.dumps(['sym', operand])
+    if (isinstance(operand, dict) and set(operand) == {'symbol'}
+            and isinstance(operand['symbol'], str)):
+        return json.dumps(['sym', operand['symbol']])
+    return json.dumps(operand, sort_keys=True, separators=(',', ':'))
+
+
+def predicate_keys(predicate):
+    """Canonical keys under which two P predicates count as reused.
+
+    The first key folds exact JSON equality and logical mirrors (swapped
+    eq/ne sides; ``a lt b`` vs ``b gt a``).  The second, optional key is the
+    zero-bound family: the same single symbol compared against ``const 0``
+    from two distinct sources (blind-batch_03 Monetrix: ``borrow_value > 0``
+    and ``borrow_value != 0``).  Those are NOT logically equivalent over the
+    integers, but at most one report fact can live in a same-observable
+    zero-bound predicate, so a second source constraining the same pair is
+    the same silent fact-drop the exact duplicate causes.
+    """
+    if not isinstance(predicate, dict) or predicate.get('kind') != 'comparison':
+        return [json.dumps(predicate, sort_keys=True, separators=(',', ':'))]
+    left, right = predicate.get('left'), predicate.get('right')
+    op = predicate.get('operator')
+    if op not in _COMPARISON_OPS:
+        return [json.dumps(['cmp', _operand_key(left), _operand_key(right), op],
+                           separators=(',', ':'))]
+    if op in ('eq', 'ne'):
+        # Commutative: order the two sides so mirrors fold.
+        sides = sorted((_operand_key(left), _operand_key(right)))
+        keys = [json.dumps(['cmp', *sides, op], separators=(',', ':'))]
+    else:
+        # Directional: a lt b -> (gt, b, a); a le b -> (ge, b, a).  gt/ge
+        # keep their orientation, so 0 lt x and x gt 0 fold onto one key.
+        first, second, oriented = ((right, left, _MIRROR[op])
+                                   if op in ('lt', 'le') else (left, right, op))
+        keys = [json.dumps(['cmp', _operand_key(first), _operand_key(second),
+                            oriented], separators=(',', ':'))]
+    if ((isinstance(left, str) and right == {'const': 0}) or
+            (isinstance(right, str) and left == {'const': 0})):
+        symbol_key = _operand_key(left) if isinstance(left, str) \
+            else _operand_key(right)
+        keys.append(json.dumps(['zero', symbol_key], separators=(',', ':')))
+    return keys
+
+
 def identical_p_predicates(plan):
-    """``source_id``s whose P predicate repeats an earlier source's exactly.
+    """``source_id``s whose P predicate repeats an earlier source's.
 
     Two distinct precondition sources must not share one predicate: the
     conjunction then collapses (``(and X X)`` is just ``X``) and one of the
     report's facts stops being represented, with nothing left to notice it.  The
     SMT shows it directly as a doubled conjunct in ``report_preconditions``.
 
-    Deliberately NOT used to reject under ``report-formal-plan/4``: one frozen run
-    in the replay battery carries a duplicate, so tightening the live schema would
-    break its recorded artifacts.  ``cli/batch_verify.py`` reports this instead --
-    verification output is not an artifact, so old runs stay replayable while the
-    defect becomes visible for every run, old and new.
+    "Repeats" covers exact equality, mirrored comparisons and the same-symbol
+    zero-bound family (see ``predicate_keys``).  Deliberately NOT used to
+    reject under ``report-formal-plan/4``: one frozen run in the replay
+    battery carries a duplicate, so tightening the live schema would break
+    its recorded artifacts.  ``cli/batch_verify.py`` reports this instead --
+    verification output is not an artifact, so old runs stay replayable while
+    the defect becomes visible for every run, old and new.
     """
     seen, duplicates = set(), []
     for term in plan.get('precondition_terms') or []:
         if not isinstance(term, dict) or 'predicate' not in term:
             continue
-        canonical = json.dumps(term['predicate'], sort_keys=True,
-                               separators=(',', ':'))
-        if canonical in seen:
+        keys = predicate_keys(term['predicate'])
+        if any(key in seen for key in keys):
             duplicates.append(term.get('source_id'))
         else:
-            seen.add(canonical)
+            seen.update(keys)
     return duplicates
 
 
@@ -625,6 +683,88 @@ def requirement_source_review(elements, plan):
         'note': ('A flagged P source cites documentation/spec requirements; '
                  'verify it is an incident fact, not a normative expectation. '
                  'This review never rewrites or rejects the plan.'),
+    }
+
+
+#: Cues that a statement asserts a structural derivation -- how a value is
+#: computed -- which the plan language (symbol comparisons) cannot express.
+#: A bare truth symbol standing in for such a fact names it without encoding
+#: it (blind-batch_03: both GTE salt facts became truth symbols sharing one
+#: derived-address concept).  Advisory only: the cue is lexical, not semantic.
+STRUCTURAL_DERIVATION_CUES = (
+    re.compile(r'\bkeccak\b|\bcreate2\b|\bsalt\b', re.IGNORECASE),
+    re.compile(r'\bhash(?:ed|ing)?\b\s+(?:of|with|using)\b', re.IGNORECASE),
+    re.compile(r'\b(?:derived|computed|calculated)\s+'
+               r'(?:from|using|via|by|as)\b', re.IGNORECASE),
+    re.compile(r'abi\.encode', re.IGNORECASE),
+)
+
+
+def placeholder_predicate_review(elements, plan):
+    """Flag P predicates that stand in for facts they cannot express.
+
+    Two flags, both advisory (``blocks_candidate_acceptance`` stays False --
+    the cues are lexical and one blind-batch defect family is stingy
+    evidence for a gate):
+
+    - ``truth_placeholder``: the source statement asserts a structural
+      derivation (a salt, a hash, a computed formula) but its P predicate
+      is a bare truth symbol.  The symbol names the fact; the fact's
+      structure stays unrepresented, so the review asks for a distinct
+      observable per source, an honest unresolved entry, or a relocation
+      to assumptions.
+    - ``trivial_zero_bound``: a non-strict zero bound (``x >= 0`` /
+      ``x <= 0``) whose statement does not literally state a zero
+      comparison.  Such a bound is satisfied by default and carries no
+      report fact (blind-batch_03 Monetrix stood four facts on such
+      bounds).
+    """
+    flagged = []
+    for term in plan.get('precondition_terms') or []:
+        source_id = term.get('source_id') if isinstance(term, dict) else None
+        row = next((x for x in elements['statements']
+                    if isinstance(x, dict) and x.get('id') == source_id), None)
+        if row is None or not isinstance(term, dict):
+            continue
+        predicate = term.get('predicate')
+        if not isinstance(predicate, dict):
+            continue
+        text = row.get('text') or ''
+        if (predicate.get('kind') == 'truth' and
+                any(pattern.search(text) for pattern in
+                    STRUCTURAL_DERIVATION_CUES)):
+            flagged.append({
+                'statement_id': source_id,
+                'statement_kind': row.get('kind'),
+                'statement_text': text,
+                'flag': 'truth_placeholder',
+                'predicate': {'kind': 'truth',
+                              'symbol': predicate.get('symbol')},
+            })
+        elif predicate.get('kind') == 'comparison' and \
+                predicate.get('operator') in ('ge', 'le'):
+            operands = (predicate.get('left'), predicate.get('right'))
+            has_zero = any(side == {'const': 0} for side in operands)
+            has_symbol = any(isinstance(side, str) for side in operands)
+            if has_zero and has_symbol and 'zero' not in text.lower():
+                flagged.append({
+                    'statement_id': source_id,
+                    'statement_kind': row.get('kind'),
+                    'statement_text': text,
+                    'flag': 'trivial_zero_bound',
+                    'predicate': predicate,
+                })
+    return {
+        'schema_version': 'placeholder-predicate-review/1',
+        'advisory_only': True,
+        'blocks_candidate_acceptance': False,
+        'flagged_count': len(flagged),
+        'flagged': flagged,
+        'note': ('A flagged P predicate likely stands in for a fact it cannot '
+                 'express. Verify each: encode a distinct report-grounded '
+                 'observable, record the fact in unresolved, or move it to '
+                 'assumptions. This review never rewrites or rejects the '
+                 'plan.'),
     }
 
 

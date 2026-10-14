@@ -159,7 +159,8 @@ class FeatureDecouplingTests(unittest.TestCase):
         # via provenance.prompt_features.
         post_baseline = {'assumption_numeric_relief', 'duplicate_predicate_gate',
                          'requirement_source_review', 'intent_scope_review',
-                         'partial_formalization', 'example_pinning_review'}
+                         'partial_formalization', 'example_pinning_review',
+                         'placeholder_predicate_review'}
         inherited = [name for name in registry.FEATURE_NAMES
                      if name not in post_baseline]
         for version in ('semantic-v3.16', 'semantic-v3.20'):
@@ -184,6 +185,14 @@ class FeatureDecouplingTests(unittest.TestCase):
                 self.assertTrue(registry.feature_enabled('semantic-live', name))
                 self.assertFalse(registry.feature_enabled('semantic-v3.16', name))
                 self.assertFalse(registry.feature_enabled('semantic-v3.20', name))
+        # live-7 (blind-batch_03 placeholder advisory): same rule; the review is
+        # advisory, so replay depends on the recorded feature decision.
+        self.assertTrue(registry.feature_enabled('semantic-live',
+                                                 'placeholder_predicate_review'))
+        self.assertFalse(registry.feature_enabled('semantic-v3.16',
+                                                  'placeholder_predicate_review'))
+        self.assertFalse(registry.feature_enabled('semantic-v3.20',
+                                                  'placeholder_predicate_review'))
         # live-6 (post-holdout defect-side): same rule for the advisory added
         # from the final_holdout_02 findings.
         self.assertTrue(registry.feature_enabled('semantic-live',

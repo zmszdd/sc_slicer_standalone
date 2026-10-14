@@ -27,6 +27,7 @@ from prompts.active import resolve_prompt_set
 from lib.ingest import build_catalog, hydrate_elements, hydrate_formalization
 from lib.plan_synthesizer import (check_distinct_p_predicates, classified_relation_alignment,
                               intent_scope_review, relax_unsupported_relation,
+                              placeholder_predicate_review,
                               requirement_source_review, structured_unresolved_review,
                               synthesize_id_formalization)
 from lib.solving import solve_queries
@@ -991,6 +992,10 @@ def main():
                 if features['example_pinning_review']:
                     write_json(args.output / 'example-pinning-review.json',
                                example_pinning_review(model_candidate, elements_raw))
+                if features['placeholder_predicate_review']:
+                    write_json(args.output / 'placeholder-predicate-review.json',
+                               placeholder_predicate_review(elements_raw,
+                                                            model_candidate))
                 if unresolved_review is not None:
                     write_json(args.output / 'unresolved-review.json', unresolved_review)
         else:
@@ -1067,7 +1072,8 @@ def main():
         # semantic-live-5: advisory reviews are referenced the same way as the
         # unresolved review -- hash-chained into the interface so tampering
         # with them after the fact breaks verify.
-        for name in ('requirement-source-review.json', 'intent-scope-review.json'):
+        for name in ('requirement-source-review.json', 'intent-scope-review.json',
+                     'placeholder-predicate-review.json'):
             if (args.output / name).is_file():
                 interface[name.replace('-', '_').removesuffix('.json') + '_path'] = name
                 interface[name.replace('-', '_').removesuffix('.json') + '_sha256'] = \

@@ -108,6 +108,7 @@ FEATURE_NAMES = (
     'intent_scope_review',
     'partial_formalization',
     'example_pinning_review',
+    'placeholder_predicate_review',
 )
 _LEGACY_FEATURE_SETS = {
     'strict_piv': STRICT_PIV_VERSIONS,
@@ -138,6 +139,9 @@ _LEGACY_FEATURE_SETS = {
     # rule: no frozen version enables them, recorded runs keep their own
     # behaviour.
     'example_pinning_review': frozenset(),
+    # S15 (2026-10-14, blind-batch_03): same replay rule -- no frozen version
+    # enables it, so recorded runs keep the behaviour they were produced under.
+    'placeholder_predicate_review': frozenset(),
 }
 
 

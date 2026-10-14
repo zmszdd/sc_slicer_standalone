@@ -30,6 +30,7 @@ from lib.semantic_core import (compile_bundle, normalize_readiness,
                            validate_elements)
 from lib.plan_synthesizer import (check_distinct_p_predicates, classified_relation_alignment,
                               identical_p_predicates, intent_scope_review,
+                              placeholder_predicate_review,
                               relax_unsupported_relation, requirement_source_review,
                               structured_unresolved_review,
                               synthesize_id_formalization)
@@ -493,6 +494,10 @@ def verify(directory):
                 require(intent_scope_review(plan, raw_elements) == json.loads(
                     (directory / 'intent-scope-review.json').read_text()),
                     'intent scope review replay mismatch')
+            if features.get('placeholder_predicate_review', False):
+                require(placeholder_predicate_review(raw_elements, plan) ==
+                        json.loads((directory / 'placeholder-predicate-review.json').read_text()),
+                        'placeholder predicate review replay mismatch')
             if features['numeric_guard']:
                 check_numeric_plan(
                     plan, raw_elements,
@@ -543,7 +548,8 @@ def verify(directory):
     require(interface['spec_sha256'] == r.sha((directory / 'constraints.json').read_bytes()), 'interface spec hash mismatch')
     require(interface['elements_sha256'] == r.sha((directory / 'elements.json').read_bytes()), 'interface elements hash mismatch')
     # semantic-live-5: advisory reviews are hash-chained into the interface.
-    for key in ('requirement_source_review', 'intent_scope_review'):
+    for key in ('requirement_source_review', 'intent_scope_review',
+                'placeholder_predicate_review'):
         if key + '_path' in interface:
             require(interface[key + '_sha256'] == r.sha(
                 (directory / interface[key + '_path']).read_bytes()),

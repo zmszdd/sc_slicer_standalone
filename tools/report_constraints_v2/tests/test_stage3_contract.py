@@ -10,6 +10,7 @@ import tempfile
 import unittest
 
 from lib.plan_synthesizer import (check_distinct_p_predicates, intent_scope_review,
+                              placeholder_predicate_review,
                               relax_unsupported_relation, requirement_source_review)
 from lib.stage3_consistency import (binding_contract, ingest_feedback)
 from tests.test_evidence_ids import id_inputs
@@ -94,6 +95,117 @@ class DuplicatePredicateGateTests(unittest.TestCase):
         plan['precondition_terms'][1]['predicate'] = \
             plan['precondition_terms'][0]['predicate']
         self.assertEqual(identical_p_predicates(plan), ['pre_b'])
+
+    def test_mirrored_comparisons_are_one_predicate(self):
+        # blind-batch_03 GTE_Perps: the two salt facts lowered to
+        # real ne derived and derived ne real (one side spelled as a bare
+        # symbol, the other as {"symbol": ...}), so the JSON-exact check
+        # passed a fact collapse.
+        from lib.plan_synthesizer import identical_p_predicates
+        plan = live_plan()
+        plan['precondition_terms'] = [
+            {'source_id': 'pre_a',
+             'predicate': {'kind': 'comparison', 'left': 'real_pair',
+                           'operator': 'ne',
+                           'right': {'symbol': 'derived_pair'}}},
+            {'source_id': 'pre_b',
+             'predicate': {'kind': 'comparison', 'left': 'derived_pair',
+                           'operator': 'ne', 'right': 'real_pair'}},
+        ]
+        self.assertEqual(identical_p_predicates(plan), ['pre_b'])
+
+    def test_same_symbol_zero_bound_family_is_one_predicate(self):
+        # blind-batch_03 Monetrix: borrow_value > 0 and borrow_value != 0
+        # from two sources -- not logically equivalent, but at most one
+        # report fact can live in a same-observable zero bound.
+        from lib.plan_synthesizer import identical_p_predicates
+        plan = live_plan()
+        plan['precondition_terms'] = [
+            {'source_id': 'pre_a',
+             'predicate': {'kind': 'comparison', 'left': 'borrow_value',
+                           'operator': 'gt', 'right': {'const': 0}}},
+            {'source_id': 'pre_b',
+             'predicate': {'kind': 'comparison', 'left': 'borrow_value',
+                           'operator': 'ne', 'right': {'const': 0}}},
+        ]
+        self.assertEqual(identical_p_predicates(plan), ['pre_b'])
+        with self.assertRaisesRegex(ValueError,
+                                    'distinct P sources reuse identical predicate'):
+            check_distinct_p_predicates(plan)
+
+    def test_distinct_zero_bounds_on_distinct_symbols_stay_clean(self):
+        from lib.plan_synthesizer import identical_p_predicates
+        plan = live_plan()
+        plan['precondition_terms'] = [
+            {'source_id': 'pre_a',
+             'predicate': {'kind': 'comparison', 'left': 'x',
+                           'operator': 'gt', 'right': {'const': 0}}},
+            {'source_id': 'pre_b',
+             'predicate': {'kind': 'comparison', 'left': 'y',
+                           'operator': 'ne', 'right': {'const': 0}}},
+        ]
+        self.assertEqual(identical_p_predicates(plan), [])
+        check_distinct_p_predicates(plan)
+
+
+class PlaceholderPredicateReviewTests(unittest.TestCase):
+    """blind-batch_03: structural facts became truth symbols and trivial
+    zero bounds.  Advisory only -- the cues are lexical, so the review
+    surfaces the suspicion instead of enforcing it."""
+
+    @staticmethod
+    def _plan(terms):
+        return {'precondition_terms': terms}
+
+    def test_truth_placeholder_for_a_structural_fact_is_flagged(self):
+        elements = fixture_elements()
+        elements['statements'][0]['text'] = (
+            'The factory deploys pairs with CREATE2 salt '
+            'keccak(token0, token1, launchpadLp, launchpadFeeDistributor).')
+        plan = self._plan([{'source_id': 'pre_a',
+                            'predicate': {'kind': 'truth',
+                                          'symbol': 'real_pair', 'value': True}}])
+        result = placeholder_predicate_review(elements, plan)
+        self.assertEqual(result['flagged_count'], 1)
+        self.assertEqual(result['flagged'][0]['flag'], 'truth_placeholder')
+        self.assertFalse(result['blocks_candidate_acceptance'])
+
+    def test_truth_symbol_for_a_plain_state_fact_is_not_flagged(self):
+        result = placeholder_predicate_review(
+            fixture_elements(),
+            self._plan([{'source_id': 'pre_a',
+                         'predicate': {'kind': 'truth', 'symbol': 'flag_a',
+                                       'value': True}}]))
+        self.assertEqual(result['flagged_count'], 0)
+        self.assertEqual(result['schema_version'],
+                         'placeholder-predicate-review/1')
+
+    def test_trivial_zero_bound_without_textual_zero_is_flagged(self):
+        # blind-batch_03 Monetrix: "0x811 contains both borrow and supply"
+        # stood on borrow_value >= 0 -- a bound satisfied by default.
+        elements = fixture_elements()
+        elements['statements'][0]['text'] = (
+            'Slot 0x811 contains both borrow and supply values.')
+        plan = self._plan([{'source_id': 'pre_a',
+                            'predicate': {'kind': 'comparison',
+                                          'left': 'borrow_value',
+                                          'operator': 'ge',
+                                          'right': {'const': 0}}}])
+        result = placeholder_predicate_review(elements, plan)
+        self.assertEqual(result['flagged_count'], 1)
+        self.assertEqual(result['flagged'][0]['flag'], 'trivial_zero_bound')
+
+    def test_stated_zero_bound_is_not_flagged(self):
+        # "greater than or equal to zero" grounds const 0 (final_holdout_02
+        # GTE_Perps): the bound is textual, not a placeholder.
+        elements = fixture_elements()
+        elements['statements'][0]['text'] = (
+            'Accrued fees are greater than or equal to zero.')
+        plan = self._plan([{'source_id': 'pre_a',
+                            'predicate': {'kind': 'comparison',
+                                          'left': 'fees', 'operator': 'ge',
+                                          'right': {'const': 0}}}])
+        self.assertEqual(placeholder_predicate_review(elements, plan)['flagged_count'], 0)
 
 
 class RequirementSourceReviewTests(unittest.TestCase):

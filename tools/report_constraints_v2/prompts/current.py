@@ -449,6 +449,9 @@ FEATURES = {
     # live-6 (2026-10-08): defect-side improvements from final_holdout_02
     # findings; OFF in every frozen version (replay-safe).
     'example_pinning_review': True,
+    # S15 (blind-batch_03): placeholder-P advisory; OFF in every frozen
+    # version (replay-safe).
+    'placeholder_predicate_review': True,
 }
 
 def formal_prompt(evidence_mode, scope):

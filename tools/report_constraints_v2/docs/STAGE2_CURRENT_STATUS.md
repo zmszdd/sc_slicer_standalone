@@ -579,3 +579,13 @@ test_hex_slot_identifiers_are_not_numeric_bounds 钉死）；同一裁判
 0%，95% CI 上界 ≈5.6%）；faithful 15 / weakened 39；完成率
 盲批 8/10、含修复复跑 10/13。裁判与管线同模型、无独立金标准的
 局限不变。
+
+**S15 占位化防御（同日收口）**：把上段两类机械可查的占位化收进门
+与 advisory——A：重复谓词门折叠镜像对与同符号零界族（GTE 盐值对、
+Monetrix `>0`/`≠0` 从放行转拒绝）；B：`placeholder_predicate_review`
+advisory 标记结构事实裸 truth 符号与无字面 zero 的恒真下界。修复与
+验证细节见 MIGRATION.md S15（403 项全绿；批 03 的 /tmp run 3/5 重放
+被新门拒绝，属预期行为变更；仓库 frozen run 不受影响）。
+已知张力仍未擅动：`>= 0` 无文本字面量是 B 的 advisory 旗标而非
+门拒绝，收紧与否仍待用户裁决。未做（候选）：C（v3.18 提示层反占位
+规则）、D（更高档模型）、独立裁判。
