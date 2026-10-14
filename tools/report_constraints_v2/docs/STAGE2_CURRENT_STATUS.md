@@ -686,3 +686,36 @@ unfaithful 2；`constants_not_in_report` 0；`collapsed_facts` 0。
 完成率盲批 20/30。批 05 的 33% 忠实份额未在本批复现（4/24）——
 单批 n=5 波动大，两批合并 12/48（25%）更接近 S16+C 后的当前水平
 估计。局限不变。
+
+## 2026-10-14：盲测批 07（D 杠杆 A/B：管线切 deepseek-v4-pro）
+
+选样：`random.Random('stage2-blind-batch-2026-10-14-07')`，池 1437 份
+未用报告（SukukFi、Panoptic、Merkl、Olas、Intuition 各一）。A/B 设计：
+唯一变量为管线模型（`--model deepseek-v4-pro`），裁判保持
+deepseek-flash，与批 05/06 直接对比。`thinking` 仍为 disabled
+（lib/deepseek.py 对两档统一设置——pro 为推理档位，此组合的适用性
+存疑，见下）。
+
+**工程链：2/5 候选（历批最低；flash 批 04-06 均为 4/5）**。三例
+被拒中两例经哈希证实为**字节级原样重交**（三次提交同一 SHA256）：
+Panoptic（首答派生定义单位自相矛盾：`user_profit_share` 声明
+unit profit 却定义为 shares×profit——真实缺陷，门拦截正确，正确
+修法是删除该定义，关系式本身交叉相乘无误）与 Olas（P 符号未
+接地，同样真实缺陷）；Intuition 首答 truth 绑定错、修复答写出
+自比较谓词。修复环"无改动即拒绝"按设计触发，但两例缺陷修复
+方向都明确——**模型不肯改而非不可改**，损失归因于修复环无法
+升级策略（记为 S17 候选：no-change 时清空反馈全新再生成一次）。
+
+**忠实性（12 项维度评分）**：faithful 2 / weakened 10 /
+unfaithful 0。与 flash 批 05+06 合并（12/48，25%）对比无优势
+（2/12，17%）；首答干净率 2/5。裁判对被拒例判 2×correct_catch
+（与人工核对一致：缺陷真实）+ 1×misfire（自比较被判"局部装饰性
+缺陷，核心形式化无误"——即 Layer B 论点：局部可修缺陷拖死整份
+忠实计划）。
+
+**结论（D 杠杆暂不采纳）**：thinking-disabled 的 v4-pro 在本批
+完成率与忠实份额均低于 flash，未发现收益；不切换默认模型。
+如实披露局限：n=5 单批、裁判同模型、未测 pro+thinking 组合。
+**"让产物忠于报告"的剩余主杠杆**是语义交叉审查调用（验收前
+逐 P 来源比对原文与谓词的方向/常量/符号，裁决路由复用 S14 修复
+环）——批 06 的事实反转与批 07 的局部缺陷都属其可拦范围。
