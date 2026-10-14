@@ -768,6 +768,51 @@ def placeholder_predicate_review(elements, plan):
     }
 
 
+FAITHFULNESS_VERDICTS = frozenset({'consistent', 'inverted', 'wrong_constant',
+                                   'wrong_symbol', 'other_mismatch'})
+
+
+def predicate_binding_symbols(value):
+    """Public wrapper: names of every symbol a P predicate JSON references."""
+    return set(_predicate_binding_symbols(value))
+
+
+def validate_faithfulness_verdict(verdict, plan):
+    """Structural check of a faithfulness-audit verdict dict.
+
+    The verdict is the only free-form input the deterministic chain later
+    replays on, so its shape must be as narrow as the plan schema itself:
+    exactly one row per selected P source, each with a verdict from the
+    fixed enum and a one-line reason.
+    """
+    require(isinstance(verdict, dict) and set(verdict) == {'checks'},
+            'invalid faithfulness verdict shape')
+    checks = verdict['checks']
+    require(isinstance(checks, list) and bool(checks),
+            'invalid faithfulness verdict checks')
+    seen = []
+    for check in checks:
+        require(isinstance(check, dict) and
+                set(check) == {'source_id', 'verdict', 'reason'},
+                'invalid faithfulness check shape')
+        require(isinstance(check['source_id'], str) and check['source_id'],
+                'invalid faithfulness check source_id')
+        require(check['verdict'] in FAITHFULNESS_VERDICTS,
+                'invalid faithfulness verdict value')
+        require(isinstance(check['reason'], str) and bool(check['reason'].strip()),
+                'invalid faithfulness check reason')
+        seen.append(check['source_id'])
+    require(set(seen) == set(plan['precondition_ids']) and
+            len(seen) == len(plan['precondition_ids']),
+            'faithfulness verdict must cover selected P sources exactly once')
+
+
+def faithfulness_mismatches(verdict):
+    """Rows the deterministic gates replay on: non-consistent verdicts."""
+    return [dict(check) for check in (verdict or {}).get('checks', [])
+            if check.get('verdict') != 'consistent']
+
+
 #: Applicability-scope cues in an intent statement.  Advisory only: the dual
 #: reviews disagreed on strictness for this family, so the check surfaces the
 #: narrowing risk instead of enforcing a contested standard.

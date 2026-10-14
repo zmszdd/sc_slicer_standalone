@@ -109,6 +109,7 @@ FEATURE_NAMES = (
     'partial_formalization',
     'example_pinning_review',
     'placeholder_predicate_review',
+    'semantic_faithfulness_audit',
 )
 _LEGACY_FEATURE_SETS = {
     'strict_piv': STRICT_PIV_VERSIONS,
@@ -142,6 +143,10 @@ _LEGACY_FEATURE_SETS = {
     # S15 (2026-10-14, blind-batch_03): same replay rule -- no frozen version
     # enables it, so recorded runs keep the behaviour they were produced under.
     'placeholder_predicate_review': frozenset(),
+    # S17 (2026-10-14, blind-batch_06): semantic cross-audit model call; no
+    # frozen version enables it, so recorded runs keep the deterministic-only
+    # acceptance they were produced under.
+    'semantic_faithfulness_audit': frozenset(),
 }
 
 

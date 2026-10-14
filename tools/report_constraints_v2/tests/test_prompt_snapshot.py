@@ -70,7 +70,17 @@ def run_pipeline(root, extra_argv=()):
     elements, formal = id_inputs()
 
     def fake(text, output, model, prompt):
-        value = elements if output.name == 'neural-elements' else formal
+        if output.name == 'neural-elements':
+            value = elements
+        elif 'faithfulness-audit' in output.name:
+            # S17: the audit call answers with a synthetic all-consistent
+            # verdict covering the plan's own P sources exactly once.
+            value = {'checks': [
+                {'source_id': term['source_id'], 'verdict': 'consistent',
+                 'reason': 'synthetic control verdict'}
+                for term in formal['precondition_terms']]}
+        else:
+            value = formal
         (output / 'model-claim.json').write_text(json.dumps(value))
         return copy.deepcopy(value)
 

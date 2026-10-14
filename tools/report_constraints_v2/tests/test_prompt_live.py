@@ -184,6 +184,35 @@ class LivePromptTests(unittest.TestCase):
             self.assertIn('pattern', fields, message)
             self.assertIn('precondition_terms', fields, message)
 
+    def test_faithfulness_audit_prompt_keeps_directional_judgment_rules(self):
+        # blind-batch_06 attribution: undistributed_fee == 0 passed every
+        # deterministic gate because all of them are syntactic; the S17 audit
+        # prompt is the only place the inversion families are named.  Guards
+        # keep the judgment rules from silently disappearing in a later
+        # in-place edit.
+        audit = current.FAITHFULNESS_AUDIT_PROMPT
+        for phrase in ('Judge\nONLY whether the predicate faithfully encodes',
+                       'equality against zero',
+                       '"at most N"',
+                       '"exceeds N"',
+                       'numeric literal in the predicate is not the statement',
+                       'direction-correct bound (e.g. >= 0) is consistent, '
+                       'NOT inverted',
+                       'every listed source_id exactly once'):
+            self.assertIn(phrase, audit)
+
+    def test_faithfulness_audit_hint_embeds_the_finding(self):
+        # The repair loop can only act on a named defect; the verdict rows are
+        # the pipeline's own validated artifact, so the localized mismatch
+        # message must carry through the hint (same contract as
+        # local_repair_payload's repair_error).
+        from cli.semantic_pipeline import formal_retry_hint
+        mismatch = formal_retry_hint(ValueError(
+            'semantic faithfulness mismatch: pre_a inverted: fee accrues'))
+        self.assertIn('semantic cross-audit', mismatch)
+        self.assertIn('pre_a inverted: fee accrues', mismatch)
+        self.assertIn('move that fact to assumptions', mismatch)
+
 
 class FeatureDecouplingTests(unittest.TestCase):
     def test_feature_names_match_live_features(self):
@@ -202,7 +231,8 @@ class FeatureDecouplingTests(unittest.TestCase):
         post_baseline = {'assumption_numeric_relief', 'duplicate_predicate_gate',
                          'requirement_source_review', 'intent_scope_review',
                          'partial_formalization', 'example_pinning_review',
-                         'placeholder_predicate_review'}
+                         'placeholder_predicate_review',
+                         'semantic_faithfulness_audit'}
         inherited = [name for name in registry.FEATURE_NAMES
                      if name not in post_baseline]
         for version in ('semantic-v3.16', 'semantic-v3.20'):
@@ -242,6 +272,14 @@ class FeatureDecouplingTests(unittest.TestCase):
         for version in registry.VERSIONS:
             self.assertFalse(registry.feature_enabled(version,
                                                       'example_pinning_review'))
+        # S17 (blind-batch_06 unfaithful): the semantic cross-audit model call
+        # is live-only; every frozen version replays without it, so recorded
+        # runs keep their deterministic-only acceptance.
+        self.assertTrue(registry.feature_enabled('semantic-live',
+                                                 'semantic_faithfulness_audit'))
+        for version in registry.VERSIONS:
+            self.assertFalse(registry.feature_enabled(version,
+                                                      'semantic_faithfulness_audit'))
 
     def test_frozen_versions_keep_their_legacy_sets(self):
         self.assertTrue(registry.feature_enabled('semantic-v3.5', 'strict_piv'))

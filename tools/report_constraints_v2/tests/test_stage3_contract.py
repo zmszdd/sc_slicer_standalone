@@ -9,9 +9,13 @@ import shutil
 import tempfile
 import unittest
 
-from lib.plan_synthesizer import (check_distinct_p_predicates, intent_scope_review,
+from cli.semantic_pipeline import (_SEMANTIC_SCOPE, faithfulness_audit_input,
+                                   formal_repair_fields, formal_retry_hint)
+from lib.plan_synthesizer import (check_distinct_p_predicates,
+                              faithfulness_mismatches, intent_scope_review,
                               placeholder_predicate_review,
-                              relax_unsupported_relation, requirement_source_review)
+                              relax_unsupported_relation, requirement_source_review,
+                              validate_faithfulness_verdict)
 from lib.stage3_consistency import (binding_contract, ingest_feedback)
 from tests.test_evidence_ids import id_inputs
 
@@ -441,6 +445,95 @@ class IngestFeedbackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'code_query_results'):
             ingest_feedback(self.rundir, self.feedback(
                 code_query_results={'P_and_V': 'sat'}))
+
+
+def verdict(plan, value='consistent', reason='statement encoded faithfully'):
+    return {'checks': [{'source_id': term['source_id'], 'verdict': value,
+                        'reason': reason}
+                       for term in plan['precondition_terms']]}
+
+
+class FaithfulnessAuditTests(unittest.TestCase):
+    """S17 (blind-batch_06 unfaithful): the one semantic check in the chain.
+
+    Validation and routing units here; the pipeline-level behaviour lives in
+    test_prompt_v316/test_evidence_ids synthetic runs.
+    """
+
+    def test_well_formed_verdict_validates(self):
+        validate_faithfulness_verdict(verdict(live_plan()), live_plan())
+
+    def test_extra_top_level_key_is_rejected(self):
+        bad = verdict(live_plan())
+        bad['note'] = 'extra'
+        with self.assertRaisesRegex(ValueError, 'invalid faithfulness verdict'):
+            validate_faithfulness_verdict(bad, live_plan())
+
+    def test_unknown_verdict_value_is_rejected(self):
+        bad = verdict(live_plan())
+        bad['checks'][0]['verdict'] = 'mostly_ok'
+        with self.assertRaisesRegex(ValueError, 'invalid faithfulness verdict'):
+            validate_faithfulness_verdict(bad, live_plan())
+
+    def test_extra_check_field_is_rejected(self):
+        bad = verdict(live_plan())
+        bad['checks'][0]['severity'] = 'high'
+        with self.assertRaisesRegex(ValueError, 'invalid faithfulness check'):
+            validate_faithfulness_verdict(bad, live_plan())
+
+    def test_empty_reason_is_rejected(self):
+        bad = verdict(live_plan())
+        bad['checks'][0]['reason'] = '   '
+        with self.assertRaisesRegex(ValueError, 'invalid faithfulness check reason'):
+            validate_faithfulness_verdict(bad, live_plan())
+
+    def test_coverage_must_match_the_plans_p_sources_exactly(self):
+        plan = live_plan()
+        for mutation in ('drop', 'duplicate', 'invent'):
+            bad = verdict(plan)
+            if mutation == 'drop':
+                bad['checks'] = bad['checks'][1:]
+            elif mutation == 'duplicate':
+                bad['checks'] = bad['checks'] + [dict(bad['checks'][0])]
+            else:
+                bad['checks'][0] = dict(bad['checks'][0], source_id='pre_c')
+            with self.assertRaisesRegex(
+                    ValueError, 'cover selected P sources exactly once'):
+                validate_faithfulness_verdict(bad, plan)
+
+    def test_mismatches_are_the_non_consistent_rows(self):
+        checked = verdict(live_plan())
+        checked['checks'][0]['verdict'] = 'inverted'
+        checked['checks'][0]['reason'] = 'statement asserts accrual, not equality'
+        rows = faithfulness_mismatches(checked)
+        self.assertEqual([row['source_id'] for row in rows], ['pre_a'])
+        self.assertEqual(rows[0]['verdict'], 'inverted')
+        self.assertEqual(faithfulness_mismatches(verdict(live_plan())), [])
+        self.assertEqual(faithfulness_mismatches(None), [])
+
+    def test_audit_input_is_narrow_per_source(self):
+        plan = live_plan()
+        payload = json.loads(faithfulness_audit_input(fixture_elements(), plan))
+        self.assertEqual(payload['schema_version'], 'faithfulness-audit-input/1')
+        self.assertEqual([row['source_id'] for row in payload['sources']],
+                         ['pre_a', 'pre_b'])
+        first = payload['sources'][0]
+        self.assertEqual(first['statement_text'],
+                         'The pool is initialized before the call.')
+        self.assertEqual(first['predicate'], plan['precondition_terms'][0]['predicate'])
+        # Only the symbols the predicate itself uses travel, with meanings.
+        self.assertEqual(set(first['symbol_meanings']), {'flag_a'})
+        self.assertEqual(first['symbol_meanings']['flag_a']['meaning'], 'first fact')
+        # Nothing else from the plan: no pattern, symbols table, or impact.
+        self.assertEqual(set(payload), {'schema_version', 'relation_class',
+                                        'sources'})
+
+    def test_audit_mismatch_is_a_retryable_defect_with_teaching(self):
+        mismatch = ValueError('semantic faithfulness mismatch: pre_a inverted: '
+                              'statement asserts accrual, predicate asserts equality')
+        self.assertIn('semantic cross-audit', formal_retry_hint(mismatch))
+        self.assertIn('pre_a inverted', formal_retry_hint(mismatch))
+        self.assertEqual(formal_repair_fields(mismatch), _SEMANTIC_SCOPE)
 
 
 if __name__ == '__main__':

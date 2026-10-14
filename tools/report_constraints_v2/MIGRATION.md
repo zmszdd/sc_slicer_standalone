@@ -466,3 +466,49 @@ live-6 反占位与复合预算守卫、修复教学断言）。真实重跑批 
 被拒例 SukukFi go6WTxic9yS 转 `candidate_checks_passed`、verify
 全过（该轮修复答恰用 4 项复合，通过归因于模型方差；上限放宽
 效果由单测钉死）。
+
+## 2026-10-14：S17 —— 语义忠实交叉审计 + 空修复升级
+
+盲批 06 首例 unfaithful（GTE feLafF5S5sM）：报告声明"费用已计提
+未分配"，方案却编码 `undistributed_fee == 0`——**方向反转**。
+根因是全链确定性门（结构/类型/单位/数字字面量/来源 ID）都是
+**语法**层面的，没有任何一处做语义检查。S17 补上这一环：
+
+1. **交叉审计调用**（`prompts/current.py`
+   `FAITHFULNESS_AUDIT_PROMPT` + `cli/semantic_pipeline.py`
+   `faithfulness_audit_input` / `request_faithfulness_audit`）
+   - 确定性门全部通过后、接受前，独立模型调用逐 P 来源判断
+     "谓词是否忠实编码其声明"：方向（费用存在/计提 → 正量而非
+     ==0；"至多 N" → ≤N；"超过 N" → >N）、常量属于本声明量、
+     符号含义匹配、真值符号对应声明断言
+   - 输入刻意收窄：仅声明文本 + 该谓词 + 其使用符号的
+     sort/unit/meaning，方案其余部分不进审计
+   - 裁决为受控枚举 `{consistent|inverted|wrong_constant|
+     wrong_symbol|other_mismatch}` + 一句话理由；
+     `validate_faithfulness_verdict` 强制形状/覆盖（每 P 来源恰一次）
+   - 非一致裁决 → `ValueError('semantic faithfulness mismatch: …')`
+     进入既有有界修复环（规则挂 `_SEMANTIC_SCOPE`，callable 提示
+     嵌入发现 + 教学重写方向/常量/符号，不可表达则移 assumptions）
+2. **独立通道参数化**：`--audit-provider {pipeline,opencode,
+   deepseek}`（默认跟随主 provider）+ `--audit-model`。构建阶段
+   可用 GLM 审 DeepSeek 产物（跨家族消除自我偏好），生产双
+   DeepSeek（限制已披露）。审计调用计入
+   external_model_invocations，provider/model 记入 provenance
+3. **verify 重放零模型调用**：`batch_verify` 按记录特征键回放
+   —— 裁决对 formal-plan 的 P 来源做形状/覆盖校验且必须零
+   mismatch；`semantic-faithfulness-audit.json` 进 stage3-spec
+   哈希链（事后篡改即破验）。特征键 `semantic_faithfulness_audit`
+   live-only，所有冻结版本回放各自生成时的行为
+4. **空修复升级**（blind-batch_07 教训：pro 通道三次逐字节重发
+   证明重复相同修复请求不可能产生新内容）：null_reprompts 授予
+   时置 `fresh_restate`，跳过 promote（不再把重发件冻结为修复
+   基底），下一轮改为完整重述（无 LOCAL REPAIR MODE）且反馈
+   命名原始缺陷；仍然一次性（仅授予一次）
+
+验证：全量 420 项测试通过（+12：裁决形状/覆盖/枚举/空理由/
+额外键、mismatch 提取、审计输入收窄、审计提示守卫、提示嵌入
+发现、修复环路由集成、快照/要素合成运行含审计通道、空修复
+升级三例改契约、BOUNDARY 七条注册）。真实 GTE 重跑：本轮模型
+自身产出忠实方案（费用存在改 bool 真值符号），审计判
+consistent；全链 verify 过、审计调用 1 次。批 06 原反转方案的
+审计归因待通道恢复后补测。

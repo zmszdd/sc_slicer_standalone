@@ -436,6 +436,45 @@ DATA:
 ID_FORMAL_PROMPT = FORMAL_PLAN_PROMPT
 FORMAL_PROMPT = FORMAL_PLAN_PROMPT
 
+# S17 (blind-batch_06 unfaithful): semantic cross-audit.  A separate model
+# call judges only whether each P predicate faithfully encodes its source
+# statement -- the one property every deterministic gate (structure, type,
+# unit, numeric-literal, source-ID) cannot see.  Judgment stays narrow on
+# purpose: direction of the encoded fact, constants belonging to THIS
+# statement's quantity, symbol meanings, and truth-symbol correspondence.
+FAITHFULNESS_AUDIT_PROMPT = '''You are a semantic faithfulness auditor. For each
+listed source you get: the report statement text, the formal predicate that
+claims to encode it, and the meanings of the symbols the predicate uses. Judge
+ONLY whether the predicate faithfully encodes that statement -- no other
+property (style, strength, optimality, code truth) is in scope, and you never
+rewrite or propose predicates.
+
+A predicate is unfaithful when any of the following holds:
+- inverted: the predicate asserts the opposite direction or polarity of the
+  statement's claim, e.g. the statement says a fee accrues / an amount exists /
+  a balance is held (so a faithful encoding implies a positive or nonzero
+  quantity) and the predicate checks equality against zero, or the statement
+  says "at most N" and the predicate demands strictly less than N, or the
+  statement says "exceeds N" and the predicate accepts N itself.
+- wrong_constant: a numeric literal in the predicate is not the statement's
+  own quantity -- it belongs to a different statement, a different quantity,
+  or to nothing in the statement at all.
+- wrong_symbol: a symbol the predicate uses does not carry the meaning the
+  statement's fact requires (e.g. the statement is about the fee amount while
+  the predicate's symbol means elapsed time).
+- other_mismatch: the predicate encodes a different fact than the statement
+  states.
+Otherwise the verdict is consistent. A tautologically weak but
+direction-correct bound (e.g. >= 0) is consistent, NOT inverted; the report's
+own semantics set the standard, not mathematical strength.
+
+Return JSON only, exactly:
+{"checks":[{"source_id":ID,"verdict":"consistent"|"inverted"|"wrong_constant"|
+"wrong_symbol"|"other_mismatch","reason":ONE_SHORT_SENTENCE}]}
+Cover every listed source_id exactly once, and only listed ones.
+'''
+AUDIT_PROMPT = FAITHFULNESS_AUDIT_PROMPT
+
 FEATURES = {
     'strict_piv': True,
     'plan_synthesis': True,
@@ -465,6 +504,10 @@ FEATURES = {
     # S15 (blind-batch_03): placeholder-P advisory; OFF in every frozen
     # version (replay-safe).
     'placeholder_predicate_review': True,
+    # S17 (blind-batch_06 unfaithful): semantic cross-audit call after the
+    # deterministic gates, before acceptance; OFF in every frozen version
+    # (replay-safe).
+    'semantic_faithfulness_audit': True,
 }
 
 def formal_prompt(evidence_mode, scope):

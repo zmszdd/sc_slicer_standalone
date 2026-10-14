@@ -115,6 +115,15 @@ class EvidenceTests(unittest.TestCase):
             if output.name == 'neural-elements':
                 self.assertIn('fragments', data)
                 value = elements
+            elif 'faithfulness-audit' in output.name:
+                # S17: the audit call sees only the narrow per-source payload
+                # and answers with an all-consistent synthetic verdict.
+                self.assertEqual(data['schema_version'],
+                                 'faithfulness-audit-input/1')
+                value = {'checks': [
+                    {'source_id': term['source_id'], 'verdict': 'consistent',
+                     'reason': 'synthetic control verdict'}
+                    for term in formal['precondition_terms']]}
             else:
                 self.assertEqual(set(data), {
                     'elements', 'evidence_catalog', 'allowed_statement_ids'})
@@ -127,7 +136,7 @@ class EvidenceTests(unittest.TestCase):
             output = Path(work) / 'out'
             with patch('sys.argv', ['semantic_pipeline.py', '--report', str(source), '--extract', '--allow-report-upload', '--model', 'synthetic_control', '--output', str(output)]), patch.object(p.r, 'extract', side_effect=fake) as call, patch('sys.stdout', io.StringIO()):
                 self.assertEqual(p.main(), 2)
-                self.assertEqual(call.call_count, 2)
+                self.assertEqual(call.call_count, 3)
             self.assertTrue(verify_semantic.verify(output)['offline_verified'])
 
     def test_id_saved_bundle_offline_verifies(self):

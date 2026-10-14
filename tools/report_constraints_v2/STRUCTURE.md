@@ -151,8 +151,8 @@ parser 错误），而 `batch` 一直转发 1——两个入口行为不一致�
 
 | 文件 | 行数 | 作用 |
 | --- | ---: | --- |
-| `semantic_pipeline.py` | 1109 | 报告筛选、两步模型调用、规则化、Z3 和输出 |
-| `batch_verify.py` | 580 | `batch`（限量并发跑真实报告）+ `verify`（零模型调用重放） |
+| `semantic_pipeline.py` | 1267 | 全链编排：readiness→P/I/V→形式化（有界重试、局部修复、S17 语义交叉审计、空修复 fresh_restate 升级）→确定性门→Z3→产物 | — |
+| `batch_verify.py` | 598 | `batch`（限量并发跑真实报告）+ `verify`（零模型调用重放） |
 | `preconditions.py` | 362 | 可选 `audit`（P 证据/时序审查）与 `repair`（受约束 P 修复） |
 | `preview.py` | 154 | 本地 `screen` 检查与 `report` / `plan` / `prompt` 预览 |
 
@@ -161,7 +161,7 @@ parser 错误），而 `batch` 一直转发 1——两个入口行为不一致�
 | 文件 | 行数 | 作用 | 由哪些文件合并而来 |
 | --- | ---: | --- | --- |
 | `semantic_core.py` | 754 | P/I/V schema、类型、编译与基础校验 | — |
-| `plan_synthesizer.py` | 1138 | 形式计划校验和确定性公式合成（含 semantic-live-5 的重复谓词门与三件 advisory/部分形式化审查、S15 的镜像/零界折叠键与占位谓词 advisory） | — |
+| `plan_synthesizer.py` | 1183 | 形式计划校验和确定性公式合成（含 semantic-live-5 的重复谓词门与三件 advisory/部分形式化审查、S15 的镜像/零界折叠键与占位谓词 advisory、S17 的忠实裁决校验/不匹配提取） | — |
 | `deepseek.py` | 203 | **DeepSeek 连接唯一定义处**：模型白名单与默认模型、官方端点、密钥文件路径、解码参数（temperature 0 / max_tokens 8192）、密钥读取校验、代理三态策略、`extract_deepseek` HTTP 传输 | — |
 | `report_only.py` | 432 | 报告解析、表达式编译、opencode 传输（`extract`） | （含原 `review_semantics.py` 的 `relationship_review`） |
 | `ingest.py` | 164 | 原文片段编号、ID 回填、提取前信息充分性门 | `evidence_catalog.py` + `report_readiness.py` |

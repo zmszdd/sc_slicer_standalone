@@ -29,11 +29,12 @@ from lib.semantic_core import (compile_bundle, normalize_readiness,
                            normalize_truth_binding, require,
                            validate_elements)
 from lib.plan_synthesizer import (check_distinct_p_predicates, classified_relation_alignment,
-                              identical_p_predicates, intent_scope_review,
-                              placeholder_predicate_review,
+                              faithfulness_mismatches, identical_p_predicates,
+                              intent_scope_review, placeholder_predicate_review,
                               relax_unsupported_relation, requirement_source_review,
                               structured_unresolved_review,
-                              synthesize_id_formalization)
+                              synthesize_id_formalization,
+                              validate_faithfulness_verdict)
 from lib.ingest import (PROMPT as READINESS_PROMPT, build_catalog,
                               hydrate_elements, hydrate_formalization,
                               model_payload as readiness_payload,
@@ -514,6 +515,22 @@ def verify(directory):
             # (their recorded features predate the key) and stay report-only.
             if features.get('duplicate_predicate_gate', False):
                 check_distinct_p_predicates(plan)
+            # S17: verify never makes a model call -- the recorded audit
+            # verdict is revalidated against the plan's P sources and must
+            # carry zero mismatches.  Runs recorded before the feature (their
+            # prompt_features predates the key) have no verdict file and no
+            # audit was claimed for them.
+            if features.get('semantic_faithfulness_audit', False):
+                audit_path = directory / 'semantic-faithfulness-audit.json'
+                if audit_path.is_file():
+                    artifact = json.loads(audit_path.read_text())
+                    verdict = {'checks': artifact['checks']}
+                    validate_faithfulness_verdict(verdict, plan)
+                    require(not faithfulness_mismatches(verdict),
+                            'semantic faithfulness audit mismatch on replay')
+                else:
+                    require(not plan.get('precondition_terms'),
+                            'semantic faithfulness audit artifact missing')
             if features['structured_unresolved']:
                 require(structured_unresolved_review(plan, raw_elements) ==
                         json.loads((directory / 'unresolved-review.json').read_text()),
@@ -547,9 +564,10 @@ def verify(directory):
         require(interface['solver_results_sha256'] == r.sha((directory / 'solver-results.json').read_bytes()), 'interface solver results hash mismatch')
     require(interface['spec_sha256'] == r.sha((directory / 'constraints.json').read_bytes()), 'interface spec hash mismatch')
     require(interface['elements_sha256'] == r.sha((directory / 'elements.json').read_bytes()), 'interface elements hash mismatch')
-    # semantic-live-5: advisory reviews are hash-chained into the interface.
+    # semantic-live-5: advisory reviews are hash-chained into the interface;
+    # S17 adds the faithfulness verdict the same way (tamper-evident).
     for key in ('requirement_source_review', 'intent_scope_review',
-                'placeholder_predicate_review'):
+                'placeholder_predicate_review', 'semantic_faithfulness_audit'):
         if key + '_path' in interface:
             require(interface[key + '_sha256'] == r.sha(
                 (directory / interface[key + '_path']).read_bytes()),

@@ -24,12 +24,14 @@ from lib.semantic_core import (NORMALIZE, compile_bundle, normalize_readiness,
 from prompts.registry import (DEFAULT_VERSION, PROMPT_MODULES, SELECTABLE_VERSIONS,
                               features_for)
 from prompts.active import resolve_prompt_set
+from prompts.current import FAITHFULNESS_AUDIT_PROMPT
 from lib.ingest import build_catalog, hydrate_elements, hydrate_formalization
 from lib.plan_synthesizer import (check_distinct_p_predicates, classified_relation_alignment,
-                              intent_scope_review, relax_unsupported_relation,
+                              faithfulness_mismatches, intent_scope_review,
+                              predicate_binding_symbols, relax_unsupported_relation,
                               placeholder_predicate_review,
                               requirement_source_review, structured_unresolved_review,
-                              synthesize_id_formalization)
+                              synthesize_id_formalization, validate_faithfulness_verdict)
 from lib.solving import solve_queries
 from lib.solving import attach_review
 from lib.solving import from_bundle as triage_bundle, from_failure as triage_failure
@@ -174,6 +176,23 @@ _FORMAL_DEFAULT_HINT = (
     'Return one valid JSON plan, following the exact schema. '
     'Do not invent report facts.\n')
 
+
+def _audit_mismatch_hint(message):
+    """S17: the one hint that embeds model-derived text, deliberately.
+
+    The verdict rows are the pipeline's own validated artifact (enum verdict
+    plus a one-line reason), and the repair loop needs the named defect to
+    act on -- the same reason ``local_repair_payload`` already ships
+    ``repair_error``.  Free prose from providers never travels here.
+    """
+    return ('\nRETRY FEEDBACK: A semantic cross-audit judged part of the plan '
+            'unfaithful to its cited report statement. Rewrite the affected '
+            'P predicate so its direction, constants, and symbols encode what '
+            'the statement itself asserts; if the statement cannot be encoded '
+            'faithfully, move that fact to assumptions or unresolved instead '
+            'of inverting it. Keep every other report fact unchanged.\n'
+            'Audit findings: ' + message + '\n')
+
 _FORMAL_ERROR_RULES = (
     (('missing plan quantity unit'), _SYMBOL_SCOPE,
      '\nRETRY FEEDBACK: Every int symbol needs a nonempty unit string. '
@@ -263,6 +282,8 @@ _FORMAL_ERROR_RULES = (
      'mirrored (a ne b versus b ne a), or same-symbol zero bounds (x > 0 '
      'versus x != 0). Keep only the clearest source if they express one fact, '
      'or encode each source with its own report-supported observable.\n'),
+    (('prefix', 'semantic faithfulness mismatch'), _SEMANTIC_SCOPE,
+     _audit_mismatch_hint),
     ('P terms must cover selected preconditions exactly once', _NUMERIC_P, None),
     ('impact context symbol not grounded by its own source', _IMPACT_CONTEXT,
      '\nRETRY FEEDBACK: Every symbol in an impact_context_terms predicate '
@@ -426,6 +447,54 @@ def element_retry_hint(_exc):
             'may reference action statements only. Use only supplied evidence IDs.\n')
 
 
+def _audit_retry_feedback(_exc):
+    return ('\nRETRY FEEDBACK: Previous verdict JSON failed shape or coverage '
+            'validation. Return exactly {"checks":[{"source_id":ID,"verdict":'
+            '"consistent"|"inverted"|"wrong_constant"|"wrong_symbol"|'
+            '"other_mismatch","reason":ONE_SHORT_SENTENCE}]} covering every '
+            'listed source_id exactly once.\n')
+
+
+def faithfulness_audit_input(elements, plan):
+    """Narrow cross-audit payload: per P source, its statement text, the
+    predicate claiming to encode it, and only the meanings of the symbols
+    that predicate uses.  Nothing else from the plan or report travels to
+    the auditor, so the audit judges faithfulness and nothing else."""
+    statements = {row['id']: row for row in elements['statements']}
+    rows = []
+    for term in plan['precondition_terms']:
+        names = predicate_binding_symbols(term['predicate'])
+        rows.append({
+            'source_id': term['source_id'],
+            'statement_text': statements[term['source_id']]['text'],
+            'predicate': term['predicate'],
+            'symbol_meanings': {name: {
+                'sort': plan['symbols'][name]['sort'],
+                'unit': plan['symbols'][name]['unit'],
+                'meaning': plan['symbols'][name]['meaning'],
+            } for name in sorted(names)},
+        })
+    return compact_json({
+        'schema_version': 'faithfulness-audit-input/1',
+        'relation_class': plan.get('relation_class'),
+        'sources': rows,
+    })
+
+
+def request_faithfulness_audit(payload, model, output, plan, extract_fn,
+                               on_attempt=None):
+    """One bounded semantic cross-audit call; only format failures retry."""
+    def accept(raw, call_dir, record):
+        validate_faithfulness_verdict(raw, plan)
+        return raw
+    accepted, _ = _bounded_model_call(
+        payload, FAITHFULNESS_AUDIT_PROMPT, model, output, 1,
+        'faithfulness-audit', 'faithfulness-audit-attempts.json', accept,
+        _audit_retry_feedback, 'accepted_for_routing', extract_fn=extract_fn,
+        on_attempt=on_attempt)
+    return accepted
+
+
 def _bounded_model_call(payload, prompt, model, output, retries, call_prefix,
                         attempts_file, accept, retry_feedback, accepted_outcome,
                         extract_fn=None, on_attempt=None):
@@ -540,13 +609,20 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                           mechanical_salvage=False, local_repair=False,
                           exclude_protocol_identifiers=False,
                           relax_assumptions=False, duplicate_predicate_gate=False,
-                          partial_formalization=False, on_attempt=None):
+                          partial_formalization=False, on_attempt=None,
+                          faithfulness_audit=None, faithfulness_audit_model=None,
+                          faithfulness_audit_on_attempt=None):
     """Retry malformed responses or perform a bounded, field-scoped plan repair.
 
     Each attempt keeps its own raw model artifacts. A rejected plan is never
     silently treated as successful. In local-repair mode, parsed plans freeze all
     unrelated top-level fields and the model receives the prior plan plus an
     explicit allow-list of fields it may change.
+
+    When ``faithfulness_audit`` (an extract transport) is supplied, every
+    candidate that passes the deterministic gates is cross-audited before
+    acceptance: a non-consistent verdict becomes a retryable ValueError and
+    enters the same repair loop.
     """
     extract_fn = extract_fn or r.extract
     attempts = attempts if attempts is not None else []
@@ -555,6 +631,7 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
     mutable_fields = ()
     repair_error = None
     null_reprompts = 0
+    fresh_restate = False
     attempt = 0
     while attempt <= retries:
         call_dir = output / ('neural-formalization' if attempt == 0 else
@@ -569,6 +646,9 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                                'Do not reconsider frozen semantic decisions.\n')
         (call_dir / 'prompt.txt').write_text(attempt_prompt + attempt_payload)
         record = {'attempt': attempt + 1, 'artifact_dir': call_dir.name}
+        if fresh_restate:
+            record['fresh_restate'] = True
+            fresh_restate = False
         if local_repair and repair_base is not None:
             record.update({'repair_mode': ('bounded_semantic_replan'
                                            if 'relation_class' in mutable_fields
@@ -616,6 +696,32 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                     check_address_plan(candidate, elements)
                 if duplicate_predicate_gate:
                     check_distinct_p_predicates(candidate)
+                if faithfulness_audit is not None and candidate.get('precondition_terms'):
+                    # S17: all gates above are syntactic; this call is the only
+                    # semantic check in the chain.  Artifacts nest inside this
+                    # formalization attempt's directory; the run-level verdict
+                    # file below is the replay artifact (batch_verify routes
+                    # on it deterministically, never on a new model call).
+                    verdict = request_faithfulness_audit(
+                        faithfulness_audit_input(elements, candidate),
+                        faithfulness_audit_model, call_dir, candidate,
+                        extract_fn=faithfulness_audit,
+                        on_attempt=faithfulness_audit_on_attempt)
+                    mismatches = faithfulness_mismatches(verdict)
+                    record['semantic_faithfulness_audit'] = {
+                        'verdict_consistent': not mismatches,
+                        'checks': len(verdict['checks']),
+                        'mismatches': mismatches,
+                    }
+                    if mismatches:
+                        raise ValueError('semantic faithfulness mismatch: ' + '; '.join(
+                            f"{row['source_id']} {row['verdict']}: "
+                            f"{row['reason'][:160]}" for row in mismatches))
+                    write_json(output / 'semantic-faithfulness-audit.json', {
+                        'schema_version': 'semantic-faithfulness-audit/1',
+                        'checks': verdict['checks'],
+                        'mismatch_count': 0,
+                    })
                 if structured:
                     review = structured_unresolved_review(candidate, elements)
                 else:
@@ -641,32 +747,54 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                     # final_holdout_02: GTE_Perps resubmitted identically on
                     # the final attempt, and the no-change prescription could
                     # never fire because no next attempt existed.
+                    # blind-batch_07 escalation: repeating the identical repair
+                    # request cannot produce new content (deepseek-v4-pro
+                    # resubmitted byte-identically three times), so the grant
+                    # reopens the frozen decisions -- the next attempt runs as
+                    # a full restatement, not another local repair.
                     null_reprompts += 1
                     retries += 1
                     record['null_repair_reprompt'] = True
+                    record['fresh_restate'] = True
+                    fresh_restate = True
+                    repair_base = None
                 else:
                     raise
-            if local_repair and isinstance(candidate, dict):
-                can_promote = repair_base is None
-                if repair_base is not None:
-                    try:
-                        validate_local_repair(repair_base, candidate, mutable_fields)
-                        can_promote = True
-                    except ValueError:
-                        can_promote = False
-                if can_promote:
-                    repair_base = copy.deepcopy(candidate)
-                mutable_fields = tuple(sorted(
-                    set(mutable_fields) | set(formal_repair_fields(exc))))
-                if str(exc) != 'local repair made no change':
-                    repair_error = exc
-                # A null repair must not replace the substantive error: the
-                # next repair request still needs the original defect (the
-                # no-change prescription itself travels via the retry hint).
-                # blind-batch-02 Kinetiq: the numeric error was overwritten by
-                # "local repair made no change" on retry 1, so retry 2 told
-                # the model to "answer repair_error" with no defect named.
-            feedback = formal_retry_hint(exc)
+            if fresh_restate:
+                # Escalated null-repair reprompt: the next attempt must be a
+                # full restatement, so the resubmitted candidate is NOT
+                # promoted to repair_base (the promote below would otherwise
+                # re-freeze the very plan the model just returned unchanged).
+                feedback = (
+                    '\nRETRY FEEDBACK: Your previous local repair returned the '
+                    'plan byte-identically -- a null response -- so its frozen '
+                    'semantic decisions are now reopened. Restate the complete '
+                    'plan from the original input and genuinely change the '
+                    'fields involved in this previously reported failure: ' +
+                    (str(repair_error) if repair_error is not None else
+                     'the stated deterministic validation failure') + '\n')
+            else:
+                if local_repair and isinstance(candidate, dict):
+                    can_promote = repair_base is None
+                    if repair_base is not None:
+                        try:
+                            validate_local_repair(repair_base, candidate, mutable_fields)
+                            can_promote = True
+                        except ValueError:
+                            can_promote = False
+                    if can_promote:
+                        repair_base = copy.deepcopy(candidate)
+                    mutable_fields = tuple(sorted(
+                        set(mutable_fields) | set(formal_repair_fields(exc))))
+                    if str(exc) != 'local repair made no change':
+                        repair_error = exc
+                    # A null repair must not replace the substantive error: the
+                    # next repair request still needs the original defect (the
+                    # no-change prescription itself travels via the retry hint).
+                    # blind-batch-02 Kinetiq: the numeric error was overwritten by
+                    # "local repair made no change" on retry 1, so retry 2 told
+                    # the model to "answer repair_error" with no defect named.
+                feedback = formal_retry_hint(exc)
         except (RuntimeError, OSError) as exc:
             record.update({'outcome': 'non_retryable_failure',
                            'error_type': type(exc).__name__, 'error': str(exc)})
@@ -745,6 +873,14 @@ def main():
                              'only, ignored otherwise): "environment" honours the '
                              'ambient *_proxy variables, "direct" ignores them, or '
                              'give an http(s):// URL. main.py injects "direct"')
+    parser.add_argument('--audit-provider', choices=('pipeline', 'opencode', 'deepseek'),
+                        default='pipeline',
+                        help='transport for the S17 semantic faithfulness cross-audit '
+                             'call (live prompt only): "pipeline" reuses the main '
+                             'provider, or override to audit one family with another')
+    parser.add_argument('--audit-model',
+                        help='model id for the faithfulness audit call; defaults to '
+                             'the chosen audit provider\'s default model')
     parser.add_argument('--evidence-mode', choices=('ids', 'quotes'), default='ids',
                         help='neural mode defaults to source IDs; quotes is legacy compatibility')
     parser.add_argument('--formalization-scope', choices=('core', 'full'), default='core',
@@ -842,6 +978,24 @@ def main():
             extract_fn = (functools.partial(extract_deepseek,
                                             proxy=args.deepseek_proxy)
                           if args.provider == 'deepseek' else r.extract)
+            # S17: the cross-audit call is independently parameterizable so a
+            # different model family can audit the generator (build phase:
+            # GLM auditing DeepSeek; production: both DeepSeek, disclosed).
+            audit_extract_fn, audit_model = None, None
+            if features['semantic_faithfulness_audit']:
+                audit_provider = (args.provider if args.audit_provider == 'pipeline'
+                                  else args.audit_provider)
+                audit_model = (args.audit_model or
+                               (DEFAULT_DEEPSEEK_MODEL if audit_provider == 'deepseek'
+                                else configured_model()))
+                if (audit_provider == 'deepseek' and
+                        audit_model not in DEEPSEEK_MODELS):
+                    raise ValueError('unsupported audit model for deepseek transport')
+                audit_extract_fn = (functools.partial(extract_deepseek,
+                                                      proxy=args.deepseek_proxy)
+                                    if audit_provider == 'deepseek' else r.extract)
+                provenance.update({'audit_provider': audit_provider,
+                                   'audit_model': audit_model})
             provenance.update({'model_provider': args.provider, 'model_name': model})
             if args.provider == 'deepseek':
                 provenance['deepseek_proxy_policy'] = args.deepseek_proxy
@@ -984,7 +1138,10 @@ def main():
                 relax_assumptions=features['assumption_numeric_relief'],
                 duplicate_predicate_gate=features['duplicate_predicate_gate'],
                 partial_formalization=features['partial_formalization'],
-                on_attempt=record_model_attempt)
+                on_attempt=record_model_attempt,
+                faithfulness_audit=audit_extract_fn,
+                faithfulness_audit_model=audit_model,
+                faithfulness_audit_on_attempt=record_model_attempt)
             if plan_mode:
                 write_json(args.output / 'formal-plan.json', model_candidate)
                 if features['relation_alignment']:
@@ -1080,7 +1237,8 @@ def main():
         # unresolved review -- hash-chained into the interface so tampering
         # with them after the fact breaks verify.
         for name in ('requirement-source-review.json', 'intent-scope-review.json',
-                     'placeholder-predicate-review.json'):
+                     'placeholder-predicate-review.json',
+                     'semantic-faithfulness-audit.json'):
             if (args.output / name).is_file():
                 interface[name.replace('-', '_').removesuffix('.json') + '_path'] = name
                 interface[name.replace('-', '_').removesuffix('.json') + '_sha256'] = \

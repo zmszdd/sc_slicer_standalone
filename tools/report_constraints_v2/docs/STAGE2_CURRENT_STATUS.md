@@ -719,3 +719,27 @@ unfaithful 0。与 flash 批 05+06 合并（12/48，25%）对比无优势
 **"让产物忠于报告"的剩余主杠杆**是语义交叉审查调用（验收前
 逐 P 来源比对原文与谓词的方向/常量/符号，裁决路由复用 S14 修复
 环）——批 06 的事实反转与批 07 的局部缺陷都属其可拦范围。
+
+## 2026-10-14：S17 落地 —— 语义忠实交叉审计 + 空修复升级
+
+批 06 事实反转的根因（全链无语义检查）以 S17 闭合：验收前独立
+交叉审计调用逐 P 来源判断谓词是否忠实编码其声明（方向/常量/
+符号/真值对应），非一致裁决经 `ValueError` 路由进既有修复环。
+特征键 `semantic_faithfulness_audit` live-only、所有冻结版本
+frozenset()（回放各自行为）；verify 零模型调用确定性重放裁决
+（形状/覆盖校验 + 零 mismatch + stage3-spec 哈希链）。审计通道
+独立参数化 `--audit-provider/--audit-model`（构建期 GLM 审
+DeepSeek，生产双 DeepSeek，限制披露）；调用计入
+external_model_invocations。
+
+同批落地空修复升级（批 07 教训）：null_reprompts 授予改为
+`fresh_restate` 完整重述（跳过 promote，不再把重发件冻结为修复
+基底，反馈命名原始缺陷），仍一次性。
+
+验证：420 项测试全过（+12）。真实 GTE feLafF5S5S5sM 重跑：
+本轮模型自身产出忠实方案（费用存在以 bool 真值符号编码，
+批 06 的 `undistributed_fee == 0` 反转未复现），审计判
+consistent，全链 verify 过、审计调用 1 次。批 06 原反转方案的
+直接审计归因（应判 inverted）在 opencode 通道两次 240s 超时后
+待通道恢复补测；亦待配置 `DEEPSEEK_API_KEY` 后走
+`--provider deepseek` 直连复核（生产通路）。
