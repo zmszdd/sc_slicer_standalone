@@ -758,3 +758,41 @@ S17 归因补测探针（`evaluation/s17_audit_retest_01/audit_retest.py`，
 dry-run 已过、载荷含反转谓词与双 sha256，真实调用待用户授权）。
 特征键两枚 live-only，verify 零模型重放，artifact 哈希链入
 stage3-spec。430 项测试全过（+10）。
+
+## 2026-10-15：盲测批 08（S17+S18 后测点：flash 回归主线）
+
+选样：`random.Random('stage2-blind-batch-2026-10-15-08')`，池 1432 份
+未用报告（Intuition 2、Kinetiq、GTE_Perps、Olas 各一，案例级零重合）。
+A/B 唯一变量 = 相对批 06 的代码态（S17 交叉审计 + fresh_restate + S18
+两件 advisory + 单位修复教学）；管线与裁判均 deepseek-flash，与批
+04–06 直接可比。
+
+**工程链：5/5 候选（并列历批最高，批 05 同为 5/5）**，每案恰好 4 次
+调用（screening+要素+形式化+审计），零重试零修复环触发——批 07 的
+"不肯改"家族本批未复现（样本未触及 fresh_restate 路径，不能归因为
+其修复，如实记录）。`verify` 五案离线重放全过。S17 审计 17 项 P 来源
+全判 consistent、零 mismatch（无误杀）；S18 两 advisory 零旗标
+（n=1 家族未复发，无回归）。
+
+**传输层事件（如实披露）**：首跑 Intuition tG7w 在 DeepSeek outage
+窗口死于 screening 响应 JSON 截断（readiness 步骤无重试预算，409
+completion tokens 处截断即致命）。同窗口另有 503 与 valid-JSON-坏
+信封两形态，已以 `TransientModelError` 可重试类收口（commit fc8a34a，
+432 测试 +2）。截断属内容级故障不在该改动覆盖内，重跑即过（5 案
+全部干净完成，未再触发）。
+
+**忠实性（30 项维度评分）**：faithful 0 / weakened 30 / unfaithful 0。
+weakened 主桶高度一致：**核心断言范围收窄**——报告陈述多重危害/性质
+（如 GTE _rewards_unclaimable、Kinetiq 永久盗取+协议损失、Intuition
+validUntil 侧、Olas MEV 提取），core 范式只形式化单一直接 impact，
+其余显式 defer；required_property 多为 bool 代理（= false）而非报告
+的构造性属性（密码学绑定、公平性、有意义最小输出）。preconditions
+两例弱化均为省略侧条件。该桶为 core-claim 设计的本征损耗候选，
+升级需动 DSL/多断言结构（大改），未立项，待 weakened 分桶凑满
+n≥2 独立家族再裁决。
+
+**累计七批（含冒烟）**：156 项维度评分 unfaithful 2（1.3%）、
+faithful 37 / weakened 117；完成率盲批 25/35。批 08 完全忠实份额
+0%（批 05 为 33%）——S16+C 后各批在 faithful/weakened 边界上波动
+大，边界由判卷措辞敏感度主导，核心信号是 unfaithful 稳定为极低。
+调用预算：管线 20 + 判卷 10 = 30 次。
