@@ -121,6 +121,40 @@ class DeepSeekDirectTests(unittest.TestCase):
             self.assertEqual(diagnostic['category'], 'incomplete_response')
             self.assertNotIn('partial secret response', json.dumps(diagnostic))
 
+    def test_gateway_http_status_is_retryable(self):
+        # 2026-10-15 blind-batch_08 attribution: DeepSeek answered 503
+        # during an outage window; the hard RuntimeError killed runs whose
+        # candidates were fine.  Gateway statuses stay retryable; 401 stays
+        # fatal (the test above pins that one).
+        with tempfile.TemporaryDirectory() as dirname:
+            root = Path(dirname)
+            key = self.make_key(root)
+
+            class UnavailableOpener:
+                def open(self, *_args, **_kwargs):
+                    raise HTTPError(deepseek.DEEPSEEK_CHAT_URL, 503,
+                                    'service unavailable', {}, io.BytesIO(b''))
+
+            with self.assertRaisesRegex(deepseek.TransientModelError, 'HTTP 503'):
+                deepseek.extract_deepseek('text', root, 'deepseek-flash', 'JSON:',
+                                        key_path=key, opener=UnavailableOpener())
+
+    def test_malformed_envelope_is_retryable(self):
+        # 2026-10-15 blind-batch_08 attribution: the endpoint also answered
+        # valid-JSON-but-wrong-shape bodies (no usable choices) during the
+        # same outage window; a malformed envelope is server-side
+        # degradation, so it rides the same retryable class as an
+        # interrupted body instead of failing the whole run.
+        with tempfile.TemporaryDirectory() as dirname:
+            root = Path(dirname)
+            key = self.make_key(root)
+            opener = FakeOpener({'error': {'message': 'server overloaded'}})
+            with self.assertRaisesRegex(deepseek.TransientModelError,
+                                        'envelope invalid'):
+                deepseek.extract_deepseek('text', root, 'deepseek-flash', 'JSON:',
+                                        key_path=key, opener=opener)
+            self.assertFalse((root / 'model-claim.json').exists())
+
     def test_pipeline_explicit_provider_dispatch_is_offline_testable(self):
         source = Path(__file__).resolve().parents[1] / 'evaluation/fresh_holdout_01/runs/' \
             'Brix_Money_qy7NXr77sDh__cSNXN84Wruw__JeqwSynbkaB'

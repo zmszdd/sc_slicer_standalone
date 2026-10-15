@@ -158,6 +158,14 @@ def extract_deepseek(text, output, model, prompt, *, key_path=None, opener=None,
             'http_status': exc.code, 'proxy_in_effect': proxy_endpoint,
             'raw_provider_output_saved': False,
         }, indent=2) + '\n')
+        # 2026-10-15 blind-batch_08 attribution: gateway-family statuses
+        # (502/503/504) are server-side overload, not candidate defects --
+        # surfaced repeatedly during a DeepSeek outage window while the
+        # classifier-style hard failure killed otherwise healthy runs.
+        # They stay retryable so the existing bounded retry absorbs them.
+        if exc.code in (502, 503, 504):
+            raise TransientModelError(
+                f'DeepSeek HTTP {exc.code}; response body not saved') from None
         raise RuntimeError(f'DeepSeek HTTP {exc.code}; response body not saved') from None
     except (TimeoutError, urlerror.URLError, OSError, http.client.IncompleteRead) as exc:
         timed_out = isinstance(exc, TimeoutError) or (
@@ -183,7 +191,14 @@ def extract_deepseek(text, output, model, prompt, *, key_path=None, opener=None,
         choice = response['choices'][0]
         content = choice['message']['content']
     except (ValueError, KeyError, IndexError, TypeError):
-        raise RuntimeError('DeepSeek response envelope invalid; raw body not saved') from None
+        # 2026-10-15 blind-batch_08 attribution: during a DeepSeek outage
+        # window the endpoint answered valid-JSON-but-wrong-shape bodies
+        # (empty/absent choices) alongside 503s.  A malformed envelope is
+        # server-side degradation, not a candidate defect -- the same
+        # retryable class as an interrupted body, so bounded retry absorbs
+        # it instead of killing the whole run.
+        raise TransientModelError(
+            'DeepSeek response envelope invalid; raw body not saved') from None
     if not isinstance(content, str):
         raise RuntimeError('DeepSeek response content missing')
     (output / 'model-response.txt').write_text(content)
