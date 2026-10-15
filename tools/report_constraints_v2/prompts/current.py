@@ -508,6 +508,11 @@ FEATURES = {
     # deterministic gates, before acceptance; OFF in every frozen version
     # (replay-safe).
     'semantic_faithfulness_audit': True,
+    # S18 (blind-batch_06 mixed-unit misfire / blind-batch_05 dead symbol):
+    # two zero-model-call advisories; OFF in every frozen version
+    # (replay-safe).
+    'mixed_unit_scaling_review': True,
+    'symbol_table_review': True,
 }
 
 def formal_prompt(evidence_mode, scope):

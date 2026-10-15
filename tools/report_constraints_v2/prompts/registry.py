@@ -110,6 +110,8 @@ FEATURE_NAMES = (
     'example_pinning_review',
     'placeholder_predicate_review',
     'semantic_faithfulness_audit',
+    'mixed_unit_scaling_review',
+    'symbol_table_review',
 )
 _LEGACY_FEATURE_SETS = {
     'strict_piv': STRICT_PIV_VERSIONS,
@@ -147,6 +149,11 @@ _LEGACY_FEATURE_SETS = {
     # frozen version enables it, so recorded runs keep the deterministic-only
     # acceptance they were produced under.
     'semantic_faithfulness_audit': frozenset(),
+    # S18 (2026-10-14, blind-batch_06/05): two zero-model-call advisories
+    # (mixed-unit scaling shape, symbol-table hygiene).  Same replay rule --
+    # no frozen version enables them, recorded runs keep their own behaviour.
+    'mixed_unit_scaling_review': frozenset(),
+    'symbol_table_review': frozenset(),
 }
 
 

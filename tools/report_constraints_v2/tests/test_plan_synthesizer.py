@@ -233,5 +233,44 @@ class PlanSynthesisTests(unittest.TestCase):
             self.assertTrue(verify_semantic.verify(output)['offline_verified'])
 
 
+class MixedUnitGateSemanticsTests(unittest.TestCase):
+    """blind-batch_06 (S18): the type/unit gate's mul mechanics decide which
+    faithful encodings exist.  symbol-times-symbol always joins the units
+    (no cancellation is inferred), so a unit-carrying scaling symbol is
+    structurally unpassable; an inlined literal inherits the other
+    operand's unit, so the scaled comparison passes when both compared
+    symbols share one raw unit.  The repair teaching rests on exactly
+    these two facts."""
+
+    def test_scaling_symbol_product_unit_is_unpassable(self):
+        symbols = {
+            'pending_reward_amount': {'sort': 'int', 'unit': 'reward_token'},
+            'precision_factor': {'sort': 'int', 'unit': 'dimensionless'},
+            'total_shares': {'sort': 'int', 'unit': 'shares'},
+        }
+        relation = {'op': 'lt', 'args': [
+            {'op': 'mul', 'args': [{'var': 'pending_reward_amount'},
+                                   {'var': 'precision_factor'}]},
+            {'var': 'total_shares'}]}
+        # The exact blind-batch_06 message: operator plus BOTH operand
+        # types, so the retry hint can name the failing comparison.
+        with self.assertRaisesRegex(
+                ValueError,
+                r'type/unit mismatch: lt int dimensionless\*reward_token int shares'):
+            report_math.expr_type(relation, symbols)
+
+    def test_inlined_scaling_constant_passes_with_same_raw_units(self):
+        symbols = {
+            'pending_reward_amount': {'sort': 'int', 'unit': 'raw'},
+            'total_shares': {'sort': 'int', 'unit': 'raw'},
+        }
+        relation = {'op': 'lt', 'args': [
+            {'op': 'mul', 'args': [{'var': 'pending_reward_amount'},
+                                   {'const': 1000000000000}]},
+            {'var': 'total_shares'}]}
+        self.assertEqual(report_math.expr_type(relation, symbols),
+                         ('bool', None))
+
+
 if __name__ == '__main__':
     unittest.main()

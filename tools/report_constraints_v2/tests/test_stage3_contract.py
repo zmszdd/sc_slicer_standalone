@@ -15,6 +15,7 @@ from lib.plan_synthesizer import (check_distinct_p_predicates,
                               faithfulness_mismatches, intent_scope_review,
                               placeholder_predicate_review,
                               relax_unsupported_relation, requirement_source_review,
+                              symbol_table_review,
                               validate_faithfulness_verdict)
 from lib.stage3_consistency import (binding_contract, ingest_feedback)
 from tests.test_evidence_ids import id_inputs
@@ -239,6 +240,164 @@ class PlaceholderPredicateReviewTests(unittest.TestCase):
                                           'left': 'fees', 'operator': 'ge',
                                           'right': {'const': 0}}}])
         self.assertEqual(placeholder_predicate_review(elements, plan)['flagged_count'], 0)
+
+
+class MixedUnitScalingReviewTests(unittest.TestCase):
+    """blind-batch_06: the report itself stated "pending x 1e12 <
+    totalShares"; the faithful cross-multiplied relation needs the scaling
+    constant inlined and one shared raw unit.  Advisory only -- the shape
+    marks where unit unification replaced the report's own mixed-unit
+    arithmetic (n=1: evidence for a possible gate, never a gate)."""
+
+    @staticmethod
+    def _plan(terms, symbols):
+        return {'symbols': symbols, 'precondition_terms': terms}
+
+    def test_scaled_constant_relation_is_flagged(self):
+        from lib.salvage import mixed_unit_scaling_review
+        elements = fixture_elements()
+        elements['statements'][0]['text'] = (
+            'Pending rewards times 1e12 stay below totalShares.')
+        plan = self._plan(
+            [{'source_id': 'pre_a',
+              'predicate': {'kind': 'relation', 'operator': 'lt',
+                            'left': {'op': 'mul', 'args': [
+                                {'symbol': 'pending'}, {'const': 1000000000000}]},
+                            'right': {'symbol': 'total_shares'}}}],
+            {'pending': {'sort': 'int', 'unit': 'raw'},
+             'total_shares': {'sort': 'int', 'unit': 'raw'}})
+        result = mixed_unit_scaling_review(plan, elements)
+        self.assertEqual(result['flagged_count'], 1)
+        row = result['flagged'][0]
+        self.assertEqual(row['flag'], 'report_scaled_comparison')
+        self.assertEqual(row['scaled_constant'], 1000000000000)
+        self.assertEqual(row['compared_symbols'], ['total_shares'])
+        self.assertEqual(row['symbol_units'], {'pending': 'raw',
+                                               'total_shares': 'raw'})
+        self.assertTrue(row['constant_in_statement_text'])
+        self.assertFalse(result['blocks_candidate_acceptance'])
+        self.assertEqual(result['schema_version'],
+                         'mixed-unit-scaling-review/1')
+
+    def test_plain_comparison_is_not_flagged(self):
+        from lib.salvage import mixed_unit_scaling_review
+        plan = self._plan(
+            [{'source_id': 'pre_a',
+              'predicate': {'kind': 'relation', 'operator': 'lt',
+                            'left': {'symbol': 'pending'},
+                            'right': {'symbol': 'total_shares'}}}],
+            {'pending': {'sort': 'int', 'unit': 'raw'},
+             'total_shares': {'sort': 'int', 'unit': 'raw'}})
+        self.assertEqual(
+            mixed_unit_scaling_review(plan, fixture_elements())['flagged_count'], 0)
+
+    def test_power_of_two_operand_is_not_flagged(self):
+        # The mandated 2^N form is a bound, not a report scaling constant.
+        from lib.salvage import mixed_unit_scaling_review
+        plan = self._plan(
+            [{'source_id': 'pre_a',
+              'predicate': {'kind': 'relation', 'operator': 'lt',
+                            'left': {'op': 'mul', 'args': [
+                                {'symbol': 'pending'},
+                                {'power_of_two': 12, 'offset': 0}]},
+                            'right': {'symbol': 'total_shares'}}}],
+            {'pending': {'sort': 'int', 'unit': 'raw'},
+             'total_shares': {'sort': 'int', 'unit': 'raw'}})
+        self.assertEqual(
+            mixed_unit_scaling_review(plan, fixture_elements())['flagged_count'], 0)
+
+    def test_scaling_symbol_is_not_a_constant_flag(self):
+        # symbol-times-symbol is the structurally unpassable shape the
+        # teaching forbids; it carries no literal, so the review stays on
+        # the inlined-constant family only.
+        from lib.salvage import mixed_unit_scaling_review
+        plan = self._plan(
+            [{'source_id': 'pre_a',
+              'predicate': {'kind': 'relation', 'operator': 'lt',
+                            'left': {'op': 'mul', 'args': [
+                                {'symbol': 'pending'}, {'symbol': 'factor'}]},
+                            'right': {'symbol': 'total_shares'}}}],
+            {'pending': {'sort': 'int', 'unit': 'raw'},
+             'factor': {'sort': 'int', 'unit': 'dimensionless'},
+             'total_shares': {'sort': 'int', 'unit': 'raw'}})
+        self.assertEqual(
+            mixed_unit_scaling_review(plan, fixture_elements())['flagged_count'], 0)
+
+
+class SymbolTableReviewTests(unittest.TestCase):
+    """blind-batch_05: ninety_pct_sold_flag was declared beside the
+    referenced ninety_pct_sold (same source, near-duplicate name, never
+    used).  Advisory only -- the formula-layer fact was still represented
+    once, so the flag surfaces symbol-table noise instead of rejecting."""
+
+    @staticmethod
+    def _plan(symbols, terms, pattern=None, derived=None):
+        return {'symbols': symbols, 'precondition_terms': terms,
+                'pattern': pattern, 'derived_definitions': derived or []}
+
+    def test_unreferenced_symbol_is_flagged(self):
+        plan = self._plan(
+            {'ninety_pct_sold': {'sort': 'bool', 'source_ids': ['pre_a']},
+             'ninety_pct_sold_flag': {'sort': 'bool', 'source_ids': ['pre_a']}},
+            [{'source_id': 'pre_a',
+              'predicate': {'kind': 'truth', 'symbol': 'ninety_pct_sold',
+                            'value': True}}])
+        result = symbol_table_review(plan)
+        flags = {(row['flag'], row.get('symbol'), row.get('duplicate_of'))
+                 for row in result['flagged']}
+        self.assertIn(('unreferenced_symbol', 'ninety_pct_sold_flag', None), flags)
+        self.assertIn(('same_source_near_duplicate', 'ninety_pct_sold',
+                       'ninety_pct_sold_flag'), flags)
+        self.assertFalse(result['blocks_candidate_acceptance'])
+        self.assertEqual(result['schema_version'], 'symbol-table-review/1')
+
+    def test_fully_referenced_plan_has_zero_flags(self):
+        plan = self._plan(
+            {'flag_a': {'sort': 'bool', 'source_ids': ['pre_a']},
+             'flag_b': {'sort': 'bool', 'source_ids': ['pre_b']}},
+            [{'source_id': 'pre_a',
+              'predicate': {'kind': 'truth', 'symbol': 'flag_a', 'value': True}},
+             {'source_id': 'pre_b',
+              'predicate': {'kind': 'truth', 'symbol': 'flag_b', 'value': True}}])
+        self.assertEqual(symbol_table_review(plan)['flagged_count'], 0)
+
+    def test_distinct_sources_same_prefix_are_not_flagged(self):
+        # Prefix-sharing names with different sources are two facts, not a
+        # redeclaration.
+        plan = self._plan(
+            {'sold_a': {'sort': 'bool', 'source_ids': ['pre_a']},
+             'sold_a_replay': {'sort': 'bool', 'source_ids': ['pre_b']}},
+            [{'source_id': 'pre_a',
+              'predicate': {'kind': 'truth', 'symbol': 'sold_a', 'value': True}},
+             {'source_id': 'pre_b',
+              'predicate': {'kind': 'truth', 'symbol': 'sold_a_replay',
+                            'value': True}}])
+        self.assertEqual(symbol_table_review(plan)['flagged_count'], 0)
+
+    def test_pattern_and_derived_references_count(self):
+        # Symbols used by the pattern or inside a derived expression are
+        # referenced; the definition target itself is produced, not used --
+        # a target nothing else uses stays flagged.
+        plan = self._plan(
+            {'cond': {'sort': 'bool', 'source_ids': ['pre_a']},
+             'amount': {'sort': 'int', 'unit': 'raw', 'source_ids': ['pre_a']},
+             'total': {'sort': 'int', 'unit': 'raw', 'source_ids': ['pre_a']},
+             'derived_total': {'sort': 'int', 'unit': 'raw',
+                               'source_ids': ['pre_a']}},
+            [{'source_id': 'pre_a',
+              'predicate': {'kind': 'truth', 'symbol': 'cond', 'value': True}}],
+            pattern={'kind': 'bounded_relation', 'condition': {
+                'kind': 'truth', 'symbol': 'cond', 'value': True},
+                'value': {'symbol': 'amount'}, 'operator': 'le',
+                'bound': {'op': 'add', 'args': [{'symbol': 'amount'},
+                                                {'symbol': 'total'}]}},
+            derived=[{'symbol': 'derived_total',
+                      'expression': {'op': 'add', 'args': [{'symbol': 'amount'},
+                                                           {'symbol': 'total'}]},
+                      'source_ids': ['pre_a']}])
+        result = symbol_table_review(plan)
+        self.assertEqual(
+            {row['symbol'] for row in result['flagged']}, {'derived_total'})
 
 
 class RequirementSourceReviewTests(unittest.TestCase):

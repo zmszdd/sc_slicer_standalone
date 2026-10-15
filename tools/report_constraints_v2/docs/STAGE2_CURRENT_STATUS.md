@@ -642,7 +642,7 @@ weakened 主因与批 03 不同，回到批 02 型设计取舍：具体代币身
 经人工核对是**符号级死重复**：`ninety_pct_sold_flag` 与已引用的
 `ninety_pct_sold` 含义、来源全同但从未被引用——公式层事实未丢
 （该事实被表示了一次），属符号表瑕疵而非谓词门职责；记为后续
-候选检查（同源同义符号去重）。
+候选检查（同源同义符号去重；S18 `symbol_table_review` 已收口）。
 
 **忠实性（24 项维度评分）**：faithful 8 / weakened 16 /
 unfaithful 0；`constants_not_in_report` 0。完全忠实份额 33%——
@@ -671,12 +671,14 @@ because timeElapsed == 0"编码为 `undistributed_fee == 0`——报告事实
 **事实反转**。漏检根因：数值保真门只验证常量字面量出现在引文
 （引文确有 == 0）；零界族检查不适用（eq 非 ge/le）。语义级反转在
 现有确定性门的职责之外——S17 候选（需用户裁决：词法启发式对
-"x == 0 且零属他量"易误报，语义判定需模型介入）。
+"x == 0 且零属他量"易误报，语义判定需模型介入；S17 语义交叉
+审计已收口，反转方案归因补测见 S18 探针）。
 
 **被拒例判 misfire，人工核实**：报告原文即 "pending × 1e12 <
 totalShares" 跨单位比较，单位门按 DSL 纪律拒收——单位规范与
 报告自身混合单位公式的真实张力（忠实编码需把两侧声明为同量纲
-的原始值），同样记为 S17 候选。
+的原始值，缩放常量内联为字面量），S18 `mixed_unit_scaling_review`
+advisory 与 `_type_unit_hint` 教学已收口。
 
 **忠实性（24 项维度评分）**：faithful 4 / weakened 18 /
 unfaithful 2；`constants_not_in_report` 0；`collapsed_facts` 0。
@@ -743,3 +745,16 @@ consistent，全链 verify 过、审计调用 1 次。批 06 原反转方案的
 直接审计归因（应判 inverted）在 opencode 通道两次 240s 超时后
 待通道恢复补测；亦待配置 `DEEPSEEK_API_KEY` 后走
 `--provider deepseek` 直连复核（生产通路）。
+
+## 2026-10-14：S18 —— 混合单位缩放 + 符号表 advisory + S17 归因补测通路
+
+批 06 跨单位 misfire（GTE QS7NsxmTjRa 混合单位公式被判误）
+与批 05 死符号（`ninety_pct_sold_flag`）两条遗留以两件
+advisory 评审闭合（n=1 证据不足以立门，全量记录积累证据）：
+`mul(symbol, const)` 缩放比较实例记录（常量是否见于原文）、
+未引用符号与同源近名重复声明。`_type_unit_hint` 补齐内联常量
+处方与按来源字面量警告（两条门语义已离线实测钉死）。另有
+S17 归因补测探针（`evaluation/s17_audit_retest_01/audit_retest.py`，
+dry-run 已过、载荷含反转谓词与双 sha256，真实调用待用户授权）。
+特征键两枚 live-only，verify 零模型重放，artifact 哈希链入
+stage3-spec。430 项测试全过（+10）。

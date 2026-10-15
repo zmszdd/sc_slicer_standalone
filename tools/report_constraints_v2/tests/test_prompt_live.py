@@ -159,6 +159,13 @@ class LivePromptTests(unittest.TestCase):
         self.assertIn('cross-multiplied relation', unit)
         self.assertIn('never define a derived symbol', unit)
         self.assertIn('Failing comparison: eq int HYPE int kHYPE', unit)
+        # blind-batch_06 attribution: the report itself stated a mixed-unit
+        # formula; the retry needs the inlined-constant recipe and the
+        # per-source literal warning, not just the cross-multiplication one.
+        self.assertIn('inline that constant as {"const": N}', unit)
+        self.assertIn('inherits the other operand\'s unit', unit)
+        self.assertIn('never declare a unit-carrying scaling symbol', unit)
+        self.assertIn('statement literally states the constant', unit)
         # blind-batch_04 attribution: the repair loop gave no teaching for the
         # compound bound, so the model had no way to know nesting was the fix.
         compound = formal_retry_hint(ValueError('invalid compound predicate'))
@@ -232,7 +239,8 @@ class FeatureDecouplingTests(unittest.TestCase):
                          'requirement_source_review', 'intent_scope_review',
                          'partial_formalization', 'example_pinning_review',
                          'placeholder_predicate_review',
-                         'semantic_faithfulness_audit'}
+                         'semantic_faithfulness_audit',
+                         'mixed_unit_scaling_review', 'symbol_table_review'}
         inherited = [name for name in registry.FEATURE_NAMES
                      if name not in post_baseline]
         for version in ('semantic-v3.16', 'semantic-v3.20'):

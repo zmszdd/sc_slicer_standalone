@@ -512,3 +512,58 @@ live-6 反占位与复合预算守卫、修复教学断言）。真实重跑批 
 自身产出忠实方案（费用存在改 bool 真值符号），审计判
 consistent；全链 verify 过、审计调用 1 次。批 06 原反转方案的
 审计归因待通道恢复后补测。
+
+## 2026-10-14：S18 —— 混合单位 advisory + 符号表 advisory + S17 归因补测通路
+
+两项零模型调用修复（盲批 06 跨单位 misfire、盲批 05 死符号），均按
+n=1 阈值纪律走 advisory/教学、不动门；外加 S17 审计归因的一次性
+探针脚本（通路建成，真实调用待用户授权）。
+
+1. **`mixed_unit_scaling_review` advisory**（`lib/salvage.py`，
+   feature 键 `mixed_unit_scaling_review` live-only、冻结版 frozenset()）
+   - 标记形如 `mul(symbol, const N) <op> <quantity>`（N 为 0/1 之外的
+     整数字面量）的 relation 谓词：这是"报告自身陈述混合单位公式"
+     （盲批 06 GTE QS7NsxmTjRa：`pending × 1e12 < totalShares`）唯一
+     可过门的忠实编码——字面量继承另一操作数单位、两侧声明同一
+     原始单位。行记录缩放符号、常量、对侧符号、各单位及常量是否
+     被所引来源文本接地（`explicit_numbers`）；为该家族在 n≥2 时
+     可能的门决策积累证据
+   - `power_of_two` 操作数（2^N 界的规范形态）与 symbol×symbol
+     （结构性不可过）均不在标记范围
+   - 落盘 `mixed-unit-scaling-review.json`，进 stage3-spec 哈希链；
+     `verify` 按录制 feature 键确定性重放
+2. **`symbol_table_review` advisory**（`lib/plan_synthesizer.py`，
+   feature 键 `symbol_table_review`）
+   - `unreferenced_symbol`：声明后从未被任何 P 谓词、impact context、
+     pattern 槽位或派生表达式引用的符号（盲批 05 GTE cjpGNf9X68J：
+     `ninety_pct_sold_flag` 与已引用的 `ninety_pct_sold` 并存）；公式层
+     事实仍被表示一次，死条目是符号表噪音
+   - `same_source_near_duplicate`：两符号 `source_ids` 相同且归一化名
+     互为前缀（同源近义重声明的指纹）
+   - 遍历为容忍式（未知形状跳过不抛错）；派生定义目标仅在被他处
+     使用时计引用；与 `salvage.drop_unused_invalid_symbols`（只删空
+     entity_ids 条目）互补。落盘 `symbol-table-review.json`，同哈希链
+     与重放
+3. **`_type_unit_hint` 修复教学扩展**（`cli/semantic_pipeline.py`）
+   - 教学建立在两条已实测的门语义上：symbol×symbol 必产生拼接乘积
+     单位（无单位消解）故结构性不可过；内联字面量继承另一操作数
+     单位故可过——处方为"报告声明的缩放常量内联为 `{"const": N}`、
+     两侧声明同一原始单位、绝不声明带单位的缩放符号"
+   - 含按来源字面量警告：数值门逐 P 来源核对，缩放关系须挂在字面
+     声明该常量的来源项上；无来源声明时如实记 unresolved
+4. **S17 归因补测探针**（`evaluation/s17_audit_retest_01/audit_retest.py`，
+   一次性脚本，零生产代码改动）
+   - 复用生产通路（`faithfulness_audit_input` + `request_faithfulness_audit`
+     + `extract_deepseek`）；对批 06 真实保存的反转方案（`undistributed_fee
+     == 0`，run 早于 S17、从未被审计）做归因
+   - `--dry-run` 零调用构建载荷与记录骨架（已实测：真实产物、
+     1888 字节载荷、4 个 P 来源含目标谓词、双 sha256 入档）；
+     真实调用 1 次 + 至多 1 次格式重试，**待用户授权执行**；
+     预注册预期：`p_fee_accrued_not_distributed` 应判 `inverted`
+
+验证：全量 430 项测试通过（+10：缩放常量标记/普通比较不标/
+power_of_two 不标/symbol×symbol 不标、未引用符号标记/同源近重
+标记/全引用零旗标/异源同前缀不标/pattern 与派生引用计数、
+乘积单位必拒与内联常量可过两例钉死门语义、修复教学四短语）。
+S18 前后 420→430 全绿；S17 基线先单独提交（420 绿），S18 改动
+在其后单独成commit，两段历史可独立复核。

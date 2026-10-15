@@ -25,6 +25,7 @@ from prompts.active import resolve_prompt_set
 
 from lib import report_only as r
 from lib.salvage import check_numeric_plan, check_address_plan
+from lib.salvage import mixed_unit_scaling_review
 from lib.semantic_core import (compile_bundle, normalize_readiness,
                            normalize_truth_binding, require,
                            validate_elements)
@@ -32,7 +33,7 @@ from lib.plan_synthesizer import (check_distinct_p_predicates, classified_relati
                               faithfulness_mismatches, identical_p_predicates,
                               intent_scope_review, placeholder_predicate_review,
                               relax_unsupported_relation, requirement_source_review,
-                              structured_unresolved_review,
+                              structured_unresolved_review, symbol_table_review,
                               synthesize_id_formalization,
                               validate_faithfulness_verdict)
 from lib.ingest import (PROMPT as READINESS_PROMPT, build_catalog,
@@ -499,6 +500,17 @@ def verify(directory):
                 require(placeholder_predicate_review(raw_elements, plan) ==
                         json.loads((directory / 'placeholder-predicate-review.json').read_text()),
                         'placeholder predicate review replay mismatch')
+            # S18: both reviews are zero-model-call advisories; runs recorded
+            # before the feature (their prompt_features predates the key)
+            # simply have no artifact to replay.
+            if features.get('mixed_unit_scaling_review', False):
+                require(mixed_unit_scaling_review(plan, raw_elements) ==
+                        json.loads((directory / 'mixed-unit-scaling-review.json').read_text()),
+                        'mixed unit scaling review replay mismatch')
+            if features.get('symbol_table_review', False):
+                require(symbol_table_review(plan) ==
+                        json.loads((directory / 'symbol-table-review.json').read_text()),
+                        'symbol table review replay mismatch')
             if features['numeric_guard']:
                 check_numeric_plan(
                     plan, raw_elements,

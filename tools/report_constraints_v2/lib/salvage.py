@@ -354,6 +354,115 @@ def example_pinning_review(plan, elements):
     }
 
 
+def _predicates_of(predicate):
+    """Expand compound predicates into their leaf predicate dicts."""
+    if not isinstance(predicate, dict):
+        return []
+    if predicate.get('kind') in ('all_of', 'any_of'):
+        result = []
+        for item in predicate.get('terms') or []:
+            result.extend(_predicates_of(item))
+        return result
+    return [predicate]
+
+
+def _scaled_const_binding(value):
+    """(symbol, const) when a quantity binding multiplies a symbol by a literal.
+
+    Only ``mul(symbol, const N)`` with N an int other than 0/1 is a scaling:
+    1 is the forbidden "multiply by 1 to fake unit equality" family, 0
+    annihilates the quantity, and ``power_of_two`` operands are the
+    mandated form for 2^N bounds -- none of these rescales a report unit.
+    """
+    if not (isinstance(value, dict) and set(value) == {'op', 'args'} and
+            value.get('op') == 'mul' and isinstance(value['args'], list) and
+            len(value['args']) == 2):
+        return None
+    first, second = value['args']
+    for a, b in ((first, second), (second, first)):
+        if (isinstance(a, dict) and set(a) == {'symbol'} and
+                isinstance(b, dict) and set(b) == {'const'} and
+                type(b['const']) is int and b['const'] not in (0, 1)):
+            return a['symbol'], b['const']
+    return None
+
+
+def _quantity_names(value, names):
+    if isinstance(value, dict):
+        if set(value) == {'symbol'}:
+            names.append(value['symbol'])
+        for item in value.get('args') or []:
+            _quantity_names(item, names)
+
+
+def mixed_unit_scaling_review(plan, elements):
+    """Flag comparisons that rescale a quantity by a literal constant.
+
+    A relation predicate shaped ``mul(symbol, const N) <op> <quantity>`` is
+    the one passable encoding of a report that *itself* states a mixed-unit
+    formula (blind-batch_06 GTE QS7NsxmTjRa: "pending x 1e12 <
+    totalShares", cross-multiplied to dodge DSL division): a literal operand
+    inherits the other operand's unit, so no product unit is formed, and
+    both compared symbols must then share one raw unit.  That unit
+    unification replaces the report's own mixed-unit arithmetic, and a
+    scaling *symbol* is structurally unpassable (symbol x symbol always
+    yields a joined product unit), so every accepted instance of this shape
+    is recorded: it is evidence toward a gate decision if the family
+    recurs (n=1 today: advisory, never blocking).
+    """
+    statements = {row['id']: row for row in elements['statements']}
+    plan_symbols = plan.get('symbols')
+    plan_symbols = plan_symbols if isinstance(plan_symbols, dict) else {}
+    flagged = []
+    for term in list(plan.get('precondition_terms') or []) + \
+            list(plan.get('impact_context_terms') or []):
+        if not isinstance(term, dict):
+            continue
+        for predicate in _predicates_of(term.get('predicate')):
+            if not (isinstance(predicate, dict) and
+                    predicate.get('kind') == 'relation'):
+                continue
+            for side, other in ((predicate.get('left'), predicate.get('right')),
+                                (predicate.get('right'), predicate.get('left'))):
+                scaled = _scaled_const_binding(side)
+                if scaled is None:
+                    continue
+                name, const = scaled
+                other_names = []
+                _quantity_names(other, other_names)
+                row = statements.get(term.get('source_id'))
+                text = row.get('text') or '' if row else ''
+                flagged.append({
+                    'statement_id': term.get('source_id'),
+                    'statement_kind': row.get('kind') if row else None,
+                    'statement_text': text,
+                    'flag': 'report_scaled_comparison',
+                    'operator': predicate.get('operator'),
+                    'scaled_symbol': name,
+                    'scaled_constant': const,
+                    'compared_symbols': sorted(set(other_names)),
+                    'symbol_units': {symbol: plan_symbols.get(symbol, {}).get('unit')
+                                     for symbol in sorted({name, *other_names})},
+                    'constant_in_statement_text':
+                        const in explicit_numbers(text) if text else False,
+                })
+    return {
+        'schema_version': 'mixed-unit-scaling-review/1',
+        'advisory_only': True,
+        'blocks_candidate_acceptance': False,
+        'flagged_count': len(flagged),
+        'flagged': flagged,
+        'note': ('A flagged comparison rescales a quantity by a literal to '
+                 'express a formula the report itself states across units. '
+                 'The compared symbols were declared with one shared raw '
+                 'unit, replacing the report mixed-unit arithmetic; and the '
+                 'scaling constant must be stated by the cited statement '
+                 'itself. Verify the encoding or record the relation in '
+                 'unresolved. This review never rewrites or rejects the '
+                 'plan.'),
+    }
+
+
 # ------------------- 节选自 mechanical_salvage.py -------------------
 
 def normalize_element_ids(raw):

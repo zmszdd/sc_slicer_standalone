@@ -813,6 +813,105 @@ def faithfulness_mismatches(verdict):
             if check.get('verdict') != 'consistent']
 
 
+def _referenced_plan_symbols(value, add):
+    """Tolerant walk: report every declared symbol name the value mentions.
+
+    Used only by the advisory symbol-table review, so unknown shapes are
+    skipped rather than rejected.  Inside predicates, patterns and derived
+    expressions every string that names a declared symbol is a reference;
+    the strings that are not symbol names (operators, kinds, qualifier
+    types, statement ids) simply match no declared name.
+    """
+    if isinstance(value, str):
+        add(value)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _referenced_plan_symbols(item, add)
+    elif isinstance(value, list):
+        for item in value:
+            _referenced_plan_symbols(item, add)
+
+
+def symbol_table_review(plan):
+    """Flag declared plan symbols no predicate or definition ever uses.
+
+    Two flags, both advisory (``blocks_candidate_acceptance`` stays False --
+    one blind-batch defect family is stingy evidence for a gate):
+
+    - ``unreferenced_symbol``: a declared symbol that no P predicate, impact
+      context term, pattern slot or derived expression references
+      (blind-batch_05 GTE: ``ninety_pct_sold_flag`` declared beside the
+      referenced ``ninety_pct_sold``).  The formula-layer fact is usually
+      still represented once; the dead entry is symbol-table noise that
+      stage 3 would otherwise have to bind or explain.
+    - ``same_source_near_duplicate``: two symbols with identical
+      ``source_ids`` whose normalized names share a prefix.  Same source,
+      near-same name, one referenced and one not is the signature of a
+      fact being redeclared instead of reused.
+    """
+    symbols = plan.get('symbols')
+    symbols = symbols if isinstance(symbols, dict) else {}
+    names = set(symbols)
+    referenced = set()
+
+    def add(name):
+        if isinstance(name, str) and name in names:
+            referenced.add(name)
+
+    for term in list(plan.get('precondition_terms') or []) + \
+            list(plan.get('impact_context_terms') or []):
+        if isinstance(term, dict):
+            _referenced_plan_symbols(term.get('predicate'), add)
+    _referenced_plan_symbols(plan.get('pattern'), add)
+    for item in plan.get('derived_definitions') or []:
+        # A definition target is produced, not referenced: it counts only
+        # when a predicate or another definition uses it.  The expression's
+        # base symbols are genuine references.
+        if isinstance(item, dict):
+            _referenced_plan_symbols(item.get('expression'), add)
+
+    def source_ids(name):
+        meta = symbols[name]
+        return sorted(meta.get('source_ids')) if isinstance(meta, dict) else []
+
+    flagged = []
+    for name in sorted(names):
+        if name not in referenced:
+            flagged.append({
+                'symbol': name,
+                'flag': 'unreferenced_symbol',
+                'source_ids': source_ids(name),
+            })
+    order = sorted(names, key=lambda name: name.lower())
+    for index, first in enumerate(order):
+        for second in order[index + 1:]:
+            if source_ids(first) != source_ids(second):
+                continue
+            low_first, low_second = first.lower(), second.lower()
+            if not (low_first.startswith(low_second) or
+                    low_second.startswith(low_first)):
+                continue
+            flagged.append({
+                'symbol': first,
+                'flag': 'same_source_near_duplicate',
+                'duplicate_of': second,
+                'source_ids': source_ids(first),
+                'referenced': {first: first in referenced,
+                               second: second in referenced},
+            })
+    return {
+        'schema_version': 'symbol-table-review/1',
+        'advisory_only': True,
+        'blocks_candidate_acceptance': False,
+        'flagged_count': len(flagged),
+        'flagged': flagged,
+        'note': ('A flagged symbol is declared but never used, or redeclares '
+                 'a same-source neighbour under a near-duplicate name. '
+                 'Deduplicate the symbol table or bind the symbol knowingly. '
+                 'This review never rewrites or rejects the plan.'),
+    }
+
+
 #: Applicability-scope cues in an intent statement.  Advisory only: the dual
 #: reviews disagreed on strictness for this family, so the check surfaces the
 #: narrowing risk instead of enforcing a contested standard.

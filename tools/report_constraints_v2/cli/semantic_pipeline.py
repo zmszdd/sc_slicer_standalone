@@ -31,11 +31,13 @@ from lib.plan_synthesizer import (check_distinct_p_predicates, classified_relati
                               predicate_binding_symbols, relax_unsupported_relation,
                               placeholder_predicate_review,
                               requirement_source_review, structured_unresolved_review,
-                              synthesize_id_formalization, validate_faithfulness_verdict)
+                              symbol_table_review, synthesize_id_formalization,
+                              validate_faithfulness_verdict)
 from lib.solving import solve_queries
 from lib.solving import attach_review
 from lib.solving import from_bundle as triage_bundle, from_failure as triage_failure
-from lib.salvage import (example_pinning_review, normalize_attack_step_roles,
+from lib.salvage import (example_pinning_review, mixed_unit_scaling_review,
+                                normalize_attack_step_roles,
                                 normalize_element_ids, drop_unused_invalid_symbols)
 from lib.stage3_consistency import binding_contract
 from lib.ingest import PROMPT as READINESS_PROMPT, model_payload, validate_readiness
@@ -136,7 +138,20 @@ def _type_unit_hint(message):
             'cross-multiplied relation (for example shares_received * '
             'total_assets <= deposit_amount * total_supply) and never '
             'define a derived symbol whose product units are then compared '
-            'against a plain share quantity. If the current relation_class '
+            'against a plain share quantity. When the report itself states '
+            'a formula that mixes units around an explicit scaling '
+            'constant (for example "pending * 1e12 < totalShares"), inline '
+            'that constant as {"const": N} inside the mul -- a literal '
+            'operand inherits the other operand\'s unit, so no product '
+            'unit is formed -- and declare both compared quantities with '
+            'one shared raw unit; never declare a unit-carrying scaling '
+            'symbol, because symbol-times-symbol always produces a joined '
+            'product unit that no plain unit can equal. The numeric gate '
+            'checks each P predicate against its own cited statement: '
+            'attach the scaled relation to the term whose statement '
+            'literally states the constant, and when no cited statement '
+            'states it, record the fact in unresolved instead of forcing '
+            'it. If the current relation_class '
             'cannot express the report relation with add/sub/mul and '
             'matching units, this bounded repair may choose a more '
             'suitable relation_class and its compiler-fixed template, or '
@@ -1160,6 +1175,13 @@ def main():
                     write_json(args.output / 'placeholder-predicate-review.json',
                                placeholder_predicate_review(elements_raw,
                                                             model_candidate))
+                if features['mixed_unit_scaling_review']:
+                    write_json(args.output / 'mixed-unit-scaling-review.json',
+                               mixed_unit_scaling_review(model_candidate,
+                                                         elements_raw))
+                if features['symbol_table_review']:
+                    write_json(args.output / 'symbol-table-review.json',
+                               symbol_table_review(model_candidate))
                 if unresolved_review is not None:
                     write_json(args.output / 'unresolved-review.json', unresolved_review)
         else:
@@ -1238,7 +1260,8 @@ def main():
         # with them after the fact breaks verify.
         for name in ('requirement-source-review.json', 'intent-scope-review.json',
                      'placeholder-predicate-review.json',
-                     'semantic-faithfulness-audit.json'):
+                     'semantic-faithfulness-audit.json',
+                     'mixed-unit-scaling-review.json', 'symbol-table-review.json'):
             if (args.output / name).is_file():
                 interface[name.replace('-', '_').removesuffix('.json') + '_path'] = name
                 interface[name.replace('-', '_').removesuffix('.json') + '_sha256'] = \
