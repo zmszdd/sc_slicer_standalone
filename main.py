@@ -140,7 +140,16 @@ STAGE2_ARG_DEFAULTS = {
             ((('--deepseek-proxy', 'direct'), '--deepseek-proxy', ()),
              (('--claim-verdict', 'signals'), '--claim-verdict', ()),
              (('--formal-retries', '1'), '--formal-retries', ('--extract', '--formalize-only')),
-             (('--element-retries', '1'), '--element-retries', ('--extract',))),
+             (('--element-retries', '1'), '--element-retries', ('--extract',)),
+             # blind-batch_08 attribution: the readiness step had zero retry
+             # budget from this entry (argparse default 0) while `batch` runs
+             # defaulted to 1 -- a truncated screening response in a DeepSeek
+             # outage window then killed an otherwise healthy run.  The budget
+             # now matches `batch`.  The conflict flag is --provider (not
+             # --readiness-retries): the child parser guards
+             # "--readiness-retries requires DeepSeek full extraction", so a
+             # caller who overrides the transport decides its own budget.
+             (('--readiness-retries', '1'), '--provider', ('--extract',))),
             ('--extract', '--formalize-only')),
     'batch': (('--provider', 'deepseek', '--model', 'deepseek-flash'),
               ((('--deepseek-proxy', 'direct'), '--deepseek-proxy', ()),

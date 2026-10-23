@@ -20,6 +20,8 @@ tools/report_constraints_v2/
 │   ├── deepseek.py           # DeepSeek 连接唯一定义处：配置/密钥/代理/HTTP 传输
 │   ├── report_only.py        # 报告解析、表达式编译、DeepSeek 传输
 │   ├── ingest.py             # evidence_catalog + report_readiness 合并
+│   ├── impact_cards.py       # P/I 适用性 schema、逐 Impact 来源卡与请求范围收窄
+│   ├── multi_impact.py       # 独立 Impact/I claim 合并、稳定 ID 与覆盖汇总
 │   ├── solving.py            # symbolic_queries + review 合并
 │   ├── salvage.py            # fidelity + mechanical_salvage 合并
 │   ├── stage3_consistency.py # stage3-feedback：阶段三绑定反馈与真实一致性判定
@@ -28,6 +30,8 @@ tools/report_constraints_v2/
 │   ├── definitions.py        # P/I/V 集中式语义定义
 │   ├── active.py             # 生产 Prompt 显式解析与哈希
 │   ├── registry.py
+│   ├── current.py            # semantic-live-17 当前提示词
+│   ├── live16_snapshot.py    # semantic-live-16 历史提示词重放快照
 │   └── versions/
 ├── tests/                    # 全部自动测试
 ├── docs/                     # 设计、状态和历史说明
@@ -42,7 +46,7 @@ tools/report_constraints_v2/
 | 层 | 目录 | 内容 | 规则 |
 | --- | --- | --- | --- |
 | 入口层 | `cli/` | 4 个脚本 | 可被 `main.py` 直接调用的脚本放这里；**不要直接 `python cli/x.py`** |
-| 共享库层 | `lib/` | 8 个模块 | 无命令入口，只被 import |
+| 共享库层 | `lib/` | 10 个模块 | 无命令入口，只被 import |
 | 兼容层 | `lib/compat.py` | 16 个名字的映射表 | 不是目录层；只做名字解析，不含任何业务逻辑 |
 
 阶段二根目录**不含任何 `.py`**：实现全部在 `lib/` 或 `cli/`，旧名字的兼容由
@@ -151,8 +155,8 @@ parser 错误），而 `batch` 一直转发 1——两个入口行为不一致�
 
 | 文件 | 行数 | 作用 |
 | --- | ---: | --- |
-| `semantic_pipeline.py` | 1290 | 全链编排：readiness→P/I/V→形式化（有界重试、局部修复、S17 语义交叉审计、空修复 fresh_restate 升级、S18 单位修复教学）→确定性门→Z3→产物 | — |
-| `batch_verify.py` | 610 | `batch`（限量并发跑真实报告）+ `verify`（零模型调用重放，含 S18 两件 advisory 回放） |
+| `semantic_pipeline.py` | — | 全链编排：readiness→Impact 清单→核心要素→报告级 P/I 适用性判定→逐 `(Impact, I)` 来源卡与独立收窄请求→形式化（有界重试、局部修复、S17 语义交叉审计）→确定性门→Z3→产物 | — |
+| `batch_verify.py` | 641 | `batch`（限量并发跑真实报告）+ `verify`（零模型调用重放，含 S18 两件 advisory、S19 example-pinning 与机械修复回放） |
 | `preconditions.py` | 362 | 可选 `audit`（P 证据/时序审查）与 `repair`（受约束 P 修复） |
 | `preview.py` | 154 | 本地 `screen` 检查与 `report` / `plan` / `prompt` 预览 |
 
@@ -162,10 +166,12 @@ parser 错误），而 `batch` 一直转发 1——两个入口行为不一致�
 | --- | ---: | --- | --- |
 | `semantic_core.py` | 754 | P/I/V schema、类型、编译与基础校验 | — |
 | `plan_synthesizer.py` | 1282 | 形式计划校验和确定性公式合成（含 semantic-live-5 的重复谓词门与三件 advisory/部分形式化审查、S15 的镜像/零界折叠键与占位谓词 advisory、S17 的忠实裁决校验/不匹配提取、S18 的符号表 advisory） | — |
-| `deepseek.py` | 203 | **DeepSeek 连接唯一定义处**：模型白名单与默认模型、官方端点、密钥文件路径、解码参数（temperature 0 / max_tokens 8192）、密钥读取校验、代理三态策略、`extract_deepseek` HTTP 传输 | — |
+| `deepseek.py` | 218 | **DeepSeek 连接唯一定义处**：模型白名单与默认模型、官方端点、密钥文件路径、解码参数（temperature 0 / max_tokens 8192）、密钥读取校验、代理三态策略、`extract_deepseek` HTTP 传输（502/503/504 与坏信封入 `TransientModelError` 可重试类） | — |
 | `report_only.py` | 432 | 报告解析、表达式编译、opencode 传输（`extract`） | （含原 `review_semantics.py` 的 `relationship_review`） |
 | `ingest.py` | 164 | 原文片段编号、ID 回填、提取前信息充分性门 | `evidence_catalog.py` + `report_readiness.py` |
 | `solving.py` | 233 | SMT/Z3 查询与 witness 校验、分流与可观察变量审查 | `symbolic_queries.py` + `review.py` |
+| `impact_cards.py` | — | P/I 适用性 schema 校验（最多 64 个选中来源对）、单 Impact/I 来源卡投影、inferred 意图排除、形式化 payload 限域 | — |
+| `multi_impact.py` | — | `(Impact, I)` 稳定 claim ID、独立规则合并、按 Impact 全部 I 来源汇总覆盖率 | — |
 | `salvage.py` | 652 | 数值与零地址保真守卫（拒绝消息带缺失来源）、机械修复、示例钉死 advisory、S18 混合单位缩放 advisory | `fidelity.py`（原 `numeric_fidelity.py` + `address_fidelity.py`）+ `mechanical_salvage.py` |
 | `stage3_consistency.py` | 224 | stage3-binding-contract 生成、阶段三反馈 ingest 与真实 consistency 判定（semantic-live-5） | — |
 

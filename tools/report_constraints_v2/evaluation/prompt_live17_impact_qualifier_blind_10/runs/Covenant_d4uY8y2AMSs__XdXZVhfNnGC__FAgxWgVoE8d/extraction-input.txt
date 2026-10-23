@@ -1,0 +1,18 @@
+Nested multicall resets payment guard, breaking batches that mix oracle updates and actions
+
+Title: Nested multicall resets payment guard, breaking batches that mix oracle updates and actions  
+Severity: Medium  
+Target: src/Covenant.sol – multicall(), _checkPayment()
+
+## Summary
+The `Covenant.multicall` helper only tracks “batch mode” with a boolean `_isMulticall`. If any payload within the batch calls `multicall` again (nested multicall), the inner frame sets `_isMulticall` back to `false` before the outer loop finishes. Subsequent outer payloads then hit `_checkPayment` with `_isMulticall == false`, so the contract enforces `msg.value == msgValue` despite still being inside the outer batch. Any sequence that spends ETH on an inner oracle update (non-zero `msgValue`) and follows up with a zero-value call will revert with `Errors.E_IncorrectPayment`, breaking otherwise valid batched flows.
+
+## Impact
+- **Liveness/DoS on self:** Integrators composing helper contracts that themselves call `multicall` can no longer combine price updates and mint/swap/redemption actions in a single top-level batch if the inner helper consumes ETH. The revert occurs even when the batched operations are solvent and previously worked in single-level multicalls.
+- **Composability break:** This undermines the reasons to expose `multicall`—operators cannot safely reuse library helpers that themselves rely on batching, forcing duplicate logic or separate transactions.
+- **User-facing regression:** The revert arises solely from call ordering, not from balance insolvency, producing unexpected `E_IncorrectPayment` errors for otherwise valid flows.
+
+## Root Cause
+- `multicall` toggles `_isMulticall` from `false → true → false` without tracking depth ([src/Covenant.sol#L506-L521](https://github.com/code-423n4/2025-10-covenant/blob/main/src/Covenant.sol#L506-L521)). An inner call resets the flag before the outer loop completes.
+- `_checkPayment` (invoked by mint/redeem/swap/updateState) requires exact `msg.value == msgValue` whenever `_isMulticall == false` ([src/Covenant.sol#L556-L560](https://github.com/code-423n4/2025-10-covenant/blob/main/src/Covenant.sol#L556-L560)). After the inner call returns, the flag is false, so the next outer payload reverts.
+- No guard disallows nesting nor compensates for it.

@@ -1,0 +1,227 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "value_relation",
+  "precondition_ids": [
+    "p_getemas_order",
+    "p_intended_formula"
+  ],
+  "intent_id": "si_twap_matches_intended",
+  "impact_ids": [
+    "i_liquidation_pricing"
+  ],
+  "symbols": {
+    "fast_ema": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "fastEMA value returned at tuple position 1 by OraclePack.getEMAs()",
+      "checkpoint": "getEMAs() return tuple position 1",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "p_getemas_order",
+        "p_intended_formula"
+      ]
+    },
+    "slow_ema": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "slowEMA value returned at tuple position 2 by OraclePack.getEMAs()",
+      "checkpoint": "getEMAs() return tuple position 2",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "p_getemas_order",
+        "p_intended_formula"
+      ]
+    },
+    "eons_ema": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "eonsEMA value returned at tuple position 3 by OraclePack.getEMAs()",
+      "checkpoint": "getEMAs() return tuple position 3",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "p_getemas_order",
+        "p_intended_formula"
+      ]
+    },
+    "computed_twap": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "twapEMA() value actually supplied as twapTick to PanopticPool liquidation pricing (getLiquidationBonus via sqrtRatioAtTick)",
+      "checkpoint": "twapEMA() output consumed by dispatchFrom()",
+      "entity_ids": [
+        "risk_engine",
+        "panoptic_pool",
+        "twap_tick"
+      ],
+      "source_ids": [
+        "si_twap_matches_intended",
+        "i_liquidation_pricing"
+      ]
+    },
+    "intended_twap": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "intended weighted TWAP 0.6*fast + 0.3*slow + 0.1*eons consistent with getEMAs() ordering",
+      "checkpoint": "derived from getEMAs() tuple positions",
+      "entity_ids": [
+        "risk_engine",
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "p_intended_formula",
+        "si_twap_matches_intended"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_getemas_order",
+      "predicate": {
+        "kind": "comparison",
+        "left": "fast_ema",
+        "operator": "ne",
+        "right": {
+          "symbol": "slow_ema"
+        }
+      }
+    },
+    {
+      "source_id": "p_intended_formula",
+      "predicate": {
+        "kind": "relation",
+        "left": {
+          "symbol": "intended_twap"
+        },
+        "operator": "eq",
+        "right": {
+          "op": "add",
+          "args": [
+            {
+              "op": "mul",
+              "args": [
+                {
+                  "const": 6
+                },
+                {
+                  "symbol": "fast_ema"
+                }
+              ]
+            },
+            {
+              "op": "add",
+              "args": [
+                {
+                  "op": "mul",
+                  "args": [
+                    {
+                      "const": 3
+                    },
+                    {
+                      "symbol": "slow_ema"
+                    }
+                  ]
+                },
+                {
+                  "symbol": "eons_ema"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "derived_definitions": [
+    {
+      "symbol": "intended_twap",
+      "expression": {
+        "op": "add",
+        "args": [
+          {
+            "op": "mul",
+            "args": [
+              {
+                "const": 6
+              },
+              {
+                "symbol": "fast_ema"
+              }
+            ]
+          },
+          {
+            "op": "add",
+            "args": [
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "const": 3
+                  },
+                  {
+                    "symbol": "slow_ema"
+                  }
+                ]
+              },
+              {
+                "symbol": "eons_ema"
+              }
+            ]
+          }
+        ]
+      },
+      "source_ids": [
+        "p_intended_formula"
+      ]
+    }
+  ],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "truth",
+      "symbol": "liquidation_pricing_active",
+      "value": true
+    },
+    "relation": {
+      "kind": "relation",
+      "left": {
+        "symbol": "computed_twap"
+      },
+      "operator": "eq",
+      "right": {
+        "symbol": "intended_twap"
+      }
+    }
+  },
+  "assumptions": [
+    "twapEMA() output is the twapTick value consumed by PanopticPool.getTWAP() for liquidation pricing.",
+    "The intended weighted formula is scaled by 10 (0.6/0.3/0.1 expressed as 6/3/1 over 10) so the equality is on the same scale."
+  ],
+  "unresolved": [
+    {
+      "category": "missing_report_definition",
+      "description": "Report does not state the numeric scale/denominator applied to the intended weighted formula, so the equality is expressed on the 6/3/1 numerator scale.",
+      "source_ids": [
+        "p_intended_formula"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "No concrete liquidation transaction or caller is described; liquidation_pricing_active is a report-level scenario flag, not a bound runtime condition.",
+      "source_ids": [
+        "i_liquidation_pricing"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Formalizes only the liquidation-pricing impact; stale-oracle and solvency-misclassification impacts are out of scope for this plan.",
+    "The relation is a code-level value correspondence; whether a harmful liquidation actually occurs is not established by the report."
+  ]
+}

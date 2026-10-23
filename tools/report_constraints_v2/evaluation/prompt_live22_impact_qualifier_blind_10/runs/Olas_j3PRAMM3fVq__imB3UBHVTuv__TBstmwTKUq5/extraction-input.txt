@@ -1,0 +1,25 @@
+BalancerPriceOracle.getPrice() Uses Spot Balances Instead of TWAP, Enabling Flashloan Price Manipulation
+
+The `BalancerPriceOracle.getPrice()` function calculates the OLAS token price by directly reading the current spot balances from the Balancer V2 pool, rather than using a time-weighted average price (TWAP). This creates a critical vulnerability where an attacker can manipulate the price within a single transaction using flash loans.
+### Root Cause
+In `BalancerPriceOracle.sol#L70-L79`, the `getPrice()` function queries the Balancer Vault for current pool balances and calculates the price as a simple ratio:
+
+The issue is that these balances reflect the current state of the pool, which can be temporarily manipulated within a single block through flash loans. While the contract does maintain a TWAP in `snapshotHistory.averagePrice`, the `getPrice()` function completely ignores this and returns the manipulable spot price.
+
+Attack Vector
+
+1. Attacker takes a large flash loan of tokens from Balancer/Aave
+2. Attacker executes a swap in the OLAS/WETH Balancer pool to drastically skew the balance ratio
+3. Attacker calls `BuyBackBurner.buyBack()` which internally calls `getPrice()` at line 188:
+
+
+4. The protocol now operates with a manipulated price, either overpaying or underpaying for OLAS
+5. Attacker reverses the swap and repays the flash loan, profiting from the price discrepancy
+
+Impact
+
+* **Direct fund loss**: The protocol can be forced to buy OLAS at artificially inflated prices, causing treasury losses
+* **Price validation bypass**: The `validatePrice()` function at line 131 also uses the manipulable `getPrice()` in its comparison against TWAP, which can be exploited when the manipulation happens within the allowed slippage window
+* **Arbitrage opportunity**: Attackers can profit by front-running legitimate buyback operations with price manipulation
+
+In my testing, I was able to manipulate the reported price by 9x (900%) within a single simulated transaction, demonstrating the severity of this vulnerability.

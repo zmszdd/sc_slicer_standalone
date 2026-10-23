@@ -1,0 +1,172 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "EIP-712 signature verification in _verifyAndMarkIntent after a chain ID change",
+    "environment": "EVM contract using immutable DOMAIN_SEPARATOR computed at construction and dynamic chainid() in intentHash",
+    "evidence": [
+      "Permanent DoS on Signature Validation Due to Immutable DOMAIN_SEPARATOR Mismatch during Chain Fork",
+      "The contract calculates DOMAIN_SEPARATOR only once, at constructor execution, and stores it as an immutable variable. The contract uses block.chainid during deployment for this calculation.",
+      "However, in the _verifyAndMarkIntent function, the logic for creating the struct hash (intentHash) includes the chainid() opcode which is dynamic (retrieving the current Chain ID):",
+      "If a blockchain experiences a hard fork or a network ID change (which is common in EVM chains), the block.chainid will change.",
+      "1. The user's wallet (client-side such as Metamask/Ethers.js) will detect the new chain ID and generate a signature based on the new DOMAIN_SEPARATOR (as per the EIP-712 standard).",
+      "- OLD DOMAIN_SEPARATOR (because it is immutable).",
+      "- NEW chainid (in the intentHash).",
+      "A mismatch between the user's (new) DOMAIN_SEPARATOR and the contract's (old) DOMAIN_SEPARATOR will cause the ECDSA.recover function to return an incorrect address or fail. Consequently, all contract features will be DoSed, and no valid transactions can be processed post-fork."
+    ]
+  },
+  "entities": [
+    {
+      "id": "contract",
+      "name": "Signature-validating contract",
+      "role": "contract",
+      "evidence": [
+        "The contract calculates DOMAIN_SEPARATOR only once, at constructor execution, and stores it as an immutable variable. The contract uses block.chainid during deployment for this calculation.",
+        "However, in the _verifyAndMarkIntent function, the logic for creating the struct hash (intentHash) includes the chainid() opcode which is dynamic (retrieving the current Chain ID):"
+      ]
+    },
+    {
+      "id": "user_wallet",
+      "name": "User wallet / client signer",
+      "role": "victim",
+      "evidence": [
+        "1. The user's wallet (client-side such as Metamask/Ethers.js) will detect the new chain ID and generate a signature based on the new DOMAIN_SEPARATOR (as per the EIP-712 standard)."
+      ]
+    },
+    {
+      "id": "domain_separator",
+      "name": "DOMAIN_SEPARATOR",
+      "role": "asset",
+      "evidence": [
+        "The contract calculates DOMAIN_SEPARATOR only once, at constructor execution, and stores it as an immutable variable. The contract uses block.chainid during deployment for this calculation.",
+        "- OLD DOMAIN_SEPARATOR (because it is immutable)."
+      ]
+    },
+    {
+      "id": "chain_id",
+      "name": "block.chainid",
+      "role": "other",
+      "evidence": [
+        "If a blockchain experiences a hard fork or a network ID change (which is common in EVM chains), the block.chainid will change.",
+        "- NEW chainid (in the intentHash)."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_chainid_changed",
+      "kind": "precondition",
+      "text": "A hard fork or network ID change occurs so that block.chainid changes from the value used at deployment.",
+      "modality": "potential",
+      "entity_ids": [
+        "chain_id"
+      ],
+      "evidence": [
+        "If a blockchain experiences a hard fork or a network ID change (which is common in EVM chains), the block.chainid will change."
+      ]
+    },
+    {
+      "id": "p_contract_domain_separator_old",
+      "kind": "precondition",
+      "text": "The contract's stored DOMAIN_SEPARATOR was computed once at construction using the deployment-time block.chainid and is immutable.",
+      "modality": "asserted",
+      "entity_ids": [
+        "contract",
+        "domain_separator"
+      ],
+      "evidence": [
+        "The contract calculates DOMAIN_SEPARATOR only once, at constructor execution, and stores it as an immutable variable. The contract uses block.chainid during deployment for this calculation.",
+        "- OLD DOMAIN_SEPARATOR (because it is immutable)."
+      ]
+    },
+    {
+      "id": "p_wallet_signs_new_domain",
+      "kind": "precondition",
+      "text": "The user's wallet detects the new chain ID and generates a signature based on the new DOMAIN_SEPARATOR per EIP-712.",
+      "modality": "potential",
+      "entity_ids": [
+        "user_wallet",
+        "domain_separator"
+      ],
+      "evidence": [
+        "1. The user's wallet (client-side such as Metamask/Ethers.js) will detect the new chain ID and generate a signature based on the new DOMAIN_SEPARATOR (as per the EIP-712 standard)."
+      ]
+    },
+    {
+      "id": "a_verify_intent",
+      "kind": "action",
+      "text": "The contract verifies the submitted signature in _verifyAndMarkIntent.",
+      "modality": "asserted",
+      "entity_ids": [
+        "contract"
+      ],
+      "evidence": [
+        "However, in the _verifyAndMarkIntent function, the logic for creating the struct hash (intentHash) includes the chainid() opcode which is dynamic (retrieving the current Chain ID):",
+        "2. The contract will verify the signature using:"
+      ]
+    },
+    {
+      "id": "rc_static_domain_dynamic_chainid",
+      "kind": "root_cause",
+      "text": "_verifyAndMarkIntent combines the immutable old DOMAIN_SEPARATOR with an intentHash that includes the dynamic current chainid() opcode, producing a domain mismatch after a chain ID change.",
+      "modality": "asserted",
+      "entity_ids": [
+        "contract",
+        "domain_separator",
+        "chain_id"
+      ],
+      "evidence": [
+        "However, in the _verifyAndMarkIntent function, the logic for creating the struct hash (intentHash) includes the chainid() opcode which is dynamic (retrieving the current Chain ID):",
+        "- OLD DOMAIN_SEPARATOR (because it is immutable).",
+        "- NEW chainid (in the intentHash).",
+        "2.\tFunction _verifyAndMarkIntent: Combines static DOMAIN_SEPARATOR with dynamic hash."
+      ]
+    },
+    {
+      "id": "i_domain_matches_chainid",
+      "kind": "security_intent",
+      "text": "When the chain ID changes, the DOMAIN_SEPARATOR used for verification should correspond to the current chain ID so that a signature generated for the new chain ID verifies successfully.",
+      "modality": "inferred",
+      "entity_ids": [
+        "contract",
+        "domain_separator",
+        "chain_id"
+      ],
+      "evidence": [
+        "A mismatch between the user's (new) DOMAIN_SEPARATOR and the contract's (old) DOMAIN_SEPARATOR will cause the ECDSA.recover function to return an incorrect address or fail. Consequently, all contract features will be DoSed, and no valid transactions can be processed post-fork.",
+        "2. Mismatch with the Standard: This implementation violates the EIP-712 recommendation, which recommends recalculating the DOMAIN_SEPARATOR if the chain ID changes to prevent inter-chain replay attacks and ensure post-fork validity."
+      ]
+    },
+    {
+      "id": "i_signature_verifies_post_fork",
+      "kind": "security_intent",
+      "text": "A valid signature generated by the user's wallet for the current chain should recover to the correct signer address rather than an incorrect address or failure.",
+      "modality": "inferred",
+      "entity_ids": [
+        "contract",
+        "user_wallet"
+      ],
+      "evidence": [
+        "A mismatch between the user's (new) DOMAIN_SEPARATOR and the contract's (old) DOMAIN_SEPARATOR will cause the ECDSA.recover function to return an incorrect address or fail. Consequently, all contract features will be DoSed, and no valid transactions can be processed post-fork."
+      ]
+    },
+    {
+      "id": "protocol_bricking",
+      "kind": "impact",
+      "text": "If the Chain ID changes, the contract becomes permanently useless because it cannot verify a new valid signature.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "1. Protocol Bricking: If the Chain ID changes, the contract becomes permanently useless because it cannot verify a new valid signature."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_verify_intent"
+  ],
+  "ambiguities": [
+    "Report does not state whether the chain ID change is observed in a real transaction; the fork scenario is conditional.",
+    "No explicit attacker actor or unauthorized-caller condition is described; the issue is a functional mismatch, not an access-control bypass.",
+    "The exact checkpoint at which the wallet's new DOMAIN_SEPARATOR signature is submitted relative to the fork is not specified beyond the described sequence.",
+    "Mismatch with the Standard: violates the EIP-712 recommendation, which recommends recalculating the DOMAIN_SEPARATOR if the chain ID changes to prevent inter-chain replay attacks and ensure post-fork validity."
+  ]
+}

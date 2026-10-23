@@ -1,0 +1,182 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "previewMint-routed deposit followed by asset-based previewWithdraw exit",
+    "environment": "ProgressiveCurve.sol and OffsetProgressiveCurve.sol vault curves using PRB-Math fixed-point arithmetic",
+    "evidence_ids": [
+      "e_9721ba845a96_0001",
+      "e_9721ba845a96_0003",
+      "e_9721ba845a96_0004",
+      "e_9721ba845a96_0005",
+      "e_9721ba845a96_0006",
+      "e_9721ba845a96_0007",
+      "e_9721ba845a96_0013",
+      "e_9721ba845a96_0017",
+      "e_9721ba845a96_0021",
+      "e_9721ba845a96_0022"
+    ]
+  },
+  "entities": [
+    {
+      "id": "vault",
+      "name": "Vault using ProgressiveCurve/OffsetProgressiveCurve",
+      "role": "contract",
+      "evidence_ids": [
+        "e_9721ba845a96_0001",
+        "e_9721ba845a96_0007",
+        "e_9721ba845a96_0013"
+      ]
+    },
+    {
+      "id": "preview_mint",
+      "name": "previewMint (ceiling-arithmetic mint cost)",
+      "role": "contract",
+      "evidence_ids": [
+        "e_9721ba845a96_0003",
+        "e_9721ba845a96_0004"
+      ]
+    },
+    {
+      "id": "preview_withdraw",
+      "name": "previewWithdraw (asset-based exit)",
+      "role": "contract",
+      "evidence_ids": [
+        "e_9721ba845a96_0005",
+        "e_9721ba845a96_0006",
+        "e_9721ba845a96_0014"
+      ]
+    },
+    {
+      "id": "prb_math_sub",
+      "name": "PRB-Math unchecked sub",
+      "role": "contract",
+      "evidence_ids": [
+        "e_9721ba845a96_0006"
+      ]
+    },
+    {
+      "id": "depositor",
+      "name": "Depositor routing deposit through previewMint",
+      "role": "attacker",
+      "evidence_ids": [
+        "e_9721ba845a96_0001",
+        "e_9721ba845a96_0013"
+      ]
+    },
+    {
+      "id": "withdrawer",
+      "name": "User/UI performing asset-based withdrawal",
+      "role": "victim",
+      "evidence_ids": [
+        "e_9721ba845a96_0014",
+        "e_9721ba845a96_0015"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "deposit_routed_through_preview_mint",
+      "kind": "precondition",
+      "text": "A deposit is processed through the previewMint path of the vault.",
+      "modality": "potential",
+      "entity_ids": [
+        "vault",
+        "preview_mint",
+        "depositor"
+      ],
+      "evidence_ids": [
+        "e_9721ba845a96_0001",
+        "e_9721ba845a96_0013"
+      ]
+    },
+    {
+      "id": "preview_mint_uses_ceiling_arithmetic",
+      "kind": "root_cause",
+      "text": "previewMint computes the cost of minting shares using ceiling (round-up) arithmetic at two steps, so after a previewMint-routed deposit totalAssets is strictly greater than HALF_SLOPE * square(totalShares).",
+      "modality": "asserted",
+      "entity_ids": [
+        "preview_mint",
+        "vault"
+      ],
+      "evidence_ids": [
+        "e_9721ba845a96_0003",
+        "e_9721ba845a96_0004"
+      ]
+    },
+    {
+      "id": "preview_withdraw_deduct_exceeds_square",
+      "kind": "root_cause",
+      "text": "When the invariant is broken, divUp(totalAssets, HALF_SLOPE) > square(totalShares), so deduct > square(s) in previewWithdraw.",
+      "modality": "asserted",
+      "entity_ids": [
+        "preview_withdraw",
+        "vault"
+      ],
+      "evidence_ids": [
+        "e_9721ba845a96_0005",
+        "e_9721ba845a96_0006"
+      ]
+    },
+    {
+      "id": "prb_sub_unchecked_underflow",
+      "kind": "root_cause",
+      "text": "PRB-Math's sub performs an unchecked subtraction on unsigned fixed-point numbers, so the deduct > square(s) subtraction underflows and reverts with ARITHMETIC_OVERFLOW (0x11).",
+      "modality": "asserted",
+      "entity_ids": [
+        "prb_math_sub",
+        "preview_withdraw"
+      ],
+      "evidence_ids": [
+        "e_9721ba845a96_0006"
+      ]
+    },
+    {
+      "id": "invariant_preserved_after_every_operation",
+      "kind": "security_intent",
+      "text": "totalAssets == HALF_SLOPE * square(totalShares) must be preserved after every operation, including previewMint-routed deposits.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "preview_mint"
+      ],
+      "evidence_ids": [
+        "e_9721ba845a96_0004",
+        "e_9721ba845a96_0022"
+      ]
+    },
+    {
+      "id": "preview_withdraw_must_not_revert_on_invariant",
+      "kind": "security_intent",
+      "text": "previewWithdraw must not revert due to invariant drift when computing share amounts for an asset-based withdrawal.",
+      "modality": "asserted",
+      "entity_ids": [
+        "preview_withdraw",
+        "withdrawer"
+      ],
+      "evidence_ids": [
+        "e_9721ba845a96_0014",
+        "e_9721ba845a96_0017"
+      ]
+    },
+    {
+      "id": "preview_mint_should_use_floor_arithmetic",
+      "kind": "security_intent",
+      "text": "previewMint should use floor arithmetic aligned with previewDeposit to preserve the curve invariant.",
+      "modality": "inferred",
+      "entity_ids": [
+        "preview_mint",
+        "vault"
+      ],
+      "evidence_ids": [
+        "e_9721ba845a96_0021",
+        "e_9721ba845a96_0022"
+      ]
+    }
+  ],
+  "attack_steps": [],
+  "ambiguities": [
+    "No explicit action fragment describes the deposit transaction itself; the deposit is only referenced conditionally as routed through previewMint.",
+    "The report does not state who may call previewMint or whether the deposit is permissionless.",
+    "The concrete state walk (SLOPE=2e18) is illustrative; no specific numeric deposit amount is given as an actual trigger."
+  ]
+}

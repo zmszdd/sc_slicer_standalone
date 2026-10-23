@@ -1,16 +1,21 @@
 # SC_Slicer 阶段二工作交接
 
-更新时间：2026-09-21  
+更新时间：2026-10-20
+
 项目目录：`/root/sc_slicer_standalone`  
 当前工作范围：`tools/report_constraints_v2/`  
 目标接手环境：DeepSeek V4 for Copilot Chat 新对话
 
-> 新对话首先完整阅读本文件，再阅读
-> `tools/report_constraints_v2/docs/STAGE2_CURRENT_STATUS.md` 和
-> `tools/report_constraints_v2/evaluation/archive/prompt_v317_development_03/REPORT.md`。
-> 不要根据旧聊天记忆猜测状态，也不要从头重做已经完成的实验。
+> **当前状态入口**：先读
+> [`STAGE2_CURRENT_STATUS.md`](tools/report_constraints_v2/docs/STAGE2_CURRENT_STATUS.md)。
+> 本交接文件保留了历史实施细节；其中旧版本号、测试计数和计划不得覆盖当前状态文档。
+> 当前工作树含未提交 S19 变更，开始操作前先看 `git status` 和对应 diff。
 
 ## 1. 当前正在做什么
+
+阶段二当前唯一主线是把报告声称的安全性质转成**可追溯、可审计、可重放并可交给阶段三的规格**。阶段二不判断报告真假，也不证明 PoC 与报告一致。完成定义、现状和有限收口任务以 `STAGE2_CURRENT_STATUS.md` 为准。
+
+下列项目背景与 P/I/V 定义仍有效：
 
 项目总目标是判断智能合约漏洞报告中的 PoC 是否与报告声称的漏洞效果一致：
 
@@ -391,7 +396,13 @@ I/V 倒置），和模型自报的歧义/局限/未决项。在 72 个可重算 
 绝对不要读取并输出 API Key，不要将密钥写入日志、报告、命令参数或聊天。真实配置文件已由
 `.gitignore` 忽略，权限应保持 `600`。
 
-## 6. 当前明确存在的问题
+## 6. 已知限制（以当前状态文档为准）
+
+本节下方原有问题清单和计划对应 2026-09 的 v3.17 时期，现已过时；不要按其中的 v3.21/schema v6 方案直接开工。当前主要质量限制是多影响报告在单 core-claim 表示中会部分表达，以及少量案例仍会出现公式范围、符号或语义对应偏差。阶段二已具备独立盲测和分层审查记录；不存在可信的“总体准确率”单一数字。详细证据与当前判断见 `STAGE2_CURRENT_STATUS.md`。
+
+阶段三变量绑定、PoC 执行分析与一致性判定不属于阶段二未完成工作。
+
+<!-- 2026-09 historical backlog retained below for audit context. -->
 
 ### 6.1 派生定义可能让 I 空真
 
@@ -449,7 +460,7 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 
 `consistency_verdict` 仍是 `not_evaluated`。阶段二输出没有证明 PoC 执行逻辑与报告一致。
 
-## 7. 还没有完成的工作
+## 7. 历史待办（2026-09，已被后续演进取代）
 
 - 尚未实现 `report-formal-plan/6`（`semantic_axioms` 那一套，顺延为 v3.21）；
   P 谓词重复的**强制**拒绝也留在那里（现在只在 `verify` 输出里报告）。
@@ -463,7 +474,18 @@ Perps 的 LP fork/reference 价值比较就是代表性失败。
 - 尚未与阶段一切片结果进行变量绑定；这属于后续阶段，不要在当前任务中擅自实现。
 - 尚未执行阶段三 PoC/报告一致性判断。
 
-## 8. 接下来应该怎么做
+## 8. 当前收口记录（2026-10-20）
+
+- S19 代码审阅和验证已完成。全量本地回归 **435/435** 通过，`git diff --check` 通过；新增调用预算测试覆盖 `semantic-live` 忠实度审查的两次最大调用。
+- 随后的首项语义质量修正解决了 Covenant 报告 `2^noCapLimit` / `noCapLimit = 60` 被数值门误拒的问题；当前保存的模型计划通过数值门，回归增至 **437/437**。这是单例、零模型调用的机制验证，不代表准确率或泛化提升；细节见 `tools/report_constraints_v2/evaluation/semantic_quality_symbolic_bound_01/REPORT.md`。
+- `prompt_live5_fidelity_01` 已补充核心 claim P/I/V 与报告影响覆盖的分层回溯评分：4 个候选中 1 个核心 claim 三维全过；12 项候选报告影响为 2 full、2 partial、6 deferred、2 not extracted。评审复用同模型且属事后重编码，不能当独立金标准；详见该评测目录的 `SCOPE_ADJUSTED_REVIEW.json`。
+- 零模型调用重放通过：v3.17 Monetrix/Olas 两个指定历史候选，以及 `prompt_live5_fidelity_01` 的四个候选。
+- 另外扫描 130 个归档/结果候选目录，94 个当前可重放，36 个因旧 Prompt/校验契约或历史产物不完整而失败。具体类别和兼容边界见 `tools/report_constraints_v2/docs/STAGE2_CURRENT_STATUS.md`；不承诺所有旧归档都可由当前 verifier 重放。
+- 阶段二工程主线已达到交接条件。下一步由阶段三消费 `stage3-spec.json` 并完成代码变量绑定和执行一致性检查；语义忠实度、多影响覆盖及关系表达精度作为独立质量迭代，不作为阶段二无限期收口条件。
+
+接手时仍先查看 `git status` 和 diff；不要覆盖工作树中已有改动。
+
+以下原计划保留作历史记录，不作为当前行动顺序：
 
 严格按以下顺序推进，不要一开始就继续扩大测试规模。
 

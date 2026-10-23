@@ -1,0 +1,216 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "CrossAdapter.updatePriceFeeds price update in inverse direction",
+    "environment": "CrossAdapter chained oracle contract (base/cross/quote with oracleBaseCross and oracleCrossQuote)",
+    "evidence": [
+      "The CrossAdapter contract supports both forward and inverse direction for price queries (like getQuote), but it forgot to add the same direction logic in updatePriceFeeds. This causes price updates to fail when called in the inverse direction.",
+      "But when we look at `updatePriceFeeds`, it's missing this direction check:",
+      "**Inverse direction (QUOTE, BASE) - Breaks:**",
+      "The oracles return wrong fees (likely 0) because they're being asked about token pairs they don't know about. Then the transaction reverts because the total fee doesn't match what was sent.",
+      "1. **Price updates fail in inverse direction** - Any call to updatePriceFeeds with inverse parameters will revert"
+    ]
+  },
+  "entities": [
+    {
+      "id": "cross_adapter",
+      "name": "CrossAdapter contract",
+      "role": "contract",
+      "evidence": [
+        "The CrossAdapter contract supports both forward and inverse direction for price queries (like getQuote), but it forgot to add the same direction logic in updatePriceFeeds. This causes price updates to fail when called in the inverse direction.",
+        "CrossAdapter is designed to chain two oracles together. For example, to price wstETH/USD, it goes through stETH as a middle token:"
+      ]
+    },
+    {
+      "id": "update_price_feeds",
+      "name": "updatePriceFeeds function",
+      "role": "contract",
+      "evidence": [
+        "But when we look at `updatePriceFeeds`, it's missing this direction check:",
+        "1. **Price updates fail in inverse direction** - Any call to updatePriceFeeds with inverse parameters will revert"
+      ]
+    },
+    {
+      "id": "get_quote",
+      "name": "getQuote function",
+      "role": "contract",
+      "evidence": [
+        "The contract has a function called `getQuote` that correctly handles both directions:",
+        "- getQuote and previewGetQuote both handle inverse correctly"
+      ]
+    },
+    {
+      "id": "oracle_base_cross",
+      "name": "oracleBaseCross (wstETH/stETH)",
+      "role": "contract",
+      "evidence": [
+        "- oracleBaseCross = handles wstETH/stETH"
+      ]
+    },
+    {
+      "id": "oracle_cross_quote",
+      "name": "oracleCrossQuote (stETH/USD)",
+      "role": "contract",
+      "evidence": [
+        "- oracleCrossQuote = handles stETH/USD"
+      ]
+    },
+    {
+      "id": "caller",
+      "name": "Caller of updatePriceFeeds",
+      "role": "other",
+      "evidence": [
+        "1. **Price updates fail in inverse direction** - Any call to updatePriceFeeds with inverse parameters will revert"
+      ]
+    },
+    {
+      "id": "market_users",
+      "name": "Users trading on a market needing inverse pricing",
+      "role": "victim",
+      "evidence": [
+        "2. **Prices become stale** - If a market needs inverse direction pricing, it can't update prices",
+        "3. **Users get bad rates** - Stale prices mean users trade at worse rates than they should"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "inverse_params_supplied",
+      "kind": "precondition",
+      "text": "updatePriceFeeds is called with inverse-direction parameters (QUOTE, BASE) rather than (BASE, QUOTE).",
+      "modality": "potential",
+      "entity_ids": [
+        "update_price_feeds",
+        "caller"
+      ],
+      "evidence": [
+        "**Inverse direction (QUOTE, BASE) - Breaks:**",
+        "1. **Price updates fail in inverse direction** - Any call to updatePriceFeeds with inverse parameters will revert"
+      ]
+    },
+    {
+      "id": "adapter_configured_chain",
+      "kind": "precondition",
+      "text": "CrossAdapter is configured with base = wstETH, cross = stETH, quote = USD, oracleBaseCross handling wstETH/stETH and oracleCrossQuote handling stETH/USD.",
+      "modality": "asserted",
+      "entity_ids": [
+        "cross_adapter",
+        "oracle_base_cross",
+        "oracle_cross_quote"
+      ],
+      "evidence": [
+        "- base = wstETH",
+        "- cross = stETH",
+        "- quote = USD",
+        "- oracleBaseCross = handles wstETH/stETH",
+        "- oracleCrossQuote = handles stETH/USD"
+      ]
+    },
+    {
+      "id": "missing_direction_check",
+      "kind": "root_cause",
+      "text": "updatePriceFeeds lacks the direction check that getQuote uses, so in inverse direction it queries the oracles with token pairs they do not know.",
+      "modality": "asserted",
+      "entity_ids": [
+        "update_price_feeds",
+        "get_quote",
+        "oracle_base_cross",
+        "oracle_cross_quote"
+      ],
+      "evidence": [
+        "The CrossAdapter contract supports both forward and inverse direction for price queries (like getQuote), but it forgot to add the same direction logic in updatePriceFeeds. This causes price updates to fail when called in the inverse direction.",
+        "But when we look at `updatePriceFeeds`, it's missing this direction check:",
+        "The oracles return wrong fees (likely 0) because they're being asked about token pairs they don't know about. Then the transaction reverts because the total fee doesn't match what was sent.",
+        "- Only updatePriceFeeds is missing this logic"
+      ]
+    },
+    {
+      "id": "wrong_fees_returned",
+      "kind": "impact",
+      "text": "In inverse direction the oracles return wrong fees (likely 0) for the queried pairs.",
+      "modality": "potential",
+      "entity_ids": [
+        "oracle_base_cross",
+        "oracle_cross_quote",
+        "update_price_feeds"
+      ],
+      "evidence": [
+        "The oracles return wrong fees (likely 0) because they're being asked about token pairs they don't know about. Then the transaction reverts because the total fee doesn't match what was sent."
+      ]
+    },
+    {
+      "id": "inverse_update_reverts",
+      "kind": "impact",
+      "text": "A call to updatePriceFeeds with inverse parameters reverts because the total fee does not match what was sent.",
+      "modality": "potential",
+      "entity_ids": [
+        "update_price_feeds",
+        "caller"
+      ],
+      "evidence": [
+        "The oracles return wrong fees (likely 0) because they're being asked about token pairs they don't know about. Then the transaction reverts because the total fee doesn't match what was sent.",
+        "1. **Price updates fail in inverse direction** - Any call to updatePriceFeeds with inverse parameters will revert"
+      ]
+    },
+    {
+      "id": "prices_stale",
+      "kind": "impact",
+      "text": "Markets needing inverse-direction pricing cannot update prices, so prices become stale.",
+      "modality": "potential",
+      "entity_ids": [
+        "market_users",
+        "update_price_feeds"
+      ],
+      "evidence": [
+        "2. **Prices become stale** - If a market needs inverse direction pricing, it can't update prices"
+      ]
+    },
+    {
+      "id": "users_bad_rates",
+      "kind": "impact",
+      "text": "Stale prices cause users to trade at worse rates than they should.",
+      "modality": "potential",
+      "entity_ids": [
+        "market_users"
+      ],
+      "evidence": [
+        "3. **Users get bad rates** - Stale prices mean users trade at worse rates than they should"
+      ]
+    },
+    {
+      "id": "intent_inverse_update_supported",
+      "kind": "security_intent",
+      "text": "updatePriceFeeds should handle the inverse direction the same way getQuote does, checking direction and calling the right oracles in the right order so inverse-direction updates succeed.",
+      "modality": "inferred",
+      "entity_ids": [
+        "update_price_feeds",
+        "get_quote"
+      ],
+      "evidence": [
+        "The CrossAdapter contract supports both forward and inverse direction for price queries (like getQuote), but it forgot to add the same direction logic in updatePriceFeeds. This causes price updates to fail when called in the inverse direction.",
+        "- The contract documentation explicitly mentions \"inverse direction\"",
+        "1. Inverse direction is supposed to work (it works for getQuote)",
+        "This makes updatePriceFeeds work the same way as getQuote - checking direction and calling the right oracles in the right order."
+      ]
+    },
+    {
+      "id": "intent_fee_matches_sent",
+      "kind": "security_intent",
+      "text": "The total update fee computed for a price update should match the fee sent so the update does not revert on fee mismatch.",
+      "modality": "inferred",
+      "entity_ids": [
+        "update_price_feeds"
+      ],
+      "evidence": [
+        "The oracles return wrong fees (likely 0) because they're being asked about token pairs they don't know about. Then the transaction reverts because the total fee doesn't match what was sent."
+      ]
+    }
+  ],
+  "attack_steps": [],
+  "ambiguities": [
+    "No concrete transaction or actor is described; inverse-direction call is a conditional scenario, so no action step is asserted.",
+    "Report does not state who may call updatePriceFeeds or any authorization requirement.",
+    "Whether the fee mismatch is the sole revert cause versus other oracle errors is not fully specified.",
+    "Inconsistent behavior between getQuote and updatePriceFeeds is listed as an impact but is a mechanism-level observation, not separately extracted."
+  ]
+}

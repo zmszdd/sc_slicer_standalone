@@ -1,0 +1,214 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "convertToV3 liquidity migration with TWAP deviation check via checkPoolAndGetCenterPrice",
+    "environment": "Uniswap V3 pool liquidity provision by owner-only convertToV3",
+    "evidence": [
+      "The `convertToV3` function relies on `checkPoolAndGetCenterPrice` to protect against price manipulation during liquidity migration. However, logic errors in the TWAP validation allow the check to be bypassed if a pool is inactive or newly created, enabling attackers to sandwich the migration and drain value from the protocol.",
+      "The protocol provides liquidity to Uniswap V3 pools at manipulated ratios. An attacker can execute a sandwich attack:",
+      "This results in a direct loss of protocol-owned funds. Although the function is `owner`-only, it is intended for use by governance/timelocks which typically operate via public mempools, making them susceptible to MEV.",
+      "The likelihood is Medium because it requires the `owner` to initiate the transaction. However, the conditions for the bypass are met by default for any new migration (where history is missing) or any pool with low volume (where the last trade was > 30 mins ago). Attackers can easily monitor the mempool for these specific migration calls and execute the manipulation with high profitability."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "MEV attacker",
+      "role": "attacker",
+      "evidence": [
+        "The protocol provides liquidity to Uniswap V3 pools at manipulated ratios. An attacker can execute a sandwich attack:",
+        "1.  Manipulate the V3 pool price (e.g., push OLAS price up).",
+        "3.  The attacker reverses their trade, profiting from the skewed liquidity distribution.",
+        "The likelihood is Medium because it requires the `owner` to initiate the transaction. However, the conditions for the bypass are met by default for any new migration (where history is missing) or any pool with low volume (where the last trade was > 30 mins ago). Attackers can easily monitor the mempool for these specific migration calls and execute the manipulation with high profitability."
+      ]
+    },
+    {
+      "id": "owner",
+      "name": "owner/governance initiating convertToV3",
+      "role": "authority",
+      "evidence": [
+        "This results in a direct loss of protocol-owned funds. Although the function is `owner`-only, it is intended for use by governance/timelocks which typically operate via public mempools, making them susceptible to MEV.",
+        "The likelihood is Medium because it requires the `owner` to initiate the transaction. However, the conditions for the bypass are met by default for any new migration (where history is missing) or any pool with low volume (where the last trade was > 30 mins ago). Attackers can easily monitor the mempool for these specific migration calls and execute the manipulation with high profitability."
+      ]
+    },
+    {
+      "id": "protocol",
+      "name": "protocol-owned funds",
+      "role": "victim",
+      "evidence": [
+        "This results in a direct loss of protocol-owned funds. Although the function is `owner`-only, it is intended for use by governance/timelocks which typically operate via public mempools, making them susceptible to MEV."
+      ]
+    },
+    {
+      "id": "convert_to_v3",
+      "name": "convertToV3 function",
+      "role": "contract",
+      "evidence": [
+        "The `convertToV3` function relies on `checkPoolAndGetCenterPrice` to protect against price manipulation during liquidity migration. However, logic errors in the TWAP validation allow the check to be bypassed if a pool is inactive or newly created, enabling attackers to sandwich the migration and drain value from the protocol.",
+        "2.  The `convertToV3` transaction executes, providing liquidity at the skewed price (e.g., depositing too much of the other token and too little OLAS)."
+      ]
+    },
+    {
+      "id": "check_pool",
+      "name": "checkPoolAndGetCenterPrice TWAP validation",
+      "role": "contract",
+      "evidence": [
+        "The `convertToV3` function relies on `checkPoolAndGetCenterPrice` to protect against price manipulation during liquidity migration. However, logic errors in the TWAP validation allow the check to be bypassed if a pool is inactive or newly created, enabling attackers to sandwich the migration and drain value from the protocol.",
+        "1.  **Fix Logic:** Use the actual oldest observation in the buffer to determine if enough history exists.",
+        "2.  **Enforce TWAP:** If `getTwapFromOracle` fails or the pool is too new, the transaction should revert rather than proceeding with the instant price."
+      ]
+    },
+    {
+      "id": "v3_pool",
+      "name": "Uniswap V3 pool",
+      "role": "contract",
+      "evidence": [
+        "The protocol provides liquidity to Uniswap V3 pools at manipulated ratios. An attacker can execute a sandwich attack:",
+        "1.  Manipulate the V3 pool price (e.g., push OLAS price up).",
+        "The likelihood is Medium because it requires the `owner` to initiate the transaction. However, the conditions for the bypass are met by default for any new migration (where history is missing) or any pool with low volume (where the last trade was > 30 mins ago). Attackers can easily monitor the mempool for these specific migration calls and execute the manipulation with high profitability."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "owner_initiates_migration",
+      "kind": "precondition",
+      "text": "The owner initiates the convertToV3 migration transaction.",
+      "modality": "asserted",
+      "entity_ids": [
+        "owner",
+        "convert_to_v3"
+      ],
+      "evidence": [
+        "This results in a direct loss of protocol-owned funds. Although the function is `owner`-only, it is intended for use by governance/timelocks which typically operate via public mempools, making them susceptible to MEV.",
+        "The likelihood is Medium because it requires the `owner` to initiate the transaction. However, the conditions for the bypass are met by default for any new migration (where history is missing) or any pool with low volume (where the last trade was > 30 mins ago). Attackers can easily monitor the mempool for these specific migration calls and execute the manipulation with high profitability."
+      ]
+    },
+    {
+      "id": "pool_inactive_or_new",
+      "kind": "precondition",
+      "text": "The target pool is inactive (last trade more than 30 minutes ago) or newly created with missing history.",
+      "modality": "potential",
+      "entity_ids": [
+        "v3_pool"
+      ],
+      "evidence": [
+        "The `convertToV3` function relies on `checkPoolAndGetCenterPrice` to protect against price manipulation during liquidity migration. However, logic errors in the TWAP validation allow the check to be bypassed if a pool is inactive or newly created, enabling attackers to sandwich the migration and drain value from the protocol.",
+        "The likelihood is Medium because it requires the `owner` to initiate the transaction. However, the conditions for the bypass are met by default for any new migration (where history is missing) or any pool with low volume (where the last trade was > 30 mins ago). Attackers can easily monitor the mempool for these specific migration calls and execute the manipulation with high profitability."
+      ]
+    },
+    {
+      "id": "attacker_manipulates_price",
+      "kind": "action",
+      "text": "The attacker manipulates the V3 pool price before the migration executes.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "v3_pool"
+      ],
+      "evidence": [
+        "1.  Manipulate the V3 pool price (e.g., push OLAS price up).",
+        "The likelihood is Medium because it requires the `owner` to initiate the transaction. However, the conditions for the bypass are met by default for any new migration (where history is missing) or any pool with low volume (where the last trade was > 30 mins ago). Attackers can easily monitor the mempool for these specific migration calls and execute the manipulation with high profitability."
+      ]
+    },
+    {
+      "id": "migration_executes",
+      "kind": "action",
+      "text": "The convertToV3 transaction executes and provides liquidity at the skewed price.",
+      "modality": "asserted",
+      "entity_ids": [
+        "convert_to_v3",
+        "v3_pool"
+      ],
+      "evidence": [
+        "2.  The `convertToV3` transaction executes, providing liquidity at the skewed price (e.g., depositing too much of the other token and too little OLAS)."
+      ]
+    },
+    {
+      "id": "attacker_reverses_trade",
+      "kind": "action",
+      "text": "The attacker reverses their trade after the migration.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "v3_pool"
+      ],
+      "evidence": [
+        "3.  The attacker reverses their trade, profiting from the skewed liquidity distribution."
+      ]
+    },
+    {
+      "id": "twap_check_bypass",
+      "kind": "root_cause",
+      "text": "Logic errors in the TWAP validation allow the deviation check to be bypassed when the pool is inactive or newly created, so the migration proceeds with the instant slot0 price.",
+      "modality": "asserted",
+      "entity_ids": [
+        "check_pool",
+        "convert_to_v3"
+      ],
+      "evidence": [
+        "The `convertToV3` function relies on `checkPoolAndGetCenterPrice` to protect against price manipulation during liquidity migration. However, logic errors in the TWAP validation allow the check to be bypassed if a pool is inactive or newly created, enabling attackers to sandwich the migration and drain value from the protocol.",
+        "1.  **Fix Logic:** Use the actual oldest observation in the buffer to determine if enough history exists.",
+        "2.  **Enforce TWAP:** If `getTwapFromOracle` fails or the pool is too new, the transaction should revert rather than proceeding with the instant price."
+      ]
+    },
+    {
+      "id": "intent_twap_enforced",
+      "kind": "security_intent",
+      "text": "When getTwapFromOracle fails or the pool is too new, the transaction should revert rather than proceeding with the instant price.",
+      "modality": "asserted",
+      "entity_ids": [
+        "check_pool",
+        "convert_to_v3"
+      ],
+      "evidence": [
+        "2.  **Enforce TWAP:** If `getTwapFromOracle` fails or the pool is too new, the transaction should revert rather than proceeding with the instant price."
+      ]
+    },
+    {
+      "id": "intent_history_check",
+      "kind": "security_intent",
+      "text": "The check should use the actual oldest observation in the buffer to determine whether enough history exists.",
+      "modality": "asserted",
+      "entity_ids": [
+        "check_pool"
+      ],
+      "evidence": [
+        "1.  **Fix Logic:** Use the actual oldest observation in the buffer to determine if enough history exists."
+      ]
+    },
+    {
+      "id": "intent_slippage_from_twap",
+      "kind": "security_intent",
+      "text": "inputAmounts and aMin should be calculated using the twapPrice returned from the oracle, not the sqrtPriceX96 from slot0.",
+      "modality": "asserted",
+      "entity_ids": [
+        "convert_to_v3",
+        "check_pool"
+      ],
+      "evidence": [
+        "3.  **Correct Slippage:** Calculate `inputAmounts` and `aMin` using the `twapPrice` returned from the oracle, not the `sqrtPriceX96` from `slot0`."
+      ]
+    },
+    {
+      "id": "direct_loss_of_protocol_owned_funds",
+      "kind": "impact",
+      "text": "This results in a direct loss of protocol-owned funds.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "This results in a direct loss of protocol-owned funds. Although the function is `owner`-only, it is intended for use by governance/timelocks which typically operate via public mempools, making them susceptible to MEV."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "attacker_manipulates_price",
+    "migration_executes",
+    "attacker_reverses_trade"
+  ],
+  "ambiguities": [
+    "Report does not state the exact numeric deviation bound or TWAP window used by checkPoolAndGetCenterPrice.",
+    "Report does not specify the concrete logic error in the history/observation check beyond 'logic errors'.",
+    "Whether the owner transaction is actually observed in mempool is conditional; report only states typical public mempool exposure."
+  ]
+}

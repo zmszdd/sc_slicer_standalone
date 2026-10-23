@@ -1,0 +1,399 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "cfd2f569a_caller_is_owner": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the caller of increaseLiquidityCurrentRange() is the owner (onlyOwner authority)",
+      "checkpoint": "before increaseLiquidityCurrentRange() execution",
+      "entity_ids": [
+        "l2_token_receiver",
+        "owner_caller"
+      ],
+      "evidence": ") external onlyOwner returns (uint128 liquidity_, uint256 amount0_, uint256 amount1_) {"
+    },
+    "cfd2f569a_pending_tx_observable": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a pending increaseLiquidityCurrentRange() call is observable in the mempool by an MEV bot",
+      "checkpoint": "before the pending transaction is mined",
+      "entity_ids": [
+        "mev_bot",
+        "l2_token_receiver"
+      ],
+      "evidence": "Detection: MEV bot monitors mempool for increaseLiquidityCurrentRange() calls"
+    },
+    "cfd2f569a_deadline_protection_disabled": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the transaction expiration protection of the deadline is completely disabled, so the transaction never expires",
+      "checkpoint": "at execution of the held transaction",
+      "entity_ids": [
+        "l2_token_receiver"
+      ],
+      "evidence": "uint256 deadline_  //  User-provided deadline"
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_impact_deadline_disabled_e1227f8b",
+      "scope": "increaseLiquidityCurrentRange() liquidity increase via Uniswap V3 NonfungiblePositionManager",
+      "modality": "asserted",
+      "impact_ids": [
+        "impact_deadline_disabled"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "increaseLiquidityCurrentRange() is callable only by the owner (onlyOwner).; A pending increaseLiquidityCurrentRange() call is observable in the mempool by an MEV bot.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "cfd2f569a_caller_is_owner"
+              },
+              {
+                "var": "cfd2f569a_pending_tx_observable"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "owner_only_call",
+            "pending_tx_in_mempool"
+          ],
+          "evidence": [
+            ") external onlyOwner returns (uint128 liquidity_, uint256 amount0_, uint256 amount1_) {",
+            "Detection: MEV bot monitors mempool for increaseLiquidityCurrentRange() calls"
+          ]
+        },
+        "safety": {
+          "text": "A liquidity-increase transaction should carry a caller-provided deadline so it expires and cannot be executed after that deadline (e.g., block.timestamp + 5 minutes).",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "cfd2f569a_caller_is_owner"
+                  },
+                  {
+                    "var": "cfd2f569a_pending_tx_observable"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "cfd2f569a_deadline_protection_disabled"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_deadline_expiry"
+          ],
+          "evidence": [
+            "uint256 deadline_  //  User-provided deadline",
+            "require(block.timestamp <= deadline_, \"Transaction expired\");  //  Proper expiration check",
+            "The caller provides a deadline (e.g., block.timestamp + 5 minutes).",
+            "The transaction will expire after 5 minutes if not mined.",
+            "require(block.timestamp <= deadline_) enforces the same security model as Uniswap V3."
+          ]
+        },
+        "effects": {
+          "text": "The purpose of the deadline is completely disabled, removing transaction expiration protection.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "cfd2f569a_caller_is_owner"
+                  },
+                  {
+                    "var": "cfd2f569a_pending_tx_observable"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "cfd2f569a_deadline_protection_disabled"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "impact_deadline_disabled"
+          ],
+          "evidence": [
+            "This completely disables the purpose of the deadline.",
+            "Looking at the two code snippets above, we can clearly see that the correct implementation (with a user provided deadline and explicit require check) follows Uniswap V3’s security design and is safe against delayed execution. In contrast, the incorrect implementation hardcodes the deadline, removes expiration protection, and introduces a serious vulnerability that can be exploited by MEV bots."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "owner_only_call",
+            "pending_tx_in_mempool"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_deadline_expiry"
+          ],
+          "args.0": [
+            "intent_deadline_expiry"
+          ],
+          "args.1": [
+            "intent_deadline_expiry"
+          ]
+        },
+        "effects": {
+          "": [
+            "impact_deadline_disabled"
+          ],
+          "args.0": [
+            "impact_deadline_disabled"
+          ],
+          "args.1": [
+            "impact_deadline_disabled"
+          ],
+          "args.1.args.0": [
+            "impact_deadline_disabled"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_deadline_disabled",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The owner is the legitimate caller of increaseLiquidityCurrentRange(); the MEV bot observes but does not author the pending call.",
+        "The deadline protection is evaluated at the moment the held transaction would execute."
+      ],
+      "unresolved": []
+    },
+    {
+      "id": "impact_claim_impact_indefinite_hold_414fbf6b",
+      "scope": "increaseLiquidityCurrentRange() liquidity increase via Uniswap V3 NonfungiblePositionManager",
+      "modality": "potential",
+      "impact_ids": [
+        "impact_indefinite_hold"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "increaseLiquidityCurrentRange() is callable only by the owner (onlyOwner).; A pending increaseLiquidityCurrentRange() call is observable in the mempool by an MEV bot.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "owner_only_call",
+            "pending_tx_in_mempool"
+          ],
+          "evidence": [
+            ") external onlyOwner returns (uint128 liquidity_, uint256 amount0_, uint256 amount1_) {",
+            "Detection: MEV bot monitors mempool for increaseLiquidityCurrentRange() calls"
+          ]
+        },
+        "safety": {
+          "text": "A liquidity-increase transaction should carry a caller-provided deadline so it expires and cannot be executed after that deadline (e.g., block.timestamp + 5 minutes).",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "intent_deadline_expiry"
+          ],
+          "evidence": [
+            "uint256 deadline_  //  User-provided deadline",
+            "require(block.timestamp <= deadline_, \"Transaction expired\");  //  Proper expiration check",
+            "The caller provides a deadline (e.g., block.timestamp + 5 minutes).",
+            "The transaction will expire after 5 minutes if not mined.",
+            "require(block.timestamp <= deadline_) enforces the same security model as Uniswap V3."
+          ]
+        },
+        "effects": {
+          "text": "MEV bots can hold the transaction indefinitely (1 hour, 1 day, 1 week, 1 month) and it still executes.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "impact_indefinite_hold"
+          ],
+          "evidence": [
+            "MEV bots can hold the transaction indefinitely (1 hour, 1 day, 1 week, 1 month >> still executes)."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_indefinite_hold",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_deadline_expiry wrong_symbol: The statement is about a caller-provided deadline, but the predicate uses hold_duration_seconds (MEV hold time) and a 300s constant unrelated to the deadline se; impact_indefinite_hold wrong_symbol: The statement concerns indefinite holding with the tx still executing, but the predicate encodes hold_duration_seconds and a 300s bound rather than indefinite h; P/I/V relation other_mismatch: V negates I's consequent while sharing the same antecedent, so V contradicts I, but both use hold_duration_seconds/300s instead of the deadline semantics, makin"
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_deadline_expiry wrong_symbol: The statement is about a caller-provided deadline, but the predicate uses hold_duration_seconds (MEV hold time) and a 300s constant unrelated to the deadline se; impact_indefinite_hold wrong_symbol: The statement concerns indefinite holding with the tx still executing, but the predicate encodes hold_duration_seconds and a 300s bound rather than indefinite h; P/I/V relation other_mismatch: V negates I's consequent while sharing the same antecedent, so V contradicts I, but both use hold_duration_seconds/300s instead of the deadline semantics, makin"
+      ]
+    },
+    {
+      "id": "impact_claim_impact_stale_execution_ac73aa5d",
+      "scope": "increaseLiquidityCurrentRange() liquidity increase via Uniswap V3 NonfungiblePositionManager",
+      "modality": "potential",
+      "impact_ids": [
+        "impact_stale_execution"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "increaseLiquidityCurrentRange() is callable only by the owner (onlyOwner).; A pending increaseLiquidityCurrentRange() call is observable in the mempool by an MEV bot.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "owner_only_call",
+            "pending_tx_in_mempool"
+          ],
+          "evidence": [
+            ") external onlyOwner returns (uint128 liquidity_, uint256 amount0_, uint256 amount1_) {",
+            "Detection: MEV bot monitors mempool for increaseLiquidityCurrentRange() calls"
+          ]
+        },
+        "safety": {
+          "text": "A liquidity-increase transaction should carry a caller-provided deadline so it expires and cannot be executed after that deadline (e.g., block.timestamp + 5 minutes).",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "intent_deadline_expiry"
+          ],
+          "evidence": [
+            "uint256 deadline_  //  User-provided deadline",
+            "require(block.timestamp <= deadline_, \"Transaction expired\");  //  Proper expiration check",
+            "The caller provides a deadline (e.g., block.timestamp + 5 minutes).",
+            "The transaction will expire after 5 minutes if not mined.",
+            "require(block.timestamp <= deadline_) enforces the same security model as Uniswap V3."
+          ]
+        },
+        "effects": {
+          "text": "The transaction executes with stale pricing parameters after being held.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "impact_stale_execution"
+          ],
+          "evidence": [
+            "Execution: Transaction executes with stale pricing parameters"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_stale_execution",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_deadline_expiry other_mismatch: The statement is about a caller-provided deadline causing expiry, but the predicate encodes a stale-pricing implication with no deadline symbol.; P/I/V relation other_mismatch: I encodes a stale-pricing implication rather than a deadline-expiry condition, so V does not contradict I under P."
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_deadline_expiry other_mismatch: The statement is about a caller-provided deadline causing expiry, but the predicate encodes a stale-pricing implication with no deadline symbol.; P/I/V relation other_mismatch: I encodes a stale-pricing implication rather than a deadline-expiry condition, so V does not contradict I under P."
+      ]
+    },
+    {
+      "id": "impact_claim_impact_value_extraction_f8ef99ce",
+      "scope": "increaseLiquidityCurrentRange() liquidity increase via Uniswap V3 NonfungiblePositionManager",
+      "modality": "potential",
+      "impact_ids": [
+        "impact_value_extraction"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "increaseLiquidityCurrentRange() is callable only by the owner (onlyOwner).; A pending increaseLiquidityCurrentRange() call is observable in the mempool by an MEV bot.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "owner_only_call",
+            "pending_tx_in_mempool"
+          ],
+          "evidence": [
+            ") external onlyOwner returns (uint128 liquidity_, uint256 amount0_, uint256 amount1_) {",
+            "Detection: MEV bot monitors mempool for increaseLiquidityCurrentRange() calls"
+          ]
+        },
+        "safety": {
+          "text": "A liquidity-increase transaction should carry a caller-provided deadline so it expires and cannot be executed after that deadline (e.g., block.timestamp + 5 minutes).",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "intent_deadline_expiry"
+          ],
+          "evidence": [
+            "uint256 deadline_  //  User-provided deadline",
+            "require(block.timestamp <= deadline_, \"Transaction expired\");  //  Proper expiration check",
+            "The caller provides a deadline (e.g., block.timestamp + 5 minutes).",
+            "The transaction will expire after 5 minutes if not mined.",
+            "require(block.timestamp <= deadline_) enforces the same security model as Uniswap V3."
+          ]
+        },
+        "effects": {
+          "text": "MEV bot extracts value through arbitrage, exposing the protocol to significant financial losses.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "impact_value_extraction"
+          ],
+          "evidence": [
+            "Profit: MEV bot extracts value through arbitrage",
+            "The hardcoded deadline: block.timestamp in L2TokenReceiverV2 creates a critical vulnerability allowing MEV bots to manipulate transaction timing for profit. This directly contradicts Uniswap V3's security model and exposes the protocol to significant financial losses. Immediate remediation is required by adding a user controlled deadline parameter."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_value_extraction",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_deadline_expiry other_mismatch: The predicate encodes an MEV/value-extraction implication rather than a caller-provided deadline expiry condition.; P/I/V relation other_mismatch: I does not encode the deadline-expiry intent, so V (value extraction) does not contradict I under P."
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_deadline_expiry other_mismatch: The predicate encodes an MEV/value-extraction implication rather than a caller-provided deadline expiry condition.; P/I/V relation other_mismatch: I does not encode the deadline-expiry intent, so V (value extraction) does not contradict I under P."
+      ]
+    }
+  ],
+  "limitations": [
+    "The 5-minute example in the intent is illustrative, not a concrete bound; no numeric deadline comparison is formalized.",
+    "Only the deadline-disabled impact is formalized here; stale execution and value extraction are separate impacts not covered by this plan.",
+    "The MEV hold duration magnitudes (1 hour/day/week/month) belong to impact_indefinite_hold, not the selected impact.",
+    "impact_indefinite_hold: No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_deadline_expiry wrong_symbol: The statement is about a caller-provided deadline, but the predicate uses hold_duration_seconds (MEV hold time) and a 300s constant unrelated to the deadline se; impact_indefinite_hold wrong_symbol: The statement concerns indefinite holding with the tx still executing, but the predicate encodes hold_duration_seconds and a 300s bound rather than indefinite h; P/I/V relation other_mismatch: V negates I's consequent while sharing the same antecedent, so V contradicts I, but both use hold_duration_seconds/300s instead of the deadline semantics, makin",
+    "impact_stale_execution: No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_deadline_expiry other_mismatch: The statement is about a caller-provided deadline causing expiry, but the predicate encodes a stale-pricing implication with no deadline symbol.; P/I/V relation other_mismatch: I encodes a stale-pricing implication rather than a deadline-expiry condition, so V does not contradict I under P.",
+    "impact_value_extraction: No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_deadline_expiry other_mismatch: The predicate encodes an MEV/value-extraction implication rather than a caller-provided deadline expiry condition.; P/I/V relation other_mismatch: I does not encode the deadline-expiry intent, so V (value extraction) does not contradict I under P."
+  ]
+}

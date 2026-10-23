@@ -1,0 +1,178 @@
+{
+  "schema_version": "report-formal-plan/8",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "pool_initialized_with_liquidity",
+    "victim_sets_sqrt_ratio_limit_near_price"
+  ],
+  "intent_id": "debt_accounting_should_run_for_eth",
+  "impact_ids": [
+    "permanent_loss_eth_stuck"
+  ],
+  "symbols": {
+    "pool_initialized_at_tick_zero": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "pool is initialized at tick 0 with liquidity",
+      "checkpoint": "before victim swap",
+      "entity_ids": [
+        "core_contract"
+      ],
+      "source_ids": [
+        "pool_initialized_with_liquidity"
+      ]
+    },
+    "victim_swap_sqrt_ratio_limit_near_price": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "victim submits a swap with sqrtRatioLimit set near the current price for slippage protection",
+      "checkpoint": "before victim swap execution",
+      "entity_ids": [
+        "victim",
+        "router"
+      ],
+      "source_ids": [
+        "victim_sets_sqrt_ratio_limit_near_price"
+      ]
+    },
+    "victim_msg_value_eth": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "native ETH sent by the victim via msg.value",
+      "checkpoint": "before victim swap execution",
+      "entity_ids": [
+        "victim",
+        "eth_asset"
+      ],
+      "source_ids": [
+        "victim_sets_sqrt_ratio_limit_near_price"
+      ]
+    },
+    "swap_msg_value_eth": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "native ETH value attached to the executed swap via msg.value",
+      "checkpoint": "swap execution",
+      "entity_ids": [
+        "core_contract",
+        "eth_asset"
+      ],
+      "source_ids": [
+        "debt_accounting_should_run_for_eth"
+      ]
+    },
+    "debt_accounting_performed": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "native ETH debt accounting (_updatePairDebtWithNative) is performed for the swap",
+      "checkpoint": "swap execution",
+      "entity_ids": [
+        "core_contract",
+        "debt_system"
+      ],
+      "source_ids": [
+        "debt_accounting_should_run_for_eth"
+      ]
+    },
+    "eth_stuck_forever": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "ETH sent to Core is stuck forever",
+      "checkpoint": "after swap execution",
+      "entity_ids": [
+        "core_contract",
+        "eth_asset"
+      ],
+      "source_ids": [
+        "permanent_loss_eth_stuck"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "pool_initialized_with_liquidity",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "pool_initialized_at_tick_zero",
+        "value": true
+      }
+    },
+    {
+      "source_id": "victim_sets_sqrt_ratio_limit_near_price",
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "truth",
+            "symbol": "victim_swap_sqrt_ratio_limit_near_price",
+            "value": true
+          },
+          {
+            "kind": "comparison",
+            "left": "victim_msg_value_eth",
+            "operator": "eq",
+            "right": {
+              "const": 10
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "impact_outcome": {
+    "source_id": "permanent_loss_eth_stuck",
+    "predicate": {
+      "kind": "truth",
+      "symbol": "eth_stuck_forever",
+      "value": true
+    }
+  },
+  "impact_context_terms": [
+    {
+      "source_id": "permanent_loss_eth_stuck",
+      "qualifier_types": [
+        "duration_or_repetition"
+      ],
+      "predicate": {
+        "kind": "truth",
+        "symbol": "eth_stuck_forever",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "required_effect",
+    "condition": {
+      "kind": "comparison",
+      "left": "swap_msg_value_eth",
+      "operator": "gt",
+      "right": {
+        "const": 0
+      }
+    },
+    "effect": {
+      "kind": "truth",
+      "symbol": "debt_accounting_performed",
+      "value": true
+    }
+  },
+  "assumptions": [
+    "The swap execution checkpoint is the point at which msg.value is available to the Core contract.",
+    "The victim's 10 ether is the msg.value attached to the swap."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "Report does not fully specify the exact sqrtRatioLimit comparison operands (only tickToSqrtRatio(0-500) is referenced), so the no-op path condition is not numerically bound.",
+      "source_ids": [
+        "victim_sets_sqrt_ratio_limit_near_price"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The no-op swap path mechanism (sqrtRatio equals sqrtRatioLimit skipping debt accounting) is not encoded as a precondition; only the frozen P facts are used.",
+    "The impact is encoded as a grounded Boolean because the report provides no more specific observable for 'stuck forever'."
+  ]
+}

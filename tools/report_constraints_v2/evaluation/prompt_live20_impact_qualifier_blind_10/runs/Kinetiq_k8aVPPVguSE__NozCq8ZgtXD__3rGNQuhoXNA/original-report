@@ -1,0 +1,162 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Kinetiq_k8aVPPVguSE",
+    "audit_uid": "k8aVPPVguSE",
+    "requested_submission_uid": "3rGNQuhoXNA",
+    "requested_finding_uid": "NozCq8ZgtXD",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Kinetiq_k8aVPPVguSE/20260618_143339/findings.json",
+    "source_submission_uid": "3rGNQuhoXNA",
+    "source_finding_uid": "NozCq8ZgtXD",
+    "original_report_path": "Kinetiq_k8aVPPVguSE\\high_valid_3rGNQuhoXNA.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "3rGNQuhoXNA",
+  "finding_uid": "NozCq8ZgtXD",
+  "finding_number": "42",
+  "title": "`ValidatorManager#reportSlashingEvent()` doesn't slash pending withdrawals",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "0xpiken",
+  "body": "## Finding description and impact\n- A staker can call [`StakingManager#queueWithdrawal()`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L256-L296) to create a HYPE withdrawal request(A withdrawal operation will be created).\n- The withdrawal operation will be executed by the operator of the protocol via calling [`StakingManager#processL1Operations()`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L627C14-L659)\n- The withdrawal request can only be confirmed after 7 days.\n- If a slash event happens to the delegated validator in 7 days, any pending withdrawal should be entitled to be slashed.\n\nHowever, the Kinetiq protocol lacks a mechanism to handle slash events on pending withdrawals, queued withdrawals prior to the [`ValidatorManager#reportSlashingEvent()`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/ValidatorManager.sol#L427-L438) call could avoid being slashed even they are pending. Meanwhile, all remaining stakers, including those who staked after slashing event, could face repeated slashing after queued withdrawals are confirmed:\n```solidity\n    function confirmWithdrawal(uint256 withdrawalId) external nonReentrant whenNotPaused {\n@>      uint256 amount = _processConfirmation(msg.sender, withdrawalId);\n        require(amount > 0, \"No valid withdrawal request\");\n        require(address(this).balance >= amount, \"Insufficient contract balance\");\n\n        stakingAccountant.recordClaim(amount);\n\n        // Process withdrawal using call instead of transfer\n@>      (bool success, ) = payable(msg.sender).call{value: amount}(\"\");\n        require(success, \"Transfer failed\");\n    }\n    function _processConfirmation(address user, uint256 withdrawalId) internal returns (uint256) {\n        WithdrawalRequest memory request = _withdrawalRequests[user][withdrawalId];\n\n        // Skip if request doesn't exist or delay period not met\n        if (request.hypeAmount == 0 || block.timestamp < request.timestamp + withdrawalDelay) {\n            return 0;\n        }\n\n@>      uint256 hypeAmount = request.hypeAmount;\n        uint256 kHYPEAmount = request.kHYPEAmount;\n        uint256 kHYPEFee = request.kHYPEFee;\n\n        // Check kHYPE balances\n        require(kHYPE.balanceOf(address(this)) >= kHYPEAmount + kHYPEFee, \"Insufficient kHYPE balance\");\n\n        // Update state\n        totalQueuedWithdrawals -= hypeAmount;\n        totalClaimed += hypeAmount;\n        delete _withdrawalRequests[user][withdrawalId];\n\n        // Burn kHYPE tokens (excluding fee)\n        kHYPE.burn(address(this), kHYPEAmount);\n\n        // Transfer fee to treasury\n        kHYPE.transfer(treasury, kHYPEFee);\n\n        emit WithdrawalConfirmed(user, withdrawalId, hypeAmount);\n\n@>      return hypeAmount;\n    }\n```\nAs can be seen, the amount of HYPE was calculated at the time of being queued, and it doesn't account any slashing event happens between queuing time and confirming time.\n\n## Recommended mitigation steps\nThe mitigation is not trivial. The protocol should implement a mechanism similar to [Eigenlayer](https://www.eigenlayer.xyz/) or [Symbiotic](https://symbiotic.fi/) to properly handle pending withdrawals upon a slashing event.",
+  "proof_of_concept": "Copy below codes to [`ValidatorManager.t.sol`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/test/ValidatorManager.t.sol) and run `forge test --match-test test_PendingWithdrawalDoesNotGetSlashed`: \n```solidity\n    function test_PendingWithdrawalDoesNotGetSlashed() public {\n        address alice = makeAddr(\"alice\");\n        address bob = makeAddr(\"bob\");\n        address charlie = makeAddr(\"charlie\");\n\n        vm.deal(alice, 1 ether);\n        vm.deal(bob, 1 ether);\n        vm.deal(charlie, 1 ether);\n        //@audit deposit enough native token to stakingManager for withdrawal\n        vm.deal(address(stakingManager), 10 ether);\n\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator1);\n        validatorManager.setDelegation(address(stakingManager), validator1);\n        //@audit-info set unstakeFeeRate to 0\n        stakingManager.setUnstakeFeeRate(0);\n        //@audit-info anyone can stake / unstake\n        stakingManager.disableWhitelist();\n        vm.stopPrank();\n\n        //@audit-info alice stake 1e18 HYPE for 1e18 kHYPE\n        vm.startPrank(alice);\n        stakingManager.stake{value: 1 ether}();\n        kHYPE.approve(address(stakingManager), 1 ether);\n        vm.stopPrank();\n\n        //@audit-info bob stake 1e18 HYPE for 1e18 kHYPE\n        vm.prank(bob);\n        stakingManager.stake{value: 1 ether}();\n        //@audit-info alice request a withdrawal with all kHYPE (1e18)\n        vm.prank(alice);\n        stakingManager.queueWithdrawal(1 ether);\n        //@audit-info a slashing event happens before the queued withdrawal of alice being confirmed\n        vm.prank(address(oracleManager));\n        validatorManager.reportSlashingEvent(validator1, 1 ether);\n\n        vm.warp(block.timestamp + 7 days);\n        //@audit-info charlie stakes 1e18 HYPE after slashing\n        vm.prank(charlie);\n        stakingManager.stake{value: 1 ether}();\n        //@audit-info Alice has no HYPE before confirming her withdrawal\n        assertEq(alice.balance, 0);\n        //@audit-info Bob's kHYPE is worth only 5e17 HYPE as a result of slashing\n        assertEq(stakingAccountant.kHYPEToHYPE(kHYPE.balanceOf(bob)), 0.5 ether);\n        //@audit-info Charlie's kHYPE is worth 1e18 HYPE since he staked after slashing\n        assertEq(stakingAccountant.kHYPEToHYPE(kHYPE.balanceOf(charlie)), 1 ether);\n        //@audit-info Alice confirmed her queued withdrawal\n        vm.prank(alice);\n        stakingManager.confirmWithdrawal(0);\n        //@audit-info Alice has 1e18 HYPE now, she didn't get slashed.\n        assertEq(alice.balance, 1 ether);\n        //@audit-info Bob got slashed again\n        assertEq(stakingAccountant.kHYPEToHYPE(kHYPE.balanceOf(bob)), uint256(1 ether) / 3);\n        //@audit-info Charlie got slashed even he staked after the slashing event.\n        assertEq(stakingAccountant.kHYPEToHYPE(kHYPE.balanceOf(charlie)), uint256(2 ether) / 3);\n    }\n```\nAs we can see, both Bob and Charlie got slashed unfairly, in the meantime Alice confirmed her queued withdrawal without suffering any penalty.",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/ValidatorManager.sol#L427-L438",
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L256-L296",
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L302-L312"
+  ],
+  "source_record": {
+    "project_id": "k8aVPPVguSE",
+    "submission_index": "718",
+    "api_submission_id": "",
+    "uid": "3rGNQuhoXNA",
+    "number": "718",
+    "title": "`ValidatorManager#reportSlashingEvent()` doesn't slash pending withdrawals",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "0xpiken",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/ValidatorManager.sol#L427-L438",
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L256-L296",
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L302-L312"
+    ],
+    "body": "## Finding description and impact\n- A staker can call [`StakingManager#queueWithdrawal()`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L256-L296) to create a HYPE withdrawal request(A withdrawal operation will be created).\n- The withdrawal operation will be executed by the operator of the protocol via calling [`StakingManager#processL1Operations()`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L627C14-L659)\n- The withdrawal request can only be confirmed after 7 days.\n- If a slash event happens to the delegated validator in 7 days, any pending withdrawal should be entitled to be slashed.\n\nHowever, the Kinetiq protocol lacks a mechanism to handle slash events on pending withdrawals, queued withdrawals prior to the [`ValidatorManager#reportSlashingEvent()`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/ValidatorManager.sol#L427-L438) call could avoid being slashed even they are pending. Meanwhile, all remaining stakers, including those who staked after slashing event, could face repeated slashing after queued withdrawals are confirmed:\n```solidity\n    function confirmWithdrawal(uint256 withdrawalId) external nonReentrant whenNotPaused {\n@>      uint256 amount = _processConfirmation(msg.sender, withdrawalId);\n        require(amount > 0, \"No valid withdrawal request\");\n        require(address(this).balance >= amount, \"Insufficient contract balance\");\n\n        stakingAccountant.recordClaim(amount);\n\n        // Process withdrawal using call instead of transfer\n@>      (bool success, ) = payable(msg.sender).call{value: amount}(\"\");\n        require(success, \"Transfer failed\");\n    }\n    function _processConfirmation(address user, uint256 withdrawalId) internal returns (uint256) {\n        WithdrawalRequest memory request = _withdrawalRequests[user][withdrawalId];\n\n        // Skip if request doesn't exist or delay period not met\n        if (request.hypeAmount == 0 || block.timestamp < request.timestamp + withdrawalDelay) {\n            return 0;\n        }\n\n@>      uint256 hypeAmount = request.hypeAmount;\n        uint256 kHYPEAmount = request.kHYPEAmount;\n        uint256 kHYPEFee = request.kHYPEFee;\n\n        // Check kHYPE balances\n        require(kHYPE.balanceOf(address(this)) >= kHYPEAmount + kHYPEFee, \"Insufficient kHYPE balance\");\n\n        // Update state\n        totalQueuedWithdrawals -= hypeAmount;\n        totalClaimed += hypeAmount;\n        delete _withdrawalRequests[user][withdrawalId];\n\n        // Burn kHYPE tokens (excluding fee)\n        kHYPE.burn(address(this), kHYPEAmount);\n\n        // Transfer fee to treasury\n        kHYPE.transfer(treasury, kHYPEFee);\n\n        emit WithdrawalConfirmed(user, withdrawalId, hypeAmount);\n\n@>      return hypeAmount;\n    }\n```\nAs can be seen, the amount of HYPE was calculated at the time of being queued, and it doesn't account any slashing event happens between queuing time and confirming time.\n\n## Recommended mitigation steps\nThe mitigation is not trivial. The protocol should implement a mechanism similar to [Eigenlayer](https://www.eigenlayer.xyz/) or [Symbiotic](https://symbiotic.fi/) to properly handle pending withdrawals upon a slashing event.",
+    "proof_of_concept": "Copy below codes to [`ValidatorManager.t.sol`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/test/ValidatorManager.t.sol) and run `forge test --match-test test_PendingWithdrawalDoesNotGetSlashed`: \n```solidity\n    function test_PendingWithdrawalDoesNotGetSlashed() public {\n        address alice = makeAddr(\"alice\");\n        address bob = makeAddr(\"bob\");\n        address charlie = makeAddr(\"charlie\");\n\n        vm.deal(alice, 1 ether);\n        vm.deal(bob, 1 ether);\n        vm.deal(charlie, 1 ether);\n        //@audit deposit enough native token to stakingManager for withdrawal\n        vm.deal(address(stakingManager), 10 ether);\n\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator1);\n        validatorManager.setDelegation(address(stakingManager), validator1);\n        //@audit-info set unstakeFeeRate to 0\n        stakingManager.setUnstakeFeeRate(0);\n        //@audit-info anyone can stake / unstake\n        stakingManager.disableWhitelist();\n        vm.stopPrank();\n\n        //@audit-info alice stake 1e18 HYPE for 1e18 kHYPE\n        vm.startPrank(alice);\n        stakingManager.stake{value: 1 ether}();\n        kHYPE.approve(address(stakingManager), 1 ether);\n        vm.stopPrank();\n\n        //@audit-info bob stake 1e18 HYPE for 1e18 kHYPE\n        vm.prank(bob);\n        stakingManager.stake{value: 1 ether}();\n        //@audit-info alice request a withdrawal with all kHYPE (1e18)\n        vm.prank(alice);\n        stakingManager.queueWithdrawal(1 ether);\n        //@audit-info a slashing event happens before the queued withdrawal of alice being confirmed\n        vm.prank(address(oracleManager));\n        validatorManager.reportSlashingEvent(validator1, 1 ether);\n\n        vm.warp(block.timestamp + 7 days);\n        //@audit-info charlie stakes 1e18 HYPE after slashing\n        vm.prank(charlie);\n        stakingManager.stake{value: 1 ether}();\n        //@audit-info Alice has no HYPE before confirming her withdrawal\n        assertEq(alice.balance, 0);\n        //@audit-info Bob's kHYPE is worth only 5e17 HYPE as a result of slashing\n        assertEq(stakingAccountant.kHYPEToHYPE(kHYPE.balanceOf(bob)), 0.5 ether);\n        //@audit-info Charlie's kHYPE is worth 1e18 HYPE since he staked after slashing\n        assertEq(stakingAccountant.kHYPEToHYPE(kHYPE.balanceOf(charlie)), 1 ether);\n        //@audit-info Alice confirmed her queued withdrawal\n        vm.prank(alice);\n        stakingManager.confirmWithdrawal(0);\n        //@audit-info Alice has 1e18 HYPE now, she didn't get slashed.\n        assertEq(alice.balance, 1 ether);\n        //@audit-info Bob got slashed again\n        assertEq(stakingAccountant.kHYPEToHYPE(kHYPE.balanceOf(bob)), uint256(1 ether) / 3);\n        //@audit-info Charlie got slashed even he staked after the slashing event.\n        assertEq(stakingAccountant.kHYPEToHYPE(kHYPE.balanceOf(charlie)), uint256(2 ether) / 3);\n    }\n```\nAs we can see, both Bob and Charlie got slashed unfairly, in the meantime Alice confirmed her queued withdrawal without suffering any penalty.",
+    "detail_url": "https://code4rena.com/api/v1/audits/k8aVPPVguSE/submissions/718",
+    "raw": {
+      "auditUid": "k8aVPPVguSE",
+      "createdAt": "2025-04-16T09:38:00.962Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "j4GufzcjBVe",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "NozCq8ZgtXD"
+        },
+        {
+          "uid": "r7zzpJEFv2M",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "NozCq8ZgtXD"
+        },
+        {
+          "uid": "vpKvfz7cMhN",
+          "userUid": "tZ7iSgbTXG2",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-04-18T01:59:14.048Z",
+          "type": "validity",
+          "value": "invalid",
+          "submissionUid": null,
+          "findingUid": "NozCq8ZgtXD"
+        },
+        {
+          "uid": "FWCtSHAiXor",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-22T12:52:18.423Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "3rGNQuhoXNA",
+          "findingUid": null
+        },
+        {
+          "uid": "vGTaX7Rww4E",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-05-06T21:18:20.193Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "NozCq8ZgtXD"
+        },
+        {
+          "uid": "f6K5dHSag5d",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-05-06T21:18:25.902Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "NozCq8ZgtXD"
+        },
+        {
+          "uid": "uXpC9YFixyP",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-05-10T13:15:17.657Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "3rGNQuhoXNA",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "NozCq8ZgtXD",
+        "number": 42,
+        "duplicates": 37
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-05-10T13:15:17.657Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "`ValidatorManager#reportSlashingEvent()` doesn't slash pending withdrawals",
+      "uid": "3rGNQuhoXNA",
+      "updatedAt": "2025-04-16T09:38:00.962Z",
+      "user": {
+        "uid": "2RU62TFqsp9",
+        "handle": "0xpiken"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n- A staker can call [`StakingManager#queueWithdrawal()`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L256-L296) to create a HYPE withdrawal request(A withdrawal operation will be created).\n- The withdrawal operation will be executed by the operator of the protocol via calling [`StakingManager#processL1Operations()`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L627C14-L659)\n- The withdrawal request can only be confirmed after 7 days.\n- If a slash event happens to the delegated validator in 7 days, any pending withdrawal should be entitled to be slashed.\n\nHowever, the Kinetiq protocol lacks a mechanism to handle slash events on pending withdrawals, queued withdrawals prior to the [`ValidatorManager#reportSlashingEvent()`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/ValidatorManager.sol#L427-L438) call could avoid being slashed even they are pending. Meanwhile, all remaining stakers, including those who staked after slashing event, could face repeated slashing after queued withdrawals are confirmed:\n```solidity\n    function confirmWithdrawal(uint256 withdrawalId) external nonReentrant whenNotPaused {\n@>      uint256 amount = _processConfirmation(msg.sender, withdrawalId);\n        require(amount > 0, \"No valid withdrawal request\");\n        require(address(this).balance >= amount, \"Insufficient contract balance\");\n\n        stakingAccountant.recordClaim(amount);\n\n        // Process withdrawal using call instead of transfer\n@>      (bool success, ) = payable(msg.sender).call{value: amount}(\"\");\n        require(success, \"Transfer failed\");\n    }\n    function _processConfirmation(address user, uint256 withdrawalId) internal returns (uint256) {\n        WithdrawalRequest memory request = _withdrawalRequests[user][withdrawalId];\n\n        // Skip if request doesn't exist or delay period not met\n        if (request.hypeAmount == 0 || block.timestamp < request.timestamp + withdrawalDelay) {\n            return 0;\n        }\n\n@>      uint256 hypeAmount = request.hypeAmount;\n        uint256 kHYPEAmount = request.kHYPEAmount;\n        uint256 kHYPEFee = request.kHYPEFee;\n\n        // Check kHYPE balances\n        require(kHYPE.balanceOf(address(this)) >= kHYPEAmount + kHYPEFee, \"Insufficient kHYPE balance\");\n\n        // Update state\n        totalQueuedWithdrawals -= hypeAmount;\n        totalClaimed += hypeAmount;\n        delete _withdrawalRequests[user][withdrawalId];\n\n        // Burn kHYPE tokens (excluding fee)\n        kHYPE.burn(address(this), kHYPEAmount);\n\n        // Transfer fee to treasury\n        kHYPE.transfer(treasury, kHYPEFee);\n\n        emit WithdrawalConfirmed(user, withdrawalId, hypeAmount);\n\n@>      return hypeAmount;\n    }\n```\nAs can be seen, the amount of HYPE was calculated at the time of being queued, and it doesn't account any slashing event happens between queuing time and confirming time.\n\n## Recommended mitigation steps\nThe mitigation is not trivial. The protocol should implement a mechanism similar to [Eigenlayer](https://www.eigenlayer.xyz/) or [Symbiotic](https://symbiotic.fi/) to properly handle pending withdrawals upon a slashing event.",
+      "proofOfConcept": "Copy below codes to [`ValidatorManager.t.sol`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/test/ValidatorManager.t.sol) and run `forge test --match-test test_PendingWithdrawalDoesNotGetSlashed`: \n```solidity\n    function test_PendingWithdrawalDoesNotGetSlashed() public {\n        address alice = makeAddr(\"alice\");\n        address bob = makeAddr(\"bob\");\n        address charlie = makeAddr(\"charlie\");\n\n        vm.deal(alice, 1 ether);\n        vm.deal(bob, 1 ether);\n        vm.deal(charlie, 1 ether);\n        //@audit deposit enough native token to stakingManager for withdrawal\n        vm.deal(address(stakingManager), 10 ether);\n\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator1);\n        validatorManager.setDelegation(address(stakingManager), validator1);\n        //@audit-info set unstakeFeeRate to 0\n        stakingManager.setUnstakeFeeRate(0);\n        //@audit-info anyone can stake / unstake\n        stakingManager.disableWhitelist();\n        vm.stopPrank();\n\n        //@audit-info alice stake 1e18 HYPE for 1e18 kHYPE\n        vm.startPrank(alice);\n        stakingManager.stake{value: 1 ether}();\n        kHYPE.approve(address(stakingManager), 1 ether);\n        vm.stopPrank();\n\n        //@audit-info bob stake 1e18 HYPE for 1e18 kHYPE\n        vm.prank(bob);\n        stakingManager.stake{value: 1 ether}();\n        //@audit-info alice request a withdrawal with all kHYPE (1e18)\n        vm.prank(alice);\n        stakingManager.queueWithdrawal(1 ether);\n        //@audit-info a slashing event happens before the queued withdrawal of alice being confirmed\n        vm.prank(address(oracleManager));\n        validatorManager.reportSlashingEvent(validator1, 1 ether);\n\n        vm.warp(block.timestamp + 7 days);\n        //@audit-info charlie stakes 1e18 HYPE after slashing\n        vm.prank(charlie);\n        stakingManager.stake{value: 1 ether}();\n        //@audit-info Alice has no HYPE before confirming her withdrawal\n        assertEq(alice.balance, 0);\n        //@audit-info Bob's kHYPE is worth only 5e17 HYPE as a result of slashing\n        assertEq(stakingAccountant.kHYPEToHYPE(kHYPE.balanceOf(bob)), 0.5 ether);\n        //@audit-info Charlie's kHYPE is worth 1e18 HYPE since he staked after slashing\n        assertEq(stakingAccountant.kHYPEToHYPE(kHYPE.balanceOf(charlie)), 1 ether);\n        //@audit-info Alice confirmed her queued withdrawal\n        vm.prank(alice);\n        stakingManager.confirmWithdrawal(0);\n        //@audit-info Alice has 1e18 HYPE now, she didn't get slashed.\n        assertEq(alice.balance, 1 ether);\n        //@audit-info Bob got slashed again\n        assertEq(stakingAccountant.kHYPEToHYPE(kHYPE.balanceOf(bob)), uint256(1 ether) / 3);\n        //@audit-info Charlie got slashed even he staked after the slashing event.\n        assertEq(stakingAccountant.kHYPEToHYPE(kHYPE.balanceOf(charlie)), uint256(2 ether) / 3);\n    }\n```\nAs we can see, both Bob and Charlie got slashed unfairly, in the meantime Alice confirmed her queued withdrawal without suffering any penalty.",
+      "linesOfCode": "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/ValidatorManager.sol#L427-L438,https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L256-L296,https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L302-L312",
+      "number": 718,
+      "aiExplanation": null,
+      "_index": 718
+    }
+  }
+}

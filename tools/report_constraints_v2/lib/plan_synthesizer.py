@@ -3,6 +3,7 @@ import json
 import re
 
 from lib import report_only as r
+from lib.piv_contract import PIV_PROPERTY_NAMES
 from lib.semantic_core import identifier, predicate_paths, require, strings
 
 
@@ -10,7 +11,15 @@ PLAN_VERSION = 'report-formal-plan/1'
 STRUCTURED_PLAN_VERSION = 'report-formal-plan/2'
 CLASSIFIED_PLAN_VERSION = 'report-formal-plan/3'
 FIXED_PLAN_VERSION = 'report-formal-plan/4'
-EXPANDED_PLAN_VERSION = 'report-formal-plan/5'
+LEGACY_EXPANDED_PLAN_VERSION = 'report-formal-plan/5'
+EXPANDED_PLAN_VERSION = 'report-formal-plan/6'
+LIVE_EXPANDED_PLAN_VERSION = 'report-formal-plan/8'
+LIVE_RELAXED_PLAN_VERSIONS = ('report-formal-plan/7',
+                              LIVE_EXPANDED_PLAN_VERSION)
+EXPANDED_PLAN_VERSIONS = (LEGACY_EXPANDED_PLAN_VERSION,
+                          EXPANDED_PLAN_VERSION,
+                          'report-formal-plan/7',
+                          LIVE_EXPANDED_PLAN_VERSION)
 UNRESOLVED_CATEGORIES = {
     'missing_report_definition', 'ambiguous_actor', 'ambiguous_condition',
     'missing_unit', 'unsupported_relation', 'missing_checkpoint',
@@ -74,18 +83,47 @@ IMPACT_QUALIFIER_PATTERNS = {
     'temporal': re.compile(
         r'\b(?:after|before|once|until|while|only\s+(?:after|before|while))\b',
         re.IGNORECASE),
+    'trigger': re.compile(
+        r'\b(?:if|when|whenever|upon|during|provided\s+that)\b',
+        re.IGNORECASE),
     'threshold': re.compile(
-        r'\b(?:exceeds?|below|above|at\s+least|at\s+most)\b', re.IGNORECASE),
+        r'\b(?:exceeds?|below|above|at\s+least|at\s+most|more\s+than|'
+        r'less\s+than|greater\s+than|lower\s+than|higher\s+than|'
+        r'fewer\s+than)\b', re.IGNORECASE),
+    'comparison_direction': re.compile(
+        r'\b(?:more\s+than|less\s+than|greater\s+than|lower\s+than|'
+        r'higher\s+than|fewer\s+than|increases?|decreases?|rises?|falls?|'
+        r'drops?|declines?|exceeds?|underperforms?)\b', re.IGNORECASE),
     'state': re.compile(
         r'\b(?:despite|even\s+(?:if|when|though)|only\s+(?:if|when))\b',
+        re.IGNORECASE),
+    'scope': re.compile(
+        r'\b(?:all|every|each|entire|whole|any|newly\s+created|'
+        r'newly\s+deployed)\b', re.IGNORECASE),
+    'duration_or_repetition': re.compile(
+        r'\b(?:permanent(?:ly)?|forever|indefinitely|continuously|'
+        r'repeatedly|repeated|constantly|keep\s+(?:re)?(?:deposit|submit|retry)|'
+        r'for\s+\d+\s+(?:seconds?|minutes?|hours?|days?))\b', re.IGNORECASE),
+    'range': re.compile(
+        r'\b(?:between\s+\S+\s+and\s+\S+|from\s+\S+\s+to\s+\S+|'
+        r'range\s+of|up\s+to|approximately|about)\b', re.IGNORECASE),
+    'rate_or_cost': re.compile(
+        r'(?:\bper\s+(?:second|minute|hour|day|week|month)|'
+        r'\b\d+(?:\.\d+)?\s*(?:gwei|wei|usd|\$)|\bcosts?\b)',
         re.IGNORECASE),
 }
 
 
 def impact_qualifier_types(text):
-    """Conservatively classify explicit impact-scope cues for v5 auditing."""
+    """Classify explicit impact conditions and qualifiers for formal-plan auditing."""
     return sorted(name for name, pattern in IMPACT_QUALIFIER_PATTERNS.items()
                   if pattern.search(text))
+
+
+def _legacy_impact_qualifier_types(text):
+    """Qualifier contract used by frozen /5 plans during deterministic replay."""
+    legacy_types = {'temporal', 'threshold', 'state'}
+    return sorted(set(impact_qualifier_types(text)) & legacy_types)
 
 
 def _index(rows, label):
@@ -121,30 +159,33 @@ def _operand(value, symbols):
     return {'const': value['const']}
 
 
-def _quantity_expression(value, symbols, depth=0):
+def _quantity_expression(value, symbols, depth=0, enforce_units=True):
     require(depth <= 3 and isinstance(value, dict), 'invalid quantity expression')
     if set(value) in ({'symbol'}, {'const'}, {'power_of_two', 'offset'}):
         expression = _operand(value, symbols)
-        sort, _ = r.expr_type(expression, symbols)
+        sort, _ = r.expr_type(expression, symbols, enforce_units=enforce_units)
         require(sort in ('int', 'literal'), 'quantity expression requires integer')
         return expression
     require(set(value) == {'op', 'args'} and value['op'] in ('add', 'sub', 'mul') and
             isinstance(value['args'], list) and len(value['args']) == 2,
             'invalid quantity expression')
     expression = {'op': value['op'], 'args': [
-        _quantity_expression(item, symbols, depth + 1) for item in value['args']]}
-    require(r.expr_type(expression, symbols)[0] == 'int', 'invalid quantity expression types')
+        _quantity_expression(item, symbols, depth + 1, enforce_units)
+        for item in value['args']]}
+    require(r.expr_type(expression, symbols, enforce_units=enforce_units)[0] == 'int',
+            'invalid quantity expression types')
     return expression
 
 
-def _predicate(value, symbols, depth=0):
+def _predicate(value, symbols, depth=0, enforce_units=True):
     require(depth <= 4 and isinstance(value, dict) and value.get('kind') in (
         'truth', 'comparison', 'divisible_by', 'all_of', 'any_of', 'relation'),
             'invalid predicate binding')
     if value['kind'] in ('all_of', 'any_of'):
         require(set(value) == {'kind', 'terms'} and isinstance(value['terms'], list) and
                 2 <= len(value['terms']) <= 8, 'invalid compound predicate')
-        expressions = [_predicate(item, symbols, depth + 1) for item in value['terms']]
+        expressions = [_predicate(item, symbols, depth + 1, enforce_units)
+                       for item in value['terms']]
         return _and(expressions) if value['kind'] == 'all_of' else _or(expressions)
     if value['kind'] == 'relation':
         require(set(value) == {'kind', 'left', 'operator', 'right'} and
@@ -153,9 +194,9 @@ def _predicate(value, symbols, depth=0):
         require(value['left'] != value['right'],
                 'trivial self-comparison predicate')
         expression = {'op': value['operator'], 'args': [
-            _quantity_expression(value['left'], symbols),
-            _quantity_expression(value['right'], symbols)]}
-        require(r.expr_type(expression, symbols) == ('bool', None),
+            _quantity_expression(value['left'], symbols, enforce_units=enforce_units),
+            _quantity_expression(value['right'], symbols, enforce_units=enforce_units)]}
+        require(r.expr_type(expression, symbols, enforce_units=enforce_units) == ('bool', None),
                 'invalid quantity relation types/units')
         return expression
     if value['kind'] == 'divisible_by':
@@ -168,7 +209,7 @@ def _predicate(value, symbols, depth=0):
             {'var': value['dividend']}, {'const': value['divisor']}]}
         expression = {'op': 'eq' if value['value'] else 'ne',
                       'args': [remainder, {'const': 0}]}
-        require(r.expr_type(expression, symbols) == ('bool', None),
+        require(r.expr_type(expression, symbols, enforce_units=enforce_units) == ('bool', None),
                 'invalid divisibility type/unit')
         return expression
     if value['kind'] == 'truth':
@@ -187,7 +228,8 @@ def _predicate(value, symbols, depth=0):
             'trivial self-comparison predicate')
     expression = {'op': value['operator'],
                   'args': [{'var': value['left']}, _operand(value['right'], symbols)]}
-    require(r.expr_type(expression, symbols) == ('bool', None), 'invalid comparison types/units')
+    require(r.expr_type(expression, symbols, enforce_units=enforce_units) == ('bool', None),
+            'invalid comparison types/units')
     return expression
 
 
@@ -313,13 +355,17 @@ def _core_relation_symbols(pattern):
     raise ValueError('unknown synthesis pattern')
 
 
-def classified_relation_alignment(plan, elements):
+def classified_relation_alignment(plan, elements, allow_missing=False):
     """Audit that classified I/V observables are grounded by intent and impacts."""
     require(plan.get('schema_version') in (
-        CLASSIFIED_PLAN_VERSION, FIXED_PLAN_VERSION, EXPANDED_PLAN_VERSION),
+        CLASSIFIED_PLAN_VERSION, FIXED_PLAN_VERSION, *EXPANDED_PLAN_VERSIONS),
             'relation alignment requires plan schema v3')
     statements = _index(elements['statements'], 'statement')
     core_symbols = sorted(_core_relation_symbols(plan['pattern']))
+    if plan.get('schema_version') == LIVE_EXPANDED_PLAN_VERSION:
+        core_symbols = sorted(set(core_symbols) |
+                              _predicate_binding_symbols(
+                                  plan['impact_outcome']['predicate']))
     require(bool(core_symbols), 'classified relation has no core observables')
     require(isinstance(plan.get('symbols'), dict) and
             all(name in plan['symbols'] for name in core_symbols),
@@ -339,25 +385,29 @@ def classified_relation_alignment(plan, elements):
                         if plan.get('schema_version') == CLASSIFIED_PLAN_VERSION
                         else list(plan['impact_ids']))
     missing = [source for source in required_sources if source not in source_union]
-    require(not missing, 'core relation observables lack intent/impact grounding')
+    if not allow_missing:
+        require(not missing, 'core relation observables lack intent/impact grounding')
     require(all(source in statements for source in source_union),
             'core relation observable has unknown source')
     result = {
         'schema_version': ('safety-relation-alignment/1'
                            if plan.get('schema_version') == CLASSIFIED_PLAN_VERSION
                            else 'safety-relation-alignment/3'
-                           if plan.get('schema_version') == EXPANDED_PLAN_VERSION
+                           if plan.get('schema_version') in EXPANDED_PLAN_VERSIONS
                            else 'safety-relation-alignment/2'),
         'relation_class': plan['relation_class'],
         'pattern_kind': plan['pattern']['kind'],
         'core_observables': core_symbols,
         'observable_source_ids': coverage,
         'required_source_ids': required_sources,
-        'missing_required_source_ids': [],
-        'direct_negation_by_construction': True,
-        'passed': True,
+        'missing_required_source_ids': missing,
+        'direct_negation_by_construction':
+            plan.get('schema_version') != LIVE_EXPANDED_PLAN_VERSION,
+        'passed': not missing,
     }
-    if plan.get('schema_version') in (FIXED_PLAN_VERSION, EXPANDED_PLAN_VERSION):
+    if allow_missing:
+        result['review_only'] = True
+    if plan.get('schema_version') in (FIXED_PLAN_VERSION, *EXPANDED_PLAN_VERSIONS):
         result.update({'intent_source_id': plan['intent_id'],
                        'intent_grounding': 'selected_safety_property'})
     return result
@@ -369,6 +419,8 @@ def _evidence(source_ids, statements):
 
 
 def _links(expression, source_ids, symbols):
+    if not source_ids:
+        return {}
     return {path: list(source_ids) for path in predicate_paths(expression, symbols)}
 
 
@@ -376,7 +428,7 @@ def structured_unresolved_review(plan, elements):
     """Validate v2 unresolved records and separate blocking from audit-only items."""
     require(plan.get('schema_version') in (
         STRUCTURED_PLAN_VERSION, CLASSIFIED_PLAN_VERSION, FIXED_PLAN_VERSION,
-        EXPANDED_PLAN_VERSION),
+        *EXPANDED_PLAN_VERSIONS),
             'structured unresolved requires plan schema v2')
     statements = _index(elements['statements'], 'statement')
     items = plan.get('unresolved')
@@ -407,14 +459,14 @@ def structured_unresolved_review(plan, elements):
     }
 
 
-def _pattern_expressions(pattern, symbols):
+def _pattern_expressions(pattern, symbols, enforce_units=True):
     require(isinstance(pattern, dict) and pattern.get('kind') in PATTERNS,
             'unknown synthesis pattern')
     kind = pattern['kind']
     if kind in ('condition_forbids_effect', 'condition_requires_effect'):
         require(set(pattern) == {'kind', 'condition', 'effect'}, 'invalid condition pattern')
-        condition = _predicate(pattern['condition'], symbols)
-        effect = _predicate(pattern['effect'], symbols)
+        condition = _predicate(pattern['condition'], symbols, enforce_units=enforce_units)
+        effect = _predicate(pattern['effect'], symbols, enforce_units=enforce_units)
         if kind == 'condition_forbids_effect':
             return {'op': 'implies', 'args': [condition, _not(effect)]}, _and([condition, effect])
         return {'op': 'implies', 'args': [condition, effect]}, _and([condition, _not(effect)])
@@ -422,32 +474,34 @@ def _pattern_expressions(pattern, symbols):
         require(set(pattern) == {'kind', 'effect', 'authorization_terms'} and
                 isinstance(pattern['authorization_terms'], list) and
                 bool(pattern['authorization_terms']), 'invalid authorization pattern')
-        effect = _predicate(pattern['effect'], symbols)
-        authorization = _or([_predicate(x, symbols) for x in pattern['authorization_terms']])
+        effect = _predicate(pattern['effect'], symbols, enforce_units=enforce_units)
+        authorization = _or([_predicate(x, symbols, enforce_units=enforce_units)
+                             for x in pattern['authorization_terms']])
         return {'op': 'implies', 'args': [effect, authorization]}, _and([effect, _not(authorization)])
     if kind == 'authorization_guard':
         require(set(pattern) == {'kind', 'effect', 'authorization'},
                 'invalid authorization guard pattern')
-        effect = _predicate(pattern['effect'], symbols)
-        authorization = _predicate(pattern['authorization'], symbols)
+        effect = _predicate(pattern['effect'], symbols, enforce_units=enforce_units)
+        authorization = _predicate(pattern['authorization'], symbols,
+                                   enforce_units=enforce_units)
         return {'op': 'implies', 'args': [effect, authorization]}, \
             _and([effect, _not(authorization)])
     if kind == 'relation_obligation':
         require(set(pattern) == {'kind', 'condition', 'relation'},
                 'invalid relation obligation pattern')
-        condition = _predicate(pattern['condition'], symbols)
-        relation = _predicate(pattern['relation'], symbols)
+        condition = _predicate(pattern['condition'], symbols, enforce_units=enforce_units)
+        relation = _predicate(pattern['relation'], symbols, enforce_units=enforce_units)
         return {'op': 'implies', 'args': [condition, relation]}, \
             _and([condition, _not(relation)])
     if kind == 'bounded_relation':
         require(set(pattern) == {'kind', 'condition', 'value', 'operator', 'bound'} and
                 pattern['operator'] in ('lt', 'le', 'gt', 'ge'),
                 'invalid bounded relation pattern')
-        condition = _predicate(pattern['condition'], symbols)
+        condition = _predicate(pattern['condition'], symbols, enforce_units=enforce_units)
         relation = {'op': pattern['operator'], 'args': [
-            _quantity_expression(pattern['value'], symbols),
-            _quantity_expression(pattern['bound'], symbols)]}
-        require(r.expr_type(relation, symbols) == ('bool', None),
+            _quantity_expression(pattern['value'], symbols, enforce_units=enforce_units),
+            _quantity_expression(pattern['bound'], symbols, enforce_units=enforce_units)]}
+        require(r.expr_type(relation, symbols, enforce_units=enforce_units) == ('bool', None),
                 'bounded relation type/unit mismatch')
         return {'op': 'implies', 'args': [condition, relation]}, \
             _and([condition, _not(relation)])
@@ -458,9 +512,9 @@ def _pattern_expressions(pattern, symbols):
         observed, expected = pattern['observed_symbol'], pattern['expected_symbol']
         require(observed in symbols and expected in symbols,
                 'unknown correspondence symbol')
-        condition = _predicate(pattern['condition'], symbols)
+        condition = _predicate(pattern['condition'], symbols, enforce_units=enforce_units)
         relation = {'op': 'eq', 'args': [{'var': observed}, {'var': expected}]}
-        require(r.expr_type(relation, symbols) == ('bool', None),
+        require(r.expr_type(relation, symbols, enforce_units=enforce_units) == ('bool', None),
                 'correspondence type/unit mismatch')
         return {'op': 'implies', 'args': [condition, relation]}, \
             _and([condition, _not(relation)])
@@ -472,29 +526,29 @@ def _pattern_expressions(pattern, symbols):
         earlier, later = pattern['earlier_symbol'], pattern['later_symbol']
         require(earlier in symbols and later in symbols,
                 'unknown temporal order symbol')
-        condition = _predicate(pattern['condition'], symbols)
+        condition = _predicate(pattern['condition'], symbols, enforce_units=enforce_units)
         relation = {'op': 'lt' if pattern['strict'] else 'le',
                     'args': [{'var': earlier}, {'var': later}]}
-        require(r.expr_type(relation, symbols) == ('bool', None),
+        require(r.expr_type(relation, symbols, enforce_units=enforce_units) == ('bool', None),
                 'temporal order type/unit mismatch')
         return {'op': 'implies', 'args': [condition, relation]}, \
             _and([condition, _not(relation)])
     if kind == 'required_effect':
         require(set(pattern) == {'kind', 'condition', 'effect'},
                 'invalid required effect pattern')
-        condition = _predicate(pattern['condition'], symbols)
-        effect = _predicate(pattern['effect'], symbols)
+        condition = _predicate(pattern['condition'], symbols, enforce_units=enforce_units)
+        effect = _predicate(pattern['effect'], symbols, enforce_units=enforce_units)
         return {'op': 'implies', 'args': [condition, effect]}, \
             _and([condition, _not(effect)])
     if kind == 'proportional_relation':
         require(set(pattern) == {'kind', 'condition', 'left', 'operator', 'right'} and
                 pattern['operator'] in ('eq', 'le', 'ge'),
                 'invalid proportional relation pattern')
-        condition = _predicate(pattern['condition'], symbols)
+        condition = _predicate(pattern['condition'], symbols, enforce_units=enforce_units)
         relation = {'op': pattern['operator'], 'args': [
-            _quantity_expression(pattern['left'], symbols),
-            _quantity_expression(pattern['right'], symbols)]}
-        require(r.expr_type(relation, symbols) == ('bool', None),
+            _quantity_expression(pattern['left'], symbols, enforce_units=enforce_units),
+            _quantity_expression(pattern['right'], symbols, enforce_units=enforce_units)]}
+        require(r.expr_type(relation, symbols, enforce_units=enforce_units) == ('bool', None),
                 'proportional relation type/unit mismatch')
         return {'op': 'implies', 'args': [condition, relation]}, \
             _and([condition, _not(relation)])
@@ -505,22 +559,22 @@ def _pattern_expressions(pattern, symbols):
                 'invalid monotonicity pattern')
         require(pattern['before_symbol'] in symbols and pattern['after_symbol'] in symbols,
                 'unknown monotonicity symbol')
-        trigger = _predicate(pattern['trigger'], symbols)
+        trigger = _predicate(pattern['trigger'], symbols, enforce_units=enforce_units)
         relation = {'op': 'ge' if pattern['direction'] == 'nondecreasing' else 'le',
                     'args': [{'var': pattern['after_symbol']},
                              {'var': pattern['before_symbol']}]}
-        require(r.expr_type(relation, symbols) == ('bool', None),
+        require(r.expr_type(relation, symbols, enforce_units=enforce_units) == ('bool', None),
                 'monotonicity type/unit mismatch')
         return {'op': 'implies', 'args': [trigger, relation]}, \
             _and([trigger, _not(relation)])
     if kind == 'conservation':
         require(set(pattern) == {'kind', 'trigger', 'before', 'after'},
                 'invalid conservation pattern')
-        trigger = _predicate(pattern['trigger'], symbols)
-        before = _quantity_expression(pattern['before'], symbols)
-        after = _quantity_expression(pattern['after'], symbols)
+        trigger = _predicate(pattern['trigger'], symbols, enforce_units=enforce_units)
+        before = _quantity_expression(pattern['before'], symbols, enforce_units=enforce_units)
+        after = _quantity_expression(pattern['after'], symbols, enforce_units=enforce_units)
         relation = {'op': 'eq', 'args': [after, before]}
-        require(r.expr_type(relation, symbols) == ('bool', None),
+        require(r.expr_type(relation, symbols, enforce_units=enforce_units) == ('bool', None),
                 'conservation type/unit mismatch')
         return {'op': 'implies', 'args': [trigger, relation]}, \
             _and([trigger, _not(relation)])
@@ -528,10 +582,11 @@ def _pattern_expressions(pattern, symbols):
             'invalid preservation pattern')
     require(pattern['before_symbol'] in symbols and pattern['after_symbol'] in symbols,
             'unknown preservation symbol')
-    trigger = _predicate(pattern['trigger'], symbols)
+    trigger = _predicate(pattern['trigger'], symbols, enforce_units=enforce_units)
     equal = {'op': 'eq', 'args': [{'var': pattern['after_symbol']},
                                   {'var': pattern['before_symbol']}]}
-    require(r.expr_type(equal, symbols) == ('bool', None), 'state preservation type/unit mismatch')
+    require(r.expr_type(equal, symbols, enforce_units=enforce_units) == ('bool', None),
+            'state preservation type/unit mismatch')
     return {'op': 'implies', 'args': [trigger, equal]}, _and([trigger, _not(equal)])
 
 
@@ -777,7 +832,7 @@ def predicate_binding_symbols(value):
     return set(_predicate_binding_symbols(value))
 
 
-def validate_faithfulness_verdict(verdict, plan):
+def validate_faithfulness_verdict(verdict, plan, include_relations=False):
     """Structural check of a faithfulness-audit verdict dict.
 
     The verdict is the only free-form input the deterministic chain later
@@ -785,15 +840,18 @@ def validate_faithfulness_verdict(verdict, plan):
     exactly one row per selected P source, each with a verdict from the
     fixed enum and a one-line reason.
     """
-    require(isinstance(verdict, dict) and set(verdict) == {'checks'},
+    expected_fields = {'checks', 'piv_relation'} if include_relations else {'checks'}
+    require(isinstance(verdict, dict) and set(verdict) == expected_fields,
             'invalid faithfulness verdict shape')
     checks = verdict['checks']
     require(isinstance(checks, list) and bool(checks),
             'invalid faithfulness verdict checks')
     seen = []
     for check in checks:
-        require(isinstance(check, dict) and
-                set(check) == {'source_id', 'verdict', 'reason'},
+        check_fields = ({'source_id', 'role', 'verdict', 'reason'}
+                        if include_relations else
+                        {'source_id', 'verdict', 'reason'})
+        require(isinstance(check, dict) and set(check) == check_fields,
                 'invalid faithfulness check shape')
         require(isinstance(check['source_id'], str) and check['source_id'],
                 'invalid faithfulness check source_id')
@@ -801,16 +859,65 @@ def validate_faithfulness_verdict(verdict, plan):
                 'invalid faithfulness verdict value')
         require(isinstance(check['reason'], str) and bool(check['reason'].strip()),
                 'invalid faithfulness check reason')
-        seen.append(check['source_id'])
-    require(set(seen) == set(plan['precondition_ids']) and
-            len(seen) == len(plan['precondition_ids']),
-            'faithfulness verdict must cover selected P sources exactly once')
+        if include_relations:
+            require(check['role'] in ('P', 'I', 'V'), 'invalid faithfulness check role')
+        seen.append((check['source_id'], check.get('role')))
+    if include_relations:
+        expected = ([(source, 'P') for source in plan['precondition_ids']] +
+                    [(plan['intent_id'], 'I')] +
+                    [(source, 'V') for source in plan['impact_ids']])
+        require(set(seen) == set(expected) and len(seen) == len(expected),
+                'faithfulness verdict must cover selected P/I/V sources exactly once')
+        relation = verdict['piv_relation']
+        require(isinstance(relation, dict) and set(relation) == {'verdict', 'reason'} and
+                relation['verdict'] in ('consistent', 'weakened', 'mismatch') and
+                isinstance(relation['reason'], str) and relation['reason'].strip(),
+                'invalid P/I/V relation verdict')
+    else:
+        sources = [source for source, _role in seen]
+        require(set(sources) == set(plan['precondition_ids']) and
+                len(sources) == len(plan['precondition_ids']),
+                'faithfulness verdict must cover selected P sources exactly once')
 
 
 def faithfulness_mismatches(verdict):
     """Rows the deterministic gates replay on: non-consistent verdicts."""
+    rows = [dict(check) for check in (verdict or {}).get('checks', [])
+            if check.get('verdict') != 'consistent']
+    relation = (verdict or {}).get('piv_relation')
+    if relation and relation.get('verdict') != 'consistent':
+        rows.append({'source_id': 'P/I/V relation', 'role': 'PIV',
+                     'verdict': 'other_mismatch', 'reason': relation['reason']})
+    return rows
+
+
+def faithfulness_repair_mismatches(verdict):
+    """Return only role-local formula findings eligible for a bounded repair.
+
+    A cross-role relation finding is retained for review, but changing formulas
+    that individually match their frozen sources can make them less faithful.
+    """
     return [dict(check) for check in (verdict or {}).get('checks', [])
             if check.get('verdict') != 'consistent']
+
+
+def faithfulness_status(verdict):
+    """Classify component fidelity separately from an uncertain P/I/V link."""
+    if not isinstance(verdict, dict):
+        return 'unavailable'
+    if any(row.get('verdict') != 'consistent'
+           for row in verdict.get('checks', [])):
+        return 'failed'
+    relation = verdict.get('piv_relation')
+    if relation is None:
+        return 'passed'
+    if relation.get('verdict') == 'consistent':
+        return 'passed'
+    if relation.get('verdict') == 'weakened':
+        return 'needs_review'
+    if relation.get('verdict') == 'mismatch':
+        return 'failed'
+    return 'unavailable'
 
 
 def _referenced_plan_symbols(value, add):
@@ -862,6 +969,9 @@ def symbol_table_review(plan):
             list(plan.get('impact_context_terms') or []):
         if isinstance(term, dict):
             _referenced_plan_symbols(term.get('predicate'), add)
+    outcome = plan.get('impact_outcome')
+    if isinstance(outcome, dict):
+        _referenced_plan_symbols(outcome.get('predicate'), add)
     _referenced_plan_symbols(plan.get('pattern'), add)
     for item in plan.get('derived_definitions') or []:
         # A definition target is produced, not referenced: it counts only
@@ -1037,44 +1147,52 @@ def relax_unsupported_relation(plan, elements):
     return plan, changes
 
 
-def synthesize_id_formalization(plan, elements):
+def synthesize_id_formalization(plan, elements, claim_id='core_claim',
+                                include_unselected_limitations=True,
+                                fidelity_only=False):
     base_fields = {
         'schema_version', 'precondition_ids', 'intent_id', 'impact_ids', 'symbols',
         'precondition_terms', 'pattern', 'assumptions', 'unresolved', 'limitations'}
     require(isinstance(plan, dict), 'invalid formal plan')
     version = plan.get('schema_version')
     expected_fields = (base_fields | {'relation_class', 'derived_definitions',
-                                      'impact_context_terms'}
-                       if version == EXPANDED_PLAN_VERSION else
+        'impact_context_terms'}
+                       if version in EXPANDED_PLAN_VERSIONS else
                        base_fields | {'relation_class', 'derived_definitions'}
                        if version == FIXED_PLAN_VERSION else
                        base_fields | {'relation_class'}
                        if version == CLASSIFIED_PLAN_VERSION else base_fields)
+    if version == LIVE_EXPANDED_PLAN_VERSION:
+        expected_fields = expected_fields | {'impact_outcome'}
     require(set(plan) == expected_fields, 'unexpected formal plan fields')
     require(version in (PLAN_VERSION, STRUCTURED_PLAN_VERSION, CLASSIFIED_PLAN_VERSION,
-                        FIXED_PLAN_VERSION, EXPANDED_PLAN_VERSION),
+                        FIXED_PLAN_VERSION, *EXPANDED_PLAN_VERSIONS),
             'unknown formal plan schema')
     if version in (CLASSIFIED_PLAN_VERSION, FIXED_PLAN_VERSION,
-                   EXPANDED_PLAN_VERSION):
+                   *EXPANDED_PLAN_VERSIONS):
         require(plan['relation_class'] in RELATION_CLASSES, 'unknown relation class')
         require(isinstance(plan['pattern'], dict), 'invalid classified relation pattern')
         if version == FIXED_PLAN_VERSION:
             require(plan['pattern'].get('kind') ==
                     FIXED_RELATION_CLASS_PATTERN[plan['relation_class']],
                     'fixed relation template mismatch')
-            _reject_cancellable_relation(plan['pattern'])
-        elif version == EXPANDED_PLAN_VERSION:
+            if not fidelity_only:
+                _reject_cancellable_relation(plan['pattern'])
+        elif version in EXPANDED_PLAN_VERSIONS:
             require(plan['pattern'].get('kind') ==
                     EXPANDED_RELATION_CLASS_PATTERN[plan['relation_class']],
                     'expanded relation template mismatch')
-            _reject_cancellable_relation(plan['pattern'])
+            if not fidelity_only:
+                _reject_cancellable_relation(plan['pattern'])
         else:
             require(plan['pattern'].get('kind') in
                     RELATION_CLASS_PATTERNS[plan['relation_class']],
                     'relation class and pattern mismatch')
     statements = _index(elements['statements'], 'statement')
     entities = _index(elements['entities'], 'entity')
-    require(strings(plan['precondition_ids']) and bool(plan['precondition_ids']) and
+    require(strings(plan['precondition_ids']) and
+            (bool(plan['precondition_ids']) or
+             version in ('report-formal-plan/7', LIVE_EXPANDED_PLAN_VERSION)) and
             len(set(plan['precondition_ids'])) ==
             len(plan['precondition_ids']), 'invalid plan precondition IDs')
     require(all(x in statements and statements[x]['kind'] in ('precondition', 'assumption')
@@ -1082,14 +1200,17 @@ def synthesize_id_formalization(plan, elements):
     require(isinstance(plan['intent_id'], str) and plan['intent_id'] in statements and
             statements[plan['intent_id']]['kind'] == 'security_intent', 'invalid plan intent ID')
     impact_limit = 1 if version in (
-        CLASSIFIED_PLAN_VERSION, FIXED_PLAN_VERSION, EXPANDED_PLAN_VERSION) else 2
+        CLASSIFIED_PLAN_VERSION, FIXED_PLAN_VERSION,
+        *EXPANDED_PLAN_VERSIONS) else 2
     require(strings(plan['impact_ids']) and 1 <= len(plan['impact_ids']) <= impact_limit and
             len(set(plan['impact_ids'])) == len(plan['impact_ids']) and
             all(x in statements and statements[x]['kind'] == 'impact' for x in plan['impact_ids']),
             'invalid plan impact IDs')
     require(strings(plan['assumptions']) and strings(plan['limitations']),
             'invalid plan caveats')
-    if version == PLAN_VERSION:
+    if fidelity_only:
+        formal_unresolved = []
+    elif version == PLAN_VERSION:
         require(strings(plan['unresolved']), 'invalid plan caveats')
         formal_unresolved = list(plan['unresolved'])
     else:
@@ -1108,11 +1229,23 @@ def synthesize_id_formalization(plan, elements):
             'invalid plan symbol')
         require(item['sort'] in ('int', 'bool', 'address'), 'invalid plan symbol sort')
         if item['sort'] == 'int':
+            if fidelity_only and (not isinstance(item['unit'], str) or
+                                  not item['unit'].strip()):
+                item['unit'] = 'unspecified'
             require(isinstance(item['unit'], str) and item['unit'].strip(), 'missing plan quantity unit')
         else:
+            if fidelity_only:
+                item['unit'] = None
             require(item['unit'] is None, 'non-quantity plan unit')
         require(all(isinstance(item[x], str) and item[x].strip()
                     for x in ('meaning', 'checkpoint')), 'missing plan symbol semantics')
+        if fidelity_only:
+            item['entity_ids'] = [x for x in item.get('entity_ids', [])
+                                  if x in entities] or list(entities)
+            allowed_sources = list(dict.fromkeys(
+                plan['precondition_ids'] + [plan['intent_id']] + plan['impact_ids']))
+            item['source_ids'] = [x for x in item.get('source_ids', [])
+                                  if x in statements] or allowed_sources
         require(strings(item['entity_ids']) and bool(item['entity_ids']) and
                 all(x in entities for x in item['entity_ids']), 'invalid plan symbol entities')
         require(strings(item['source_ids']) and bool(item['source_ids']) and
@@ -1125,7 +1258,7 @@ def synthesize_id_formalization(plan, elements):
                                 'entity_ids': item['entity_ids']}
 
     definition_expressions = []
-    if version in (FIXED_PLAN_VERSION, EXPANDED_PLAN_VERSION):
+    if version in (FIXED_PLAN_VERSION, *EXPANDED_PLAN_VERSIONS):
         definitions = plan['derived_definitions']
         require(isinstance(definitions, list) and len(definitions) <= 6,
                 'invalid derived definitions')
@@ -1142,12 +1275,14 @@ def synthesize_id_formalization(plan, elements):
             require(strings(item['source_ids']) and bool(item['source_ids']) and
                     set(item['source_ids']) <= allowed_definition_sources,
                     'invalid derived definition sources')
-            expression = _quantity_expression(item['expression'], symbols)
+            expression = _quantity_expression(
+                item['expression'], symbols, enforce_units=not fidelity_only)
             require(target not in _expression_variables(expression),
                     'recursive derived definition')
             targets.append(target)
             definition = {'op': 'eq', 'args': [{'var': target}, expression]}
-            require(r.expr_type(definition, symbols) == ('bool', None),
+            require(r.expr_type(definition, symbols,
+                                enforce_units=not fidelity_only) == ('bool', None),
                     'derived definition type/unit mismatch')
             definition_expressions.append(definition)
         # Keep the first implementation intentionally acyclic and auditable.
@@ -1160,33 +1295,48 @@ def synthesize_id_formalization(plan, elements):
     for term in plan['precondition_terms']:
         require(isinstance(term, dict) and set(term) == {'source_id', 'predicate'},
                 'invalid plan P term')
-        require(term['source_id'] in plan['precondition_ids'], 'P term source not selected')
+        if not fidelity_only:
+            require(term['source_id'] in plan['precondition_ids'],
+                    'P term source not selected')
         term_sources.append(term['source_id'])
-        expression = _predicate(term['predicate'], symbols)
-        if version == EXPANDED_PLAN_VERSION:
+        expression = _predicate(term['predicate'], symbols,
+                                enforce_units=not fidelity_only)
+        if version in EXPANDED_PLAN_VERSIONS and not fidelity_only:
             require(all(term['source_id'] in plan['symbols'][name]['source_ids']
                         for name in _expression_variables(expression)),
                     'P predicate symbol not grounded by its own source')
-        else:
+        elif version not in EXPANDED_PLAN_VERSIONS and not fidelity_only:
             require(all(any(source in plan['precondition_ids']
                             for source in plan['symbols'][name]['source_ids'])
                         for name in _expression_variables(expression)),
                     'P predicate symbol not grounded by selected preconditions')
         p_expressions.append(expression)
-    require(set(term_sources) == set(plan['precondition_ids']) and
-            len(term_sources) == len(plan['precondition_ids']),
-            'P terms must cover selected preconditions exactly once')
-    if version == EXPANDED_PLAN_VERSION:
+    if not fidelity_only:
+        require(set(term_sources) == set(plan['precondition_ids']) and
+                len(term_sources) == len(plan['precondition_ids']),
+                'P terms must cover selected preconditions exactly once')
+    if version in (LEGACY_EXPANDED_PLAN_VERSION, EXPANDED_PLAN_VERSION):
         require(not identical_p_predicates(plan),
                 'distinct P sources reuse identical predicate')
-    p_expression = _and(p_expressions) if p_expressions else None
-    if version in (CLASSIFIED_PLAN_VERSION, FIXED_PLAN_VERSION,
-                   EXPANDED_PLAN_VERSION):
+    # No explicit report precondition means the claim is unconditional; encode
+    # P=true so the compiler and the post-generation fidelity audit can still
+    # evaluate I/V without inventing a P source.
+    p_expression = (_and(p_expressions) if p_expressions else
+                    {'const': True} if version in (
+                        'report-formal-plan/7', LIVE_EXPANDED_PLAN_VERSION) else None)
+    # Validate the selected template's exact fields before alignment walks
+    # into symbols such as observed_symbol/earlier_symbol. Malformed model
+    # plans must produce a retryable ValueError, never an unhandled KeyError.
+    safety, effects = _pattern_expressions(
+        plan['pattern'], symbols, enforce_units=not fidelity_only)
+    # live-16 defers this semantic source-alignment judgment until after P/I/V
+    # generation. Frozen schemas keep their original validation behavior.
+    if version not in LIVE_RELAXED_PLAN_VERSIONS and version in (
+            CLASSIFIED_PLAN_VERSION, FIXED_PLAN_VERSION, *EXPANDED_PLAN_VERSIONS):
         classified_relation_alignment(plan, elements)
-    safety, effects = _pattern_expressions(plan['pattern'], symbols)
-    if version == EXPANDED_PLAN_VERSION:
+    if version in EXPANDED_PLAN_VERSIONS:
         context_terms = plan['impact_context_terms']
-        require(isinstance(context_terms, list) and len(context_terms) <= 3,
+        require(isinstance(context_terms, list) and len(context_terms) <= 4,
                 'invalid impact context terms')
         context_types = {source: set() for source in plan['impact_ids']}
         context_expressions = []
@@ -1194,34 +1344,65 @@ def synthesize_id_formalization(plan, elements):
             require(isinstance(term, dict) and set(term) == {
                 'source_id', 'qualifier_types', 'predicate'},
                     'invalid impact context term')
-            source_id = term['source_id']
-            require(source_id in plan['impact_ids'],
-                    'impact context source not selected')
-            require(strings(term['qualifier_types']) and
-                    len(term['qualifier_types']) == len(set(term['qualifier_types'])) and
-                    set(term['qualifier_types']) <= set(IMPACT_QUALIFIER_PATTERNS),
-                    'invalid impact qualifier types')
-            expression = _predicate(term['predicate'], symbols)
-            require(all(source_id in plan['symbols'][name]['source_ids']
-                        for name in _expression_variables(expression)),
-                    'impact context symbol not grounded by its own source')
-            context_types[source_id].update(term['qualifier_types'])
+            source_id = (plan['impact_ids'][0] if fidelity_only
+                         else term['source_id'])
+            if not fidelity_only:
+                require(source_id in plan['impact_ids'],
+                        'impact context source not selected')
+                require(strings(term['qualifier_types']) and
+                        len(term['qualifier_types']) == len(set(term['qualifier_types'])) and
+                        set(term['qualifier_types']) <= set(IMPACT_QUALIFIER_PATTERNS),
+                        'invalid impact qualifier types')
+            expression = _predicate(term['predicate'], symbols,
+                                    enforce_units=not fidelity_only)
+            if not fidelity_only:
+                require(all(source_id in plan['symbols'][name]['source_ids']
+                            for name in _expression_variables(expression)),
+                        'impact context symbol not grounded by its own source')
+                context_types[source_id].update(term['qualifier_types'])
             context_expressions.append(expression)
+        detector = (_legacy_impact_qualifier_types
+                    if version == LEGACY_EXPANDED_PLAN_VERSION
+                    else impact_qualifier_types)
         missing_context = {
-            source: sorted(set(impact_qualifier_types(statements[source]['text'])) -
+            source: sorted(set(detector(statements[source]['text'])) -
                            context_types[source])
             for source in plan['impact_ids']
         }
         missing_context = {source: kinds for source, kinds in missing_context.items()
                            if kinds}
-        require(not missing_context,
-                'impact qualifier missing from formal plan: ' +
-                json.dumps(missing_context, sort_keys=True, separators=(',', ':')))
-        if context_expressions:
+        if missing_context and version not in LIVE_RELAXED_PLAN_VERSIONS and not fidelity_only:
+            require(not missing_context,
+                    'impact qualifier missing from formal plan: ' +
+                    json.dumps(missing_context, sort_keys=True, separators=(',', ':')))
+        # Earlier live schemas folded the impact context into the safety
+        # relation, then fabricated V as its negation.  Live-19+ carries a
+        # source-grounded impact observation separately so the audit can check
+        # whether the report's actual outcome violates I.
+        if version == LIVE_EXPANDED_PLAN_VERSION:
+            outcome = plan['impact_outcome']
+            require(isinstance(outcome, dict) and set(outcome) == {
+                'source_id', 'predicate'}, 'invalid direct impact outcome')
+            source_id = (plan['impact_ids'][0] if fidelity_only
+                         else outcome['source_id'])
+            if not fidelity_only:
+                require(source_id in plan['impact_ids'],
+                        'impact outcome source not selected')
+                require(len(plan['impact_ids']) == 1,
+                        'direct impact outcome requires exactly one impact')
+            outcome_expression = _predicate(
+                outcome['predicate'], symbols, enforce_units=not fidelity_only)
+            if not fidelity_only:
+                require(all(source_id in plan['symbols'][name]['source_ids']
+                            for name in _expression_variables(outcome_expression)),
+                        'impact outcome symbol not grounded by its own source')
+            effects = _and([outcome_expression, *context_expressions])
+        elif context_expressions:
+            # Historical plan schemas remain byte-for-byte replay compatible.
             context = _and(context_expressions)
             safety = {'op': 'implies', 'args': [context, safety]}
             effects = _and([context, effects])
-    if version in (FIXED_PLAN_VERSION, EXPANDED_PLAN_VERSION):
+    if version in (FIXED_PLAN_VERSION, *EXPANDED_PLAN_VERSIONS):
         referenced = (_expression_variables(safety) | _expression_variables(effects) |
                       set().union(*(_expression_variables(x) for x in p_expressions)))
         declared_derived = {
@@ -1236,8 +1417,9 @@ def synthesize_id_formalization(plan, elements):
             # constructive negation under those same definitions.
             safety = {'op': 'implies', 'args': [definitions, safety]}
             effects = _and([definitions, effects])
-    require(r.expr_type(safety, symbols) == ('bool', None) and
-            r.expr_type(effects, symbols) == ('bool', None), 'synthesized property is not Boolean')
+    require(r.expr_type(safety, symbols, enforce_units=not fidelity_only) == ('bool', None) and
+            r.expr_type(effects, symbols, enforce_units=not fidelity_only) == ('bool', None),
+            'synthesized property is not Boolean')
 
     p_sources = plan['precondition_ids']
     i_sources = [plan['intent_id']]
@@ -1246,32 +1428,34 @@ def synthesize_id_formalization(plan, elements):
     i_text = statements[plan['intent_id']]['text']
     v_text = '; '.join(statements[x]['text'] for x in v_sources)
     properties = {
-        'preconditions': {'text': p_text, 'expression': p_expression,
+        PIV_PROPERTY_NAMES[0]: {'text': p_text, 'expression': p_expression,
                           'evidence_ids': _evidence(p_sources, statements) if p_sources else [],
                           'derivation': 'Program conjunction of selected report preconditions.',
                           'source_ids': p_sources},
-        'safety': {'text': i_text, 'expression': safety,
+        PIV_PROPERTY_NAMES[1]: {'text': i_text, 'expression': safety,
                    'evidence_ids': _evidence(i_sources, statements),
                    'derivation': 'Program synthesis from the selected intent and logical pattern.',
                    'source_ids': i_sources},
-        'effects': {'text': v_text, 'expression': effects,
+        PIV_PROPERTY_NAMES[2]: {'text': v_text, 'expression': effects,
                     'evidence_ids': _evidence(v_sources, statements),
                     'derivation': 'Program-generated direct negation witness for the selected safety pattern.',
                     'source_ids': v_sources},
     }
-    formula_sources = {
-        'preconditions': _links(p_expression, p_sources, symbols) if p_expression else {},
-        'safety': _links(safety, i_sources, symbols),
-        'effects': _links(effects, v_sources, symbols),
-    }
+    formula_sources = dict(zip(PIV_PROPERTY_NAMES, (
+        _links(p_expression, p_sources, symbols) if p_expression else {},
+        _links(safety, i_sources, symbols),
+        _links(effects, v_sources, symbols),
+    )))
     modality = ('potential' if any(statements[x]['modality'] == 'potential' for x in v_sources)
                 else 'inferred' if any(statements[x]['modality'] == 'inferred' for x in v_sources)
                 else 'asserted')
     unselected = [row['id'] for row in elements['statements']
                   if row['kind'] == 'impact' and row['id'] not in v_sources]
-    limitations = list(plan['limitations']) + [f'Deferred report impact: {x}' for x in unselected]
+    limitations = list(plan['limitations'])
+    if include_unselected_limitations:
+        limitations.extend(f'Deferred report impact: {x}' for x in unselected)
     claim = {
-        'id': 'core_claim', 'scope': elements['scope']['flow'], 'modality': modality,
+        'id': claim_id, 'scope': elements['scope']['flow'], 'modality': modality,
         'impact_ids': v_sources, 'properties': properties, 'formula_sources': formula_sources,
         'effect_coverage': [{'statement_id': x, 'status': 'formalized',
                              'reason': 'Program-generated exact coverage for selected direct impact.'}

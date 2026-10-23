@@ -1,0 +1,67 @@
+PM slot auto-registration can brick accounting before HyperCore activates the 0x811 supplied slot
+
+## vulnerability details
+
+Under PM mode, executeHedge() optimistically registers a supplied slot in the accountant immediately after enqueuing the HyperCore spot/perp actions. But HyperCore actions are asynchronous, and the 0x811 supplied slot may not exist yet when the accountant later reads it. Because the accountant intentionally performs strict reads on every registered slot, a single premature registration can cause totalBackingSigned() to revert, which in turn bricks surplus(), distributableSurplus(), settle(), and any workflow that depends on them.
+
+## Summary
+
+ PM-mode auto-registration can poison the 0x811 supplied-slot registry before HyperCore actually activates the slot, which can brick totalBacking(), surplus(), and settle().
+
+## Root cause
+
+executeHedge() does two logically separate things:
+
+1. it sends the spot/perp actions to HyperCore
+2. it immediately calls notifyVaultSupply() when pmEnabled
+
+That registration is treated by the accountant as a hard promise that the slot is live and readable. During backing reads, the accountant iterates every registered supplied asset and uses PrecompileReader.suppliedBalance() or suppliedNotionalUsdcFromPerp(...). Those reads are fail-closed. If HyperCore has not actually activated the supplied slot yet, the read reverts.
+
+The key problem is that the code assumes "action submitted" and "0x811 slot live" are equivalent states. They are not.
+## Broken invariants
+
+- README INV-1: backing becomes unreadable due to an internally created stale registration entry
+- README INV-7 / INV-9 pipeline liveness: settlement can no longer evaluate distributable surplus once total backing reverts
+- README area-of-concern #2: precompile read semantics and fail-closed behavior
+
+## Attack / failure path
+
+1. Governor enables PM mode and whitelists a hedge asset.
+2. Operator calls executeHedge().
+3. The spot leg is only enqueued on HyperCore, delayed, or partially/unfilled.
+4. executeHedge() still calls notifyVaultSupply() right away.
+5. The accountant now has a registered supplied slot for that token.
+6. Any later call to totalBackingSigned() attempts a strict 0x811 read for the registered token.
+7. If the slot is not actually active yet, the precompile read reverts.
+8. Accounting-dependent flows are bricked until operators manually repair state.
+
+
+
+## Why this is not a known issue
+
+The README discusses strict 0x811 handling and trusted operators, but it does not disclose that the vault itself can create self-poisoning registry entries before the HyperCore state transition they are supposed to represent has happened.
+
+## Impact
+This is a protocol liveness failure with direct economic consequences:
+
+- yield settlement can halt
+- surplus checks can halt
+- redemption and risk operations relying on backing observability can be delayed
+- the system can remain stuck until privileged intervention happens
+
+Although this does not directly steal funds, it can freeze critical accounting and settlement flows, which is a solid Medium.
+
+
+## Tool Used
+Manual Review, Slither
+
+## Recommendation
+Do not register a supplied slot until the slot is provably live.
+
+Safer options:
+
+- register only after a successful explicit 0x811 read
+- separate "pending PM slot" from "active PM slot" in the accountant
+- or add an operator-controlled reconciliation path that can safely clear premature entries without bricking reads.
+
+If strict fail-closed accounting is desired, the registration step must be equally strict about actual slot activation.

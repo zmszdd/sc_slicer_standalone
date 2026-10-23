@@ -35,15 +35,53 @@ MODULE_NAMES = (
 MODULES = tuple(import_module(f'{__package__}.versions.{name}')
                 for name in MODULE_NAMES)
 PROMPT_MODULES = {module.PROMPT_VERSION: module for module in MODULES}
-# ``VERSIONS`` stays frozen-only: the live prompt is appended to
-# ``PROMPT_MODULES`` afterwards so it never leaks into the ``_from()`` slices.
 VERSIONS = tuple(PROMPT_MODULES)
+# semantic-live-16 was the last single-I live schema. Keep its prompt and
+# feature matrix immutable while the editable live prompt advances.
+from . import live16_snapshot as _live16_snapshot
+PROMPT_MODULES[_live16_snapshot.PROMPT_VERSION] = _live16_snapshot
+# Preserve semantic-live-17 as a frozen replay target before advancing the
+# editable live prompt. Historical runs retain their original feature matrix.
+from . import live17_snapshot as _live17_snapshot
+PROMPT_MODULES[_live17_snapshot.PROMPT_VERSION] = _live17_snapshot
+# Preserve semantic-live-18 as an exact replay target before advancing the live prompt.
+from . import live18_snapshot as _live18_snapshot
+PROMPT_MODULES[_live18_snapshot.PROMPT_VERSION] = _live18_snapshot
+# Preserve semantic-live-19's prompt-only experiment before the direct-V schema change.
+from . import live19_snapshot as _live19_snapshot
+PROMPT_MODULES[_live19_snapshot.PROMPT_VERSION] = _live19_snapshot
+# Preserve semantic-live-20 before tightening source-role isolation and repair scope.
+from . import live20_snapshot as _live20_snapshot
+PROMPT_MODULES[_live20_snapshot.PROMPT_VERSION] = _live20_snapshot
+# Preserve semantic-live-22 before advancing the active prompt with generation-
+# side relation context and explicit vacuity checks.
+from . import live22_snapshot as _live22_snapshot
+PROMPT_MODULES[_live22_snapshot.PROMPT_VERSION] = _live22_snapshot
+# Preserve semantic-live-23 before introducing a generated, audit-only bridge
+# trace in the same rule-generation call.
+from . import live23_snapshot as _live23_snapshot
+PROMPT_MODULES[_live23_snapshot.PROMPT_VERSION] = _live23_snapshot
+# ``VERSIONS`` contains only archived semantic-v3.x modules. The live-16
+# snapshot is selectable for exact replay, but is not part of those frozen
+# generation baselines or feature suffixes.
 
-LIVE_VERSION = _current.PROMPT_VERSION
+# Preserve the stable command-line alias while also exposing the live prompt's
+# stamped revision for frozen evaluation manifests. Both names resolve to the
+# same editable module; VERSIONS remains frozen-only.
+LIVE_VERSION = 'semantic-live'
+LIVE_PROMPT_VERSION = _current.PROMPT_VERSION
+LIVE_VERSION_NAMES = frozenset({LIVE_VERSION, LIVE_PROMPT_VERSION})
 PROMPT_MODULES[LIVE_VERSION] = _current
-# Versions selectable on the command line: the frozen archive plus the live
-# file that is maintained in place.
-SELECTABLE_VERSIONS = VERSIONS + (LIVE_VERSION,)
+PROMPT_MODULES[LIVE_PROMPT_VERSION] = _current
+# The stable alias stays last for existing CLI defaults and integrations.
+SELECTABLE_VERSIONS = VERSIONS + (_live16_snapshot.PROMPT_VERSION,
+                                  _live17_snapshot.PROMPT_VERSION,
+                                  _live18_snapshot.PROMPT_VERSION,
+                                  _live19_snapshot.PROMPT_VERSION,
+                                  _live20_snapshot.PROMPT_VERSION,
+                                  _live22_snapshot.PROMPT_VERSION,
+                                  _live23_snapshot.PROMPT_VERSION,
+                                  LIVE_PROMPT_VERSION, LIVE_VERSION)
 
 # Single source of truth for "which version should people actually run".
 # Every frozen version stays listed in ``VERSIONS``; these two labels only
@@ -112,6 +150,15 @@ FEATURE_NAMES = (
     'semantic_faithfulness_audit',
     'mixed_unit_scaling_review',
     'symbol_table_review',
+    'impact_level_claims',
+    'impact_section_scope',
+    'impact_inventory_stage',
+    'frozen_piv_sources',
+    'multi_i_claims',
+    'unit_guard',
+    'fidelity_only_rules',
+    'relation_context_generation',
+    'relationship_trace',
 )
 _LEGACY_FEATURE_SETS = {
     'strict_piv': STRICT_PIV_VERSIONS,
@@ -154,6 +201,29 @@ _LEGACY_FEATURE_SETS = {
     # no frozen version enables them, recorded runs keep their own behaviour.
     'mixed_unit_scaling_review': frozenset(),
     'symbol_table_review': frozenset(),
+    # semantic-live-8: inventory report effects and formalize each impact in an
+    # independently replayable claim. Frozen prompts keep their prior contract.
+    'impact_level_claims': frozenset(),
+    # semantic-live-11: deterministic source boundary for extracted impacts.
+    # Frozen versions retain their historical unrestricted statement evidence.
+    'impact_section_scope': frozenset(),
+    # semantic-live-12: extract the Impact inventory from a restricted catalog,
+    # then merge it with the separately generated core elements. Frozen versions
+    # retain their original single-pass extraction.
+    'impact_inventory_stage': frozenset(),
+    # semantic-live-16: applicability-selected P/I sources are immutable input
+    # to rule generation. Historical prompts keep their recorded behavior.
+    'frozen_piv_sources': frozenset(),
+    'multi_i_claims': frozenset(),
+    # Unit compatibility was historically enforced by the formula compiler.
+    # Keep it enabled for archived versions; semantic-live-18 delegates it to
+    # the post-generation P/I/V fidelity audit.
+    'unit_guard': frozenset(VERSIONS),
+    'fidelity_only_rules': frozenset(),
+    # semantic-live-23: pass cited action/root-cause excerpts to rule generation
+    # while preserving frozen prompt replay behavior for all earlier versions.
+    'relation_context_generation': frozenset(),
+    'relationship_trace': frozenset(),
 }
 
 
@@ -163,8 +233,15 @@ def feature_enabled(version, feature):
         raise ValueError(f'unknown prompt feature: {feature}')
     if version not in PROMPT_MODULES:
         raise ValueError(f'unknown prompt version: {version}')
-    if version == LIVE_VERSION:
-        return bool(_current.FEATURES.get(feature))
+    if version in LIVE_VERSION_NAMES:
+        if feature in _current.FEATURES:
+            return bool(_current.FEATURES[feature])
+        return feature == 'unit_guard'
+    module = PROMPT_MODULES[version]
+    if hasattr(module, 'FEATURES'):
+        if feature in module.FEATURES:
+            return bool(module.FEATURES[feature])
+        return feature == 'unit_guard'
     return version in _LEGACY_FEATURE_SETS[feature]
 
 

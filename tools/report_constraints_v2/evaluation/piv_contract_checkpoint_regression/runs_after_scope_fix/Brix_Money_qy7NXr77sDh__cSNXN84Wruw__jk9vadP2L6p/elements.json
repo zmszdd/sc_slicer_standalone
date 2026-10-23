@@ -1,0 +1,293 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "FastAccessVault.rebalanceFunds() rebalancing with external custodian transfer",
+    "environment": "Solidity vault contract with custodian address and ERC777/callback-enabled tokens",
+    "evidence": [
+      "FastAccessVault.rebalanceFunds() Lacks Access Control and Reentrancy Protection, Enabling Griefing and DoS Attacks",
+      "The `FastAccessVault.rebalanceFunds()` function has no access control modifier, allowing anyone to trigger vault rebalancing at will. Combined with the external call to the custodian address (which could be a contract), this creates multiple attack vectors:",
+      "- Line 176: `_vaultToken.transfer(custodian, excess)` is external call",
+      "- No `nonReentrant` modifier on `rebalanceFunds()`",
+      "- Malicious custodian contract can re-enter during transfer",
+      "- With ERC777 tokens or callback-enabled tokens, can drain excess twice"
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "arbitrary caller / attacker",
+      "role": "attacker",
+      "evidence": [
+        "The `FastAccessVault.rebalanceFunds()` function has no access control modifier, allowing anyone to trigger vault rebalancing at will. Combined with the external call to the custodian address (which could be a contract), this creates multiple attack vectors:",
+        "- Any user can call `rebalanceFunds()` unlimited times",
+        "- Attacker can front-run legitimate rebalancing operations"
+      ]
+    },
+    {
+      "id": "vault",
+      "name": "FastAccessVault contract",
+      "role": "contract",
+      "evidence": [
+        "FastAccessVault.rebalanceFunds() Lacks Access Control and Reentrancy Protection, Enabling Griefing and DoS Attacks",
+        "The `FastAccessVault.rebalanceFunds()` function has no access control modifier, allowing anyone to trigger vault rebalancing at will. Combined with the external call to the custodian address (which could be a contract), this creates multiple attack vectors:"
+      ]
+    },
+    {
+      "id": "custodian",
+      "name": "custodian address (possibly contract)",
+      "role": "other",
+      "evidence": [
+        "The `FastAccessVault.rebalanceFunds()` function has no access control modifier, allowing anyone to trigger vault rebalancing at will. Combined with the external call to the custodian address (which could be a contract), this creates multiple attack vectors:",
+        "4. **Reentrancy Potential** (if custodian is contract)",
+        "- Malicious custodian contract can re-enter during transfer"
+      ]
+    },
+    {
+      "id": "vault_token",
+      "name": "vault token (ERC777/callback-enabled)",
+      "role": "asset",
+      "evidence": [
+        "- Line 176: `_vaultToken.transfer(custodian, excess)` is external call",
+        "- With ERC777 tokens or callback-enabled tokens, can drain excess twice"
+      ]
+    },
+    {
+      "id": "users",
+      "name": "redeeming users",
+      "role": "victim",
+      "evidence": [
+        "- User redemption via `processTransfer()` reduces vault balance",
+        "- Other redemptions might fail in this window",
+        "- **User Experience**: Redemptions might fail during race conditions"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "no_access_control",
+      "kind": "precondition",
+      "text": "rebalanceFunds() has no access control modifier, so any caller can invoke it.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "attacker"
+      ],
+      "evidence": [
+        "The `FastAccessVault.rebalanceFunds()` function has no access control modifier, allowing anyone to trigger vault rebalancing at will. Combined with the external call to the custodian address (which could be a contract), this creates multiple attack vectors:",
+        "- Any user can call `rebalanceFunds()` unlimited times"
+      ]
+    },
+    {
+      "id": "custodian_is_contract",
+      "kind": "precondition",
+      "text": "The custodian address may be a contract.",
+      "modality": "potential",
+      "entity_ids": [
+        "custodian"
+      ],
+      "evidence": [
+        "The `FastAccessVault.rebalanceFunds()` function has no access control modifier, allowing anyone to trigger vault rebalancing at will. Combined with the external call to the custodian address (which could be a contract), this creates multiple attack vectors:",
+        "4. **Reentrancy Potential** (if custodian is contract)"
+      ]
+    },
+    {
+      "id": "callback_token",
+      "kind": "precondition",
+      "text": "The vault token may be an ERC777 or callback-enabled token.",
+      "modality": "potential",
+      "entity_ids": [
+        "vault_token"
+      ],
+      "evidence": [
+        "- With ERC777 tokens or callback-enabled tokens, can drain excess twice"
+      ]
+    },
+    {
+      "id": "redemption_reduces_balance",
+      "kind": "precondition",
+      "text": "A user redemption via processTransfer() reduces the vault balance before the attacker calls rebalanceFunds().",
+      "modality": "asserted",
+      "entity_ids": [
+        "users",
+        "vault"
+      ],
+      "evidence": [
+        "- User redemption via `processTransfer()` reduces vault balance",
+        "- Attacker immediately calls `rebalanceFunds()`"
+      ]
+    },
+    {
+      "id": "call_rebalance",
+      "kind": "action",
+      "text": "Caller invokes rebalanceFunds() unlimited times.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "vault"
+      ],
+      "evidence": [
+        "- Any user can call `rebalanceFunds()` unlimited times",
+        "- Each call emits events and triggers custodian transfers"
+      ]
+    },
+    {
+      "id": "front_run",
+      "kind": "action",
+      "text": "Attacker front-runs legitimate rebalancing operations with spam calls.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "vault"
+      ],
+      "evidence": [
+        "- Attacker can front-run legitimate rebalancing operations",
+        "- Spam calls waste gas and create transaction congestion"
+      ]
+    },
+    {
+      "id": "reenter_transfer",
+      "kind": "action",
+      "text": "Malicious custodian contract re-enters during the external _vaultToken.transfer(custodian, excess) call.",
+      "modality": "potential",
+      "entity_ids": [
+        "custodian",
+        "vault_token",
+        "vault"
+      ],
+      "evidence": [
+        "- Line 176: `_vaultToken.transfer(custodian, excess)` is external call",
+        "- Malicious custodian contract can re-enter during transfer"
+      ]
+    },
+    {
+      "id": "missing_guard",
+      "kind": "root_cause",
+      "text": "rebalanceFunds() lacks access control and a nonReentrant modifier while making an external transfer to the custodian.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "custodian"
+      ],
+      "evidence": [
+        "The `FastAccessVault.rebalanceFunds()` function has no access control modifier, allowing anyone to trigger vault rebalancing at will. Combined with the external call to the custodian address (which could be a contract), this creates multiple attack vectors:",
+        "- Line 176: `_vaultToken.transfer(custodian, excess)` is external call",
+        "- No `nonReentrant` modifier on `rebalanceFunds()`"
+      ]
+    },
+    {
+      "id": "spam_events",
+      "kind": "impact",
+      "text": "Unlimited calls emit events and trigger custodian transfers, creating spam in event logs and monitoring systems.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "custodian",
+        "vault"
+      ],
+      "evidence": [
+        "- Each call emits events and triggers custodian transfers",
+        "- Creates spam in event logs and monitoring systems",
+        "- Custodian must handle arbitrary rebalance requests"
+      ]
+    },
+    {
+      "id": "dos_delay",
+      "kind": "impact",
+      "text": "Spam calls waste gas and create transaction congestion, delaying or blocking critical rebalancing operations.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "vault"
+      ],
+      "evidence": [
+        "- Spam calls waste gas and create transaction congestion",
+        "- **DoS Risk**: Critical rebalancing operations delayed or blocked"
+      ]
+    },
+    {
+      "id": "undercollateralized_window",
+      "kind": "impact",
+      "text": "After a redemption reduces the vault balance and the attacker immediately calls rebalanceFunds(), the vault is temporarily under-collateralized and other redemptions might fail in this window.",
+      "modality": "potential",
+      "entity_ids": [
+        "vault",
+        "users",
+        "attacker"
+      ],
+      "evidence": [
+        "- Attacker immediately calls `rebalanceFunds()`",
+        "- Vault temporarily under-collateralized between operations",
+        "- Other redemptions might fail in this window",
+        "- **User Experience**: Redemptions might fail during race conditions"
+      ]
+    },
+    {
+      "id": "double_drain",
+      "kind": "impact",
+      "text": "With ERC777 or callback-enabled tokens, re-entrancy can drain excess twice.",
+      "modality": "potential",
+      "entity_ids": [
+        "custodian",
+        "vault_token",
+        "vault"
+      ],
+      "evidence": [
+        "- Malicious custodian contract can re-enter during transfer",
+        "- With ERC777 tokens or callback-enabled tokens, can drain excess twice"
+      ]
+    },
+    {
+      "id": "intent_access_control",
+      "kind": "security_intent",
+      "text": "rebalanceFunds() should be restricted so that only authorized callers can trigger vault rebalancing.",
+      "modality": "inferred",
+      "entity_ids": [
+        "vault"
+      ],
+      "evidence": [
+        "The `FastAccessVault.rebalanceFunds()` function has no access control modifier, allowing anyone to trigger vault rebalancing at will. Combined with the external call to the custodian address (which could be a contract), this creates multiple attack vectors:",
+        "- ✅ `rebalanceFunds()` - No access control"
+      ]
+    },
+    {
+      "id": "intent_no_reentrancy",
+      "kind": "security_intent",
+      "text": "The external transfer to the custodian should not allow re-entrant draining of excess funds.",
+      "modality": "inferred",
+      "entity_ids": [
+        "vault",
+        "custodian"
+      ],
+      "evidence": [
+        "- No `nonReentrant` modifier on `rebalanceFunds()`",
+        "- With ERC777 tokens or callback-enabled tokens, can drain excess twice"
+      ]
+    },
+    {
+      "id": "intent_redemption_availability",
+      "kind": "security_intent",
+      "text": "User redemptions should not fail due to a vault being temporarily under-collateralized by an interleaved rebalanceFunds() call.",
+      "modality": "inferred",
+      "entity_ids": [
+        "vault",
+        "users"
+      ],
+      "evidence": [
+        "- Vault temporarily under-collateralized between operations",
+        "- Other redemptions might fail in this window",
+        "- ✅ User redemptions - Can fail if vault under-collateralized"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "call_rebalance",
+    "front_run",
+    "reenter_transfer"
+  ],
+  "ambiguities": [
+    "Report does not state whether the custodian is actually a contract or the token is actually ERC777; reentrancy and double-drain are conditional.",
+    "No concrete amounts, balances, or numeric bounds are given for the under-collateralization window or drained excess.",
+    "Whether any real transaction occurred is not established; effects are described as possible attack vectors.",
+    "Additional claimed effects (gas cost increase, reputation damage, custodian operational overhead) are not extracted as separate impacts."
+  ]
+}

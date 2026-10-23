@@ -1,0 +1,214 @@
+{
+  "schema_version": "report-formal-plan/6",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "p_vulnerable_pool_state",
+    "p_owner_tx_pending",
+    "p_attacker_capital"
+  ],
+  "intent_id": "i_twap_validation",
+  "impact_ids": [
+    "compounded_economic_damage"
+  ],
+  "symbols": {
+    "observation_age_minutes": {
+      "sort": "int",
+      "unit": "minutes",
+      "meaning": "age of the most recent pool observation at the vulnerable pool checkpoint",
+      "checkpoint": "before owner liquidity operation",
+      "entity_ids": [
+        "uniswap_v3_pool"
+      ],
+      "source_ids": [
+        "p_vulnerable_pool_state"
+      ]
+    },
+    "observation_history_insufficient": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "pool has insufficient observation history for the TWAP query",
+      "checkpoint": "before owner liquidity operation",
+      "entity_ids": [
+        "uniswap_v3_pool"
+      ],
+      "source_ids": [
+        "p_vulnerable_pool_state"
+      ]
+    },
+    "owner_tx_pending": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "an owner-initiated liquidity operation transaction targeting the vulnerable pool is pending in the mempool",
+      "checkpoint": "before attacker front-run",
+      "entity_ids": [
+        "owner",
+        "liquidity_manager_core"
+      ],
+      "source_ids": [
+        "p_owner_tx_pending"
+      ]
+    },
+    "attacker_capital_available": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "attacker has flash loan capital available for price manipulation, reversible via back-run, plus gas costs",
+      "checkpoint": "before attacker front-run",
+      "entity_ids": [
+        "attacker"
+      ],
+      "source_ids": [
+        "p_attacker_capital"
+      ]
+    },
+    "price_validated_against_twap": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the liquidity operation validated the current pool price against the 30-minute TWAP rather than using the unvalidated spot price",
+      "checkpoint": "during owner liquidity operation",
+      "entity_ids": [
+        "liquidity_manager_core",
+        "uniswap_v3_pool"
+      ],
+      "source_ids": [
+        "i_twap_validation"
+      ]
+    },
+    "sequential_operations_compounded": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "multiple sequential liquidity operations on different vulnerable pools occur, compounding the economic damage",
+      "checkpoint": "after owner liquidity operations across vulnerable pools",
+      "entity_ids": [
+        "liquidity_manager_core",
+        "protocol_funds"
+      ],
+      "source_ids": [
+        "compounded_economic_damage"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_vulnerable_pool_state",
+      "predicate": {
+        "kind": "any_of",
+        "terms": [
+          {
+            "kind": "comparison",
+            "left": "observation_age_minutes",
+            "operator": "gt",
+            "right": {
+              "const": 30
+            }
+          },
+          {
+            "kind": "truth",
+            "symbol": "observation_history_insufficient",
+            "value": true
+          }
+        ]
+      }
+    },
+    {
+      "source_id": "p_owner_tx_pending",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "owner_tx_pending",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_attacker_capital",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "attacker_capital_available",
+        "value": true
+      }
+    }
+  ],
+  "impact_context_terms": [
+    {
+      "source_id": "compounded_economic_damage",
+      "qualifier_types": [
+        "scope",
+        "duration_or_repetition"
+      ],
+      "predicate": {
+        "kind": "truth",
+        "symbol": "sequential_operations_compounded",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "required_effect",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "any_of",
+          "terms": [
+            {
+              "kind": "comparison",
+              "left": "observation_age_minutes",
+              "operator": "gt",
+              "right": {
+                "const": 30
+              }
+            },
+            {
+              "kind": "truth",
+              "symbol": "observation_history_insufficient",
+              "value": true
+            }
+          ]
+        },
+        {
+          "kind": "truth",
+          "symbol": "owner_tx_pending",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "attacker_capital_available",
+          "value": true
+        }
+      ]
+    },
+    "effect": {
+      "kind": "truth",
+      "symbol": "price_validated_against_twap",
+      "value": true
+    }
+  },
+  "assumptions": [
+    "The owner liquidity operation is a mint/rebalance that derives tick ranges from the price returned by checkPoolAndGetCenterPrice.",
+    "The attacker's front-run swap and back-run restore are feasible within the same block ordering as the pending owner transaction.",
+    "Each vulnerable pool independently satisfies the stale-or-insufficient-observation condition."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "Report does not specify the concrete liquidity operation type (mint, rebalance, etc.) nor numeric swap size or tick shifts, so the compounding scenario is only qualitatively bounded.",
+      "source_ids": [
+        "p_owner_tx_pending",
+        "compounded_economic_damage"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "missing_report_definition",
+      "description": "Report does not define a numeric measure of 'economic damage' or how damage across sequential operations aggregates, so compounding is represented only as a qualitative occurrence flag.",
+      "source_ids": [
+        "compounded_economic_damage"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Formalizes only the compounded_economic_damage impact; other listed impacts (out-of-range position, fee loss, gas costs, impermanent loss, opportunity cost) are handled in separate passes.",
+    "The compounding relation is qualitative because the report supplies no numeric damage aggregation formula.",
+    "The scenario is conditional/potential in the report; the plan encodes the report-supported conditional scenario rather than an inevitable outcome."
+  ]
+}

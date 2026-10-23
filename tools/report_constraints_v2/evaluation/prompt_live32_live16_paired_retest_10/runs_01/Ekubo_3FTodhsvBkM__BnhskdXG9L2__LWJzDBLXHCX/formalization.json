@@ -1,0 +1,300 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "c445a31ae_pool_initialized_at_tick_zero": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "pool is initialized at tick 0 with liquidity",
+      "checkpoint": "before victim swap submission",
+      "entity_ids": [
+        "core_contract"
+      ],
+      "evidence": "1. The pool is initialized at tick 0 with liquidity."
+    },
+    "c445a31ae_victim_swap_msg_value": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "native ETH amount sent as msg.value with the victim's swap",
+      "checkpoint": "victim swap submission",
+      "entity_ids": [
+        "victim",
+        "router",
+        "eth_asset"
+      ],
+      "evidence": "2. Victim submits a swap transaction: `router.swap{value: 10 ether}(poolKey, false, 10 ether, tickToSqrtRatio(0-500), ...)` where `sqrtRatioLimit` equals the current `sqrtRatio` - 500 (legitimate price impact/slippage protection)."
+    },
+    "c445a31ae_victim_sqrt_ratio_limit_near_price": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "victim's swap has sqrtRatioLimit set near the current price for slippage protection",
+      "checkpoint": "victim swap submission",
+      "entity_ids": [
+        "victim",
+        "router"
+      ],
+      "evidence": "2. Victim submits a swap transaction: `router.swap{value: 10 ether}(poolKey, false, 10 ether, tickToSqrtRatio(0-500), ...)` where `sqrtRatioLimit` equals the current `sqrtRatio` - 500 (legitimate price impact/slippage protection)."
+    },
+    "c445a31ae_eth_accounted_or_reverted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the swap either reverts or otherwise accounts for the sent ETH (debt handled) rather than completing without accounting",
+      "checkpoint": "after victim swap execution",
+      "entity_ids": [
+        "core_contract",
+        "eth_asset"
+      ],
+      "evidence": "**Approach 2: Revert when swap would be a no-op, but msg.value > 0**"
+    },
+    "c445a31ae_stuck_eth_extractable": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the stuck ETH can be extracted from the contract",
+      "checkpoint": "after victim swap execution",
+      "entity_ids": [
+        "core_contract",
+        "eth_asset"
+      ],
+      "evidence": "2. **No Recovery**: The `withdraw()` function requires proper debt accounting, which was skipped. There is no way to extract the stuck ETH."
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_no_recovery_stuck_eth_50ab35d4_772707cc",
+      "scope": "There is no way to extract the stuck ETH.",
+      "modality": "asserted",
+      "impact_ids": [
+        "no_recovery_stuck_eth"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The pool is initialized at tick 0 with liquidity.; The victim submits a swap with sqrtRatioLimit set near the current price for slippage protection, sending 10 ether as msg.value.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c445a31ae_pool_initialized_at_tick_zero"
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c445a31ae_victim_swap_msg_value"
+                      },
+                      {
+                        "const": 10
+                      }
+                    ]
+                  },
+                  {
+                    "var": "c445a31ae_victim_sqrt_ratio_limit_near_price"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "pool_initialized_with_liquidity",
+            "victim_sets_sqrt_ratio_limit_near_price"
+          ],
+          "evidence": [
+            "1. The pool is initialized at tick 0 with liquidity.",
+            "2. Victim submits a swap transaction: `router.swap{value: 10 ether}(poolKey, false, 10 ether, tickToSqrtRatio(0-500), ...)` where `sqrtRatioLimit` equals the current `sqrtRatio` - 500 (legitimate price impact/slippage protection).",
+            "2. **Common Scenario**: Users legitimately set `sqrtRatioLimit` near the current price for price impact/slippage protection."
+          ]
+        },
+        "safety": {
+          "text": "A swap that would be a no-op (sqrtRatio equal to sqrtRatioLimit) with msg.value greater than zero must not complete without accounting for the ETH; it should revert or otherwise handle the debt.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "c445a31ae_stuck_eth_extractable"
+                  }
+                ]
+              },
+              {
+                "op": "implies",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "var": "c445a31ae_pool_initialized_at_tick_zero"
+                      },
+                      {
+                        "op": "gt",
+                        "args": [
+                          {
+                            "var": "c445a31ae_victim_swap_msg_value"
+                          },
+                          {
+                            "const": 0
+                          }
+                        ]
+                      },
+                      {
+                        "var": "c445a31ae_victim_sqrt_ratio_limit_near_price"
+                      }
+                    ]
+                  },
+                  {
+                    "var": "c445a31ae_eth_accounted_or_reverted"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_no_op_with_value_must_revert"
+          ],
+          "evidence": [
+            "**Approach 2: Revert when swap would be a no-op, but msg.value > 0**",
+            "Add a check at the beginning of the swap function to revert if `sqrtRatio == sqrtRatioLimit` and `msg.value > 0`:",
+            "Add explicit handling for the edge case where the swap is a no-op, but ETH was sent:"
+          ]
+        },
+        "effects": {
+          "text": "There is no way to extract the stuck ETH.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "c445a31ae_stuck_eth_extractable"
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "var": "c445a31ae_pool_initialized_at_tick_zero"
+                      },
+                      {
+                        "op": "gt",
+                        "args": [
+                          {
+                            "var": "c445a31ae_victim_swap_msg_value"
+                          },
+                          {
+                            "const": 0
+                          }
+                        ]
+                      },
+                      {
+                        "var": "c445a31ae_victim_sqrt_ratio_limit_near_price"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c445a31ae_eth_accounted_or_reverted"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "no_recovery_stuck_eth"
+          ],
+          "evidence": [
+            "2. **No Recovery**: The `withdraw()` function requires proper debt accounting, which was skipped. There is no way to extract the stuck ETH."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "pool_initialized_with_liquidity",
+            "victim_sets_sqrt_ratio_limit_near_price"
+          ],
+          "args.1": [
+            "pool_initialized_with_liquidity",
+            "victim_sets_sqrt_ratio_limit_near_price"
+          ],
+          "args.1.args.0": [
+            "pool_initialized_with_liquidity",
+            "victim_sets_sqrt_ratio_limit_near_price"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_no_op_with_value_must_revert"
+          ],
+          "args.0": [
+            "intent_no_op_with_value_must_revert"
+          ],
+          "args.1": [
+            "intent_no_op_with_value_must_revert"
+          ],
+          "args.1.args.0": [
+            "intent_no_op_with_value_must_revert"
+          ],
+          "args.1.args.0.args.1": [
+            "intent_no_op_with_value_must_revert"
+          ]
+        },
+        "effects": {
+          "": [
+            "no_recovery_stuck_eth"
+          ],
+          "args.0": [
+            "no_recovery_stuck_eth"
+          ],
+          "args.1": [
+            "no_recovery_stuck_eth"
+          ],
+          "args.1.args.0": [
+            "no_recovery_stuck_eth"
+          ],
+          "args.1.args.0.args.1": [
+            "no_recovery_stuck_eth"
+          ],
+          "args.1.args.1": [
+            "no_recovery_stuck_eth"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "no_recovery_stuck_eth",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The victim's swap is the checked action; the no-op condition (sqrtRatio equal to sqrtRatioLimit) is part of the reported scenario rather than a separately selected P fact.",
+        "msg.value of 10 ether is the report-stated concrete amount sent with the victim's swap."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "The no-op equality (sqrtRatio equal to sqrtRatioLimit) is not a selected P source and is not encoded as a precondition predicate.",
+    "The impact's 'no way to extract' is represented as a Boolean observable; no extraction function or balance relation is defined in the report.",
+    "The front-run trigger variant is not encoded; only the frozen P facts are used.",
+    "permanent_loss_eth_stuck/intent_debt_accounting_for_sent_eth: No rule candidate produced after bounded generation: local repair changed frozen fields",
+    "permanent_loss_eth_stuck/intent_no_op_with_value_must_revert: No rule candidate produced after bounded generation: local repair changed frozen fields",
+    "no_recovery_stuck_eth/intent_debt_accounting_for_sent_eth: No rule candidate produced after bounded generation: semantic faithfulness mismatch: intent_debt_accounting_for_sent_eth other_mismatch: The consequent is a tautology (x==x) so it does not actually require the ETH be accounted in debt.; no_recovery_stuck_eth other_mismatch: Statement is only about no extraction of stuck ETH, but predicate adds unrelated msg.value and debt-accounting conditions.; P/I/V relation other_mismatch: I's consequent is tautologically true, so V's negation of it cannot contradict I, and V adds conditions beyond the intent.",
+    "attackers_front_run_victims: No explicit intent source directly states an expected behavior about front-running or attacker manipulation; the cited intents concern debt accounting/no-op handling, not front-running prevention.",
+    "trigger_by_legitimate_swaps: No explicit intent source directly states expected behavior about legitimate swaps triggering the issue; the cited intents concern debt accounting and no-op handling, not this trigger property."
+  ]
+}

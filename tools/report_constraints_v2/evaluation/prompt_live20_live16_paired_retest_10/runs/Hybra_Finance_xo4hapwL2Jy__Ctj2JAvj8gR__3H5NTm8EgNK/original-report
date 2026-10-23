@@ -1,0 +1,124 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Hybra Finance_xo4hapwL2Jy",
+    "audit_uid": "xo4hapwL2Jy",
+    "requested_submission_uid": "3H5NTm8EgNK",
+    "requested_finding_uid": "Ctj2JAvj8gR",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Hybra_Finance_xo4hapwL2Jy/20260618_145600/findings.json",
+    "source_submission_uid": "3H5NTm8EgNK",
+    "source_finding_uid": "Ctj2JAvj8gR",
+    "original_report_path": "Hybra Finance_xo4hapwL2Jy\\medium_valid_3H5NTm8EgNK.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "3H5NTm8EgNK",
+  "finding_uid": "Ctj2JAvj8gR",
+  "finding_number": "50",
+  "title": "Dynamic Fee Mechanism Broken by Conflicting Fee Caps",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "ZanyBonzy",
+  "body": "## Finding description and impact\n\nThe dynamic fee system contains a cconflicting fee caps between `DynamicSwapFeeModule.getFee()` and `CLFactory.getSwapFee()` which renders the dynamic fee mechanism ineffective. The `DynamicSwapFeeModule` allows fees up to 500,000 (50%) internally, but `CLFactory.getSwapFee()` rejects any fee above 100,000 (10%), causing the system to always fall back to basic tick spacing fees.\n\n\nWe can see in DynamicSwapFeeModule that the MAX_FEE_CAP is set to 500,000.\n\n```solidity\n    uint256 public constant MAX_FEE_CAP = 500_000; // 50% - for launch anti-MEV protection  //<<===1\n\n```\n\nAnd in CLFactory the getSwapFee function rejects any fee above 100,000 (10%), upon which it falls back to the default tick spacing fee.\n\n```solidity\n    function getSwapFee(address pool) external view override returns (uint24) {\n        if (swapFeeModule != address(0)) {\n            (bool success, bytes memory data) = swapFeeModule.excessivelySafeStaticCall(\n                200_000, 32, abi.encodeWithSelector(IFeeModule.getFee.selector, pool)\n            );\n            if (success) {\n                uint24 fee = abi.decode(data, (uint24));\n                if (fee <= 100_000) { //<<===2\n                    return fee;\n                }\n            }\n        }\n        return tickSpacingToFee[CLPool(pool).tickSpacing()];\n```\n\nAs a result, any dynamically calculated fee above 10% gets rejected reducing potential protocol revenue. Potential user discounts applied in `getFee()` are lost when the factory rejects the final fee. And the 50% anti-MEV protection cap becomes unusable, leaving pools vulnerable to maximal extractable value attacks during high volatility\n\n## Recommended mitigation steps\n\n\nAlign `getSwapFee` threshold with `MAX_FEE_CAP` (500_000) to allow full dynamic fees. Otherwise, fallback to 100_000 (10%) fee instead for swaps.",
+  "proof_of_concept": "We add the test below to [C4PoC.t.sol](https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/test/C4PoC.t.sol)\n\nIt shows how the due to the conflicting fee caps, the protocol charges a much lower fee than intended.\n\n```solidity\nfunction testDynamicFeeMechanismBrokenByConflictingCaps() public {\n    // Create a pool first\n    address token0 = USDC;\n    address token1 = USDT;\n    int24 tickSpacing = 50;\n    uint160 sqrtPriceX96 = 79228162514264337593543950336; // 1.0\n    \n    address pool = poolFactory.createPool(token0, token1, tickSpacing, sqrtPriceX96);\n    \n    // Get the default fee for this tick spacing\n    uint24 defaultFee = poolFactory.tickSpacingToFee(tickSpacing);\n    \n    // Set up dynamic fee module with parameters that should trigger the issue\n    vm.startPrank(feeManager);\n    \n    // Set a custom base fee that is above 10% but below 50% (15% in this case)\n    uint24 customBaseFee = 150000; // 15%\n    swapFeeModule.setCustomFee(pool, customBaseFee);\n    \n    // Set a fee cap in dynamic module that's above 10%\n    uint24 dynamicFeeCap = 200000; // 20%\n    swapFeeModule.setFeeCap(pool, dynamicFeeCap);\n    \n    // Set scaling factor to 150000 to ensure we only use base fee for this test\n    swapFeeModule.setScalingFactor(pool, 150000);\n    \n    vm.stopPrank();\n    \n    // Verify the dynamic fee module returns the custom fee correctly\n    uint24 dynamicModuleFee = swapFeeModule.getFee(pool);\n    \n    // This should be 150000 (15%) according to dynamic fee module logic\n    assertEq(uint256(dynamicModuleFee), uint256(customBaseFee), \"Dynamic fee module should return custom base fee\");\n    assertEq(uint256(customBaseFee), 150000);\n    assertEq(uint256(dynamicModuleFee), 150000);\n\n    // Now call the factory's getSwapFee - this is where the conflict occurs\n    uint24 factoryFee = poolFactory.getSwapFee(pool);\n    \n    // The bug: factory rejects fees above 100000 (10%) and falls back to default\n    assertTrue(\n        factoryFee != customBaseFee, \n        \"Factory should NOT return the dynamic fee due to 10% cap conflict\"\n    );\n    assertEq(\n        uint256(factoryFee), \n        uint256(defaultFee), \n        \"Factory should fall back to default tick spacing fee\"\n    );\n    assertEq(uint256(factoryFee), 500);\n    assertEq(uint256(defaultFee), 500);\n    assertEq(uint256(dynamicModuleFee), 150000);\n    assertEq(uint256(customBaseFee), 150000);\n\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/contracts/core/fees/DynamicSwapFeeModule.sol#L24-L27",
+    "https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/contracts/core/fees/DynamicSwapFeeModule.sol#L70-L79",
+    "https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/contracts/core/fees/DynamicSwapFeeModule.sol#L152-L176",
+    "https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/contracts/core/CLFactory.sol#L176-L188"
+  ],
+  "source_record": {
+    "project_id": "xo4hapwL2Jy",
+    "submission_index": "657",
+    "api_submission_id": "",
+    "uid": "3H5NTm8EgNK",
+    "number": "657",
+    "title": "Dynamic Fee Mechanism Broken by Conflicting Fee Caps",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "ZanyBonzy",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/contracts/core/fees/DynamicSwapFeeModule.sol#L24-L27",
+      "https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/contracts/core/fees/DynamicSwapFeeModule.sol#L70-L79",
+      "https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/contracts/core/fees/DynamicSwapFeeModule.sol#L152-L176",
+      "https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/contracts/core/CLFactory.sol#L176-L188"
+    ],
+    "body": "## Finding description and impact\n\nThe dynamic fee system contains a cconflicting fee caps between `DynamicSwapFeeModule.getFee()` and `CLFactory.getSwapFee()` which renders the dynamic fee mechanism ineffective. The `DynamicSwapFeeModule` allows fees up to 500,000 (50%) internally, but `CLFactory.getSwapFee()` rejects any fee above 100,000 (10%), causing the system to always fall back to basic tick spacing fees.\n\n\nWe can see in DynamicSwapFeeModule that the MAX_FEE_CAP is set to 500,000.\n\n```solidity\n    uint256 public constant MAX_FEE_CAP = 500_000; // 50% - for launch anti-MEV protection  //<<===1\n\n```\n\nAnd in CLFactory the getSwapFee function rejects any fee above 100,000 (10%), upon which it falls back to the default tick spacing fee.\n\n```solidity\n    function getSwapFee(address pool) external view override returns (uint24) {\n        if (swapFeeModule != address(0)) {\n            (bool success, bytes memory data) = swapFeeModule.excessivelySafeStaticCall(\n                200_000, 32, abi.encodeWithSelector(IFeeModule.getFee.selector, pool)\n            );\n            if (success) {\n                uint24 fee = abi.decode(data, (uint24));\n                if (fee <= 100_000) { //<<===2\n                    return fee;\n                }\n            }\n        }\n        return tickSpacingToFee[CLPool(pool).tickSpacing()];\n```\n\nAs a result, any dynamically calculated fee above 10% gets rejected reducing potential protocol revenue. Potential user discounts applied in `getFee()` are lost when the factory rejects the final fee. And the 50% anti-MEV protection cap becomes unusable, leaving pools vulnerable to maximal extractable value attacks during high volatility\n\n## Recommended mitigation steps\n\n\nAlign `getSwapFee` threshold with `MAX_FEE_CAP` (500_000) to allow full dynamic fees. Otherwise, fallback to 100_000 (10%) fee instead for swaps.",
+    "proof_of_concept": "We add the test below to [C4PoC.t.sol](https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/test/C4PoC.t.sol)\n\nIt shows how the due to the conflicting fee caps, the protocol charges a much lower fee than intended.\n\n```solidity\nfunction testDynamicFeeMechanismBrokenByConflictingCaps() public {\n    // Create a pool first\n    address token0 = USDC;\n    address token1 = USDT;\n    int24 tickSpacing = 50;\n    uint160 sqrtPriceX96 = 79228162514264337593543950336; // 1.0\n    \n    address pool = poolFactory.createPool(token0, token1, tickSpacing, sqrtPriceX96);\n    \n    // Get the default fee for this tick spacing\n    uint24 defaultFee = poolFactory.tickSpacingToFee(tickSpacing);\n    \n    // Set up dynamic fee module with parameters that should trigger the issue\n    vm.startPrank(feeManager);\n    \n    // Set a custom base fee that is above 10% but below 50% (15% in this case)\n    uint24 customBaseFee = 150000; // 15%\n    swapFeeModule.setCustomFee(pool, customBaseFee);\n    \n    // Set a fee cap in dynamic module that's above 10%\n    uint24 dynamicFeeCap = 200000; // 20%\n    swapFeeModule.setFeeCap(pool, dynamicFeeCap);\n    \n    // Set scaling factor to 150000 to ensure we only use base fee for this test\n    swapFeeModule.setScalingFactor(pool, 150000);\n    \n    vm.stopPrank();\n    \n    // Verify the dynamic fee module returns the custom fee correctly\n    uint24 dynamicModuleFee = swapFeeModule.getFee(pool);\n    \n    // This should be 150000 (15%) according to dynamic fee module logic\n    assertEq(uint256(dynamicModuleFee), uint256(customBaseFee), \"Dynamic fee module should return custom base fee\");\n    assertEq(uint256(customBaseFee), 150000);\n    assertEq(uint256(dynamicModuleFee), 150000);\n\n    // Now call the factory's getSwapFee - this is where the conflict occurs\n    uint24 factoryFee = poolFactory.getSwapFee(pool);\n    \n    // The bug: factory rejects fees above 100000 (10%) and falls back to default\n    assertTrue(\n        factoryFee != customBaseFee, \n        \"Factory should NOT return the dynamic fee due to 10% cap conflict\"\n    );\n    assertEq(\n        uint256(factoryFee), \n        uint256(defaultFee), \n        \"Factory should fall back to default tick spacing fee\"\n    );\n    assertEq(uint256(factoryFee), 500);\n    assertEq(uint256(defaultFee), 500);\n    assertEq(uint256(dynamicModuleFee), 150000);\n    assertEq(uint256(customBaseFee), 150000);\n\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/xo4hapwL2Jy/submissions/657",
+    "raw": {
+      "auditUid": "xo4hapwL2Jy",
+      "createdAt": "2025-10-15T18:47:57.540Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "hvNGEUAfpg6",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-14T13:05:30.557Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "Ctj2JAvj8gR"
+        },
+        {
+          "uid": "5vSLZyFJNnd",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-17T11:28:02.899Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "3H5NTm8EgNK",
+          "findingUid": null
+        },
+        {
+          "uid": "MiVFGVYFH3w",
+          "userUid": "6LS9McgpnmC",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-05T14:59:16.364Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "Ctj2JAvj8gR"
+        }
+      ],
+      "finding": {
+        "uid": "Ctj2JAvj8gR",
+        "number": 50,
+        "duplicates": 5
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-11-05T14:59:16.364Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Dynamic Fee Mechanism Broken by Conflicting Fee Caps",
+      "uid": "3H5NTm8EgNK",
+      "updatedAt": "2025-10-15T18:47:57.540Z",
+      "user": {
+        "uid": "zjmjM94BuSw",
+        "handle": "ZanyBonzy"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe dynamic fee system contains a cconflicting fee caps between `DynamicSwapFeeModule.getFee()` and `CLFactory.getSwapFee()` which renders the dynamic fee mechanism ineffective. The `DynamicSwapFeeModule` allows fees up to 500,000 (50%) internally, but `CLFactory.getSwapFee()` rejects any fee above 100,000 (10%), causing the system to always fall back to basic tick spacing fees.\n\n\nWe can see in DynamicSwapFeeModule that the MAX_FEE_CAP is set to 500,000.\n\n```solidity\n    uint256 public constant MAX_FEE_CAP = 500_000; // 50% - for launch anti-MEV protection  //<<===1\n\n```\n\nAnd in CLFactory the getSwapFee function rejects any fee above 100,000 (10%), upon which it falls back to the default tick spacing fee.\n\n```solidity\n    function getSwapFee(address pool) external view override returns (uint24) {\n        if (swapFeeModule != address(0)) {\n            (bool success, bytes memory data) = swapFeeModule.excessivelySafeStaticCall(\n                200_000, 32, abi.encodeWithSelector(IFeeModule.getFee.selector, pool)\n            );\n            if (success) {\n                uint24 fee = abi.decode(data, (uint24));\n                if (fee <= 100_000) { //<<===2\n                    return fee;\n                }\n            }\n        }\n        return tickSpacingToFee[CLPool(pool).tickSpacing()];\n```\n\nAs a result, any dynamically calculated fee above 10% gets rejected reducing potential protocol revenue. Potential user discounts applied in `getFee()` are lost when the factory rejects the final fee. And the 50% anti-MEV protection cap becomes unusable, leaving pools vulnerable to maximal extractable value attacks during high volatility\n\n## Recommended mitigation steps\n\n\nAlign `getSwapFee` threshold with `MAX_FEE_CAP` (500_000) to allow full dynamic fees. Otherwise, fallback to 100_000 (10%) fee instead for swaps.",
+      "proofOfConcept": "We add the test below to [C4PoC.t.sol](https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/test/C4PoC.t.sol)\n\nIt shows how the due to the conflicting fee caps, the protocol charges a much lower fee than intended.\n\n```solidity\nfunction testDynamicFeeMechanismBrokenByConflictingCaps() public {\n    // Create a pool first\n    address token0 = USDC;\n    address token1 = USDT;\n    int24 tickSpacing = 50;\n    uint160 sqrtPriceX96 = 79228162514264337593543950336; // 1.0\n    \n    address pool = poolFactory.createPool(token0, token1, tickSpacing, sqrtPriceX96);\n    \n    // Get the default fee for this tick spacing\n    uint24 defaultFee = poolFactory.tickSpacingToFee(tickSpacing);\n    \n    // Set up dynamic fee module with parameters that should trigger the issue\n    vm.startPrank(feeManager);\n    \n    // Set a custom base fee that is above 10% but below 50% (15% in this case)\n    uint24 customBaseFee = 150000; // 15%\n    swapFeeModule.setCustomFee(pool, customBaseFee);\n    \n    // Set a fee cap in dynamic module that's above 10%\n    uint24 dynamicFeeCap = 200000; // 20%\n    swapFeeModule.setFeeCap(pool, dynamicFeeCap);\n    \n    // Set scaling factor to 150000 to ensure we only use base fee for this test\n    swapFeeModule.setScalingFactor(pool, 150000);\n    \n    vm.stopPrank();\n    \n    // Verify the dynamic fee module returns the custom fee correctly\n    uint24 dynamicModuleFee = swapFeeModule.getFee(pool);\n    \n    // This should be 150000 (15%) according to dynamic fee module logic\n    assertEq(uint256(dynamicModuleFee), uint256(customBaseFee), \"Dynamic fee module should return custom base fee\");\n    assertEq(uint256(customBaseFee), 150000);\n    assertEq(uint256(dynamicModuleFee), 150000);\n\n    // Now call the factory's getSwapFee - this is where the conflict occurs\n    uint24 factoryFee = poolFactory.getSwapFee(pool);\n    \n    // The bug: factory rejects fees above 100000 (10%) and falls back to default\n    assertTrue(\n        factoryFee != customBaseFee, \n        \"Factory should NOT return the dynamic fee due to 10% cap conflict\"\n    );\n    assertEq(\n        uint256(factoryFee), \n        uint256(defaultFee), \n        \"Factory should fall back to default tick spacing fee\"\n    );\n    assertEq(uint256(factoryFee), 500);\n    assertEq(uint256(defaultFee), 500);\n    assertEq(uint256(dynamicModuleFee), 150000);\n    assertEq(uint256(customBaseFee), 150000);\n\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/contracts/core/fees/DynamicSwapFeeModule.sol#L24-L27,https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/contracts/core/fees/DynamicSwapFeeModule.sol#L70-L79,https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/contracts/core/fees/DynamicSwapFeeModule.sol#L152-L176,https://github.com/code-423n4/2025-10-hybra-finance/blob/6299bfbc089158221e5c645d4aaceceea474f5be/cl/contracts/core/CLFactory.sol#L176-L188",
+      "number": 657,
+      "aiExplanation": null,
+      "_index": 657
+    }
+  }
+}

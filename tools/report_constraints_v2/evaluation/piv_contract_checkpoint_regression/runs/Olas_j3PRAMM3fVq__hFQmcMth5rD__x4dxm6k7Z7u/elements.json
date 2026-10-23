@@ -1,0 +1,204 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "BuyBackBurnerBalancer V3 (Slipstream) buyback swap via _performSwap",
+    "environment": "On-chain Balancer V3 pool with public mempool; MEV sandwich attack",
+    "evidence": [
+      "BuyBackBurnerBalancer V3 swaps set amountOutMinimum=1 and sqrtPriceLimitX96=0, allowing MEV bots to extract up to 100% of swap value via sandwich attacks",
+      "The `_performSwap` function for V3 (Slipstream) swaps in `BuyBackBurnerBalancer.sol` implements swaps with no effective slippage protection:",
+      "1. Attacker monitors mempool for `buyBack()` transactions targeting V3 pools",
+      "2. When buyback tx is detected, attacker front-runs with large buy → inflates price",
+      "3. Victim's buyback executes at inflated price, receives minimal OLAS",
+      "4. Attacker back-runs by selling → extracts profit",
+      "5. Protocol receives fraction of fair OLAS value",
+      "- **Direct financial loss**: Protocol receives significantly less OLAS than fair value",
+      "- **Repeatable**: Every V3 buyback is exploitable",
+      "| **External conditions** | Requires public mempool (mitigable via Flashbots) |"
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "MEV bot / sandwich attacker",
+      "role": "attacker",
+      "evidence": [
+        "BuyBackBurnerBalancer V3 swaps set amountOutMinimum=1 and sqrtPriceLimitX96=0, allowing MEV bots to extract up to 100% of swap value via sandwich attacks",
+        "1. Attacker monitors mempool for `buyBack()` transactions targeting V3 pools",
+        "2. When buyback tx is detected, attacker front-runs with large buy → inflates price",
+        "4. Attacker back-runs by selling → extracts profit"
+      ]
+    },
+    {
+      "id": "protocol",
+      "name": "Protocol (BuyBackBurnerBalancer)",
+      "role": "victim",
+      "evidence": [
+        "3. Victim's buyback executes at inflated price, receives minimal OLAS",
+        "5. Protocol receives fraction of fair OLAS value",
+        "- **Direct financial loss**: Protocol receives significantly less OLAS than fair value"
+      ]
+    },
+    {
+      "id": "v3_pool",
+      "name": "Balancer V3 (Slipstream) pool",
+      "role": "contract",
+      "evidence": [
+        "The `_performSwap` function for V3 (Slipstream) swaps in `BuyBackBurnerBalancer.sol` implements swaps with no effective slippage protection:",
+        "1. Attacker monitors mempool for `buyBack()` transactions targeting V3 pools"
+      ]
+    },
+    {
+      "id": "olas",
+      "name": "OLAS token",
+      "role": "asset",
+      "evidence": [
+        "3. Victim's buyback executes at inflated price, receives minimal OLAS",
+        "5. Protocol receives fraction of fair OLAS value",
+        "- **Direct financial loss**: Protocol receives significantly less OLAS than fair value"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "public_mempool_visibility",
+      "kind": "precondition",
+      "text": "The buyback transaction is visible in the public mempool before execution.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "protocol"
+      ],
+      "evidence": [
+        "1. Attacker monitors mempool for `buyBack()` transactions targeting V3 pools",
+        "| **External conditions** | Requires public mempool (mitigable via Flashbots) |"
+      ]
+    },
+    {
+      "id": "v3_swap_no_slippage_protection",
+      "kind": "root_cause",
+      "text": "The V3 _performSwap sets amountOutMinimum=1 and sqrtPriceLimitX96=0 with no post-swap validation, so the swap has no effective slippage protection.",
+      "modality": "asserted",
+      "entity_ids": [
+        "v3_pool",
+        "protocol"
+      ],
+      "evidence": [
+        "The `_performSwap` function for V3 (Slipstream) swaps in `BuyBackBurnerBalancer.sol` implements swaps with no effective slippage protection:",
+        "1. `amountOutMinimum = 1` - Swap succeeds even if 99.99999999% of value is lost",
+        "2. `sqrtPriceLimitX96 = 0` - No price boundary for the swap",
+        "3. No post-swap validation (unlike V2 implementation)",
+        "| Post-swap validation | ✅ Price bounds check | ❌ NONE |"
+      ]
+    },
+    {
+      "id": "front_run_inflate_price",
+      "kind": "action",
+      "text": "Attacker front-runs the detected buyback with a large buy, inflating the pool price.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "v3_pool"
+      ],
+      "evidence": [
+        "2. When buyback tx is detected, attacker front-runs with large buy → inflates price"
+      ]
+    },
+    {
+      "id": "victim_buyback_executes",
+      "kind": "action",
+      "text": "The victim's buyback executes at the inflated price and receives minimal OLAS.",
+      "modality": "asserted",
+      "entity_ids": [
+        "protocol",
+        "v3_pool",
+        "olas"
+      ],
+      "evidence": [
+        "3. Victim's buyback executes at inflated price, receives minimal OLAS"
+      ]
+    },
+    {
+      "id": "back_run_sell",
+      "kind": "action",
+      "text": "Attacker back-runs by selling to extract profit.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "v3_pool"
+      ],
+      "evidence": [
+        "4. Attacker back-runs by selling → extracts profit"
+      ]
+    },
+    {
+      "id": "intent_slippage_bound",
+      "kind": "security_intent",
+      "text": "A V3 buyback swap should enforce an effective minimum output or price bound so the protocol does not accept execution at an arbitrarily inflated price.",
+      "modality": "inferred",
+      "entity_ids": [
+        "protocol",
+        "v3_pool"
+      ],
+      "evidence": [
+        "The `_performSwap` function for V3 (Slipstream) swaps in `BuyBackBurnerBalancer.sol` implements swaps with no effective slippage protection:",
+        "1. `amountOutMinimum = 1` - Swap succeeds even if 99.99999999% of value is lost",
+        "2. `sqrtPriceLimitX96 = 0` - No price boundary for the swap",
+        "| Post-swap validation | ✅ Price bounds check | ❌ NONE |"
+      ]
+    },
+    {
+      "id": "impact_reduced_olas",
+      "kind": "impact",
+      "text": "Protocol receives significantly less OLAS than fair value; the swap succeeds even if 99.99999999% of value is lost.",
+      "modality": "potential",
+      "entity_ids": [
+        "protocol",
+        "olas"
+      ],
+      "evidence": [
+        "1. `amountOutMinimum = 1` - Swap succeeds even if 99.99999999% of value is lost",
+        "5. Protocol receives fraction of fair OLAS value",
+        "- **Direct financial loss**: Protocol receives significantly less OLAS than fair value",
+        "| **Direct fund loss** | ✅ Yes - reduced OLAS acquisition |"
+      ]
+    },
+    {
+      "id": "impact_mev_extraction",
+      "kind": "impact",
+      "text": "MEV bots can extract up to 100% of swap value via sandwich attacks.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "protocol"
+      ],
+      "evidence": [
+        "BuyBackBurnerBalancer V3 swaps set amountOutMinimum=1 and sqrtPriceLimitX96=0, allowing MEV bots to extract up to 100% of swap value via sandwich attacks",
+        "4. Attacker back-runs by selling → extracts profit"
+      ]
+    },
+    {
+      "id": "impact_repeatable",
+      "kind": "impact",
+      "text": "Every V3 buyback is exploitable, undermining the entire buyback-and-burn mechanism.",
+      "modality": "potential",
+      "entity_ids": [
+        "protocol",
+        "v3_pool"
+      ],
+      "evidence": [
+        "- **Repeatable**: Every V3 buyback is exploitable",
+        "- **Cumulative damage**: Undermines entire buyback-and-burn mechanism"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "front_run_inflate_price",
+    "victim_buyback_executes",
+    "back_run_sell"
+  ],
+  "ambiguities": [
+    "Report does not state concrete amounts or a specific observed transaction; effects are described as potential/conditional.",
+    "Whether the attacker is permissionless/unauthorized is not explicitly stated; only mempool monitoring is described.",
+    "No explicit numeric fair-value versus actual OLAS amount is given beyond the 99.99999999% loss bound."
+  ]
+}

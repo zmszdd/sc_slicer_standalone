@@ -1,0 +1,132 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Covenant_d4uY8y2AMSs",
+    "audit_uid": "d4uY8y2AMSs",
+    "requested_submission_uid": "segviiRDqQb",
+    "requested_finding_uid": "oq24Vuwjp6r",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Covenant_d4uY8y2AMSs/20260618_145249/findings.json",
+    "source_submission_uid": "segviiRDqQb",
+    "source_finding_uid": "oq24Vuwjp6r",
+    "original_report_path": "Covenant_d4uY8y2AMSs\\low_valid_segviiRDqQb.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "segviiRDqQb",
+  "finding_uid": "oq24Vuwjp6r",
+  "finding_number": "80",
+  "title": "noCapLimit default applied to baseToken, not quoteToken (policy confusion)",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "0xshdax",
+  "body": "## Finding description and impact\n\nLatentSwapLEX exposes `setDefaultNoCapLimit(address token, uint8)` documented as: “if defaultMintRedeemNoCap == 0, new markets will use 1 baseToken as the MintRedeemNoCap as the default” and “for markets with this quote token”. At init, the code reads `tokenNoCapLimit[marketParams.baseToken]` and assigns that to the market’s `noCapLimit`. This creates a policy confusion: governance expecting to configure the default mint/redeem cap for “markets with this quote token” by calling `setDefaultNoCapLimit(quoteToken, x)` will have no effect. Only overrides set for the baseToken address are used. As a result, markets instantiated under a given quote do not inherit the intended cap setting, potentially leaving large markets unbounded or overly restricted depending on expectation.\n\n\nMisconfiguration risk: quote-level policy changes are silently ignored. Operators can believe caps are set for an entire quote currency class when in fact they are not, leading to unintended liquidity growth or unnecessary constraints.\n\n## Recommended mitigation steps\nClarify and align semantics: if the intention is quote-scoped policy, read `tokenNoCapLimit[marketParams.quoteToken]` at init. If base-scoped is intended, rename the function/docs to reflect base token scope and adjust comments accordingly.",
+  "proof_of_concept": "# test/poc/NoCapLimitOverrideBug.t.sol\n```sol\n\n// SPDX-License-Identifier: GPL-3.0-or-later\npragma solidity ^0.8.30;\n\nimport \"forge-std/Test.sol\";\nimport {Covenant} from \"../../src/Covenant.sol\";\nimport {LatentSwapLEX} from \"../../src/lex/latentswap/LatentSwapLEX.sol\";\nimport {ILatentSwapLEX, LexConfig} from \"../../src/lex/latentswap/interfaces/ILatentSwapLEX.sol\";\nimport {MockOracle} from \"../mocks/MockOracle.sol\";\nimport {MockERC20} from \"../mocks/MockERC20.sol\";\nimport {FixedPoint} from \"../../src/lex/latentswap/libraries/FixedPoint.sol\";\nimport {LatentSwapLib} from \"../../src/periphery/libraries/LatentSwapLib.sol\";\nimport {MarketId, MarketParams} from \"../../src/interfaces/ICovenant.sol\";\n\ncontract NoCapLimitOverrideBugTest is Test {\n    uint160 internal constant P_MAX = uint160((1095445 * FixedPoint.Q96) / 1000000);\n    uint160 internal constant P_MIN = uint160(FixedPoint.Q192 / P_MAX);\n    uint32 internal constant DURATION = 30 * 24 * 60 * 60;\n    uint8 internal constant SWAP_FEE = 0;\n    int64 internal constant LN_RATE_BIAS = 5012540000000000; // WAD\n    uint160 private P_LIM_H = LatentSwapLib.getSqrtPriceFromLTVX96(P_MIN, P_MAX, 9500);\n    uint160 private P_LIM_MAX = LatentSwapLib.getSqrtPriceFromLTVX96(P_MIN, P_MAX, 9999);\n\n    Covenant public covenant;\n    LatentSwapLEX public lex;\n    address private _mockOracle;\n    address private _mockBaseAsset;\n    address private _mockQuoteAsset;\n\n    function setUp() public {\n        _mockOracle = address(new MockOracle(address(this)));\n        _mockBaseAsset = address(new MockERC20(address(this), \"MockBaseAsset\", \"MBA\", 18));\n        _mockQuoteAsset = address(new MockERC20(address(this), \"MockQaseAsset\", \"MQA\", 18));\n        covenant = new Covenant(address(this));\n        lex = new LatentSwapLEX(address(this), address(covenant), P_MAX, P_MIN, P_LIM_H, P_LIM_MAX, LN_RATE_BIAS, DURATION, SWAP_FEE);\n        covenant.setEnabledLEX(address(lex), true);\n        covenant.setEnabledCurator(_mockOracle, true);\n    }\n\n    function test_poc_NoCapLimitOverrideAppliedToWrongToken() public {\n        // Intention: override noCapLimit for quote token to 255, expecting markets with this quote to have no cap\n        lex.setDefaultNoCapLimit(_mockQuoteAsset, 255);\n\n        // Create market using that quote\n        MarketParams memory marketParams = MarketParams({\n            baseToken: _mockBaseAsset,\n            quoteToken: _mockQuoteAsset,\n            curator: _mockOracle,\n            lex: address(lex)\n        });\n        MarketId marketId = covenant.createMarket(marketParams, hex\"\");\n\n        // Read config\n        LexConfig memory cfg = lex.getLexConfig(marketId);\n\n        // Bug: override stored for quote token is not applied; code uses baseToken as key\n        // Expect cfg.noCapLimit != 255 (likely 60 for 18 decimals)\n        assertTrue(cfg.noCapLimit != 255, \"override incorrectly applied to quote token (should not be 255)\");\n\n        // Now apply override for base token and create again to show override actually affects config\n        LatentSwapLEX lex2 = new LatentSwapLEX(address(this), address(covenant), P_MAX, P_MIN, P_LIM_H, P_LIM_MAX, LN_RATE_BIAS, DURATION, SWAP_FEE);\n        covenant.setEnabledLEX(address(lex2), true);\n        lex2.setDefaultNoCapLimit(_mockBaseAsset, 255);\n\n        MarketParams memory marketParams2 = MarketParams({\n            baseToken: _mockBaseAsset,\n            quoteToken: _mockQuoteAsset,\n            curator: _mockOracle,\n            lex: address(lex2)\n        });\n        MarketId marketId2 = covenant.createMarket(marketParams2, hex\"\");\n        LexConfig memory cfg2 = lex2.getLexConfig(marketId2);\n        assertEq(cfg2.noCapLimit, 255, \"override only applies when set for base token\");\n    }\n}\n```\n\n\n# Run\n```bash\n\nforge test --match-path test/poc/NoCapLimitOverrideBug.t.sol -vvv\n[⠊] Compiling...\nNo files changed, compilation skipped\n\nRan 1 test for test/poc/NoCapLimitOverrideBug.t.sol:NoCapLimitOverrideBugTest\n[PASS] test_poc_NoCapLimitOverrideAppliedToWrongToken() (gas: 7824083)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 4.66ms (1.90ms CPU time)\n\nRan 1 test suite in 16.05ms (4.66ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-10-covenant/blob/main/src/lex/latentswap/LatentSwapLEX.sol#L139-L147",
+    "https://github.com/code-423n4/2025-10-covenant/blob/main/src/lex/latentswap/LatentSwapLEX.sol#L244-L277",
+    "https://github.com/code-423n4/2025-10-covenant/blob/main/src/lex/latentswap/libraries/LatentSwapLogic.sol#L261-L277"
+  ],
+  "source_record": {
+    "project_id": "d4uY8y2AMSs",
+    "submission_index": "22",
+    "api_submission_id": "",
+    "uid": "segviiRDqQb",
+    "number": "22",
+    "title": "noCapLimit default applied to baseToken, not quoteToken (policy confusion)",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "0xshdax",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-10-covenant/blob/main/src/lex/latentswap/LatentSwapLEX.sol#L139-L147",
+      "https://github.com/code-423n4/2025-10-covenant/blob/main/src/lex/latentswap/LatentSwapLEX.sol#L244-L277",
+      "https://github.com/code-423n4/2025-10-covenant/blob/main/src/lex/latentswap/libraries/LatentSwapLogic.sol#L261-L277"
+    ],
+    "body": "## Finding description and impact\n\nLatentSwapLEX exposes `setDefaultNoCapLimit(address token, uint8)` documented as: “if defaultMintRedeemNoCap == 0, new markets will use 1 baseToken as the MintRedeemNoCap as the default” and “for markets with this quote token”. At init, the code reads `tokenNoCapLimit[marketParams.baseToken]` and assigns that to the market’s `noCapLimit`. This creates a policy confusion: governance expecting to configure the default mint/redeem cap for “markets with this quote token” by calling `setDefaultNoCapLimit(quoteToken, x)` will have no effect. Only overrides set for the baseToken address are used. As a result, markets instantiated under a given quote do not inherit the intended cap setting, potentially leaving large markets unbounded or overly restricted depending on expectation.\n\n\nMisconfiguration risk: quote-level policy changes are silently ignored. Operators can believe caps are set for an entire quote currency class when in fact they are not, leading to unintended liquidity growth or unnecessary constraints.\n\n## Recommended mitigation steps\nClarify and align semantics: if the intention is quote-scoped policy, read `tokenNoCapLimit[marketParams.quoteToken]` at init. If base-scoped is intended, rename the function/docs to reflect base token scope and adjust comments accordingly.",
+    "proof_of_concept": "# test/poc/NoCapLimitOverrideBug.t.sol\n```sol\n\n// SPDX-License-Identifier: GPL-3.0-or-later\npragma solidity ^0.8.30;\n\nimport \"forge-std/Test.sol\";\nimport {Covenant} from \"../../src/Covenant.sol\";\nimport {LatentSwapLEX} from \"../../src/lex/latentswap/LatentSwapLEX.sol\";\nimport {ILatentSwapLEX, LexConfig} from \"../../src/lex/latentswap/interfaces/ILatentSwapLEX.sol\";\nimport {MockOracle} from \"../mocks/MockOracle.sol\";\nimport {MockERC20} from \"../mocks/MockERC20.sol\";\nimport {FixedPoint} from \"../../src/lex/latentswap/libraries/FixedPoint.sol\";\nimport {LatentSwapLib} from \"../../src/periphery/libraries/LatentSwapLib.sol\";\nimport {MarketId, MarketParams} from \"../../src/interfaces/ICovenant.sol\";\n\ncontract NoCapLimitOverrideBugTest is Test {\n    uint160 internal constant P_MAX = uint160((1095445 * FixedPoint.Q96) / 1000000);\n    uint160 internal constant P_MIN = uint160(FixedPoint.Q192 / P_MAX);\n    uint32 internal constant DURATION = 30 * 24 * 60 * 60;\n    uint8 internal constant SWAP_FEE = 0;\n    int64 internal constant LN_RATE_BIAS = 5012540000000000; // WAD\n    uint160 private P_LIM_H = LatentSwapLib.getSqrtPriceFromLTVX96(P_MIN, P_MAX, 9500);\n    uint160 private P_LIM_MAX = LatentSwapLib.getSqrtPriceFromLTVX96(P_MIN, P_MAX, 9999);\n\n    Covenant public covenant;\n    LatentSwapLEX public lex;\n    address private _mockOracle;\n    address private _mockBaseAsset;\n    address private _mockQuoteAsset;\n\n    function setUp() public {\n        _mockOracle = address(new MockOracle(address(this)));\n        _mockBaseAsset = address(new MockERC20(address(this), \"MockBaseAsset\", \"MBA\", 18));\n        _mockQuoteAsset = address(new MockERC20(address(this), \"MockQaseAsset\", \"MQA\", 18));\n        covenant = new Covenant(address(this));\n        lex = new LatentSwapLEX(address(this), address(covenant), P_MAX, P_MIN, P_LIM_H, P_LIM_MAX, LN_RATE_BIAS, DURATION, SWAP_FEE);\n        covenant.setEnabledLEX(address(lex), true);\n        covenant.setEnabledCurator(_mockOracle, true);\n    }\n\n    function test_poc_NoCapLimitOverrideAppliedToWrongToken() public {\n        // Intention: override noCapLimit for quote token to 255, expecting markets with this quote to have no cap\n        lex.setDefaultNoCapLimit(_mockQuoteAsset, 255);\n\n        // Create market using that quote\n        MarketParams memory marketParams = MarketParams({\n            baseToken: _mockBaseAsset,\n            quoteToken: _mockQuoteAsset,\n            curator: _mockOracle,\n            lex: address(lex)\n        });\n        MarketId marketId = covenant.createMarket(marketParams, hex\"\");\n\n        // Read config\n        LexConfig memory cfg = lex.getLexConfig(marketId);\n\n        // Bug: override stored for quote token is not applied; code uses baseToken as key\n        // Expect cfg.noCapLimit != 255 (likely 60 for 18 decimals)\n        assertTrue(cfg.noCapLimit != 255, \"override incorrectly applied to quote token (should not be 255)\");\n\n        // Now apply override for base token and create again to show override actually affects config\n        LatentSwapLEX lex2 = new LatentSwapLEX(address(this), address(covenant), P_MAX, P_MIN, P_LIM_H, P_LIM_MAX, LN_RATE_BIAS, DURATION, SWAP_FEE);\n        covenant.setEnabledLEX(address(lex2), true);\n        lex2.setDefaultNoCapLimit(_mockBaseAsset, 255);\n\n        MarketParams memory marketParams2 = MarketParams({\n            baseToken: _mockBaseAsset,\n            quoteToken: _mockQuoteAsset,\n            curator: _mockOracle,\n            lex: address(lex2)\n        });\n        MarketId marketId2 = covenant.createMarket(marketParams2, hex\"\");\n        LexConfig memory cfg2 = lex2.getLexConfig(marketId2);\n        assertEq(cfg2.noCapLimit, 255, \"override only applies when set for base token\");\n    }\n}\n```\n\n\n# Run\n```bash\n\nforge test --match-path test/poc/NoCapLimitOverrideBug.t.sol -vvv\n[⠊] Compiling...\nNo files changed, compilation skipped\n\nRan 1 test for test/poc/NoCapLimitOverrideBug.t.sol:NoCapLimitOverrideBugTest\n[PASS] test_poc_NoCapLimitOverrideAppliedToWrongToken() (gas: 7824083)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 4.66ms (1.90ms CPU time)\n\nRan 1 test suite in 16.05ms (4.66ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/d4uY8y2AMSs/submissions/22",
+    "raw": {
+      "auditUid": "d4uY8y2AMSs",
+      "createdAt": "2025-10-23T12:42:12.986Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "Pyq3fjdtpxE",
+          "userUid": "6gNcwqYnMhM",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-24T09:22:39.005Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "segviiRDqQb",
+          "findingUid": null
+        },
+        {
+          "uid": "nh53zkxFPht",
+          "userUid": "6gNcwqYnMhM",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-27T15:25:53.423Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "oq24Vuwjp6r"
+        },
+        {
+          "uid": "gHWkYkBsQuB",
+          "userUid": "6gNcwqYnMhM",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-27T15:25:55.007Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "oq24Vuwjp6r"
+        },
+        {
+          "uid": "CDwWPkNwsD5",
+          "userUid": "xrsg7LtD2gr",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-11-01T21:17:20.649Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "oq24Vuwjp6r"
+        }
+      ],
+      "finding": {
+        "uid": "oq24Vuwjp6r",
+        "number": 80,
+        "duplicates": 3
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-11-03T13:30:23.645Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "noCapLimit default applied to baseToken, not quoteToken (policy confusion)",
+      "uid": "segviiRDqQb",
+      "updatedAt": "2025-10-23T12:42:12.986Z",
+      "user": {
+        "uid": "Nj9WX62B5cM",
+        "handle": "0xshdax"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nLatentSwapLEX exposes `setDefaultNoCapLimit(address token, uint8)` documented as: “if defaultMintRedeemNoCap == 0, new markets will use 1 baseToken as the MintRedeemNoCap as the default” and “for markets with this quote token”. At init, the code reads `tokenNoCapLimit[marketParams.baseToken]` and assigns that to the market’s `noCapLimit`. This creates a policy confusion: governance expecting to configure the default mint/redeem cap for “markets with this quote token” by calling `setDefaultNoCapLimit(quoteToken, x)` will have no effect. Only overrides set for the baseToken address are used. As a result, markets instantiated under a given quote do not inherit the intended cap setting, potentially leaving large markets unbounded or overly restricted depending on expectation.\n\n\nMisconfiguration risk: quote-level policy changes are silently ignored. Operators can believe caps are set for an entire quote currency class when in fact they are not, leading to unintended liquidity growth or unnecessary constraints.\n\n## Recommended mitigation steps\nClarify and align semantics: if the intention is quote-scoped policy, read `tokenNoCapLimit[marketParams.quoteToken]` at init. If base-scoped is intended, rename the function/docs to reflect base token scope and adjust comments accordingly.",
+      "proofOfConcept": "# test/poc/NoCapLimitOverrideBug.t.sol\n```sol\n\n// SPDX-License-Identifier: GPL-3.0-or-later\npragma solidity ^0.8.30;\n\nimport \"forge-std/Test.sol\";\nimport {Covenant} from \"../../src/Covenant.sol\";\nimport {LatentSwapLEX} from \"../../src/lex/latentswap/LatentSwapLEX.sol\";\nimport {ILatentSwapLEX, LexConfig} from \"../../src/lex/latentswap/interfaces/ILatentSwapLEX.sol\";\nimport {MockOracle} from \"../mocks/MockOracle.sol\";\nimport {MockERC20} from \"../mocks/MockERC20.sol\";\nimport {FixedPoint} from \"../../src/lex/latentswap/libraries/FixedPoint.sol\";\nimport {LatentSwapLib} from \"../../src/periphery/libraries/LatentSwapLib.sol\";\nimport {MarketId, MarketParams} from \"../../src/interfaces/ICovenant.sol\";\n\ncontract NoCapLimitOverrideBugTest is Test {\n    uint160 internal constant P_MAX = uint160((1095445 * FixedPoint.Q96) / 1000000);\n    uint160 internal constant P_MIN = uint160(FixedPoint.Q192 / P_MAX);\n    uint32 internal constant DURATION = 30 * 24 * 60 * 60;\n    uint8 internal constant SWAP_FEE = 0;\n    int64 internal constant LN_RATE_BIAS = 5012540000000000; // WAD\n    uint160 private P_LIM_H = LatentSwapLib.getSqrtPriceFromLTVX96(P_MIN, P_MAX, 9500);\n    uint160 private P_LIM_MAX = LatentSwapLib.getSqrtPriceFromLTVX96(P_MIN, P_MAX, 9999);\n\n    Covenant public covenant;\n    LatentSwapLEX public lex;\n    address private _mockOracle;\n    address private _mockBaseAsset;\n    address private _mockQuoteAsset;\n\n    function setUp() public {\n        _mockOracle = address(new MockOracle(address(this)));\n        _mockBaseAsset = address(new MockERC20(address(this), \"MockBaseAsset\", \"MBA\", 18));\n        _mockQuoteAsset = address(new MockERC20(address(this), \"MockQaseAsset\", \"MQA\", 18));\n        covenant = new Covenant(address(this));\n        lex = new LatentSwapLEX(address(this), address(covenant), P_MAX, P_MIN, P_LIM_H, P_LIM_MAX, LN_RATE_BIAS, DURATION, SWAP_FEE);\n        covenant.setEnabledLEX(address(lex), true);\n        covenant.setEnabledCurator(_mockOracle, true);\n    }\n\n    function test_poc_NoCapLimitOverrideAppliedToWrongToken() public {\n        // Intention: override noCapLimit for quote token to 255, expecting markets with this quote to have no cap\n        lex.setDefaultNoCapLimit(_mockQuoteAsset, 255);\n\n        // Create market using that quote\n        MarketParams memory marketParams = MarketParams({\n            baseToken: _mockBaseAsset,\n            quoteToken: _mockQuoteAsset,\n            curator: _mockOracle,\n            lex: address(lex)\n        });\n        MarketId marketId = covenant.createMarket(marketParams, hex\"\");\n\n        // Read config\n        LexConfig memory cfg = lex.getLexConfig(marketId);\n\n        // Bug: override stored for quote token is not applied; code uses baseToken as key\n        // Expect cfg.noCapLimit != 255 (likely 60 for 18 decimals)\n        assertTrue(cfg.noCapLimit != 255, \"override incorrectly applied to quote token (should not be 255)\");\n\n        // Now apply override for base token and create again to show override actually affects config\n        LatentSwapLEX lex2 = new LatentSwapLEX(address(this), address(covenant), P_MAX, P_MIN, P_LIM_H, P_LIM_MAX, LN_RATE_BIAS, DURATION, SWAP_FEE);\n        covenant.setEnabledLEX(address(lex2), true);\n        lex2.setDefaultNoCapLimit(_mockBaseAsset, 255);\n\n        MarketParams memory marketParams2 = MarketParams({\n            baseToken: _mockBaseAsset,\n            quoteToken: _mockQuoteAsset,\n            curator: _mockOracle,\n            lex: address(lex2)\n        });\n        MarketId marketId2 = covenant.createMarket(marketParams2, hex\"\");\n        LexConfig memory cfg2 = lex2.getLexConfig(marketId2);\n        assertEq(cfg2.noCapLimit, 255, \"override only applies when set for base token\");\n    }\n}\n```\n\n\n# Run\n```bash\n\nforge test --match-path test/poc/NoCapLimitOverrideBug.t.sol -vvv\n[⠊] Compiling...\nNo files changed, compilation skipped\n\nRan 1 test for test/poc/NoCapLimitOverrideBug.t.sol:NoCapLimitOverrideBugTest\n[PASS] test_poc_NoCapLimitOverrideAppliedToWrongToken() (gas: 7824083)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 4.66ms (1.90ms CPU time)\n\nRan 1 test suite in 16.05ms (4.66ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-10-covenant/blob/main/src/lex/latentswap/LatentSwapLEX.sol#L139-L147,https://github.com/code-423n4/2025-10-covenant/blob/main/src/lex/latentswap/LatentSwapLEX.sol#L244-L277,https://github.com/code-423n4/2025-10-covenant/blob/main/src/lex/latentswap/libraries/LatentSwapLogic.sol#L261-L277",
+      "number": 22,
+      "aiExplanation": null,
+      "_index": 22
+    }
+  }
+}

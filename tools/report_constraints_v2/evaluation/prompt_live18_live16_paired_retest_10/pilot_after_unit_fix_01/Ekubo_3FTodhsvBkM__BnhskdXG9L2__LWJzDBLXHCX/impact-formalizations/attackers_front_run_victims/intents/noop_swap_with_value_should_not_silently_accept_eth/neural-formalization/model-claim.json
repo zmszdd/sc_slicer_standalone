@@ -1,0 +1,220 @@
+{
+  "schema_version": "report-formal-plan/7",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "pool_initialized_with_liquidity",
+    "victim_sets_sqrt_ratio_limit_near_price",
+    "attacker_moves_price_to_limit"
+  ],
+  "intent_id": "noop_swap_with_value_should_not_silently_accept_eth",
+  "impact_ids": [
+    "attackers_front_run_victims"
+  ],
+  "symbols": {
+    "pool_initialized_at_tick_zero": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "pool is initialized at tick 0 with liquidity",
+      "checkpoint": "before victim swap submission",
+      "entity_ids": [
+        "core_contract"
+      ],
+      "source_ids": [
+        "pool_initialized_with_liquidity"
+      ]
+    },
+    "victim_swap_msg_value": {
+      "sort": "int",
+      "unit": "ether",
+      "meaning": "native ETH carried as msg.value by the victim's swap",
+      "checkpoint": "victim swap submission",
+      "entity_ids": [
+        "victim",
+        "router",
+        "native_eth"
+      ],
+      "source_ids": [
+        "victim_sets_sqrt_ratio_limit_near_price"
+      ]
+    },
+    "victim_sqrt_ratio_limit_set_near_price": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "victim's swap has a sqrtRatioLimit set near the current price for slippage protection",
+      "checkpoint": "victim swap submission",
+      "entity_ids": [
+        "victim",
+        "router"
+      ],
+      "source_ids": [
+        "victim_sets_sqrt_ratio_limit_near_price"
+      ]
+    },
+    "attacker_front_run_occurred": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "attacker front-runs the victim's transaction before it executes",
+      "checkpoint": "before victim swap execution",
+      "entity_ids": [
+        "attacker",
+        "core_contract"
+      ],
+      "source_ids": [
+        "attacker_moves_price_to_limit"
+      ]
+    },
+    "pool_price_moved_to_victim_limit": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "pool price is moved down to exactly the victim's sqrtRatioLimit by the front-run",
+      "checkpoint": "after attacker front-run, before victim swap execution",
+      "entity_ids": [
+        "attacker",
+        "core_contract"
+      ],
+      "source_ids": [
+        "attacker_moves_price_to_limit"
+      ]
+    },
+    "swap_is_noop_with_value": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the victim's swap executes as a no-op (sqrtRatio equals sqrtRatioLimit) while msg.value > 0",
+      "checkpoint": "victim swap execution",
+      "entity_ids": [
+        "core_contract",
+        "native_eth"
+      ],
+      "source_ids": [
+        "noop_swap_with_value_should_not_silently_accept_eth",
+        "attackers_front_run_victims"
+      ]
+    },
+    "eth_silently_accepted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the no-op swap silently accepts the sent ETH without reverting or handling debt accounting",
+      "checkpoint": "victim swap execution outcome",
+      "entity_ids": [
+        "core_contract",
+        "native_eth"
+      ],
+      "source_ids": [
+        "noop_swap_with_value_should_not_silently_accept_eth",
+        "attackers_front_run_victims"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "pool_initialized_with_liquidity",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "pool_initialized_at_tick_zero",
+        "value": true
+      }
+    },
+    {
+      "source_id": "victim_sets_sqrt_ratio_limit_near_price",
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "truth",
+            "symbol": "victim_sqrt_ratio_limit_set_near_price",
+            "value": true
+          },
+          {
+            "kind": "comparison",
+            "left": "victim_swap_msg_value",
+            "operator": "gt",
+            "right": {
+              "const": 0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "source_id": "attacker_moves_price_to_limit",
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "truth",
+            "symbol": "attacker_front_run_occurred",
+            "value": true
+          },
+          {
+            "kind": "truth",
+            "symbol": "pool_price_moved_to_victim_limit",
+            "value": true
+          }
+        ]
+      }
+    }
+  ],
+  "impact_context_terms": [
+    {
+      "source_id": "attackers_front_run_victims",
+      "qualifier_types": [
+        "trigger",
+        "state"
+      ],
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "truth",
+            "symbol": "attacker_front_run_occurred",
+            "value": true
+          },
+          {
+            "kind": "truth",
+            "symbol": "pool_price_moved_to_victim_limit",
+            "value": true
+          }
+        ]
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "required_effect",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "swap_is_noop_with_value",
+          "value": true
+        }
+      ]
+    },
+    "effect": {
+      "kind": "truth",
+      "symbol": "eth_silently_accepted",
+      "value": false
+    }
+  },
+  "assumptions": [
+    "The victim's swap carries a positive msg.value (report states 10 ether).",
+    "The attacker's front-run is treated as a potential trigger, not an inevitable event."
+  ],
+  "unresolved": [
+    {
+      "category": "unsupported_relation",
+      "description": "Report does not give a general numeric relation between sqrtRatioLimit and current sqrtRatio at execution time; the no-op condition is represented as a grounded Boolean rather than a numeric equality.",
+      "source_ids": [
+        "noop_swap_with_value_should_not_silently_accept_eth",
+        "victim_sets_sqrt_ratio_limit_near_price"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The no-op equality (sqrtRatio == sqrtRatioLimit) is encoded as a grounded Boolean because the report supplies no general numeric bound.",
+    "The impact's potential modality is preserved by treating the attacker front-run as a trigger condition rather than an unconditional event.",
+    "Only the selected impact attackers_front_run_victims is formalized here; other impacts are handled separately."
+  ]
+}

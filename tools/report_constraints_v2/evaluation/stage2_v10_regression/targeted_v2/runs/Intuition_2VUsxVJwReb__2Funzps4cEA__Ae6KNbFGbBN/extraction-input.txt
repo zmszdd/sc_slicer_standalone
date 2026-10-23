@@ -1,0 +1,28 @@
+AtomWallet._validateSignature reverts on InvalidSignatureS instead of returning SIG_VALIDATION_FAILED
+
+## Finding description and impact
+
+In `_validateSignature`, three error branches are handled after `ECDSA.tryRecover`:
+
+
+The `InvalidSignature` branch correctly returns `_packValidationData(true, ...)` (i.e. `SIG_VALIDATION_FAILED`). However, the `InvalidSignatureS` branch unconditionally reverts instead.
+
+`RecoverError.InvalidSignatureS` is triggered by OpenZeppelin's ECDSA library when the `s` component of a signature falls in the upper half of the secp256k1 curve order (high-s signature). While modern wallets following EIP-2 canonical signature rules produce low-s signatures, high-s signatures are technically valid ECDSA signatures. Crucially, any observer of a valid owner signature can derive a high-s counterpart by computing `s' = curve_order - s` — the recovered address is identical, making this a constructable input against any live wallet.
+
+This is similar to this older finding: https://github.com/code-423n4/2023-01-biconomy-findings/issues/516
+
+The ERC-4337 (https://github.com/ethereum/ercs/blob/master/ERCS/erc-4337.md) specification is explicit:
+
+> "MUST validate that the signature is a valid signature of the userOpHash, and SHOULD return SIG_VALIDATION_FAILED (1) without reverting on signature mismatch."
+
+When `validateUserOp` reverts instead of returning `SIG_VALIDATION_FAILED`, the ERC-4337 EntryPoint cannot distinguish a signature failure from a critical wallet bug. During on-chain `handleOps` execution, the EntryPoint calls `validateUserOp` without a try/catch — a revert propagates through the entire bundle, causing the bundler's transaction to fail.
+
+Note: the README's known issue states "AtomWallet signature format is intentionally strict: only 65-byte raw ECDSA or 77-byte ECDSA+time-window suffix." This addresses signature *length*, not s-value canonicity. A 65-byte high-s signature satisfies the length requirement and is not covered by this known issue.
+
+On top of not being compliant with the standard we also have the following impacts:
+
+1. **Adversary-constructable griefing**: Given any valid on-chain ECDSA signature from an AtomWallet owner (observable after any executed UserOp), an adversary derives the high-s counterpart: `s' = secp256k1_order - s`, `v' = v XOR 1`. The recovered address is identical to the original signer, so the signature appears legitimate until `tryRecover` rejects the high-s value. The adversary can then repeatedly submit griefing UserOps targeting any AtomWallet.
+
+2. **Bundler availability disruption**: When bundlers simulate the griefing UserOp, `validateUserOp` reverts. Depending on EntryPoint version and bundler implementation: (a) the simulation failure wastes bundler compute on every griefing submission, (b) if the bundler's error handling does not distinguish a wallet revert from a transient failure, it may retry or blacklist the wallet, and (c) in EntryPoint implementations where validation reverts propagate to the outer `handleOps` call, the bundler's entire batch transaction fails on-chain, causing gas loss.
+
+3. **Wallet degradation**: Persistent griefing can cause bundlers to deprioritize or refuse to service the targeted AtomWallet, degrading the user's ability to submit transactions through the ERC-4337 infrastructure.

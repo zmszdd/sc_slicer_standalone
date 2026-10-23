@@ -1,0 +1,170 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Launchpad.buy curve fill followed by graduation and AMM exact-out leg",
+    "environment": "Launchpad bonding curve with CPMM AMM graduation",
+    "evidence": [
+      "- Root cause: Slippage is enforced only on the curve portion in `Launchpad.buy`, not on the combined curve+AMM execution after graduation. An attacker can first push bonding near completion (cheaply when Vb is small), then frontrun to force a tiny curve fill and trigger graduation; the CPMM’s marginal price near end is hyperbolic.",
+      "- Impact: Victim’s `maxAmountInQuote` is largely consumed by an extremely expensive tiny curve fill; remaining quote is insufficient for the AMM exact-out leg, so victim gets only a tiny amount at a terrible effective price. Attacker’s trade is typically unprofitable (griefing), but reliably harms users.",
+      "- Remaining quote ≪ requiredQuote → AMM leg fails; victim ends with only Z = 1 base."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "frontrunning attacker",
+      "role": "attacker",
+      "evidence": [
+        "- Root cause: Slippage is enforced only on the curve portion in `Launchpad.buy`, not on the combined curve+AMM execution after graduation. An attacker can first push bonding near completion (cheaply when Vb is small), then frontrun to force a tiny curve fill and trigger graduation; the CPMM’s marginal price near end is hyperbolic.",
+        "- Attacker frontruns to leave only Z = 1 base on curve for the victim (R−Y = 1):"
+      ]
+    },
+    {
+      "id": "victim",
+      "name": "victim buyer",
+      "role": "victim",
+      "evidence": [
+        "- Impact: Victim’s `maxAmountInQuote` is largely consumed by an extremely expensive tiny curve fill; remaining quote is insufficient for the AMM exact-out leg, so victim gets only a tiny amount at a terrible effective price. Attacker’s trade is typically unprofitable (griefing), but reliably harms users.",
+        "- Victim targets D = 500,000 base; budget from current curve view:",
+        "- Victim: pays ≈ 7.993e9 quote for 1 base (effective ≈ 7.993e9/base) instead of 500,000 base → severe loss."
+      ]
+    },
+    {
+      "id": "launchpad",
+      "name": "Launchpad.buy",
+      "role": "contract",
+      "evidence": [
+        "- Root cause: Slippage is enforced only on the curve portion in `Launchpad.buy`, not on the combined curve+AMM execution after graduation. An attacker can first push bonding near completion (cheaply when Vb is small), then frontrun to force a tiny curve fill and trigger graduation; the CPMM’s marginal price near end is hyperbolic."
+      ]
+    },
+    {
+      "id": "amm",
+      "name": "CPMM AMM leg",
+      "role": "contract",
+      "evidence": [
+        "- Root cause: Slippage is enforced only on the curve portion in `Launchpad.buy`, not on the combined curve+AMM execution after graduation. An attacker can first push bonding near completion (cheaply when Vb is small), then frontrun to force a tiny curve fill and trigger graduation; the CPMM’s marginal price near end is hyperbolic.",
+        "- Using Uniswap formula, requiredQuote ≈ (reserveIn·out·1000)/(997·(reserveOut−out)) ≈ 2.67e12 (orders of magnitude larger than 2.4e7)."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "attacker_pushes_curve_near_end",
+      "kind": "precondition",
+      "text": "Attacker has pushed the bonding curve near completion, leaving remaining R = 1,000,000 on curve.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "launchpad"
+      ],
+      "evidence": [
+        "- Attacker actively pushes curve near end: leaves remaining R = 1,000,000 on curve (can be achieved by buying beforehand; cost is moderate early and rises only near the end)."
+      ]
+    },
+    {
+      "id": "victim_sets_max_amount_in",
+      "kind": "precondition",
+      "text": "Victim sets maxAmountInQuote ≈ 8.016e9 (Q_D × 1.005, 0.5% headroom) for target D = 500,000 base.",
+      "modality": "potential",
+      "entity_ids": [
+        "victim"
+      ],
+      "evidence": [
+        "- Victim targets D = 500,000 base; budget from current curve view:",
+        "- Q_D ≈ Qr·D/(Br−D) ≈ 7.992e9 · 500,000 / 501,000 ≈ 7.977e9 quote.",
+        "- Sets `maxAmountInQuote = Q_D × 1.005` ≈ 8.016e9 (0.5% headroom)."
+      ]
+    },
+    {
+      "id": "attacker_frontruns_to_leave_one_base",
+      "kind": "action",
+      "text": "Attacker frontruns to leave only Z = 1 base on curve for the victim.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "launchpad"
+      ],
+      "evidence": [
+        "- Attacker frontruns to leave only Z = 1 base on curve for the victim (R−Y = 1):",
+        "- Br' = Vb + Z = 1,001; Qr' = K/Br' ≈ 7.992e12."
+      ]
+    },
+    {
+      "id": "victim_buy_executes",
+      "kind": "action",
+      "text": "Victim's buy executes, consuming curve cost Q_Z ≈ 7.992e9 quote for Z = 1 base and triggering graduation.",
+      "modality": "potential",
+      "entity_ids": [
+        "victim",
+        "launchpad"
+      ],
+      "evidence": [
+        "- Victim curve cost Q_Z = Qr'·Z/Vb ≈ 7.992e12 / 1,000 ≈ 7.992e9, which is ≤ maxAmountInQuote.",
+        "- Graduation: AMM initialized with base = Bs/4 = 2,000,000; quote = totalQuote = (Vq·Bs)/Vb = 8.0e12."
+      ]
+    },
+    {
+      "id": "slippage_only_on_curve",
+      "kind": "root_cause",
+      "text": "Slippage is enforced only on the curve portion in Launchpad.buy, not on the combined curve+AMM execution after graduation.",
+      "modality": "asserted",
+      "entity_ids": [
+        "launchpad"
+      ],
+      "evidence": [
+        "- Root cause: Slippage is enforced only on the curve portion in `Launchpad.buy`, not on the combined curve+AMM execution after graduation. An attacker can first push bonding near completion (cheaply when Vb is small), then frontrun to force a tiny curve fill and trigger graduation; the CPMM’s marginal price near end is hyperbolic."
+      ]
+    },
+    {
+      "id": "amm_leg_fails",
+      "kind": "impact",
+      "text": "Remaining quote ≈ 2.4e7 is far below requiredQuote ≈ 2.67e12, so the AMM exact-out leg fails.",
+      "modality": "potential",
+      "entity_ids": [
+        "victim",
+        "amm"
+      ],
+      "evidence": [
+        "- Victim remaining: needs D−Z = 499,999 base; remaining quote = maxAmountInQuote − Q_Z ≈ 8.016e9 − 7.992e9 = 2.4e7.",
+        "- Using Uniswap formula, requiredQuote ≈ (reserveIn·out·1000)/(997·(reserveOut−out)) ≈ 2.67e12 (orders of magnitude larger than 2.4e7).",
+        "- Remaining quote ≪ requiredQuote → AMM leg fails; victim ends with only Z = 1 base."
+      ]
+    },
+    {
+      "id": "victim_gets_one_base",
+      "kind": "impact",
+      "text": "Victim ends with only Z = 1 base, paying ≈ 7.993e9 quote (effective ≈ 7.993e9/base) instead of 500,000 base.",
+      "modality": "potential",
+      "entity_ids": [
+        "victim"
+      ],
+      "evidence": [
+        "- Remaining quote ≪ requiredQuote → AMM leg fails; victim ends with only Z = 1 base.",
+        "- Victim: pays ≈ 7.993e9 quote for 1 base (effective ≈ 7.993e9/base) instead of 500,000 base → severe loss."
+      ]
+    },
+    {
+      "id": "intent_slippage_covers_combined",
+      "kind": "security_intent",
+      "text": "Inferred: the victim's maxAmountInQuote slippage bound should constrain the combined curve+AMM execution so the victim does not pay the bound for a tiny fill.",
+      "modality": "inferred",
+      "entity_ids": [
+        "victim",
+        "launchpad"
+      ],
+      "evidence": [
+        "- Root cause: Slippage is enforced only on the curve portion in `Launchpad.buy`, not on the combined curve+AMM execution after graduation. An attacker can first push bonding near completion (cheaply when Vb is small), then frontrun to force a tiny curve fill and trigger graduation; the CPMM’s marginal price near end is hyperbolic.",
+        "- Impact: Victim’s `maxAmountInQuote` is largely consumed by an extremely expensive tiny curve fill; remaining quote is insufficient for the AMM exact-out leg, so victim gets only a tiny amount at a terrible effective price. Attacker’s trade is typically unprofitable (griefing), but reliably harms users."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "attacker_frontruns_to_leave_one_base",
+    "victim_buy_executes"
+  ],
+  "ambiguities": [
+    "Report does not state whether attacker's prior push (R=1,000,000) is a separate transaction or part of the same frontrun.",
+    "Attacker's net loss (grief-only) is a secondary economic consequence not included as a direct impact.",
+    "Whether the AMM leg failure reverts the whole transaction or leaves victim with only 1 base is not fully specified."
+  ]
+}

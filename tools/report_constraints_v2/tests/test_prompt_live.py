@@ -1,11 +1,14 @@
 """The single live prompt: contract, feature decoupling, CLI reachability."""
+import json
 import unittest
 
 from prompts import current
 from prompts.active import resolve_prompt_set
 from prompts import registry
 from prompts.definitions import ELEMENT_CONTRACT_MARKERS, FORMAL_CONTRACT_MARKERS
-from cli.semantic_pipeline import formal_repair_fields
+from cli.semantic_pipeline import (SemanticFaithfulnessMismatch,
+                                   formal_repair_fields, local_repair_payload,
+                                   restore_frozen_repair_fields)
 
 
 class LivePromptTests(unittest.TestCase):
@@ -31,8 +34,22 @@ class LivePromptTests(unittest.TestCase):
         formal = current.FORMAL_PLAN_PROMPT
         for phrase in ('monotonicity MUST use kind monotonicity with trigger, before_symbol,',
                        'conservation MUST use kind conservation with trigger, before and after;',
-                       'every other class MUST use kind relation_obligation with condition and relation.'):
+                       'progress_or_liveness MUST use required_effect',
+                       'value_relation and data_structure_integrity MUST use relation_obligation',
+                       'temporal_order: {kind,condition,earlier_symbol,later_symbol,strict}',
+                       'state_correspondence uses correspondence with condition'):
             self.assertIn(phrase, formal)
+
+    def test_live_formal_plan_contract_requires_impact_qualifier_context(self):
+        formal = current.FORMAL_PLAN_PROMPT
+        self.assertIn('schema_version:"report-formal-plan/8"', formal)
+        self.assertIn('impact_outcome:{source_id:TARGET_IMPACT_ID,predicate:PREDICATE}', formal)
+        self.assertIn('impact_context_terms:[{source_id:ID,qualifier_types:', formal)
+        for qualifier in ('comparison_direction', 'scope',
+                          'duration_or_repetition', 'rate_or_cost'):
+            self.assertIn(qualifier, formal)
+        fields = formal_repair_fields(ValueError('unexpected formal plan fields'))
+        self.assertIn('impact_context_terms', fields)
 
     def test_live_element_prompt_keeps_p_temporal_role_mandate(self):
         # blind-03 attribution: formula-layer P failures were all inherited from
@@ -74,7 +91,8 @@ class LivePromptTests(unittest.TestCase):
         # direction-correct repairs.  Guards keep the live-3 constant-form rule
         # from silently disappearing in a later in-place edit.
         formal = current.FORMAL_PLAN_PROMPT
-        self.assertIn('TASK VERSION: semantic-live-6', formal)
+        self.assertIn('TASK VERSION: semantic-live-21', formal)
+        self.assertIn('schema_version:"report-formal-plan/8"', formal)
         for phrase in ('Every explicit bound constant must be a literal',
                        'appears in the cited report text',
                        'never 2^12, 4096, or a',
@@ -83,23 +101,76 @@ class LivePromptTests(unittest.TestCase):
                        'instead of inventing a'):
             self.assertIn(phrase, formal)
 
-    def test_live_formal_prompt_keeps_duplicate_predicate_mandate(self):
-        # prompt_live3_blind_01 attribution: both Panoptic candidates collapsed
-        # two distinct extracted facts onto one repeated truth predicate, so one
-        # fact stopped being represented.  Guards keep the live-4 audit-list
-        # extension (live-6: equivalence-aware wording) from silently
-        # disappearing in a later in-place edit.
+    def test_live_i_formula_isolated_from_impact_witness(self):
         formal = current.FORMAL_PLAN_PROMPT
-        # Phrases avoid the prompt's mid-phrase line breaks.
-        for phrase in ('Two different precondition sources must never share one',
-                       'predicate',
-                       'the conjunction collapses',
-                       'move it to assumptions instead of repeating the',
-                       "first fact's",
-                       # live-6 (blind-batch_03/S15): the gate folds mirrors
-                       # and same-symbol zero bounds, so the prompt names them.
-                       'mirrored spelling',
-                       'two zero bounds on the same symbol'):
+        for phrase in ('I FORMULA ISOLATION (mandatory)',
+                       'Do not use a TARGET IMPACT result',
+                       'Every symbol used only by V belongs in impact_outcome',
+                       'eth_stuck_forever implies accounting',
+                       'notifyVaultSupply" into "settlement reverts',
+                       'do not replace it with "now < start"'):
+            self.assertIn(phrase, formal)
+
+    def test_live20_prompt_is_frozen_for_replay(self):
+        old = resolve_prompt_set('semantic-live-20')
+        self.assertEqual(old.version, 'semantic-live-20')
+        self.assertIn('TASK VERSION: semantic-live-20', old.formal_prompt)
+        self.assertNotIn('I FORMULA ISOLATION (mandatory)', old.formal_prompt)
+
+    def test_faithfulness_repair_scope_tracks_failed_role(self):
+        i_failure = SemanticFaithfulnessMismatch(
+            'semantic faithfulness mismatch: intent_a other_mismatch: impact used as guard',
+            [{'source_id': 'intent_a', 'role': 'I',
+              'verdict': 'other_mismatch', 'reason': 'impact used as guard'}])
+        self.assertEqual(set(formal_repair_fields(i_failure)),
+                         {'pattern', 'symbols', 'derived_definitions'})
+        payload = json.loads(local_repair_payload(
+            '{}', {'plan': 'old'}, i_failure, formal_repair_fields(i_failure)))
+        self.assertEqual(payload['repair_roles'], ['I'])
+        self.assertIn('Do not gate I on a V-only impact result',
+                      '\n'.join(payload['requirements']))
+
+        previous = {'pattern': {'relation': 'I'}, 'impact_outcome': {'witness': 'V'},
+                    'limitations': ['original']}
+        repaired = {'pattern': {'relation': 'I2'}, 'impact_outcome': {'witness': 'V'},
+                    'limitations': ['model changed unrelated caveat']}
+        repaired, restored = restore_frozen_repair_fields(
+            previous, repaired, ('pattern',))
+        self.assertEqual(repaired['limitations'], ['original'])
+        self.assertEqual(restored, ['limitations'])
+        self.assertEqual(formal_repair_fields(i_failure),
+                         ('derived_definitions', 'pattern', 'symbols'))
+
+        v_failure = SemanticFaithfulnessMismatch(
+            'semantic faithfulness mismatch: impact_a other_mismatch: amount omitted',
+            [{'source_id': 'impact_a', 'role': 'V',
+              'verdict': 'other_mismatch', 'reason': 'amount omitted'}])
+        self.assertEqual(set(formal_repair_fields(v_failure)),
+                         {'impact_outcome', 'impact_context_terms', 'symbols',
+                          'derived_definitions'})
+
+        relation_failure = SemanticFaithfulnessMismatch(
+            'semantic faithfulness mismatch: P/I/V relation other_mismatch: weakened',
+            [{'source_id': 'P/I/V relation', 'role': 'PIV',
+              'verdict': 'other_mismatch', 'reason': 'weakened'}])
+        self.assertNotIn('precondition_ids', formal_repair_fields(relation_failure))
+        self.assertNotIn('intent_id', formal_repair_fields(relation_failure))
+
+    def test_impact_extraction_uses_explicit_impact_sections(self):
+        prompt = current.IMPACT_INVENTORY_PROMPT
+        for phrase in ('explicitly labeled Impact area',
+                       'supplied fragments are already\nlimited to that area',
+                       'Do not infer an impact from a cause or mechanism',
+                       'Each item must cite one or more supplied evidence IDs'):
+            self.assertIn(phrase, prompt)
+        self.assertIn('do not create, paraphrase, omit, or cite any kind="impact"',
+                      current.ID_ELEMENT_PROMPT)
+
+    def test_live_formal_prompt_defers_duplicate_predicate_judgment_to_fidelity(self):
+        formal = current.FORMAL_PLAN_PROMPT
+        for phrase in ('Different precondition sources may share one',
+                       'Keep one term and provenance link for every selected source',
+                       'audit decides whether identical predicates faithfully represent'):
             self.assertIn(phrase, formal)
 
     def test_live_formal_prompt_keeps_anti_placeholder_mandates(self):
@@ -114,7 +185,7 @@ class LivePromptTests(unittest.TestCase):
                        'A tautological bound',
                        'satisfied by default and encodes nothing',
                        'truth symbol that merely names',
-                       'move the fact to assumptions with its structure stated'):
+                       'or record the gap in unresolved'):
             self.assertIn(phrase, formal)
 
     def test_live_formal_prompt_keeps_compound_term_budget(self):
@@ -218,7 +289,17 @@ class LivePromptTests(unittest.TestCase):
             'semantic faithfulness mismatch: pre_a inverted: fee accrues'))
         self.assertIn('semantic cross-audit', mismatch)
         self.assertIn('pre_a inverted: fee accrues', mismatch)
-        self.assertIn('move that fact to assumptions', mismatch)
+        self.assertIn('change the relevant precondition_terms', mismatch)
+        self.assertIn('change the safety pattern', mismatch)
+
+    def test_live_rule_generation_uses_frozen_piv_and_audits_duplicate_predicates_later(self):
+        from prompts.current import FEATURES
+        formal = resolve_prompt_set('semantic-live').formal_prompt
+        self.assertIn('source IDs selected in the supplied applicability card are frozen',
+                      formal)
+        self.assertIn('identical predicates faithfully represent duplicate wording',
+                      formal)
+        self.assertFalse(FEATURES['duplicate_predicate_gate'])
 
 
 class FeatureDecouplingTests(unittest.TestCase):
@@ -240,7 +321,12 @@ class FeatureDecouplingTests(unittest.TestCase):
                          'partial_formalization', 'example_pinning_review',
                          'placeholder_predicate_review',
                          'semantic_faithfulness_audit',
-                         'mixed_unit_scaling_review', 'symbol_table_review'}
+                         'mixed_unit_scaling_review', 'symbol_table_review',
+                         'impact_level_claims', 'impact_section_scope',
+                         'impact_inventory_stage', 'frozen_piv_sources',
+                         'multi_i_claims', 'strict_piv', 'structured_unresolved',
+                         'numeric_guard', 'address_guard', 'relation_alignment',
+                         'local_repair', 'unit_guard', 'fidelity_only_rules'}
         inherited = [name for name in registry.FEATURE_NAMES
                      if name not in post_baseline]
         for version in ('semantic-v3.16', 'semantic-v3.20'):
@@ -256,27 +342,37 @@ class FeatureDecouplingTests(unittest.TestCase):
                                                   'assumption_numeric_relief'))
         self.assertFalse(registry.feature_enabled('semantic-v3.20',
                                                   'assumption_numeric_relief'))
-        # semantic-live-5 (post-closure): the four structural additions are
-        # live-only; every frozen version keeps the behaviour it shipped with,
-        # so recorded runs replay under their own feature decisions.
-        for name in ('duplicate_predicate_gate', 'requirement_source_review',
-                     'intent_scope_review', 'partial_formalization'):
+        # These standalone diagnostics were intentionally removed from the
+        # live flow after they generated parallel review channels.
+        for name in ('requirement_source_review', 'intent_scope_review',
+                     'mixed_unit_scaling_review'):
             with self.subTest(feature=name):
-                self.assertTrue(registry.feature_enabled('semantic-live', name))
+                self.assertFalse(registry.feature_enabled('semantic-live', name))
                 self.assertFalse(registry.feature_enabled('semantic-v3.16', name))
                 self.assertFalse(registry.feature_enabled('semantic-v3.20', name))
-        # live-7 (blind-batch_03 placeholder advisory): same rule; the review is
-        # advisory, so replay depends on the recorded feature decision.
+        self.assertFalse(registry.feature_enabled('semantic-live',
+                                                  'duplicate_predicate_gate'))
         self.assertTrue(registry.feature_enabled('semantic-live',
-                                                 'placeholder_predicate_review'))
-        self.assertFalse(registry.feature_enabled('semantic-v3.16',
-                                                  'placeholder_predicate_review'))
+                                                 'frozen_piv_sources'))
+        self.assertTrue(registry.feature_enabled('semantic-live',
+                                                 'multi_i_claims'))
+        self.assertFalse(registry.feature_enabled('semantic-live',
+                                                  'partial_formalization'))
+        self.assertTrue(registry.feature_enabled('semantic-live',
+                                                 'impact_section_scope'))
+        self.assertTrue(registry.feature_enabled('semantic-live',
+                                                 'impact_inventory_stage'))
         self.assertFalse(registry.feature_enabled('semantic-v3.20',
+                                                  'impact_section_scope'))
+        self.assertFalse(registry.feature_enabled('semantic-v3.20',
+                                                  'impact_inventory_stage'))
+        # These standalone advisory diagnostics were later removed from the
+        # live path; the semantic faithfulness audit remains the single extra
+        # review channel.
+        self.assertFalse(registry.feature_enabled('semantic-live',
                                                   'placeholder_predicate_review'))
-        # live-6 (post-holdout defect-side): same rule for the advisory added
-        # from the final_holdout_02 findings.
-        self.assertTrue(registry.feature_enabled('semantic-live',
-                                                 'example_pinning_review'))
+        self.assertFalse(registry.feature_enabled('semantic-live',
+                                                  'example_pinning_review'))
         for version in registry.VERSIONS:
             self.assertFalse(registry.feature_enabled(version,
                                                       'example_pinning_review'))
@@ -300,6 +396,7 @@ class FeatureDecouplingTests(unittest.TestCase):
     def test_versions_stay_frozen_only(self):
         self.assertNotIn('semantic-live', registry.VERSIONS)
         self.assertIn('semantic-live', registry.SELECTABLE_VERSIONS)
+        self.assertIn('semantic-live-16', registry.SELECTABLE_VERSIONS)
         self.assertEqual(len(registry.VERSIONS), 16)
         self.assertEqual(registry.SELECTABLE_VERSIONS[-1], 'semantic-live')
 

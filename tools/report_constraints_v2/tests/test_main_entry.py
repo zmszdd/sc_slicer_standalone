@@ -180,16 +180,18 @@ class Stage2OnlyTest(unittest.TestCase):
             entry._with_arg_defaults('run', ['--extract', '--case-dir', 'x']),
             ['--provider', 'deepseek', '--extract', '--case-dir', 'x',
              '--deepseek-proxy', 'direct', '--claim-verdict', 'signals',
-             '--formal-retries', '1', '--element-retries', '1'])
+             '--formal-retries', '1', '--element-retries', '1',
+             '--readiness-retries', '1'])
 
     def test_formalize_only_run_gets_no_element_retry_budget(self):
-        # --element-retries is guarded by the target parser as
-        # "requires --extract"; injecting it into a formalize-only run
-        # would make the child exit 2 before any model call.
+        # --element-retries/--readiness-retries are guarded by the target
+        # parser as "requires --extract"; injecting either into a
+        # formalize-only run would make the child exit 2 before any model call.
         result = entry._with_arg_defaults(
             'run', ['--formalize-only', '--case-dir', 'x'])
         self.assertIn('--formal-retries', result)
         self.assertNotIn('--element-retries', result)
+        self.assertNotIn('--readiness-retries', result)
 
     def test_offline_run_is_not_pinned_to_the_deepseek_transport(self):
         """An offline run replays saved candidates and makes no model call.
@@ -211,6 +213,7 @@ class Stage2OnlyTest(unittest.TestCase):
                                                '--claim-verdict', 'signals'])
                 self.assertNotIn('--formal-retries', result)
                 self.assertNotIn('--element-retries', result)
+                self.assertNotIn('--readiness-retries', result)
 
     def test_batch_also_pins_the_official_model_id(self):
         args = entry._with_arg_defaults('batch', ['--reports-root', 'r'])
@@ -229,13 +232,28 @@ class Stage2OnlyTest(unittest.TestCase):
                           '--claim-verdict', 'signals',
                           '--formal-retries', '1'])
 
+    def test_explicit_provider_owns_the_readiness_budget(self):
+        # --readiness-retries is injected only when this entry also pins the
+        # provider: the child parser guards the flag with
+        # "requires DeepSeek full extraction", so a caller who overrides the
+        # transport must decide the budget itself (mirrors `batch`, which
+        # forwards the flag only for the deepseek provider).
+        argv = ['--provider', 'opencode', '--extract', '--case-dir', 'x']
+        result = entry._with_arg_defaults('run', argv)
+        self.assertNotIn('--readiness-retries', result)
+        argv = ['--provider', 'deepseek', '--extract', '--case-dir', 'x']
+        result = entry._with_arg_defaults('run', argv)
+        self.assertNotIn('--readiness-retries', result)
+        self.assertIn('--element-retries', result)
+
     def test_explicit_retry_budget_is_never_overridden(self):
         argv = ['--extract', '--case-dir', 'x', '--formal-retries', '2']
         self.assertEqual(entry._with_arg_defaults('run', argv),
                          ['--provider', 'deepseek', *argv,
                           '--deepseek-proxy', 'direct',
                           '--claim-verdict', 'signals',
-                          '--element-retries', '1'])
+                          '--element-retries', '1',
+                          '--readiness-retries', '1'])
 
     def test_offline_commands_get_no_model_defaults(self):
         for command in ('verify', 'screen', 'status'):

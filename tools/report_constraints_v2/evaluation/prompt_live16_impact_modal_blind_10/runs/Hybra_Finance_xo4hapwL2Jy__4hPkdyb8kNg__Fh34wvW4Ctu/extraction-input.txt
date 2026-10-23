@@ -1,0 +1,36 @@
+Complete Fund Freeze via Low-Cost Array Griefing Attack
+
+## Overview
+
+The `GrowthHYBR.deposit()` function allows any address to deposit tokens on behalf of any recipient, creating an unbounded array of lock entries in `userLocks[recipient]`. An attacker can exploit this by making thousands of 1-wei deposits for a victim, causing the victim's token transfers to trigger expensive array cleanup operations in `_cleanExpired()` that exceed Hyperliquid's 30M gas block limit ([source](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/dual-block-architecture)), effectively freezing the victim's tokens at minimal cost to the attacker.
+
+## Vulnerability Description
+
+The GrowthHYBR contract (in GovernanceHYBR.sol) implements time-locked tokens where deposits create lock entries expiring after 24 hours. The vulnerability combines unrestricted third-party deposits with unbounded array growth, causing expensive cleanup operations during transfers.
+
+Line 126 of `deposit()` allows anyone to deposit for any recipient without access control:
+
+
+Each deposit appends to `userLocks[recipient]` with no minimum amount requirement (line 271), enabling attackers to create thousands of 1-wei locks. The DoS occurs during token transfers when `_beforeTokenTransfer()` calls `_cleanExpired()` to remove expired locks:
+
+
+The `_cleanExpired()` function (lines 303-326) iterates through the ENTIRE `userLocks` array to compact it, reading all storage slots, writing to reorder non-expired entries, and popping expired entries:
+
+
+With 4,000+ locks, this cleanup consumes 30-40M gas (reading 4,000 slots + array compaction + storage deletions), exceeding Hyperliquid's 30M gas slow block limit ([source](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/dual-block-architecture)) and reverting all transfer attempts. An attacker spends 4,000 wei HYBR (~$0.000000001) plus ~$100 gas to freeze millions in victim assets.
+
+## Code Location
+
+**GovernanceHYBR.sol (GrowthHYBR contract)**
+- [`deposit()` function (L124-L153)](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GovernanceHYBR.sol#L124-L153) - Allows unrestricted third-party deposits
+- [`_addTransferLock()` function (L269-L276)](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GovernanceHYBR.sol#L269-L276) - Unbounded array append
+- [`_cleanExpired()` function (L303-L326)](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GovernanceHYBR.sol#L303-L326) - Gas-intensive full array iteration
+- [`_beforeTokenTransfer()` hook (L332-L357)](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GovernanceHYBR.sol#L332-L357) - Triggers cleanup on transfers
+
+## Impact
+
+This vulnerability enables griefing where an attacker spending ~$100 can freeze millions in victim assets. The attack causes complete DoS on token transfers and withdrawals via 30-40M gas cleanup that exceeds Hyperliquid's 30M gas slow block limit ([source](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/dual-block-architecture)).
+
+The attack sustains indefinitely—while individual locks expire after 24 hours, attackers continuously deposit new locks before expiry, maintaining permanent DoS for ~$100/day. Victims cannot transfer, withdraw, or rebalance positions during market volatility, creating direct financial losses.
+
+Any user holding gHYBR tokens can be targeted. DeFi integrations (pools, lending, vaults) face particularly severe risk since smart contracts cannot manually clean up or migrate to new addresses, enabling permanent griefing.

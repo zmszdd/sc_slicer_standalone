@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import unittest
 
-from cli.semantic_pipeline import (_SEMANTIC_SCOPE, faithfulness_audit_input,
+from cli.semantic_pipeline import (_FAITHFULNESS_SCOPE, faithfulness_audit_input,
                                    formal_repair_fields, formal_retry_hint)
 from lib.plan_synthesizer import (check_distinct_p_predicates,
                               faithfulness_mismatches, intent_scope_review,
@@ -692,7 +692,7 @@ class FaithfulnessAuditTests(unittest.TestCase):
                               'statement asserts accrual, predicate asserts equality')
         self.assertIn('semantic cross-audit', formal_retry_hint(mismatch))
         self.assertIn('pre_a inverted', formal_retry_hint(mismatch))
-        self.assertEqual(formal_repair_fields(mismatch), _SEMANTIC_SCOPE)
+        self.assertEqual(formal_repair_fields(mismatch), _FAITHFULNESS_SCOPE)
 
 
 if __name__ == '__main__':

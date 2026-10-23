@@ -1,0 +1,130 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Monetrix_L3gNZDymiju",
+    "audit_uid": "L3gNZDymiju",
+    "requested_submission_uid": "a2ihKzkQ4TE",
+    "requested_finding_uid": "uBJHpCWWngt",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Monetrix_L3gNZDymiju/20260618_131702/findings.json",
+    "source_submission_uid": "a2ihKzkQ4TE",
+    "source_finding_uid": "uBJHpCWWngt",
+    "original_report_path": "Monetrix_L3gNZDymiju\\low_valid_a2ihKzkQ4TE.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "a2ihKzkQ4TE",
+  "finding_uid": "uBJHpCWWngt",
+  "finding_number": "124",
+  "title": "USDC Blacklisting Permanently Locks User Funds in RedeemEscrow With No Recovery Path",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "Luc1jan",
+  "body": "## Finding description and impact\n\nWhen a user calls [`requestRedeem()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L183-L196), their USDM is transferred to the vault and [`addObligation()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L41-L44) increments `totalOwed` in RedeemEscrow. The operator later calls `fundRedemptions` to move the matching USDC into the escrow. When the user eventually calls [`claimRedeem()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L198-L213), the vault calls [`payOut()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L47-L53) which does `usdc.safeTransfer(recipient, amount)`.\n\nCircle (the USDC issuer) can blacklist any address at any time, including in response to legal orders or theft. If the redeeming user is blacklisted between `requestRedeem` and `claimRedeem`, the `safeTransfer` reverts because USDC enforces a blacklist check on every transfer. There is nothing in the protocol that handles this revert.\n\nThe consequences are permanent:\n\n- `payOut` is the only function that reduces `totalOwed`. With a blacklisted recipient, every call to `payOut` reverts and `totalOwed` can never decrease for that obligation.\n- [`reclaimTo`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L59-L65) enforces `bal >= amount + totalOwed`. As long as the stuck obligation remains in `totalOwed`, the operator cannot reclaim the corresponding USDC.\n- The user's USDM is sitting in the vault (transferred there at `requestRedeem`) and can never be burned or returned -- there is no refund path.\n- There is no admin or governance function in RedeemEscrow or the vault that can clear a stuck obligation or redirect a payment to an alternative address.\n\n**Accounting impact.** The stuck USDC stays in RedeemEscrow and is still counted as backing by [`totalBackingSigned()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L135). The corresponding USDM is still in `usdm.totalSupply()` (never burned). So `surplus()` is not distorted -- the accounting stays balanced, just with permanently frozen funds.\n\n---\n\n## Mitigation\n\nThe cleanest fix is to allow the redemption owner to specify an alternative recipient in `claimRedeem`. Since the ownership check already ensures only `req.owner` can call it, they can redirect the USDC to any non-blacklisted address they control. This requires no governance intervention and keeps the existing access control intact.",
+  "proof_of_concept": "```\nforge test --match-path \"test/c4/C4Submission.t.sol\" -vvv\n```\n\n```solidity\n// test/c4/C4Submission.t.sol\n\nfunction test_submissionValidity() public {\n    // User deposits and requests redemption. USDM moves to vault, obligation recorded.\n    _deposit(user1, 1_000e6);\n    uint256 requestId = _requestRedeem(user1, 1_000e6);\n\n    // Operator funds the escrow so the USDC is ready for the user to claim.\n    vm.prank(operator);\n    vault.fundRedemptions(0);\n\n    // Cooldown passes. Before the user claims, Circle blacklists their address.\n    vm.warp(block.timestamp + 3 days + 1);\n    vm.mockCallRevert(\n        address(usdc),\n        abi.encodeWithSelector(bytes4(keccak256(\"transfer(address,uint256)\")), user1, 1_000e6),\n        abi.encodeWithSignature(\"Error(string)\", \"Blacklistable: account is blacklisted\")\n    );\n\n    // claimRedeem is permanently bricked for this user.\n    vm.prank(user1);\n    vm.expectRevert(\"Blacklistable: account is blacklisted\");\n    vault.claimRedeem(requestId);\n\n    // The request, the obligation, and the USDC are all permanently stuck.\n    // totalOwed can only decrease via a successful payOut, which always reverts.\n    assertEq(redeemEscrow.totalOwed(), 1_000e6, \"Obligation permanently stuck\");\n    assertEq(usdc.balanceOf(address(redeemEscrow)), 1_000e6, \"USDC permanently locked\");\n\n    // reclaimTo enforces bal >= amount + totalOwed, so the USDC cannot be\n    // reclaimed by the operator either.\n    vm.prank(operator);\n    vm.expectRevert(\"RedeemEscrow: would underfund obligations\");\n    vault.reclaimFromRedeemEscrow(1e6);\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L47-L53",
+    "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L211"
+  ],
+  "source_record": {
+    "project_id": "L3gNZDymiju",
+    "submission_index": "1452",
+    "api_submission_id": "",
+    "uid": "a2ihKzkQ4TE",
+    "number": "1452",
+    "title": "USDC Blacklisting Permanently Locks User Funds in RedeemEscrow With No Recovery Path",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "Luc1jan",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L47-L53",
+      "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L211"
+    ],
+    "body": "## Finding description and impact\n\nWhen a user calls [`requestRedeem()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L183-L196), their USDM is transferred to the vault and [`addObligation()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L41-L44) increments `totalOwed` in RedeemEscrow. The operator later calls `fundRedemptions` to move the matching USDC into the escrow. When the user eventually calls [`claimRedeem()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L198-L213), the vault calls [`payOut()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L47-L53) which does `usdc.safeTransfer(recipient, amount)`.\n\nCircle (the USDC issuer) can blacklist any address at any time, including in response to legal orders or theft. If the redeeming user is blacklisted between `requestRedeem` and `claimRedeem`, the `safeTransfer` reverts because USDC enforces a blacklist check on every transfer. There is nothing in the protocol that handles this revert.\n\nThe consequences are permanent:\n\n- `payOut` is the only function that reduces `totalOwed`. With a blacklisted recipient, every call to `payOut` reverts and `totalOwed` can never decrease for that obligation.\n- [`reclaimTo`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L59-L65) enforces `bal >= amount + totalOwed`. As long as the stuck obligation remains in `totalOwed`, the operator cannot reclaim the corresponding USDC.\n- The user's USDM is sitting in the vault (transferred there at `requestRedeem`) and can never be burned or returned -- there is no refund path.\n- There is no admin or governance function in RedeemEscrow or the vault that can clear a stuck obligation or redirect a payment to an alternative address.\n\n**Accounting impact.** The stuck USDC stays in RedeemEscrow and is still counted as backing by [`totalBackingSigned()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L135). The corresponding USDM is still in `usdm.totalSupply()` (never burned). So `surplus()` is not distorted -- the accounting stays balanced, just with permanently frozen funds.\n\n---\n\n## Mitigation\n\nThe cleanest fix is to allow the redemption owner to specify an alternative recipient in `claimRedeem`. Since the ownership check already ensures only `req.owner` can call it, they can redirect the USDC to any non-blacklisted address they control. This requires no governance intervention and keeps the existing access control intact.",
+    "proof_of_concept": "```\nforge test --match-path \"test/c4/C4Submission.t.sol\" -vvv\n```\n\n```solidity\n// test/c4/C4Submission.t.sol\n\nfunction test_submissionValidity() public {\n    // User deposits and requests redemption. USDM moves to vault, obligation recorded.\n    _deposit(user1, 1_000e6);\n    uint256 requestId = _requestRedeem(user1, 1_000e6);\n\n    // Operator funds the escrow so the USDC is ready for the user to claim.\n    vm.prank(operator);\n    vault.fundRedemptions(0);\n\n    // Cooldown passes. Before the user claims, Circle blacklists their address.\n    vm.warp(block.timestamp + 3 days + 1);\n    vm.mockCallRevert(\n        address(usdc),\n        abi.encodeWithSelector(bytes4(keccak256(\"transfer(address,uint256)\")), user1, 1_000e6),\n        abi.encodeWithSignature(\"Error(string)\", \"Blacklistable: account is blacklisted\")\n    );\n\n    // claimRedeem is permanently bricked for this user.\n    vm.prank(user1);\n    vm.expectRevert(\"Blacklistable: account is blacklisted\");\n    vault.claimRedeem(requestId);\n\n    // The request, the obligation, and the USDC are all permanently stuck.\n    // totalOwed can only decrease via a successful payOut, which always reverts.\n    assertEq(redeemEscrow.totalOwed(), 1_000e6, \"Obligation permanently stuck\");\n    assertEq(usdc.balanceOf(address(redeemEscrow)), 1_000e6, \"USDC permanently locked\");\n\n    // reclaimTo enforces bal >= amount + totalOwed, so the USDC cannot be\n    // reclaimed by the operator either.\n    vm.prank(operator);\n    vm.expectRevert(\"RedeemEscrow: would underfund obligations\");\n    vault.reclaimFromRedeemEscrow(1e6);\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/L3gNZDymiju/submissions/1452",
+    "raw": {
+      "auditUid": "L3gNZDymiju",
+      "createdAt": "2026-05-04T10:56:43.729Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "YbENfmtJWZ9",
+          "userUid": "LBbWumddX2j",
+          "userAuditRole": "judge",
+          "createdAt": "2026-05-06T14:32:24.334Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "uBJHpCWWngt"
+        },
+        {
+          "uid": "ZAKZ5eq3QKr",
+          "userUid": "LBbWumddX2j",
+          "userAuditRole": "judge",
+          "createdAt": "2026-05-12T19:02:40.884Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "a2ihKzkQ4TE",
+          "findingUid": null
+        },
+        {
+          "uid": "peSLaAo6Sen",
+          "userUid": "LBbWumddX2j",
+          "userAuditRole": "judge",
+          "createdAt": "2026-05-15T14:08:06.780Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "uBJHpCWWngt"
+        },
+        {
+          "uid": "DUYZ9UTB4hY",
+          "userUid": "YLWDmmwfFr3",
+          "userAuditRole": "sponsor",
+          "createdAt": "2026-05-26T09:19:29.451Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "uBJHpCWWngt"
+        }
+      ],
+      "finding": {
+        "uid": "uBJHpCWWngt",
+        "number": 124,
+        "duplicates": 8
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2026-05-26T09:19:29.451Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "USDC Blacklisting Permanently Locks User Funds in RedeemEscrow With No Recovery Path",
+      "uid": "a2ihKzkQ4TE",
+      "updatedAt": "2026-05-04T10:56:43.729Z",
+      "user": {
+        "uid": "jsi9JszLm9Z",
+        "handle": "Luc1jan"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nWhen a user calls [`requestRedeem()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L183-L196), their USDM is transferred to the vault and [`addObligation()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L41-L44) increments `totalOwed` in RedeemEscrow. The operator later calls `fundRedemptions` to move the matching USDC into the escrow. When the user eventually calls [`claimRedeem()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L198-L213), the vault calls [`payOut()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L47-L53) which does `usdc.safeTransfer(recipient, amount)`.\n\nCircle (the USDC issuer) can blacklist any address at any time, including in response to legal orders or theft. If the redeeming user is blacklisted between `requestRedeem` and `claimRedeem`, the `safeTransfer` reverts because USDC enforces a blacklist check on every transfer. There is nothing in the protocol that handles this revert.\n\nThe consequences are permanent:\n\n- `payOut` is the only function that reduces `totalOwed`. With a blacklisted recipient, every call to `payOut` reverts and `totalOwed` can never decrease for that obligation.\n- [`reclaimTo`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L59-L65) enforces `bal >= amount + totalOwed`. As long as the stuck obligation remains in `totalOwed`, the operator cannot reclaim the corresponding USDC.\n- The user's USDM is sitting in the vault (transferred there at `requestRedeem`) and can never be burned or returned -- there is no refund path.\n- There is no admin or governance function in RedeemEscrow or the vault that can clear a stuck obligation or redirect a payment to an alternative address.\n\n**Accounting impact.** The stuck USDC stays in RedeemEscrow and is still counted as backing by [`totalBackingSigned()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L135). The corresponding USDM is still in `usdm.totalSupply()` (never burned). So `surplus()` is not distorted -- the accounting stays balanced, just with permanently frozen funds.\n\n---\n\n## Mitigation\n\nThe cleanest fix is to allow the redemption owner to specify an alternative recipient in `claimRedeem`. Since the ownership check already ensures only `req.owner` can call it, they can redirect the USDC to any non-blacklisted address they control. This requires no governance intervention and keeps the existing access control intact.",
+      "proofOfConcept": "```\nforge test --match-path \"test/c4/C4Submission.t.sol\" -vvv\n```\n\n```solidity\n// test/c4/C4Submission.t.sol\n\nfunction test_submissionValidity() public {\n    // User deposits and requests redemption. USDM moves to vault, obligation recorded.\n    _deposit(user1, 1_000e6);\n    uint256 requestId = _requestRedeem(user1, 1_000e6);\n\n    // Operator funds the escrow so the USDC is ready for the user to claim.\n    vm.prank(operator);\n    vault.fundRedemptions(0);\n\n    // Cooldown passes. Before the user claims, Circle blacklists their address.\n    vm.warp(block.timestamp + 3 days + 1);\n    vm.mockCallRevert(\n        address(usdc),\n        abi.encodeWithSelector(bytes4(keccak256(\"transfer(address,uint256)\")), user1, 1_000e6),\n        abi.encodeWithSignature(\"Error(string)\", \"Blacklistable: account is blacklisted\")\n    );\n\n    // claimRedeem is permanently bricked for this user.\n    vm.prank(user1);\n    vm.expectRevert(\"Blacklistable: account is blacklisted\");\n    vault.claimRedeem(requestId);\n\n    // The request, the obligation, and the USDC are all permanently stuck.\n    // totalOwed can only decrease via a successful payOut, which always reverts.\n    assertEq(redeemEscrow.totalOwed(), 1_000e6, \"Obligation permanently stuck\");\n    assertEq(usdc.balanceOf(address(redeemEscrow)), 1_000e6, \"USDC permanently locked\");\n\n    // reclaimTo enforces bal >= amount + totalOwed, so the USDC cannot be\n    // reclaimed by the operator either.\n    vm.prank(operator);\n    vm.expectRevert(\"RedeemEscrow: would underfund obligations\");\n    vault.reclaimFromRedeemEscrow(1e6);\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L47-L53,https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L211",
+      "number": 1452,
+      "aiExplanation": null,
+      "_index": 1452
+    }
+  }
+}

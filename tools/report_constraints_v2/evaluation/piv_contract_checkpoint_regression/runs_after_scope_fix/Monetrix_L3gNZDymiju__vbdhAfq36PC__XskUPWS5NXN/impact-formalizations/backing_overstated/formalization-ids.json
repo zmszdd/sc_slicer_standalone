@@ -1,0 +1,272 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "portfolio_margin_enabled": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Portfolio Margin is activated on the Vault's L1 account",
+      "checkpoint": "before settle",
+      "evidence_ids": [
+        "e_3a9a1d9ad023_0029"
+      ],
+      "entity_ids": [
+        "vault",
+        "l1_account"
+      ]
+    },
+    "usdm_minted_ratio": {
+      "sort": "int",
+      "unit": "USDM per USDC",
+      "meaning": "USDM minted per USDC of backing (report states 1:1)",
+      "checkpoint": "before settle",
+      "evidence_ids": [
+        "e_3a9a1d9ad023_0029"
+      ],
+      "entity_ids": [
+        "vault"
+      ]
+    },
+    "auto_borrow_occurred": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "HyperLiquid PM auto-borrow has triggered on the Vault's L1 account due to adverse price movement",
+      "checkpoint": "before settle",
+      "evidence_ids": [
+        "e_3a9a1d9ad023_0010",
+        "e_3a9a1d9ad023_0030"
+      ],
+      "entity_ids": [
+        "l1_account"
+      ]
+    },
+    "borrow_value": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "0x811 borrow.value of the Vault's L1 account (the borrow leg amount)",
+      "checkpoint": "before settle",
+      "evidence_ids": [
+        "e_3a9a1d9ad023_0010",
+        "e_3a9a1d9ad023_0030"
+      ],
+      "entity_ids": [
+        "l1_account"
+      ]
+    },
+    "reported_backing": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "totalBackingSigned() reported backing as computed by the Accountant",
+      "checkpoint": "after auto-borrow, before settle",
+      "evidence_ids": [
+        "e_3a9a1d9ad023_0023",
+        "e_3a9a1d9ad023_0025",
+        "e_3a9a1d9ad023_0009"
+      ],
+      "entity_ids": [
+        "accountant",
+        "l1_account"
+      ]
+    },
+    "real_net_assets": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "real net assets of the Vault's L1 account (unchanged by the auto-borrow)",
+      "checkpoint": "after auto-borrow, before settle",
+      "evidence_ids": [
+        "e_3a9a1d9ad023_0010",
+        "e_3a9a1d9ad023_0030",
+        "e_3a9a1d9ad023_0023",
+        "e_3a9a1d9ad023_0025"
+      ],
+      "entity_ids": [
+        "l1_account"
+      ]
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_backing_overstated_6933b492",
+      "scope": "Vault surplus accounting and yield settlement via vault.settle/distributeYield",
+      "modality": "potential",
+      "impact_ids": [
+        "backing_overstated"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "Portfolio Margin is activated on the Vault's L1 account.; Vault is in production with USDM minted 1:1 against USDC.; HyperLiquid PM auto-borrow triggers due to adverse price movement (e.g. BTC drops), so the Vault's L1 account shows spot USDC = +X and 0x811 borrow.value = +X while real net assets are unchanged.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "portfolio_margin_enabled"
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "usdm_minted_ratio"
+                  },
+                  {
+                    "const": 1
+                  }
+                ]
+              },
+              {
+                "var": "auto_borrow_occurred"
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_3a9a1d9ad023_0029",
+            "e_3a9a1d9ad023_0010",
+            "e_3a9a1d9ad023_0030"
+          ],
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "pm_enabled_vault",
+            "usdm_minted_against_usdc",
+            "auto_borrow_triggered"
+          ]
+        },
+        "safety": {
+          "text": "Reported backing must not exceed real net assets: the borrow leg (borrow.value) must be accounted so that surplus reflects net BLP exposure rather than gross supply.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "portfolio_margin_enabled"
+                  },
+                  {
+                    "var": "auto_borrow_occurred"
+                  }
+                ]
+              },
+              {
+                "op": "le",
+                "args": [
+                  {
+                    "var": "reported_backing"
+                  },
+                  {
+                    "var": "real_net_assets"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_3a9a1d9ad023_0009",
+            "e_3a9a1d9ad023_0023",
+            "e_3a9a1d9ad023_0025"
+          ],
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "solvency_intent"
+          ]
+        },
+        "effects": {
+          "text": "Once an auto-borrow triggers, totalBackingSigned() overstates real net assets by exactly the borrow amount, so reported backing exceeds real backing.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "portfolio_margin_enabled"
+                  },
+                  {
+                    "var": "auto_borrow_occurred"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "le",
+                    "args": [
+                      {
+                        "var": "reported_backing"
+                      },
+                      {
+                        "var": "real_net_assets"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_3a9a1d9ad023_0023",
+            "e_3a9a1d9ad023_0025"
+          ],
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "backing_overstated"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "pm_enabled_vault",
+            "usdm_minted_against_usdc",
+            "auto_borrow_triggered"
+          ],
+          "args.1": [
+            "pm_enabled_vault",
+            "usdm_minted_against_usdc",
+            "auto_borrow_triggered"
+          ]
+        },
+        "safety": {
+          "": [
+            "solvency_intent"
+          ],
+          "args.0": [
+            "solvency_intent"
+          ],
+          "args.1": [
+            "solvency_intent"
+          ]
+        },
+        "effects": {
+          "": [
+            "backing_overstated"
+          ],
+          "args.0": [
+            "backing_overstated"
+          ],
+          "args.1": [
+            "backing_overstated"
+          ],
+          "args.1.args.0": [
+            "backing_overstated"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "backing_overstated",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The keeper is authorized and settle is callable in the reported scenario; no unauthorized-caller condition is claimed.",
+        "The auto-borrow scenario is treated as realized for the checked transition, per the report's potential modality.",
+        "USDM is minted 1:1 against USDC, so backing and net-asset quantities are compared in the same USDC unit."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Only the backing_overstated impact is formalized; phantom surplus passing Gate 3 and principal displacement are handled in separate passes.",
+    "The exact borrow amount and displaced principal are not quantified beyond +X."
+  ]
+}

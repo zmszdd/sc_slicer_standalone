@@ -1,0 +1,472 @@
+{
+  "case_id": "Ekubo_3FTodhsvBkM__BnhskdXG9L2__LWJzDBLXHCX",
+  "impact_id": "attackers_front_run_victims",
+  "intent_id": "noop_with_value_should_revert",
+  "precondition_ids": [
+    "attacker_can_force_noop",
+    "victim_sets_sqrt_ratio_limit_near_price"
+  ],
+  "prompt_version": "semantic-live-23",
+  "relation_context_statement_count": 3,
+  "generated": true,
+  "fidelity_passed": true,
+  "fidelity_status": "passed",
+  "audit": {
+    "schema_version": "semantic-faithfulness-audit/3",
+    "status": "completed",
+    "verdict_consistent": true,
+    "fidelity_status": "passed",
+    "checks": [
+      {
+        "source_id": "attacker_can_force_noop",
+        "role": "P",
+        "verdict": "consistent",
+        "reason": "The predicate's symbol directly encodes the attacker front-running to move price to the victim's sqrtRatioLimit."
+      },
+      {
+        "source_id": "victim_sets_sqrt_ratio_limit_near_price",
+        "role": "P",
+        "verdict": "consistent",
+        "reason": "The predicate's symbol directly encodes the victim submitting a swap with sqrtRatioLimit near current price and 10 ether msg.value."
+      },
+      {
+        "source_id": "noop_with_value_should_revert",
+        "role": "I",
+        "verdict": "consistent",
+        "reason": "The implication encodes that a no-op swap with positive msg.value must revert, matching the statement."
+      },
+      {
+        "source_id": "attackers_front_run_victims",
+        "role": "V",
+        "verdict": "consistent",
+        "reason": "The predicate's symbol directly encodes attackers front-running to manipulate price to the victim's sqrtRatioLimit."
+      }
+    ],
+    "piv_relation": {
+      "verdict": "consistent",
+      "reason": "relation_context statement_id attacker_moves_price_to_limit (e_be7fd2bc7865_0023) and noop_condition_skips_swap_block (e_be7fd2bc7865_0003) explicitly bridge front-running to the no-op-with-ETH condition."
+    },
+    "relation_context": [
+      {
+        "statement_id": "attacker_moves_price_to_limit",
+        "role": "action",
+        "evidence": [
+          {
+            "evidence_id": "e_be7fd2bc7865_0023",
+            "text": "3. Attacker front-runs the victim's transaction and moves the price down to exactly the victim's `sqrtRatioLimit`."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0009",
+            "text": "3. **Exploitable by Attackers**: Attackers can front-run victim transactions to manipulate the pool price to exactly match the victim's `sqrtRatioLimit`, guaranteeing the exploit succeeds."
+          }
+        ]
+      },
+      {
+        "statement_id": "victim_swap_executes_sending_eth",
+        "role": "action",
+        "evidence": [
+          {
+            "evidence_id": "e_be7fd2bc7865_0024",
+            "text": "4. Victim's transaction executes:"
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0025",
+            "text": "- Router calculates `value = 10 ether` and calls `CoreLib::swap()`."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0026",
+            "text": "- `CoreLib::swap()` sends 10 ETH to Core via `call(gas(), core, value, ...)`."
+          }
+        ]
+      },
+      {
+        "statement_id": "noop_condition_skips_swap_block",
+        "role": "root_cause",
+        "evidence": [
+          {
+            "evidence_id": "e_be7fd2bc7865_0003",
+            "text": "In `Core::swap_6269342730()`, when the current `sqrtRatio` equals the `sqrtRatioLimit`, the swap is treated as a no-op, and the entire swap block is skipped. This includes the critical `_updatePairDebtWithNative()` call, which means ETH sent via `msg.value` is never accounted for in the debt system. The ETH becomes permanently stuck in the Core contract with no recovery mechanism."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0019",
+            "text": "The vulnerability exists in `Core::swap_6269342730()` where the `_updatePairDebtWithNative()` function is placed inside a conditional block that gets skipped when `sqrtRatio == sqrtRatioLimit`."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0027",
+            "text": "- In `Core::swap_6269342730()`, the condition `stateAfter.sqrtRatio() != sqrtRatioLimit` is FALSE."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0028",
+            "text": "- The entire swap block (lines 542-843) is skipped, including `_updatePairDebtWithNative()`."
+          }
+        ]
+      }
+    ],
+    "mismatch_count": 0,
+    "repair_finding_count": 0
+  },
+  "formal_plan": {
+    "schema_version": "report-formal-plan/8",
+    "relation_class": "progress_or_liveness",
+    "precondition_ids": [
+      "attacker_can_force_noop",
+      "victim_sets_sqrt_ratio_limit_near_price"
+    ],
+    "intent_id": "noop_with_value_should_revert",
+    "impact_ids": [
+      "attackers_front_run_victims"
+    ],
+    "symbols": {
+      "sqrt_ratio_equals_limit": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the swap's current sqrtRatio equals the victim's sqrtRatioLimit, making the swap a no-op",
+        "checkpoint": "at swap execution, before the swap block",
+        "entity_ids": [
+          "core_contract"
+        ],
+        "source_ids": [
+          "noop_with_value_should_revert"
+        ]
+      },
+      "msg_value_positive": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "msg.value sent with the swap is greater than 0 (ETH supplied)",
+        "checkpoint": "at swap execution",
+        "entity_ids": [
+          "core_contract",
+          "eth_asset"
+        ],
+        "source_ids": [
+          "noop_with_value_should_revert"
+        ]
+      },
+      "swap_reverted": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the swap call reverts instead of silently accepting the ETH",
+        "checkpoint": "after swap execution",
+        "entity_ids": [
+          "core_contract"
+        ],
+        "source_ids": [
+          "noop_with_value_should_revert"
+        ]
+      },
+      "victim_sqrt_ratio_limit_near_price": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "victim submits a swap with sqrtRatioLimit set near the current price for slippage protection, sending 10 ether via msg.value",
+        "checkpoint": "before victim swap execution",
+        "entity_ids": [
+          "victim",
+          "router",
+          "eth_asset"
+        ],
+        "source_ids": [
+          "victim_sets_sqrt_ratio_limit_near_price"
+        ]
+      },
+      "attacker_front_runs_to_limit": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "attacker observes the victim's sqrtRatioLimit in the mempool and front-runs to move the pool price to exactly that limit",
+        "checkpoint": "before victim swap execution",
+        "entity_ids": [
+          "attacker",
+          "victim"
+        ],
+        "source_ids": [
+          "attacker_can_force_noop"
+        ]
+      },
+      "price_manipulated_to_victim_limit": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "attackers front-run victim transactions to manipulate the pool price to exactly match the victim's sqrtRatioLimit",
+        "checkpoint": "after attacker front-run, before victim swap",
+        "entity_ids": [
+          "attacker",
+          "victim"
+        ],
+        "source_ids": [
+          "attackers_front_run_victims"
+        ]
+      }
+    },
+    "precondition_terms": [
+      {
+        "source_id": "victim_sets_sqrt_ratio_limit_near_price",
+        "predicate": {
+          "kind": "truth",
+          "symbol": "victim_sqrt_ratio_limit_near_price",
+          "value": true
+        }
+      },
+      {
+        "source_id": "attacker_can_force_noop",
+        "predicate": {
+          "kind": "truth",
+          "symbol": "attacker_front_runs_to_limit",
+          "value": true
+        }
+      }
+    ],
+    "impact_outcome": {
+      "source_id": "attackers_front_run_victims",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "price_manipulated_to_victim_limit",
+        "value": true
+      }
+    },
+    "impact_context_terms": [],
+    "derived_definitions": [],
+    "pattern": {
+      "kind": "required_effect",
+      "condition": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "truth",
+            "symbol": "sqrt_ratio_equals_limit",
+            "value": true
+          },
+          {
+            "kind": "truth",
+            "symbol": "msg_value_positive",
+            "value": true
+          }
+        ]
+      },
+      "effect": {
+        "kind": "truth",
+        "symbol": "swap_reverted",
+        "value": true
+      }
+    },
+    "assumptions": [
+      "The no-op swap path is reachable when sqrtRatio equals sqrtRatioLimit.",
+      "msg.value > 0 is observable as a Boolean condition; the exact ETH amount is not needed for the intent."
+    ],
+    "unresolved": [
+      {
+        "category": "ambiguous_condition",
+        "description": "Report does not fully specify the exact numeric sqrtRatioLimit value (described only via tickToSqrtRatio(0-500)); the equality sqrtRatio == sqrtRatioLimit is encoded as a grounded Boolean.",
+        "source_ids": [
+          "noop_with_value_should_revert"
+        ],
+        "blocks_formalization": false
+      }
+    ],
+    "limitations": [
+      "The impact is potential; the impact_outcome Boolean encodes the reported potential front-run price manipulation without asserting inevitability.",
+      "The intent's revert requirement is encoded as a required_effect; the impact witness is the separate front-run price manipulation outcome."
+    ]
+  },
+  "formalization": {
+    "schema_version": "report-formalization/2",
+    "symbols": {
+      "sqrt_ratio_equals_limit": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the swap's current sqrtRatio equals the victim's sqrtRatioLimit, making the swap a no-op",
+        "checkpoint": "at swap execution, before the swap block",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0035",
+          "e_be7fd2bc7865_0036"
+        ],
+        "entity_ids": [
+          "core_contract"
+        ]
+      },
+      "msg_value_positive": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "msg.value sent with the swap is greater than 0 (ETH supplied)",
+        "checkpoint": "at swap execution",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0035",
+          "e_be7fd2bc7865_0036"
+        ],
+        "entity_ids": [
+          "core_contract",
+          "eth_asset"
+        ]
+      },
+      "swap_reverted": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the swap call reverts instead of silently accepting the ETH",
+        "checkpoint": "after swap execution",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0035",
+          "e_be7fd2bc7865_0036"
+        ],
+        "entity_ids": [
+          "core_contract"
+        ]
+      },
+      "victim_sqrt_ratio_limit_near_price": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "victim submits a swap with sqrtRatioLimit set near the current price for slippage protection, sending 10 ether via msg.value",
+        "checkpoint": "before victim swap execution",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0022",
+          "e_be7fd2bc7865_0015"
+        ],
+        "entity_ids": [
+          "victim",
+          "router",
+          "eth_asset"
+        ]
+      },
+      "attacker_front_runs_to_limit": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "attacker observes the victim's sqrtRatioLimit in the mempool and front-runs to move the pool price to exactly that limit",
+        "checkpoint": "before victim swap execution",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0014",
+          "e_be7fd2bc7865_0016"
+        ],
+        "entity_ids": [
+          "attacker",
+          "victim"
+        ]
+      },
+      "price_manipulated_to_victim_limit": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "attackers front-run victim transactions to manipulate the pool price to exactly match the victim's sqrtRatioLimit",
+        "checkpoint": "after attacker front-run, before victim swap",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0009"
+        ],
+        "entity_ids": [
+          "attacker",
+          "victim"
+        ]
+      }
+    },
+    "claims": [
+      {
+        "id": "impact_claim_attackers_front_run_victims_noop_with_value_should_revert",
+        "scope": "Attackers can front-run victim transactions to manipulate the pool price to exactly match the victim's `sqrtRatioLimit`, guaranteeing the exploit succeeds.",
+        "modality": "potential",
+        "impact_ids": [
+          "attackers_front_run_victims"
+        ],
+        "properties": {
+          "preconditions": {
+            "text": "An attacker monitoring the mempool can observe the victim's sqrtRatioLimit and front-run to move the price to exactly that limit.; The victim submits a swap with a sqrtRatioLimit set near the current price for slippage protection, sending 10 ether via msg.value.",
+            "expression": {
+              "op": "and",
+              "args": [
+                {
+                  "var": "victim_sqrt_ratio_limit_near_price"
+                },
+                {
+                  "var": "attacker_front_runs_to_limit"
+                }
+              ]
+            },
+            "evidence_ids": [
+              "e_be7fd2bc7865_0014",
+              "e_be7fd2bc7865_0016",
+              "e_be7fd2bc7865_0022",
+              "e_be7fd2bc7865_0015"
+            ],
+            "derivation": "Program conjunction of selected report preconditions.",
+            "source_ids": [
+              "attacker_can_force_noop",
+              "victim_sets_sqrt_ratio_limit_near_price"
+            ]
+          },
+          "safety": {
+            "text": "A swap that would be a no-op (sqrtRatio == sqrtRatioLimit) with msg.value > 0 must revert rather than silently accept the ETH.",
+            "expression": {
+              "op": "implies",
+              "args": [
+                {
+                  "op": "and",
+                  "args": [
+                    {
+                      "var": "sqrt_ratio_equals_limit"
+                    },
+                    {
+                      "var": "msg_value_positive"
+                    }
+                  ]
+                },
+                {
+                  "var": "swap_reverted"
+                }
+              ]
+            },
+            "evidence_ids": [
+              "e_be7fd2bc7865_0035",
+              "e_be7fd2bc7865_0036"
+            ],
+            "derivation": "Program synthesis from the selected intent and logical pattern.",
+            "source_ids": [
+              "noop_with_value_should_revert"
+            ]
+          },
+          "effects": {
+            "text": "Attackers can front-run victim transactions to manipulate the pool price to exactly match the victim's `sqrtRatioLimit`, guaranteeing the exploit succeeds.",
+            "expression": {
+              "var": "price_manipulated_to_victim_limit"
+            },
+            "evidence_ids": [
+              "e_be7fd2bc7865_0009"
+            ],
+            "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+            "source_ids": [
+              "attackers_front_run_victims"
+            ]
+          }
+        },
+        "formula_sources": {
+          "preconditions": {
+            "": [
+              "attacker_can_force_noop",
+              "victim_sets_sqrt_ratio_limit_near_price"
+            ]
+          },
+          "safety": {
+            "": [
+              "noop_with_value_should_revert"
+            ],
+            "args.0": [
+              "noop_with_value_should_revert"
+            ]
+          },
+          "effects": {
+            "": [
+              "attackers_front_run_victims"
+            ]
+          }
+        },
+        "effect_coverage": [
+          {
+            "statement_id": "attackers_front_run_victims",
+            "status": "formalized",
+            "reason": "Program-generated exact coverage for selected direct impact."
+          }
+        ],
+        "assumptions": [
+          "The no-op swap path is reachable when sqrtRatio equals sqrtRatioLimit.",
+          "msg.value > 0 is observable as a Boolean condition; the exact ETH amount is not needed for the intent."
+        ],
+        "unresolved": []
+      }
+    ],
+    "limitations": [
+      "The impact is potential; the impact_outcome Boolean encodes the reported potential front-run price manipulation without asserting inevitability.",
+      "The intent's revert requirement is encoded as a required_effect; the impact witness is the separate front-run price manipulation outcome."
+    ]
+  }
+}

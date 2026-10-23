@@ -1,0 +1,205 @@
+{
+  "schema_version": "report-formal-plan/6",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "outer_multicall_invoked",
+    "payload_can_invoke_nested_multicall",
+    "remaining_outer_items_exist",
+    "payment_entrypoints_rely_on_flag"
+  ],
+  "intent_id": "valid_batch_sequences_complete",
+  "impact_ids": [
+    "dos_persists_no_recovery"
+  ],
+  "symbols": {
+    "outer_batch_executing": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "an outer Covenant.multicall batch is being executed with _isMulticall set to true before delegating into MulticallLib.multicall",
+      "checkpoint": "before outer batch delegation",
+      "entity_ids": [
+        "covenant_contract",
+        "multicall_lib",
+        "is_multicall_flag",
+        "outer_batch"
+      ],
+      "source_ids": [
+        "outer_multicall_invoked"
+      ]
+    },
+    "payload_invokes_nested_multicall": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a payload item in the outer batch invokes Covenant.multicall again as a nested invocation",
+      "checkpoint": "during outer batch iteration",
+      "entity_ids": [
+        "outer_batch",
+        "nested_multicall",
+        "covenant_contract"
+      ],
+      "source_ids": [
+        "payload_can_invoke_nested_multicall"
+      ]
+    },
+    "remaining_outer_items_present": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the outer batch contains subsequent items following the nested invocation that are still part of the original multicall",
+      "checkpoint": "before nested invocation unwind",
+      "entity_ids": [
+        "outer_batch",
+        "nested_multicall"
+      ],
+      "source_ids": [
+        "remaining_outer_items_exist"
+      ]
+    },
+    "payment_entrypoints_skip_enforcement": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "payment-sensitive entrypoints updateState, mint, redeem, swap rely on _checkPayment(msgValue) to skip msg.value == msgValue enforcement during batched execution",
+      "checkpoint": "before outer batch delegation",
+      "entity_ids": [
+        "payment_entrypoints",
+        "is_multicall_flag",
+        "covenant_contract"
+      ],
+      "source_ids": [
+        "payment_entrypoints_rely_on_flag"
+      ]
+    },
+    "remaining_items_revert_incorrect_payment": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "outer batch items following the nested invocation revert with Errors.E_IncorrectPayment, halting execution",
+      "checkpoint": "after nested invocation unwind, during remaining outer batch iteration",
+      "entity_ids": [
+        "outer_batch",
+        "nested_multicall"
+      ],
+      "source_ids": [
+        "dos_persists_no_recovery"
+      ]
+    },
+    "dos_persists_without_recovery": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the DoS effect persists for the remainder of the transaction without any post-hoc recovery because the final balance check only triggers after the outer batch finishes",
+      "checkpoint": "remainder of transaction after outer batch failure",
+      "entity_ids": [
+        "outer_batch",
+        "integrator"
+      ],
+      "source_ids": [
+        "dos_persists_no_recovery"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "outer_multicall_invoked",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "outer_batch_executing",
+        "value": true
+      }
+    },
+    {
+      "source_id": "payload_can_invoke_nested_multicall",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "payload_invokes_nested_multicall",
+        "value": true
+      }
+    },
+    {
+      "source_id": "remaining_outer_items_exist",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "remaining_outer_items_present",
+        "value": true
+      }
+    },
+    {
+      "source_id": "payment_entrypoints_rely_on_flag",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "payment_entrypoints_skip_enforcement",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "outer_batch_executing",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "payload_invokes_nested_multicall",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "remaining_outer_items_present",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "payment_entrypoints_skip_enforcement",
+          "value": true
+        }
+      ]
+    },
+    "relation": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "remaining_items_revert_incorrect_payment",
+          "value": false
+        },
+        {
+          "kind": "truth",
+          "symbol": "dos_persists_without_recovery",
+          "value": false
+        }
+      ]
+    }
+  },
+  "assumptions": [
+    "The nested invocation is treated as a payload item within the outer batch, whether intentional or accidental; the report does not fix intent.",
+    "The remaining outer items are otherwise valid delegated batch items that would complete absent the guard desynchronization.",
+    "The outer batch's final balance check occurs only after the outer batch finishes, so no recovery occurs within the transaction."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_actor",
+      "description": "Report does not specify a concrete attacker actor or permission for inserting the nested multicall; griefing is described without an explicit unauthorized-caller statement.",
+      "source_ids": [
+        "payload_can_invoke_nested_multicall",
+        "integrations_griefed"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "Exact number or identity of remaining outer batch items is not specified; only their existence is asserted.",
+      "source_ids": [
+        "remaining_outer_items_exist"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Formalizes only the dos_persists_no_recovery impact; the separate integrations_griefed potential impact is not covered by this plan.",
+    "The condition uses grounded Boolean observables for the report's qualitative scenario facts; concrete batch item identities and counts are deferred to code binding.",
+    "The relation expresses absence of the reported revert and absence of the persistent DoS; it does not model gas accounting."
+  ]
+}

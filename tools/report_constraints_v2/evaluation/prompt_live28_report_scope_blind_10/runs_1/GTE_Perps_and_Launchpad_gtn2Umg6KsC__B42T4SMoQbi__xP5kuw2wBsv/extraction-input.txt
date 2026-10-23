@@ -1,0 +1,49 @@
+Buy/sell launch tokens leads ==> rewards are paid to `Launchpad` (msg.sender) instead of the user
+
+## Finding description and impact
+- `Distributor._distributeAssets` sends realized rewards to `msg.sender`. In stake/unstake flows, `msg.sender` is `Launchpad`, not the user.
+- `Launchpad` has no ERC20 forwarding or rescue; rewards accumulate on `Launchpad` and users don’t receive them. Accounting reduces `totalPendingRewards`, so value is effectively locked.
+- Users can trigger this by causing any update (stake/unstake vis buy/sell) to realize pending; the PoC confirms both paths.
+
+- Setup (stake exists)
+During buy, 
+  - `LaunchToken.transfer(userA, S)` → `LaunchToken._increaseFeeShares` → `Launchpad.increaseStake(userA, S)` → `Distributor.increaseStake(baseToken, userA, S)`
+  - State: `totalShares = S`, `userA.shares = S`
+
+- Add rewards
+  - `Distributor.addRewards(baseToken, quoteToken, 0, R)`
+  - State: `pendingQuoteRewards += R`, `totalPendingRewards[quoteToken] += R`
+
+- Trigger via stake (pays Launchpad)
+  - `LaunchToken.transfer(userA, δ)` → `Launchpad.increaseStake(userA, δ)` → `Distributor.increaseStake(baseToken, userA, δ)`
+  - Payout: `Distributor._distributeAssets` → `quoteToken.safeTransfer(msg.sender, R)` where `msg.sender == Launchpad`
+  - Accounting: `totalPendingRewards[quoteToken] -= R`
+
+- Trigger via unstake (also pays Launchpad)
+  - `LaunchToken.transfer(launchpad, δ)` → `Launchpad.decreaseStake(userA, δ)` → `Distributor.decreaseStake(baseToken, userA, δ)`
+  - payout again to `Launchpad` via `safeTransfer(msg.sender, R)`
+
+- Result
+  - User gets 0; `Launchpad` balance of `quoteToken` increases by `R`
+  - No ERC20 forward/rescue on `Launchpad` → rewards stuck on `Launchpad`
+
+
+
+### Affected code (root cause)
+
+https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L170-L175
+
+
+https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Launchpad.sol#L423
+
+
+https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/LaunchToken.sol#L131
+
+
+
+
+## Recommended mitigation steps
+
+- In `Distributor`, change distribution recipient to the actual `account` on stake/unstake:
+  - Pass `account` to `increaseStake`/`decreaseStake` internals and use it in `_distributeAssets` instead of `msg.sender`.
+- Or, have `Launchpad` capture returned amounts and immediately forward ERC20s to `account`

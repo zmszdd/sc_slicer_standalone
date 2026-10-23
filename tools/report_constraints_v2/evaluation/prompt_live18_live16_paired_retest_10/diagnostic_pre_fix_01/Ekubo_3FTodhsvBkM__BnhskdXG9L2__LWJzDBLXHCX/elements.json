@@ -1,0 +1,244 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Core::swap_6269342730() no-op swap path when sqrtRatio equals sqrtRatioLimit with ETH sent via msg.value",
+    "environment": "Core contract and Router swap flow",
+    "evidence": [
+      "In `Core::swap_6269342730()`, when the current `sqrtRatio` equals the `sqrtRatioLimit`, the swap is treated as a no-op, and the entire swap block is skipped. This includes the critical `_updatePairDebtWithNative()` call, which means ETH sent via `msg.value` is never accounted for in the debt system. The ETH becomes permanently stuck in the Core contract with no recovery mechanism.",
+      "The vulnerability exists in `Core::swap_6269342730()` where the `_updatePairDebtWithNative()` function is placed inside a conditional block that gets skipped when `sqrtRatio == sqrtRatioLimit`.",
+      "2. Victim submits a swap transaction: `router.swap{value: 10 ether}(poolKey, false, 10 ether, tickToSqrtRatio(0-500), ...)` where `sqrtRatioLimit` equals the current `sqrtRatio` - 500 (legitimate price impact/slippage protection).",
+      "3. Attacker front-runs the victim's transaction and moves the price down to exactly the victim's `sqrtRatioLimit`.",
+      "- In `Core::swap_6269342730()`, the condition `stateAfter.sqrtRatio() != sqrtRatioLimit` is FALSE.",
+      "- The entire swap block (lines 542-843) is skipped, including `_updatePairDebtWithNative()`."
+    ]
+  },
+  "entities": [
+    {
+      "id": "core_contract",
+      "name": "Core contract",
+      "role": "contract",
+      "evidence": [
+        "In `Core::swap_6269342730()`, when the current `sqrtRatio` equals the `sqrtRatioLimit`, the swap is treated as a no-op, and the entire swap block is skipped. This includes the critical `_updatePairDebtWithNative()` call, which means ETH sent via `msg.value` is never accounted for in the debt system. The ETH becomes permanently stuck in the Core contract with no recovery mechanism.",
+        "The vulnerability exists in `Core::swap_6269342730()` where the `_updatePairDebtWithNative()` function is placed inside a conditional block that gets skipped when `sqrtRatio == sqrtRatioLimit`."
+      ]
+    },
+    {
+      "id": "router",
+      "name": "Router",
+      "role": "contract",
+      "evidence": [
+        "2. Victim submits a swap transaction: `router.swap{value: 10 ether}(poolKey, false, 10 ether, tickToSqrtRatio(0-500), ...)` where `sqrtRatioLimit` equals the current `sqrtRatio` - 500 (legitimate price impact/slippage protection).",
+        "- Router calculates `value = 10 ether` and calls `CoreLib::swap()`.",
+        "5. Back in Router, since `delta0 == 0`, the refund logic is skipped."
+      ]
+    },
+    {
+      "id": "victim",
+      "name": "Victim swap user",
+      "role": "victim",
+      "evidence": [
+        "2. Victim submits a swap transaction: `router.swap{value: 10 ether}(poolKey, false, 10 ether, tickToSqrtRatio(0-500), ...)` where `sqrtRatioLimit` equals the current `sqrtRatio` - 500 (legitimate price impact/slippage protection).",
+        "7. Result: Victim spent 10 ETH, received 0 token1, and 10 ETH is permanently stuck in Core."
+      ]
+    },
+    {
+      "id": "attacker",
+      "name": "Front-running attacker",
+      "role": "attacker",
+      "evidence": [
+        "3. **Exploitable by Attackers**: Attackers can front-run victim transactions to manipulate the pool price to exactly match the victim's `sqrtRatioLimit`, guaranteeing the exploit succeeds.",
+        "3. Attacker front-runs the victim's transaction and moves the price down to exactly the victim's `sqrtRatioLimit`."
+      ]
+    },
+    {
+      "id": "eth_asset",
+      "name": "ETH sent via msg.value",
+      "role": "asset",
+      "evidence": [
+        "In `Core::swap_6269342730()`, when the current `sqrtRatio` equals the `sqrtRatioLimit`, the swap is treated as a no-op, and the entire swap block is skipped. This includes the critical `_updatePairDebtWithNative()` call, which means ETH sent via `msg.value` is never accounted for in the debt system. The ETH becomes permanently stuck in the Core contract with no recovery mechanism.",
+        "- `CoreLib::swap()` sends 10 ETH to Core via `call(gas(), core, value, ...)`.",
+        "7. Result: Victim spent 10 ETH, received 0 token1, and 10 ETH is permanently stuck in Core."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "pool_initialized_with_liquidity",
+      "kind": "precondition",
+      "text": "The pool is initialized at tick 0 with liquidity.",
+      "modality": "asserted",
+      "entity_ids": [
+        "core_contract"
+      ],
+      "evidence": [
+        "1. The pool is initialized at tick 0 with liquidity."
+      ]
+    },
+    {
+      "id": "victim_sets_sqrt_ratio_limit_near_price",
+      "kind": "precondition",
+      "text": "The victim submits a swap with a sqrtRatioLimit set near the current price for slippage protection, and the swap carries a nonzero ETH value via msg.value.",
+      "modality": "asserted",
+      "entity_ids": [
+        "victim",
+        "router",
+        "eth_asset"
+      ],
+      "evidence": [
+        "2. Victim submits a swap transaction: `router.swap{value: 10 ether}(poolKey, false, 10 ether, tickToSqrtRatio(0-500), ...)` where `sqrtRatioLimit` equals the current `sqrtRatio` - 500 (legitimate price impact/slippage protection).",
+        "2. **Common Scenario**: Users legitimately set `sqrtRatioLimit` near the current price for price impact/slippage protection."
+      ]
+    },
+    {
+      "id": "attacker_front_runs_to_limit",
+      "kind": "action",
+      "text": "The attacker front-runs the victim's transaction and moves the pool price down to exactly the victim's sqrtRatioLimit.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "core_contract"
+      ],
+      "evidence": [
+        "3. Attacker front-runs the victim's transaction and moves the price down to exactly the victim's `sqrtRatioLimit`.",
+        "3. **Exploitable by Attackers**: Attackers can front-run victim transactions to manipulate the pool price to exactly match the victim's `sqrtRatioLimit`, guaranteeing the exploit succeeds."
+      ]
+    },
+    {
+      "id": "router_sends_eth_to_core",
+      "kind": "action",
+      "text": "The Router calculates value and calls CoreLib::swap(), sending the ETH to Core via call(gas(), core, value, ...).",
+      "modality": "asserted",
+      "entity_ids": [
+        "router",
+        "core_contract",
+        "eth_asset"
+      ],
+      "evidence": [
+        "- Router calculates `value = 10 ether` and calls `CoreLib::swap()`.",
+        "- `CoreLib::swap()` sends 10 ETH to Core via `call(gas(), core, value, ...)`."
+      ]
+    },
+    {
+      "id": "victim_swap_executes_at_limit",
+      "kind": "action",
+      "text": "The victim's transaction executes and in Core::swap_6269342730() the condition stateAfter.sqrtRatio() != sqrtRatioLimit is FALSE.",
+      "modality": "asserted",
+      "entity_ids": [
+        "victim",
+        "core_contract"
+      ],
+      "evidence": [
+        "4. Victim's transaction executes:",
+        "- In `Core::swap_6269342730()`, the condition `stateAfter.sqrtRatio() != sqrtRatioLimit` is FALSE."
+      ]
+    },
+    {
+      "id": "debt_update_inside_skipped_block",
+      "kind": "root_cause",
+      "text": "The _updatePairDebtWithNative() call is placed inside the conditional swap block that is skipped when sqrtRatio equals sqrtRatioLimit, so ETH sent via msg.value is never accounted for in the debt system.",
+      "modality": "asserted",
+      "entity_ids": [
+        "core_contract",
+        "eth_asset"
+      ],
+      "evidence": [
+        "In `Core::swap_6269342730()`, when the current `sqrtRatio` equals the `sqrtRatioLimit`, the swap is treated as a no-op, and the entire swap block is skipped. This includes the critical `_updatePairDebtWithNative()` call, which means ETH sent via `msg.value` is never accounted for in the debt system. The ETH becomes permanently stuck in the Core contract with no recovery mechanism.",
+        "The vulnerability exists in `Core::swap_6269342730()` where the `_updatePairDebtWithNative()` function is placed inside a conditional block that gets skipped when `sqrtRatio == sqrtRatioLimit`.",
+        "- The entire swap block (lines 542-843) is skipped, including `_updatePairDebtWithNative()`."
+      ]
+    },
+    {
+      "id": "intent_debt_accounting_for_received_eth",
+      "kind": "security_intent",
+      "text": "When a swap receives ETH via msg.value, the debt accounting (_updatePairDebtWithNative) must be performed so the received ETH is accounted for in the debt system.",
+      "modality": "asserted",
+      "entity_ids": [
+        "core_contract",
+        "eth_asset"
+      ],
+      "evidence": [
+        "In `Core::swap_6269342730()`, when the current `sqrtRatio` equals the `sqrtRatioLimit`, the swap is treated as a no-op, and the entire swap block is skipped. This includes the critical `_updatePairDebtWithNative()` call, which means ETH sent via `msg.value` is never accounted for in the debt system. The ETH becomes permanently stuck in the Core contract with no recovery mechanism.",
+        "**Approach 1: Move debt accounting outside the conditional block**",
+        "**Approach 3: Handle debt accounting separately for the no-op case**"
+      ]
+    },
+    {
+      "id": "intent_no_op_with_value_reverts",
+      "kind": "security_intent",
+      "text": "When sqrtRatio equals sqrtRatioLimit and msg.value > 0, the swap must revert rather than silently succeed.",
+      "modality": "asserted",
+      "entity_ids": [
+        "core_contract",
+        "eth_asset"
+      ],
+      "evidence": [
+        "**Approach 2: Revert when swap would be a no-op, but msg.value > 0**",
+        "Add a check at the beginning of the swap function to revert if `sqrtRatio == sqrtRatioLimit` and `msg.value > 0`:"
+      ]
+    },
+    {
+      "id": "intent_eth_recoverable",
+      "kind": "security_intent",
+      "text": "ETH sent to Core must remain recoverable rather than becoming permanently stuck with no recovery mechanism.",
+      "modality": "asserted",
+      "entity_ids": [
+        "core_contract",
+        "eth_asset"
+      ],
+      "evidence": [
+        "1. **Permanent Loss**: ETH sent to Core is stuck forever. The Core contract has no `refundNativeToken()` function or admin rescue mechanism.",
+        "2. **No Recovery**: The `withdraw()` function requires proper debt accounting, which was skipped. There is no way to extract the stuck ETH."
+      ]
+    },
+    {
+      "id": "permanent_loss_eth_stuck",
+      "kind": "impact",
+      "text": "ETH sent to Core is stuck forever.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "1. **Permanent Loss**: ETH sent to Core is stuck forever. The Core contract has no `refundNativeToken()` function or admin rescue mechanism."
+      ]
+    },
+    {
+      "id": "no_recovery_stuck_eth",
+      "kind": "impact",
+      "text": "There is no way to extract the stuck ETH.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "2. **No Recovery**: The `withdraw()` function requires proper debt accounting, which was skipped. There is no way to extract the stuck ETH."
+      ]
+    },
+    {
+      "id": "attackers_front_run_victims",
+      "kind": "impact",
+      "text": "Attackers can front-run victim transactions to manipulate the pool price to exactly match the victim's `sqrtRatioLimit`, guaranteeing the exploit succeeds.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "3. **Exploitable by Attackers**: Attackers can front-run victim transactions to manipulate the pool price to exactly match the victim's `sqrtRatioLimit`, guaranteeing the exploit succeeds."
+      ]
+    },
+    {
+      "id": "automatic_trigger_by_legitimate_swaps",
+      "kind": "impact",
+      "text": "The vulnerability can be triggered even by price movements from legitimate swaps (not just by attackers).",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "4. **Automatic Trigger**: The vulnerability can be triggered even by price movements from legitimate swaps (not just by attackers)."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "attacker_front_runs_to_limit",
+    "router_sends_eth_to_core",
+    "victim_swap_executes_at_limit"
+  ],
+  "ambiguities": [
+    "Report does not establish whether the victim's swap is submitted before the attacker's front-run in a single ordering; the front-run is described as a potential griefing scenario.",
+    "The exact numeric sqrtRatioLimit value is described only as tickToSqrtRatio(0-500); the precise bound is not given.",
+    "Whether the no-op path can also be triggered by legitimate price movements (not attacker) is stated but not tied to a concrete prior state."
+  ]
+}

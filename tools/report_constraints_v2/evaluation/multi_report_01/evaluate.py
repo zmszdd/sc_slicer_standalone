@@ -30,7 +30,9 @@ def diagnostic(case_id, formal):
     ast = formal['claims'][0]['properties']['safety']['expression']
     result = {'scope': 'assistant-aligned abstract core I under candidate P; no code T'}
     try:
-        if ast is None or r.expr_type(ast, symbols) != ('bool', None):
+        # Evaluation is independent of whichever prompt/version a preceding
+        # test happened to run; keep this diagnostic's explicit unit policy.
+        if ast is None or r.expr_type(ast, symbols, enforce_units=True) != ('bool', None):
             raise ValueError('missing/non-Boolean I')
     except (ValueError, KeyError) as exc:
         return {**result, 'status': 'type_error', 'error': str(exc)}

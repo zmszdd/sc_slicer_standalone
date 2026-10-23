@@ -1,0 +1,187 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "LatentSwapLogic._checkMintCap mint-cap check via Covenant.mint using cached pre-state marketBaseTokenSupply",
+    "environment": "LatentSwapLogic / Covenant market with ETWAP growth bound and small-market noCapLimit branch",
+    "evidence_ids": [
+      "e_57b7047943f9_0003",
+      "e_57b7047943f9_0004",
+      "e_57b7047943f9_0005",
+      "e_57b7047943f9_0006"
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "early minting actor",
+      "role": "attacker",
+      "evidence_ids": [
+        "e_57b7047943f9_0004",
+        "e_57b7047943f9_0006"
+      ]
+    },
+    {
+      "id": "legitimate_users",
+      "name": "subsequent legitimate depositors",
+      "role": "victim",
+      "evidence_ids": [
+        "e_57b7047943f9_0005"
+      ]
+    },
+    {
+      "id": "latent_swap_logic",
+      "name": "LatentSwapLogic",
+      "role": "contract",
+      "evidence_ids": [
+        "e_57b7047943f9_0003"
+      ]
+    },
+    {
+      "id": "covenant",
+      "name": "Covenant",
+      "role": "contract",
+      "evidence_ids": [
+        "e_57b7047943f9_0003"
+      ]
+    },
+    {
+      "id": "market",
+      "name": "market base token supply",
+      "role": "asset",
+      "evidence_ids": [
+        "e_57b7047943f9_0003",
+        "e_57b7047943f9_0004"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "small_market_prestate",
+      "kind": "precondition",
+      "text": "The market is small: marketBaseTokenSupply <= 2^noCapLimit (approximately ~1 BASE for 18 decimals with noCapLimit = 60).",
+      "modality": "potential",
+      "entity_ids": [
+        "market"
+      ],
+      "evidence_ids": [
+        "e_57b7047943f9_0003",
+        "e_57b7047943f9_0004"
+      ]
+    },
+    {
+      "id": "attacker_mints_100e18",
+      "kind": "action",
+      "text": "The attacker mints 100e18 BASE in one call while the market is small.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "market"
+      ],
+      "evidence_ids": [
+        "e_57b7047943f9_0004"
+      ]
+    },
+    {
+      "id": "cached_prestate_passed",
+      "kind": "action",
+      "text": "Covenant.mint calls LEX.mint passing localBaseSupply (cached pre-state) and updates ms.baseSupply only after the LEX call returns.",
+      "modality": "asserted",
+      "entity_ids": [
+        "covenant",
+        "latent_swap_logic"
+      ],
+      "evidence_ids": [
+        "e_57b7047943f9_0003"
+      ]
+    },
+    {
+      "id": "cap_checked_against_prestate",
+      "kind": "root_cause",
+      "text": "_checkMintCap evaluates the small-market branch against the pre-action marketBaseTokenSupply and does not re-evaluate the cap against post-mint supply, so any mintAmount <= 2^96 passes even if it makes the market large.",
+      "modality": "asserted",
+      "entity_ids": [
+        "latent_swap_logic",
+        "market"
+      ],
+      "evidence_ids": [
+        "e_57b7047943f9_0003"
+      ]
+    },
+    {
+      "id": "large_growth_bypass",
+      "kind": "impact",
+      "text": "The 100e18 mint passes the small-market branch, bypassing the large-market ETWAP growth bound that would have rejected it.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "market",
+        "latent_swap_logic"
+      ],
+      "evidence_ids": [
+        "e_57b7047943f9_0004"
+      ]
+    },
+    {
+      "id": "subsequent_mints_revert",
+      "kind": "impact",
+      "text": "Immediately after the oversized mint, subsequent legitimate small mints (e.g., 1e18) revert with E_LEX_MintCapExceeded because ETWAP still reflects the prior tiny market.",
+      "modality": "potential",
+      "entity_ids": [
+        "legitimate_users",
+        "market",
+        "latent_swap_logic"
+      ],
+      "evidence_ids": [
+        "e_57b7047943f9_0005"
+      ]
+    },
+    {
+      "id": "deposit_dos",
+      "kind": "impact",
+      "text": "Deposits are time-gated until ETWAP catches up, creating a practical DoS on adding collateral.",
+      "modality": "potential",
+      "entity_ids": [
+        "legitimate_users",
+        "market"
+      ],
+      "evidence_ids": [
+        "e_57b7047943f9_0005"
+      ]
+    },
+    {
+      "id": "mint_cap_intent",
+      "kind": "security_intent",
+      "text": "Inferred: mint growth should be bounded by the cap evaluated against the resulting post-mint supply, so a mint that makes the market large must satisfy the large-market ETWAP growth bound.",
+      "modality": "inferred",
+      "entity_ids": [
+        "latent_swap_logic",
+        "market"
+      ],
+      "evidence_ids": [
+        "e_57b7047943f9_0003",
+        "e_57b7047943f9_0004"
+      ]
+    },
+    {
+      "id": "no_privileged_roles",
+      "kind": "assumption",
+      "text": "The scenario requires no privileged roles, oracle manipulation, or governance actions, only being early to mint when the market is small.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker"
+      ],
+      "evidence_ids": [
+        "e_57b7047943f9_0006"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "attacker_mints_100e18",
+    "cached_prestate_passed"
+  ],
+  "ambiguities": [
+    "Report does not state whether the small-market pre-state was actually observed in a live transaction; scenario is conditional.",
+    "Exact noCapLimit and 2^96 bound relationship to 100e18 is asserted but not independently verified.",
+    "Duration of ETWAP lag and time-gating window is not quantified."
+  ]
+}

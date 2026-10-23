@@ -1,0 +1,37 @@
+rebalanceFunds missing ownership restriction allows arbitrary users to drain buffer to custodian
+
+## Finding description and impact
+
+The `FastAccessVault` contract is the on‑chain DLF buffer used to provide instant redemptions for iTRY holders. It is designed to maintain a configurable buffer of DLF on‑chain while the remainder is held by an off‑chain custodian. The `rebalanceFunds` function is responsible for keeping this buffer at a target level by either:
+
+- Emitting a `TopUpRequestedFromCustodian` event if the buffer is below target, or
+- Transferring excess DLF from the vault to the `custodian` address if the buffer is above target.
+
+The interface and docstring for `rebalanceFunds` explicitly state that it is “Only callable by owner”:
+
+However, the implementation in `FastAccessVault` does not enforce this. The function is exposed as:
+There is no `onlyOwner` modifier or any other restriction on the caller. This means **any address** can call `rebalanceFunds`.
+
+The behavior of `rebalanceFunds` is directly relevant to user redemptions because the issuer decides whether to serve redemptions from the buffer or via the custodian based on the vault’s on‑chain balance:
+When `currentBalance > targetBalance`, `rebalanceFunds` transfers `excess = currentBalance - targetBalance` to the custodian address. By calling this function at the right time, an unprivileged attacker can:
+
+1. Detect that the vault currently holds more than its target (e.g., after a custodian top‑up or a period of low redemptions).
+2. Call `rebalanceFunds` from their own address (`attacker`), which will:
+- Push all excess DLF from the vault to the custodian.
+- Reduce `getAvailableBalance()` to exactly `targetBalance`.
+3. Immediately after, large user redemptions that would have been served entirely from the buffer may now see `bufferBalance < grossDlfAmount` and be forced down the `_redeemFromCustodian` path instead of the fast on‑chain path.
+
+This has several concrete impacts:
+
+- **Denial‑of‑service on “fast access”**
+Any user with no special permissions can repeatedly call `rebalanceFunds` to keep the buffer close to its target, reducing the likelihood that large redemptions can be served from the vault. Those redemptions are instead routed to the custodian path, which is inherently slower and dependent on off‑chain actions, contradicting the design goal of a “Fast Access Vault”.
+
+- **Griefing and UX degradation**
+An attacker can monitor the mempool and call `rebalanceFunds` just before large redemptions are included in a block, systematically forcing them into the custodian path despite ample on‑chain liquidity being available at the time users submitted their transactions. This is a clean griefing vector: the attacker pays only gas and does not need to hold any DLF or iTRY.
+
+- **Confusion for off‑chain processes**
+Because the interface states `rebalanceFunds` is owner‑only, custodian infrastructure and monitoring systems are likely to treat `TopUpRequestedFromCustodian` and `ExcessFundsTransferredToCustodian` events as authoritative signals from the protocol operator. In reality, these events can be triggered by any address. This can lead to miscalibrated off‑chain behavior (e.g., sending funds in response to an event triggered by an attacker, or misinterpreting vault state).
+
+While this bug does not allow an attacker to steal funds—the DLF always goes from the vault to the protocol‑defined `custodian` address—it materially weakens the protocol’s liquidity guarantees and gives an unprivileged party a lever to sabotage user redemptions.
+
+This is a **Medium‑severity** issue: it is permissionless, impacts core user‑visible functionality (instant redemption), and contradicts the documented access‑control assumptions.

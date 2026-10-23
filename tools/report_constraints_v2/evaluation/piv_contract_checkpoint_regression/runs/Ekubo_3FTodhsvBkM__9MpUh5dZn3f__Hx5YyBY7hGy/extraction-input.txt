@@ -1,0 +1,21 @@
+TokenWrapper violates ERC-20 standard by emitting msg.sender instead of from parameter in Transfer events during transferFrom operations
+
+## Finding description and impact
+
+File: `src/TokenWrapper.sol`
+Function: `transferFrom(address from, address to, uint256 amount)`
+Vulnerable Code:
+
+The `TokenWrapper` contract implements the IERC20 interface but contains a critical standard violation in its `transferFrom` function. When a user or contract calls `transferFrom` to move tokens on behalf of another address using an allowance, the emitted Transfer event incorrectly identifies the transaction initiator (msg.sender, the spender) as the source of the tokens, rather than the actual token holder (the from parameter) whose balance is being debited.
+
+According to the ERC-20 standard as defined in EIP-20, the Transfer event must emit the address of the token holder whose balance decreases as the from parameter. The current implementation violates this requirement by substituting msg.sender for the from address in the event emission. While the internal accounting through the _balanceOf mapping is updated correctly and the actual token balances reflect the proper transfer from the token holder to the recipient, the event log creates a permanent and incorrect record in the blockchain history.
+
+This desynchronization between on-chain state and event emissions has cascading effects throughout the Ethereum ecosystem. Block explorers such as Etherscan and Blockscout rely on Transfer events to construct transaction histories and token movement visualizations. When these explorers parse the incorrect events from TokenWrapper, they will display the operator or router contract as the originating address rather than the actual token holder. Users checking their transaction history on these platforms will not see their TokenWrapper transfers in their sent transactions list, creating confusion and support burden.
+
+Wallet applications including MetaMask, Rainbow, Coinbase Wallet, and others similarly depend on Transfer events to populate user transaction histories and portfolio tracking. Since the events incorrectly attribute transfers to the msg.sender rather than the token holder, users will not see accurate representations of their TokenWrapper activity within their wallet interfaces. This breaks the fundamental user experience expectation that wallet software accurately reflects token movements.
+
+Off-chain indexing systems face similar complications. The Graph subgraphs that index TokenWrapper transfers will store incorrect sender information, causing any dApps that query this data to display inaccurate information. Dune Analytics dashboards and queries that aggregate TokenWrapper volume will attribute trading activity to router contracts and operators rather than the actual users, making it impossible to accurately track user behavior or trading patterns. Tax reporting tools that scan blockchain events to generate transaction reports for users will fail to detect TokenWrapper transfers since the events do not identify the user as the sender, potentially causing incomplete tax reporting and compliance issues.
+
+The impact extends to smart contract integrations as well. Protocols that listen to Transfer events for accounting purposes, such as DAO treasury tracking systems, token-gated access controls, referral tracking mechanisms, or rewards distribution contracts, will incorrectly credit activity to operator contracts rather than users. This breaks composability and makes TokenWrapper unsuitable for integration with other protocols that rely on standard-compliant event emissions.
+
+The severity is classified as Medium because while the bug does not directly enable theft of funds or manipulation of on-chain balances, it fundamentally breaks the contract's compatibility with the Ethereum ecosystem. Every single `transferFrom` call is affected with one hundred percent likelihood, and the impact touches nearly every off-chain system and user interface in the ecosystem. The bug represents a complete violation of a widely-adopted standard that billions of dollars worth of infrastructure depends upon.

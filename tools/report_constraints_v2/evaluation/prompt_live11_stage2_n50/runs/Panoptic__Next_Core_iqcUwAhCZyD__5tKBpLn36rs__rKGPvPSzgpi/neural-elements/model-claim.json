@@ -1,0 +1,230 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "RiskEngine.twapEMA() EMA tuple destructuring feeding PanopticPool.getTWAP() liquidation and pricing checks",
+    "environment": "Panoptic RiskEngine/OraclePack/PanopticPool on-chain contracts",
+    "evidence_ids": [
+      "e_de7e75b4b5c6_0001",
+      "e_de7e75b4b5c6_0003",
+      "e_de7e75b4b5c6_0004",
+      "e_de7e75b4b5c6_0005",
+      "e_de7e75b4b5c6_0012",
+      "e_de7e75b4b5c6_0013",
+      "e_de7e75b4b5c6_0017",
+      "e_de7e75b4b5c6_0018",
+      "e_de7e75b4b5c6_0019",
+      "e_de7e75b4b5c6_0020",
+      "e_de7e75b4b5c6_0022",
+      "e_de7e75b4b5c6_0023",
+      "e_de7e75b4b5c6_0024",
+      "e_de7e75b4b5c6_0025",
+      "e_de7e75b4b5c6_0027",
+      "e_de7e75b4b5c6_0028"
+    ]
+  },
+  "entities": [
+    {
+      "id": "risk_engine",
+      "name": "RiskEngine",
+      "role": "contract",
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0003"
+      ]
+    },
+    {
+      "id": "oracle_pack",
+      "name": "OraclePack",
+      "role": "contract",
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0003",
+        "e_de7e75b4b5c6_0004"
+      ]
+    },
+    {
+      "id": "panoptic_pool",
+      "name": "PanopticPool",
+      "role": "contract",
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0018",
+        "e_de7e75b4b5c6_0019",
+        "e_de7e75b4b5c6_0020"
+      ]
+    },
+    {
+      "id": "twap_value",
+      "name": "Returned TWAP value",
+      "role": "asset",
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0013",
+        "e_de7e75b4b5c6_0017"
+      ]
+    },
+    {
+      "id": "solvent_account",
+      "name": "Borderline solvent account",
+      "role": "victim",
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0028"
+      ]
+    },
+    {
+      "id": "bad_debt",
+      "name": "Accumulated bad debt",
+      "role": "asset",
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0027"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "spot_ema_moves_first",
+      "kind": "precondition",
+      "text": "Short-horizon price movement propagates into spotEMA faster than into longer-horizon EMAs.",
+      "modality": "potential",
+      "entity_ids": [
+        "twap_value"
+      ],
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0022"
+      ]
+    },
+    {
+      "id": "twap_used_in_liquidation",
+      "kind": "precondition",
+      "text": "The TWAP returned via PanopticPool.getTWAP() is used in liquidation solvency checks and the StaleOracle gate.",
+      "modality": "asserted",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_value"
+      ],
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0018",
+        "e_de7e75b4b5c6_0019",
+        "e_de7e75b4b5c6_0020"
+      ]
+    },
+    {
+      "id": "wrong_destructure",
+      "kind": "root_cause",
+      "text": "RiskEngine.twapEMA() destructures getEMAs() as (eonsEMA, slowEMA, fastEMA, , ) instead of the returned order (spotEMA, fastEMA, slowEMA, eonsEMA, medianTick), so eonsEMA is discarded and spotEMA is included.",
+      "modality": "asserted",
+      "entity_ids": [
+        "risk_engine",
+        "oracle_pack"
+      ],
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0003",
+        "e_de7e75b4b5c6_0004",
+        "e_de7e75b4b5c6_0005",
+        "e_de7e75b4b5c6_0011"
+      ]
+    },
+    {
+      "id": "actual_formula",
+      "kind": "root_cause",
+      "text": "The implementation computes (6*slowEMA + 3*fastEMA + spotEMA)/10 instead of the intended (6*fastEMA + 3*slowEMA + eonsEMA)/10.",
+      "modality": "asserted",
+      "entity_ids": [
+        "risk_engine",
+        "twap_value"
+      ],
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0012",
+        "e_de7e75b4b5c6_0013",
+        "e_de7e75b4b5c6_0017"
+      ]
+    },
+    {
+      "id": "intent_ema_weights",
+      "kind": "security_intent",
+      "text": "The returned TWAP should be the intended blend (6*fastEMA + 3*slowEMA + eonsEMA)/10, giving eonsEMA influence and zero weight to spotEMA.",
+      "modality": "inferred",
+      "entity_ids": [
+        "risk_engine",
+        "twap_value"
+      ],
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0012",
+        "e_de7e75b4b5c6_0016",
+        "e_de7e75b4b5c6_0017"
+      ]
+    },
+    {
+      "id": "intent_stale_gate",
+      "kind": "security_intent",
+      "text": "The StaleOracle gate should revert when |currentTick - twapTick| > tickDeltaLiquidation and proceed otherwise, based on the correctly computed TWAP.",
+      "modality": "inferred",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_value"
+      ],
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0020",
+        "e_de7e75b4b5c6_0024",
+        "e_de7e75b4b5c6_0025"
+      ]
+    },
+    {
+      "id": "spot_weighted_twap",
+      "kind": "impact",
+      "text": "The buggy TWAP incorporates short-horizon spotEMA movement with 10% weight where it should have 0%.",
+      "modality": "potential",
+      "entity_ids": [
+        "twap_value",
+        "risk_engine"
+      ],
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0023",
+        "e_de7e75b4b5c6_0017"
+      ]
+    },
+    {
+      "id": "stale_gate_misbehavior",
+      "kind": "impact",
+      "text": "The StaleOracle safety boundary and solvency evaluation outcomes are altered, so the system may proceed when it should revert as stale or revert when it should proceed.",
+      "modality": "potential",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_value"
+      ],
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0024",
+        "e_de7e75b4b5c6_0025"
+      ]
+    },
+    {
+      "id": "blocked_liquidations_bad_debt",
+      "kind": "impact",
+      "text": "Blocked liquidations may allow bad debt to accumulate.",
+      "modality": "potential",
+      "entity_ids": [
+        "bad_debt",
+        "panoptic_pool"
+      ],
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0027"
+      ]
+    },
+    {
+      "id": "incorrect_liquidations",
+      "kind": "impact",
+      "text": "Incorrect liquidations may flag borderline solvent accounts as insolvent.",
+      "modality": "potential",
+      "entity_ids": [
+        "solvent_account",
+        "panoptic_pool"
+      ],
+      "evidence_ids": [
+        "e_de7e75b4b5c6_0028"
+      ]
+    }
+  ],
+  "attack_steps": [],
+  "ambiguities": [
+    "No explicit attacker action or transaction sequence is described; impacts are conditional on short-horizon price movement propagating into spotEMA.",
+    "Report does not state who triggers the liquidation or stale-gate checks or any authorization condition.",
+    "Whether the misweighted TWAP actually crosses the tickDeltaLiquidation boundary in a concrete scenario is not quantified.",
+    "Premium settlement and force-exercise pricing effects are mentioned but not detailed as distinct harms."
+  ]
+}

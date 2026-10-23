@@ -3,6 +3,7 @@ import copy
 import re
 
 from lib import report_only as r
+from lib.piv_contract import PIV_PROPERTY_NAMES, property_source_kinds
 
 ELEMENT_VERSION = 'report-elements/1'
 FORMAL_VERSION = 'report-formalization/1'
@@ -40,8 +41,8 @@ def evidence_spans(quotes, text):
     return spans
 
 
-def index(items, label):
-    require(isinstance(items, list) and len(items) <= 32, 'invalid ' + label)
+def index(items, label, maximum=32):
+    require(isinstance(items, list) and len(items) <= maximum, 'invalid ' + label)
     result = {}
     for item in items:
         require(isinstance(item, dict) and identifier(item.get('id')), 'invalid ' + label + ' id')
@@ -79,14 +80,17 @@ def validate_elements(elements, text):
     return grounded
 
 
-def predicate_paths(expr, symbols, path=''):
+def predicate_paths(expr, symbols, path='', enforce_units=True):
     """Every Boolean operation/root must have an independently inspectable source."""
     result = []
     if expr is None: return result
-    if path == '' or ('op' in expr and r.expr_type(expr, symbols) == ('bool', None)):
+    if path == '' or ('op' in expr and r.expr_type(
+            expr, symbols, enforce_units=enforce_units) == ('bool', None)):
         result.append(path)
     for n, child in enumerate(expr.get('args', [])):
-        result.extend(predicate_paths(child, symbols, (path + '.' if path else '') + f'args.{n}'))
+        result.extend(predicate_paths(
+            child, symbols, (path + '.' if path else '') + f'args.{n}',
+            enforce_units=enforce_units))
     return result
 
 
@@ -103,7 +107,34 @@ def node_at(expr, path):
     return expr
 
 
-def validate_formalization(formal, elements, text):
+def symbols_for_claim(claim, symbols):
+    """Return only symbols referenced by one claim's P/I/V expressions."""
+    used = set()
+    def visit(value):
+        if isinstance(value, dict):
+            if set(value) == {'var'}:
+                used.add(value['var'])
+            else:
+                for child in value.values():
+                    visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+    for prop in claim['properties'].values():
+        visit(prop['expression'])
+    require(used <= set(symbols), 'claim references undeclared symbol')
+    return {name: symbols[name] for name in sorted(used)}
+
+
+def impact_claim_set(formal):
+    """Identify new per-impact bundles without changing historical replay."""
+    claims = formal.get('claims', []) if isinstance(formal, dict) else []
+    return bool(claims) and all(
+        isinstance(row.get('id'), str) and row['id'].startswith('impact_claim_')
+        for row in claims)
+
+
+def validate_formalization(formal, elements, text, enforce_units=True):
     validate_elements(elements, text)
     require(isinstance(formal, dict) and set(formal) == {'schema_version', 'symbols', 'claims', 'limitations'}, 'unexpected formalization fields')
     require(formal['schema_version'] == FORMAL_VERSION, 'unknown formalization schema')
@@ -116,9 +147,10 @@ def validate_formalization(formal, elements, text):
         require(isinstance(item, dict) and set(item) == {'sort', 'unit', 'meaning', 'checkpoint', 'evidence', 'entity_ids'}, 'unexpected observable fields')
         require(strings(item['entity_ids']) and all(x in entities for x in item['entity_ids']), 'unknown observable entity')
         symbol_base[name] = {k: v for k, v in item.items() if k != 'entity_ids'}
-    claims = index(formal['claims'], 'claim')
-    require(bool(claims), 'formalization requires at least one claim')
-    require(len(claims) <= 8, 'too many claims')
+    claims = index(formal['claims'], 'claim', maximum=64)
+    # An empty claim set is valid when no report impact yielded a complete
+    # P/I/V rule. The caller will produce an abstaining, empty handoff.
+    require(len(claims) <= 64, 'too many claims')
     claimed_impacts = set()
     for claim in claims.values():
         require(set(claim) == {'id', 'scope', 'modality', 'impact_ids', 'properties', 'formula_sources', 'effect_coverage', 'assumptions', 'unresolved'}, 'unexpected claim fields')
@@ -128,18 +160,23 @@ def validate_formalization(formal, elements, text):
         claimed_impacts.update(claim['impact_ids'])
         if any(statements[x]['modality'] == 'potential' for x in claim['impact_ids']):
             require(claim['modality'] == 'potential', 'potential impact upgraded to asserted effect')
-        require(set(claim['properties']) == {'preconditions', 'safety', 'effects'}, 'unexpected properties')
+        require(set(claim['properties']) == set(PIV_PROPERTY_NAMES), 'unexpected properties')
         base_props = {}
-        allowed = {'preconditions': {'precondition', 'assumption'},
-                   'safety': {'security_intent'}, 'effects': {'impact'}}
-        require(set(claim['formula_sources']) == set(allowed), 'unexpected formula source fields')
+        require(set(claim['formula_sources']) == set(PIV_PROPERTY_NAMES),
+                'unexpected formula source fields')
         for name, prop in claim['properties'].items():
             require(set(prop) == {'text', 'expression', 'evidence', 'derivation', 'source_ids'}, 'unexpected property fields')
             sources = prop['source_ids']
+            unconditional_p = (name == PIV_PROPERTY_NAMES[0] and
+                               prop['expression'] == {'const': True} and
+                               not sources)
             require(strings(sources) and all(x in statements for x in sources), 'unknown property source')
-            require(all(statements[x]['kind'] in allowed[name] for x in sources), 'property source role mismatch: ' + name)
+            source_kinds = property_source_kinds(name)
+            require(all(statements[x]['kind'] in source_kinds for x in sources),
+                    'property source role mismatch: ' + name)
             if prop['expression'] is not None:
-                require(bool(sources), 'formal property missing source')
+                require(bool(sources) or unconditional_p,
+                        'formal property missing source')
                 if name == 'effects': require(set(sources) <= set(claim['impact_ids']), 'effect source outside claim')
                 # Ground formula evidence in its own declared source, not just any report sentence.
                 quotes = {q for x in sources for q in statements[x]['evidence']}
@@ -153,10 +190,15 @@ def validate_formalization(formal, elements, text):
             for path, ids in links.items():
                 node_at(prop['expression'], path)
                 require(strings(ids) and bool(ids) and set(ids) <= set(sources), 'invalid subformula sources')
-            require(set(predicate_paths(prop['expression'], symbol_base)) <= set(links), 'predicate lacks source mapping')
-        base = {'symbols': symbol_base, 'properties': base_props,
+            if not unconditional_p:
+                require(set(predicate_paths(prop['expression'], symbol_base,
+                                            enforce_units=enforce_units)) <= set(links),
+                        'predicate lacks source mapping')
+        claim_symbols = (symbols_for_claim(claim, symbol_base)
+                         if impact_claim_set(formal) else symbol_base)
+        base = {'symbols': claim_symbols, 'properties': base_props,
                 'assumptions': claim['assumptions'], 'unresolved': claim['unresolved']}
-        r.validate(base, text)
+        r.validate(base, text, enforce_units=enforce_units)
         coverage = index([dict(row, id=row.get('statement_id')) for row in claim['effect_coverage']], 'coverage')
         require(set(coverage) == set(claim['impact_ids']), 'impact coverage missing or duplicate')
         for row in claim['effect_coverage']:
@@ -179,9 +221,19 @@ CONTRADICTION_CHECKS = frozenset({'precondition_feasibility', 'safety_feasibilit
 
 
 def compile_bundle(elements, formal, text, strict_piv=False, verdict_v2=False,
-                   require_complete_piv=False):
-    symbol_base, covered = validate_formalization(formal, elements, text)
+                   require_complete_piv=False, enforce_units=True,
+                   fidelity_only_rules=False):
+    symbol_base, covered = validate_formalization(
+        formal, elements, text,
+        enforce_units=(enforce_units and not fidelity_only_rules))
     impacts = {x['id'] for x in elements['statements'] if x['kind'] == 'impact'}
+    impact_statements = {x['id']: x for x in elements['statements']
+                         if x['kind'] == 'impact'}
+    impact_claims = {impact_id: [] for impact_id in impacts}
+    for claim in formal['claims']:
+        for row in claim['effect_coverage']:
+            impact_claims[row['statement_id']].append(
+                (claim['id'], row['status'], row['reason']))
     unassigned_preconditions = set()
     if strict_piv:
         extracted_preconditions = {x['id'] for x in elements['statements']
@@ -192,14 +244,23 @@ def compile_bundle(elements, formal, text, strict_piv=False, verdict_v2=False,
         unassigned_preconditions = extracted_preconditions - used_preconditions
     output, warnings = [], []
     for claim in formal['claims']:
-        base = {'symbols': symbol_base,
+        claim_symbols = (symbols_for_claim(claim, symbol_base)
+                         if impact_claim_set(formal) else symbol_base)
+        base = {'symbols': claim_symbols,
                 'properties': {name: {k: v for k, v in prop.items() if k != 'source_ids'}
                                for name, prop in claim['properties'].items()},
                 'assumptions': claim['assumptions'], 'unresolved': claim['unresolved']}
         validation, smt = r.compile_spec(
-            base, text, require_complete_piv=require_complete_piv)
-        relationship = r.relationship_review(base, text, require_direct_counterexample=strict_piv)
-        reasons = list(validation['warnings']) + list(relationship['warnings'])
+            base, text, require_complete_piv=require_complete_piv,
+            enforce_units=enforce_units,
+            run_checks=not fidelity_only_rules)
+        relationship = ({'status': 'deferred_to_post_generation_fidelity_audit',
+                         'warnings': []} if fidelity_only_rules else
+                        r.relationship_review(
+                            base, text,
+                            require_direct_counterexample=strict_piv))
+        reasons = ([] if fidelity_only_rules else
+                   list(validation['warnings']) + list(relationship['warnings']))
         # S12: under verdict_v2 a non-asserted modality is a *realization* fact, not
         # a structural defect, so it no longer blocks the positive verdict.
         if not verdict_v2 and claim['modality'] != 'asserted': reasons.append('claim is qualified or inferred; not a verified realized effect')
@@ -239,7 +300,11 @@ def compile_bundle(elements, formal, text, strict_piv=False, verdict_v2=False,
     if not verdict_v2 and formal['limitations']:
         warnings.append('formalization has declared limitations')
     core = 'formalized_candidate' if output and all(x['structural_formalization_status'] != 'not_formalized' for x in output) else 'partial'
-    review = 'needs_review' if warnings or any(x['formalization_status'] != 'formalized_candidate' for x in output) else 'candidate_checks_passed'
+    review = ('candidate_checks_passed'
+              if output and not warnings and all(
+                  x['formalization_status'] == 'formalized_candidate'
+                  for x in output)
+              else 'needs_review')
     # A contradictory feasibility check is NOT a declared uncertainty.  Under the
     # signals policy every non-clean bundle lands in `needs_review`, which
     # automation is allowed to carry on past; but "P unsatisfiable" means the
@@ -259,6 +324,24 @@ def compile_bundle(elements, formal, text, strict_piv=False, verdict_v2=False,
     result = {'schema_version': 'stage2-semantic-bundle/1', 'core_formalization_status': core,
             'acceptance_status': review, 'report_warnings': warnings,
             'unassigned_impact_ids': sorted(impacts - covered), 'claims': output,
+            'report_impact_coverage': [
+                {
+                    'impact_id': impact_id,
+                    'evidence': list(impact_statements[impact_id]['evidence']),
+                    'claim_ids': sorted({row[0] for row in impact_claims[impact_id]}),
+                    'status': (
+                        'unformalized' if not impact_claims[impact_id] or
+                        any(row[1] == 'unformalized' for row in impact_claims[impact_id])
+                        else 'formalized' if all(row[1] == 'formalized'
+                                                 for row in impact_claims[impact_id])
+                        else 'partial'),
+                    'reason': ('; '.join(dict.fromkeys(
+                        row[2] for row in impact_claims[impact_id]))
+                        if impact_claims[impact_id] else
+                        'No claim currently formalizes this report impact.'),
+                }
+                for impact_id in sorted(impacts)
+            ],
             'coverage_is_model_declared_not_semantically_verified': True,
             'human_semantic_review_required': True, 'code_alignment_status': 'not_attempted',
             'execution_ready': False, 'consistency_verdict': 'not_evaluated'}
@@ -287,7 +370,7 @@ def compile_bundle(elements, formal, text, strict_piv=False, verdict_v2=False,
                 'claims_present': bool(output),
                 'all_claims_have_p_i_v': bool(output) and all(
                     all(claim['properties'][name]['expression'] is not None
-                        for name in ('preconditions', 'safety', 'effects'))
+                        for name in PIV_PROPERTY_NAMES)
                     for claim in output),
                 'relationship_checks_are_structural_only': True,
                 'semantic_fidelity_verified': False,
@@ -370,6 +453,8 @@ BOUNDARY = (
      'readiness telemetry nested one level too deep; hoisted by normalize_readiness()'),
     ('missing report-readiness summary', NORMALIZE,
      'readiness telemetry nested one level too deep; hoisted by normalize_readiness()'),
+    ('impact statement  lacks Impact evidence', REJECT),
+    ('impact statement  cites evidence outside marked Impact areas', REJECT),
 
     # ---- REJECT: fixing these would change what the P/I/V claim ----
     ('P predicate symbol not grounded by its own source', REJECT),
@@ -396,6 +481,7 @@ BOUNDARY = (
     ('effect source outside claim', REJECT),
     ('empty conjunction', REJECT),
     ('empty disjunction', REJECT),
+    ('empty report prose after filtering', REJECT),
     ('empty report description/impact after filtering', REJECT),
     ('evidence absent from input', REJECT),
     ('expanded relation template mismatch', REJECT),
@@ -403,11 +489,14 @@ BOUNDARY = (
     ('fixed relation template mismatch', REJECT),
     ('formal property lacks evidence/derivation', REJECT),
     ('formal property missing source', REJECT),
-    ('formalization requires at least one claim', REJECT),
     ('formula path absent', REJECT),
+    ('faithfulness verdict must cover selected P/I/V sources exactly once', REJECT),
     ('impact context source not selected', REJECT),
     ('impact context symbol not grounded by its own source', REJECT),
     ('impact coverage missing or duplicate', REJECT),
+    ('direct impact outcome requires exactly one impact', REJECT),
+    ('impact outcome source not selected', REJECT),
+    ('impact outcome symbol not grounded by its own source', REJECT),
     ('impact qualifier missing from formal plan: ', REJECT),
     ('invalid ', REJECT),
     ('invalid AST fields', REJECT),
@@ -429,6 +518,7 @@ BOUNDARY = (
     ('invalid constant', REJECT),
     ('invalid correspondence pattern', REJECT),
     ('invalid coverage status', REJECT),
+    ('claim references undeclared symbol', REJECT),
     ('invalid derived definition', REJECT),
     ('invalid derived definition sources', REJECT),
     ('invalid derived definitions', REJECT),
@@ -438,15 +528,18 @@ BOUNDARY = (
     ('invalid faithfulness check reason', REJECT),
     ('invalid faithfulness check shape', REJECT),
     ('invalid faithfulness check source_id', REJECT),
+    ('invalid faithfulness check role', REJECT),
     ('invalid faithfulness verdict checks', REJECT),
     ('invalid faithfulness verdict shape', REJECT),
     ('invalid faithfulness verdict value', REJECT),
+    ('invalid P/I/V relation verdict', REJECT),
     ('invalid exact power-of-two operand', REJECT),
     ('invalid formal plan', REJECT),
     ('invalid formula path', REJECT),
     ('invalid formula sources', REJECT),
     ('invalid impact context term', REJECT),
     ('invalid impact context terms', REJECT),
+    ('invalid direct impact outcome', REJECT),
     ('invalid impact qualifier types', REJECT),
     ('invalid kind/modality', REJECT),
     ('invalid limitations', REJECT),
@@ -657,7 +750,7 @@ def normalize_readiness(candidate):
 
 
 
-def _truth_binding_candidate(term, symbols):
+def _truth_binding_candidate(term, symbols, allow_named_symbol=False):
     """The ``(name, source_id)`` a ``truth`` predicate names but never declares.
 
     Returns ``None`` unless the shapes are exactly the ones this fix may touch.
@@ -675,7 +768,7 @@ def _truth_binding_candidate(term, symbols):
     name = predicate.get('symbol')
     if not isinstance(name, str) or name in symbols:
         return None
-    if not _reuses_source_identifier(name, source_id):
+    if not allow_named_symbol and not _reuses_source_identifier(name, source_id):
         return None
     return name, source_id
 
@@ -696,7 +789,7 @@ def _reuses_source_identifier(name, source_id):
     return source_id[:2] in ('p_', 'a_') and source_id[2:] == name
 
 
-def normalize_truth_binding(candidate, elements):
+def normalize_truth_binding(candidate, elements, allow_named_symbol=False):
     """Declare the boolean a ``truth`` predicate already names.
 
     Observed on a real run:
@@ -717,7 +810,10 @@ def normalize_truth_binding(candidate, elements):
     to it.
 
     Refuses -- leaving the plan untouched so the ORIGINAL error still fires --
-    whenever a declaration would have to be invented or would break the schema:
+    in the historical strict mode whenever a declaration would have to be
+    invented or would break the schema. Fidelity-only live runs may instead
+    declare the exact boolean symbol already named by a source-backed `truth`
+    predicate; the generated P/I/V audit then judges its meaning.
 
     * the name does not reuse the entry's own ``source_id`` (a paraphrase such as
       ``domain_separator_immutable``, or a truncation);
@@ -738,7 +834,8 @@ def normalize_truth_binding(candidate, elements):
                   if isinstance(row, dict) and isinstance(row.get('id'), str)}
     added, changes = {}, []
     for term in terms:
-        found = _truth_binding_candidate(term, {**symbols, **added})
+        found = _truth_binding_candidate(
+            term, {**symbols, **added}, allow_named_symbol=allow_named_symbol)
         if found is None:
             continue
         name, source_id = found

@@ -1,0 +1,215 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "p_amount_is_quote",
+    "p_lot_size_present",
+    "p_remaining_quote",
+    "p_fok_order"
+  ],
+  "intent_id": "i_fok_complete_or_fail",
+  "impact_ids": [
+    "v_premature_termination"
+  ],
+  "symbols": {
+    "amount_is_quote": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "incoming fill order is quote-denominated (amountIsBase = false)",
+      "checkpoint": "before _matchIncomingOrder",
+      "entity_ids": [
+        "taker",
+        "clob_contract"
+      ],
+      "source_ids": [
+        "p_amount_is_quote"
+      ]
+    },
+    "lot_size_in_base": {
+      "sort": "int",
+      "unit": "base token units",
+      "meaning": "lot-size constraint in base units (e.g. 1e18) enabling lot-size flooring",
+      "checkpoint": "before _matchIncomingOrder",
+      "entity_ids": [
+        "clob_contract"
+      ],
+      "source_ids": [
+        "p_lot_size_present"
+      ]
+    },
+    "remaining_quote_before": {
+      "sort": "int",
+      "unit": "quote token units",
+      "meaning": "taker order remaining quote amount before matching (e.g. 2.5e18)",
+      "checkpoint": "before _matchIncomingOrder",
+      "entity_ids": [
+        "taker",
+        "quote_asset"
+      ],
+      "source_ids": [
+        "p_remaining_quote"
+      ]
+    },
+    "maker_base_liquidity": {
+      "sort": "int",
+      "unit": "base token units",
+      "meaning": "maker base liquidity available for matching (e.g. 3e18)",
+      "checkpoint": "before _matchIncomingOrder",
+      "entity_ids": [
+        "maker",
+        "base_asset"
+      ],
+      "source_ids": [
+        "p_remaining_quote"
+      ]
+    },
+    "is_fok_order": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "order is a Fill-or-Kill order",
+      "checkpoint": "before _matchIncomingOrder",
+      "entity_ids": [
+        "taker"
+      ],
+      "source_ids": [
+        "p_fok_order"
+      ]
+    },
+    "loop_terminated_prematurely": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "matching loop terminated before the order's quote amount was filled, preventing further matching against additional liquidity",
+      "checkpoint": "after _matchIncomingOrder matching loop",
+      "entity_ids": [
+        "clob_contract",
+        "taker"
+      ],
+      "source_ids": [
+        "v_premature_termination",
+        "i_fok_complete_or_fail"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_amount_is_quote",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "amount_is_quote",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_lot_size_present",
+      "predicate": {
+        "kind": "comparison",
+        "left": "lot_size_in_base",
+        "operator": "gt",
+        "right": {
+          "const": 0
+        }
+      }
+    },
+    {
+      "source_id": "p_remaining_quote",
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "comparison",
+            "left": "remaining_quote_before",
+            "operator": "gt",
+            "right": {
+              "const": 0
+            }
+          },
+          {
+            "kind": "comparison",
+            "left": "maker_base_liquidity",
+            "operator": "gt",
+            "right": {
+              "const": 0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "source_id": "p_fok_order",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "is_fok_order",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "amount_is_quote",
+          "value": true
+        },
+        {
+          "kind": "comparison",
+          "left": "lot_size_in_base",
+          "operator": "gt",
+          "right": {
+            "const": 0
+          }
+        },
+        {
+          "kind": "comparison",
+          "left": "remaining_quote_before",
+          "operator": "gt",
+          "right": {
+            "const": 0
+          }
+        },
+        {
+          "kind": "comparison",
+          "left": "maker_base_liquidity",
+          "operator": "gt",
+          "right": {
+            "const": 0
+          }
+        },
+        {
+          "kind": "truth",
+          "symbol": "is_fok_order",
+          "value": true
+        }
+      ]
+    },
+    "relation": {
+      "kind": "truth",
+      "symbol": "loop_terminated_prematurely",
+      "value": false
+    }
+  },
+  "assumptions": [
+    "The matching loop is expected to continue matching the quote-denominated order against additional maker liquidity until the order's quote amount is filled or liquidity is exhausted.",
+    "No authorization or caller restriction is claimed for _matchIncomingOrder; the scenario is a normal taker order.",
+    "The lot-size constraint is a positive base-unit quantity enabling flooring of the tradeable base amount."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "The exact FOK validation condition on newOrder.amount is not quoted; only that it passes when amount is reduced to 0. This affects the sibling FOK-pass impact, not the selected premature-termination relation.",
+      "source_ids": [
+        "a_fok_validation",
+        "v_fok_passes_partial"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Formalizes only the premature-termination impact; the FOK-pass and value-loss impacts are handled in separate claim-generation passes.",
+    "The premature-termination observable is represented as a Boolean occurrence because the report states the loop stops before the quote amount is filled without a numeric residual threshold.",
+    "Concrete example amounts (2.5e18 quote, 3e18 base, 1e18 lot size) are illustrative and not encoded as fixed constants."
+  ]
+}

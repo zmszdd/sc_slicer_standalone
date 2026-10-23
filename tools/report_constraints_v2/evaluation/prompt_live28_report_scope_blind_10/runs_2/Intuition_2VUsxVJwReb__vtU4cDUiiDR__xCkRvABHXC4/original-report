@@ -1,0 +1,108 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Intuition_2VUsxVJwReb",
+    "audit_uid": "2VUsxVJwReb",
+    "requested_submission_uid": "xCkRvABHXC4",
+    "requested_finding_uid": "vtU4cDUiiDR",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Intuition_2VUsxVJwReb/20260618_132553/findings.json",
+    "source_submission_uid": "xCkRvABHXC4",
+    "source_finding_uid": "vtU4cDUiiDR",
+    "original_report_path": "Intuition_2VUsxVJwReb\\low_valid_xCkRvABHXC4.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "xCkRvABHXC4",
+  "finding_uid": "vtU4cDUiiDR",
+  "finding_number": "18",
+  "title": "ProgressiveCurve previewWithdraw Always Reverts with Underflow on Full Withdrawal",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "KKKKK",
+  "body": "## Finding description and impact\n\n\n##Description\n\n\nIn ProgressiveCurve.sol, an arithmetic underflow guarantees that users can never withdraw their entire deposit.\n\n\nWhen converting from shares to assets during a generic withdrawal, the _convertToAssets calculation explicitly rounds down the asset representation of the area under the curve to protect the system. However, the requirement to pass the MultiVault's full-balance checkout leads the system to calculate the necessary reduction in shares via previewWithdraw.\n\n\n\nDue to the fundamental math of ProgressiveCurve:\n\n\nMinting shares (deposit) correctly rounds down: shares = ⌊√(2 × assets)⌋\n\nAt full withdrawal, previewWithdraw calculates inner = ⌈assets * SLOPE / 1e18⌉.\n\nIt then squares the total shares to find the outer bound squaredShares = square(totalShares).\n\nIt finally subtracts shares = squaredShares - inner.\n\nBecause square(shares) is strictly less than 2 × assets for any non-perfect square, this implies squaredShares < inner. When attempting to withdraw 100% of the assets in an isolated state, squaredShares - inner produces an unavoidable PANIC(0x11) arithmetic underflow.\n\n\n\n\n##Impact\n\nNo user can ever fully withdraw their deposited assets from any ProgressiveCurve market. Whenever a user requests a full withdrawal of their maxAssets, the preview calculation hard reverts, permanently trapping dust and preventing position liquidations.\n\n\n\n## Recommended mitigation steps\n\nUpdate the share subtraction methodology explicitly. If squaredShares < inner, default to transferring totalShares rather than reverting or strictly enforce a non-100% ceiling on withdrawals.",
+  "proof_of_concept": "The test confirms the mathematical underflow with 100% precision:\n\nDeposit Assets: 2000000000000000000 (2.0)\nShares Minted: 1414213562373095048 (Precision lost during square root)\nShares Squared: 1999999999999999997 (Reconstruction is 3 units short)\nDeduct Term: 2000000000000000000\nResult: 1999...997 - 2000...000 → Arithmetic Underflow Panic(0x11)\n\nThis proves that all full withdrawals from a ProgressiveCurve vault will revert, effectively trapping user funds.\n\n\n\n run this standalone test yourself with:\n\n\nforge test --match-contract PoC_PC01_Mainnet --fork-url https://mainnet.base.org/ -vvv\n\n\n\n\n\n\n\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.29;\n\nimport { Test } from \"forge-std/src/Test.sol\";\nimport { console2 as console } from \"forge-std/src/console2.sol\";\nimport { ProgressiveCurve } from \"src/protocol/curves/ProgressiveCurve.sol\";\nimport { TransparentUpgradeableProxy } from \"@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol\";\nimport { ProgressiveCurveMathLib as PCMath } from \"src/libraries/ProgressiveCurveMathLib.sol\";\nimport { UD60x18, wrap, unwrap } from \"@prb/math/src/UD60x18.sol\";\n\ncontract PoC_PC01_Mainnet is Test {\n    ProgressiveCurve curve;\n\n    function setUp() public {\n        // Deploy curve explicitly to ensure it simulates exact contract conditions\n        ProgressiveCurve impl = new ProgressiveCurve();\n        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(\n            address(impl),\n            address(this),\n            abi.encodeWithSelector(impl.initialize.selector, \"PC-01 Test\", 2e18)\n        );\n        curve = ProgressiveCurve(address(proxy));\n    }\n\n    /*//////////////////////////////////////////////////////////////\n                FINDING: ProgressiveCurve Underflow (PC-01)\n    //////////////////////////////////////////////////////////////*/\n    function test_PC01_fullWithdrawalReverts() public {\n        uint256 depositAmount = 2e18; // 2 ETH/Tokens equivalent\n        uint256 totalSharesBefore = 0;\n        uint256 totalAssetsBefore = 0;\n        \n        console.log(\"---- MATH BREAKDOWN ----\");\n        console.log(\"Deposit Assets:\", depositAmount);\n        \n        uint256 sharesOut = curve.previewDeposit(\n            depositAmount,\n            totalAssetsBefore,\n            totalSharesBefore\n        );\n        \n        console.log(\"Shares Mints:  \", sharesOut);\n        \n        // Manual simulation of ProgressiveCurve.sol logic\n        // UD60x18 s = wrap(totalShares);\n        // UD60x18 deduct = PCMath.divUp(wrap(assets), HALF_SLOPE);\n        // UD60x18 inner = sub(PCMath.square(s), deduct);\n        \n        UD60x18 s = wrap(sharesOut);\n        UD60x18 HALF_SLOPE = curve.HALF_SLOPE();\n        \n        UD60x18 sSquared = PCMath.square(s);\n        UD60x18 deduct = PCMath.divUp(wrap(depositAmount), HALF_SLOPE);\n        \n        console.log(\"Shares Squared (UD60x18 raw): \", unwrap(sSquared));\n        console.log(\"Deduct Term (UD60x18 raw):    \", unwrap(deduct));\n        \n        console.log(\"----\");\n        // Because square(s) < deduct, \n        // sub(square(s), deduct) causes PANIC(0x11) underflow.\n        if (unwrap(sSquared) < unwrap(deduct)) {\n            console.log(\"CONCLUSION: square(totalShares) < deduct! It will mathematically underflow.\");\n        }\n        \n        console.log(\"Executing Withdraw...\");\n        // Expecting arithmetic underflow Panic(0x11)\n        vm.expectRevert(); \n        curve.previewWithdraw(\n            depositAmount,  \n            depositAmount,  // totalAssets = depositAmount\n            sharesOut       // totalShares = sharesOut\n        );\n        \n        console.log(\"[PASS] Vault successfully reverted on a valid 100% parameter withdrawal due to rounding underflow.\");\n    }\n}",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/ProgressiveCurve.sol#L139"
+  ],
+  "source_record": {
+    "project_id": "2VUsxVJwReb",
+    "submission_index": "357",
+    "api_submission_id": "",
+    "uid": "xCkRvABHXC4",
+    "number": "357",
+    "title": "ProgressiveCurve previewWithdraw Always Reverts with Underflow on Full Withdrawal",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "",
+    "handle": "KKKKK",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/ProgressiveCurve.sol#L139"
+    ],
+    "body": "## Finding description and impact\n\n\n##Description\n\n\nIn ProgressiveCurve.sol, an arithmetic underflow guarantees that users can never withdraw their entire deposit.\n\n\nWhen converting from shares to assets during a generic withdrawal, the _convertToAssets calculation explicitly rounds down the asset representation of the area under the curve to protect the system. However, the requirement to pass the MultiVault's full-balance checkout leads the system to calculate the necessary reduction in shares via previewWithdraw.\n\n\n\nDue to the fundamental math of ProgressiveCurve:\n\n\nMinting shares (deposit) correctly rounds down: shares = ⌊√(2 × assets)⌋\n\nAt full withdrawal, previewWithdraw calculates inner = ⌈assets * SLOPE / 1e18⌉.\n\nIt then squares the total shares to find the outer bound squaredShares = square(totalShares).\n\nIt finally subtracts shares = squaredShares - inner.\n\nBecause square(shares) is strictly less than 2 × assets for any non-perfect square, this implies squaredShares < inner. When attempting to withdraw 100% of the assets in an isolated state, squaredShares - inner produces an unavoidable PANIC(0x11) arithmetic underflow.\n\n\n\n\n##Impact\n\nNo user can ever fully withdraw their deposited assets from any ProgressiveCurve market. Whenever a user requests a full withdrawal of their maxAssets, the preview calculation hard reverts, permanently trapping dust and preventing position liquidations.\n\n\n\n## Recommended mitigation steps\n\nUpdate the share subtraction methodology explicitly. If squaredShares < inner, default to transferring totalShares rather than reverting or strictly enforce a non-100% ceiling on withdrawals.",
+    "proof_of_concept": "The test confirms the mathematical underflow with 100% precision:\n\nDeposit Assets: 2000000000000000000 (2.0)\nShares Minted: 1414213562373095048 (Precision lost during square root)\nShares Squared: 1999999999999999997 (Reconstruction is 3 units short)\nDeduct Term: 2000000000000000000\nResult: 1999...997 - 2000...000 → Arithmetic Underflow Panic(0x11)\n\nThis proves that all full withdrawals from a ProgressiveCurve vault will revert, effectively trapping user funds.\n\n\n\n run this standalone test yourself with:\n\n\nforge test --match-contract PoC_PC01_Mainnet --fork-url https://mainnet.base.org/ -vvv\n\n\n\n\n\n\n\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.29;\n\nimport { Test } from \"forge-std/src/Test.sol\";\nimport { console2 as console } from \"forge-std/src/console2.sol\";\nimport { ProgressiveCurve } from \"src/protocol/curves/ProgressiveCurve.sol\";\nimport { TransparentUpgradeableProxy } from \"@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol\";\nimport { ProgressiveCurveMathLib as PCMath } from \"src/libraries/ProgressiveCurveMathLib.sol\";\nimport { UD60x18, wrap, unwrap } from \"@prb/math/src/UD60x18.sol\";\n\ncontract PoC_PC01_Mainnet is Test {\n    ProgressiveCurve curve;\n\n    function setUp() public {\n        // Deploy curve explicitly to ensure it simulates exact contract conditions\n        ProgressiveCurve impl = new ProgressiveCurve();\n        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(\n            address(impl),\n            address(this),\n            abi.encodeWithSelector(impl.initialize.selector, \"PC-01 Test\", 2e18)\n        );\n        curve = ProgressiveCurve(address(proxy));\n    }\n\n    /*//////////////////////////////////////////////////////////////\n                FINDING: ProgressiveCurve Underflow (PC-01)\n    //////////////////////////////////////////////////////////////*/\n    function test_PC01_fullWithdrawalReverts() public {\n        uint256 depositAmount = 2e18; // 2 ETH/Tokens equivalent\n        uint256 totalSharesBefore = 0;\n        uint256 totalAssetsBefore = 0;\n        \n        console.log(\"---- MATH BREAKDOWN ----\");\n        console.log(\"Deposit Assets:\", depositAmount);\n        \n        uint256 sharesOut = curve.previewDeposit(\n            depositAmount,\n            totalAssetsBefore,\n            totalSharesBefore\n        );\n        \n        console.log(\"Shares Mints:  \", sharesOut);\n        \n        // Manual simulation of ProgressiveCurve.sol logic\n        // UD60x18 s = wrap(totalShares);\n        // UD60x18 deduct = PCMath.divUp(wrap(assets), HALF_SLOPE);\n        // UD60x18 inner = sub(PCMath.square(s), deduct);\n        \n        UD60x18 s = wrap(sharesOut);\n        UD60x18 HALF_SLOPE = curve.HALF_SLOPE();\n        \n        UD60x18 sSquared = PCMath.square(s);\n        UD60x18 deduct = PCMath.divUp(wrap(depositAmount), HALF_SLOPE);\n        \n        console.log(\"Shares Squared (UD60x18 raw): \", unwrap(sSquared));\n        console.log(\"Deduct Term (UD60x18 raw):    \", unwrap(deduct));\n        \n        console.log(\"----\");\n        // Because square(s) < deduct, \n        // sub(square(s), deduct) causes PANIC(0x11) underflow.\n        if (unwrap(sSquared) < unwrap(deduct)) {\n            console.log(\"CONCLUSION: square(totalShares) < deduct! It will mathematically underflow.\");\n        }\n        \n        console.log(\"Executing Withdraw...\");\n        // Expecting arithmetic underflow Panic(0x11)\n        vm.expectRevert(); \n        curve.previewWithdraw(\n            depositAmount,  \n            depositAmount,  // totalAssets = depositAmount\n            sharesOut       // totalShares = sharesOut\n        );\n        \n        console.log(\"[PASS] Vault successfully reverted on a valid 100% parameter withdrawal due to rounding underflow.\");\n    }\n}",
+    "detail_url": "https://code4rena.com/api/v1/audits/2VUsxVJwReb/submissions/357",
+    "raw": {
+      "auditUid": "2VUsxVJwReb",
+      "createdAt": "2026-03-07T09:05:48.405Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "4vhwpZJ68HS",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-21T21:25:00.382Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "vtU4cDUiiDR"
+        },
+        {
+          "uid": "aauKqCsFTNp",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-21T21:25:01.372Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "vtU4cDUiiDR"
+        }
+      ],
+      "finding": {
+        "uid": "vtU4cDUiiDR",
+        "number": 18,
+        "duplicates": 40
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2026-04-28T14:24:44.015Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "ProgressiveCurve previewWithdraw Always Reverts with Underflow on Full Withdrawal",
+      "uid": "xCkRvABHXC4",
+      "updatedAt": "2026-03-07T09:05:48.405Z",
+      "user": {
+        "uid": "7xDzofyiaAN",
+        "handle": "KKKKK"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\n\n##Description\n\n\nIn ProgressiveCurve.sol, an arithmetic underflow guarantees that users can never withdraw their entire deposit.\n\n\nWhen converting from shares to assets during a generic withdrawal, the _convertToAssets calculation explicitly rounds down the asset representation of the area under the curve to protect the system. However, the requirement to pass the MultiVault's full-balance checkout leads the system to calculate the necessary reduction in shares via previewWithdraw.\n\n\n\nDue to the fundamental math of ProgressiveCurve:\n\n\nMinting shares (deposit) correctly rounds down: shares = ⌊√(2 × assets)⌋\n\nAt full withdrawal, previewWithdraw calculates inner = ⌈assets * SLOPE / 1e18⌉.\n\nIt then squares the total shares to find the outer bound squaredShares = square(totalShares).\n\nIt finally subtracts shares = squaredShares - inner.\n\nBecause square(shares) is strictly less than 2 × assets for any non-perfect square, this implies squaredShares < inner. When attempting to withdraw 100% of the assets in an isolated state, squaredShares - inner produces an unavoidable PANIC(0x11) arithmetic underflow.\n\n\n\n\n##Impact\n\nNo user can ever fully withdraw their deposited assets from any ProgressiveCurve market. Whenever a user requests a full withdrawal of their maxAssets, the preview calculation hard reverts, permanently trapping dust and preventing position liquidations.\n\n\n\n## Recommended mitigation steps\n\nUpdate the share subtraction methodology explicitly. If squaredShares < inner, default to transferring totalShares rather than reverting or strictly enforce a non-100% ceiling on withdrawals.",
+      "proofOfConcept": "The test confirms the mathematical underflow with 100% precision:\n\nDeposit Assets: 2000000000000000000 (2.0)\nShares Minted: 1414213562373095048 (Precision lost during square root)\nShares Squared: 1999999999999999997 (Reconstruction is 3 units short)\nDeduct Term: 2000000000000000000\nResult: 1999...997 - 2000...000 → Arithmetic Underflow Panic(0x11)\n\nThis proves that all full withdrawals from a ProgressiveCurve vault will revert, effectively trapping user funds.\n\n\n\n run this standalone test yourself with:\n\n\nforge test --match-contract PoC_PC01_Mainnet --fork-url https://mainnet.base.org/ -vvv\n\n\n\n\n\n\n\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.29;\n\nimport { Test } from \"forge-std/src/Test.sol\";\nimport { console2 as console } from \"forge-std/src/console2.sol\";\nimport { ProgressiveCurve } from \"src/protocol/curves/ProgressiveCurve.sol\";\nimport { TransparentUpgradeableProxy } from \"@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol\";\nimport { ProgressiveCurveMathLib as PCMath } from \"src/libraries/ProgressiveCurveMathLib.sol\";\nimport { UD60x18, wrap, unwrap } from \"@prb/math/src/UD60x18.sol\";\n\ncontract PoC_PC01_Mainnet is Test {\n    ProgressiveCurve curve;\n\n    function setUp() public {\n        // Deploy curve explicitly to ensure it simulates exact contract conditions\n        ProgressiveCurve impl = new ProgressiveCurve();\n        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(\n            address(impl),\n            address(this),\n            abi.encodeWithSelector(impl.initialize.selector, \"PC-01 Test\", 2e18)\n        );\n        curve = ProgressiveCurve(address(proxy));\n    }\n\n    /*//////////////////////////////////////////////////////////////\n                FINDING: ProgressiveCurve Underflow (PC-01)\n    //////////////////////////////////////////////////////////////*/\n    function test_PC01_fullWithdrawalReverts() public {\n        uint256 depositAmount = 2e18; // 2 ETH/Tokens equivalent\n        uint256 totalSharesBefore = 0;\n        uint256 totalAssetsBefore = 0;\n        \n        console.log(\"---- MATH BREAKDOWN ----\");\n        console.log(\"Deposit Assets:\", depositAmount);\n        \n        uint256 sharesOut = curve.previewDeposit(\n            depositAmount,\n            totalAssetsBefore,\n            totalSharesBefore\n        );\n        \n        console.log(\"Shares Mints:  \", sharesOut);\n        \n        // Manual simulation of ProgressiveCurve.sol logic\n        // UD60x18 s = wrap(totalShares);\n        // UD60x18 deduct = PCMath.divUp(wrap(assets), HALF_SLOPE);\n        // UD60x18 inner = sub(PCMath.square(s), deduct);\n        \n        UD60x18 s = wrap(sharesOut);\n        UD60x18 HALF_SLOPE = curve.HALF_SLOPE();\n        \n        UD60x18 sSquared = PCMath.square(s);\n        UD60x18 deduct = PCMath.divUp(wrap(depositAmount), HALF_SLOPE);\n        \n        console.log(\"Shares Squared (UD60x18 raw): \", unwrap(sSquared));\n        console.log(\"Deduct Term (UD60x18 raw):    \", unwrap(deduct));\n        \n        console.log(\"----\");\n        // Because square(s) < deduct, \n        // sub(square(s), deduct) causes PANIC(0x11) underflow.\n        if (unwrap(sSquared) < unwrap(deduct)) {\n            console.log(\"CONCLUSION: square(totalShares) < deduct! It will mathematically underflow.\");\n        }\n        \n        console.log(\"Executing Withdraw...\");\n        // Expecting arithmetic underflow Panic(0x11)\n        vm.expectRevert(); \n        curve.previewWithdraw(\n            depositAmount,  \n            depositAmount,  // totalAssets = depositAmount\n            sharesOut       // totalShares = sharesOut\n        );\n        \n        console.log(\"[PASS] Vault successfully reverted on a valid 100% parameter withdrawal due to rounding underflow.\");\n    }\n}",
+      "linesOfCode": "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/ProgressiveCurve.sol#L139",
+      "number": 357,
+      "aiExplanation": null,
+      "_index": 357
+    }
+  }
+}

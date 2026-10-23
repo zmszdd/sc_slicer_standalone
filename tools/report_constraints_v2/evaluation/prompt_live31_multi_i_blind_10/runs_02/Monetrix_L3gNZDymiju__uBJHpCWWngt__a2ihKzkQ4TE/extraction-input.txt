@@ -1,0 +1,22 @@
+USDC Blacklisting Permanently Locks User Funds in RedeemEscrow With No Recovery Path
+
+## Finding description and impact
+
+When a user calls [`requestRedeem()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L183-L196), their USDM is transferred to the vault and [`addObligation()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L41-L44) increments `totalOwed` in RedeemEscrow. The operator later calls `fundRedemptions` to move the matching USDC into the escrow. When the user eventually calls [`claimRedeem()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L198-L213), the vault calls [`payOut()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L47-L53) which does `usdc.safeTransfer(recipient, amount)`.
+
+Circle (the USDC issuer) can blacklist any address at any time, including in response to legal orders or theft. If the redeeming user is blacklisted between `requestRedeem` and `claimRedeem`, the `safeTransfer` reverts because USDC enforces a blacklist check on every transfer. There is nothing in the protocol that handles this revert.
+
+The consequences are permanent:
+
+- `payOut` is the only function that reduces `totalOwed`. With a blacklisted recipient, every call to `payOut` reverts and `totalOwed` can never decrease for that obligation.
+- [`reclaimTo`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L59-L65) enforces `bal >= amount + totalOwed`. As long as the stuck obligation remains in `totalOwed`, the operator cannot reclaim the corresponding USDC.
+- The user's USDM is sitting in the vault (transferred there at `requestRedeem`) and can never be burned or returned -- there is no refund path.
+- There is no admin or governance function in RedeemEscrow or the vault that can clear a stuck obligation or redirect a payment to an alternative address.
+
+**Accounting impact.** The stuck USDC stays in RedeemEscrow and is still counted as backing by [`totalBackingSigned()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L135). The corresponding USDM is still in `usdm.totalSupply()` (never burned). So `surplus()` is not distorted -- the accounting stays balanced, just with permanently frozen funds.
+
+---
+
+## Mitigation
+
+The cleanest fix is to allow the redemption owner to specify an alternative recipient in `claimRedeem`. Since the ownership check already ensures only `req.owner` can call it, they can redirect the USDC to any non-blacklisted address they control. This requires no governance intervention and keeps the existing access control intact.

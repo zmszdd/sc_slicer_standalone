@@ -26,6 +26,8 @@ from lib.plan_synthesizer import synthesize_id_formalization
 # ------------------- 节选自 fidelity.py -------------------
 
 POWER_OF_TWO = r'2\s*\^\s*\{?\d+\}?(?:\s*[+-]\s*\d+)?'
+POWER_EXPRESSION = (r'2\s*\^\s*\{?(?:[A-Za-z_]\w*|\d+)\}?'
+                    r'(?:\s*[+-]\s*\d+)?')
 NUMBER = (r'(?:' + POWER_OF_TWO +
           r'|-?(?:0[xX][0-9a-fA-F]+|(?:\d{1,3}(?:,\d{3})+|\d+)'
           r'(?:\.\d+)?(?:[eE][+-]?\d+)?))')
@@ -46,6 +48,12 @@ WORDS = re.compile(
     r'\b(?P<op>less than|smaller than|below|under|at most|no more than|'
     r'greater than|more than|above|at least|no less than|equal to)\s+'
     r'(?P<number>' + NUMBER + r')\b', re.IGNORECASE)
+POWER_SYMBOLIC = re.compile(
+    r'(?P<op><=|>=|==|!=|<|>)\s*(?P<number>' + POWER_EXPRESSION + r')')
+POWER_WORDS = re.compile(
+    r'\b(?P<op>less than|smaller than|below|under|at most|no more than|'
+    r'greater than|more than|above|at least|no less than|equal to)\s+'
+    r'(?P<number>' + POWER_EXPRESSION + r')', re.IGNORECASE)
 OPERATORS = {'<': 'lt', '<=': 'le', '>': 'gt', '>=': 'ge', '==': 'eq', '!=': 'ne',
              'less than': 'lt', 'smaller than': 'lt', 'below': 'lt', 'under': 'lt',
              'at most': 'le', 'no more than': 'le', 'greater than': 'gt',
@@ -76,9 +84,49 @@ def number(value):
 
 
 def explicit_bounds(text):
+    # Resolve report-authored expressions such as ``2^noCapLimit`` only when
+    # that same statement gives one unambiguous integer binding for the
+    # exponent. Mask the expression before running the literal regexes below;
+    # otherwise ``supply <= 2^noCapLimit`` is misread as the bound ``<= 2``.
+    candidates = {}
+    for match in re.finditer(
+            r'\b(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<value>\d[\d,]*)\b', text):
+        candidates.setdefault(match.group('name'), set()).add(
+            number(match.group('value')))
+    bindings = {name: next(iter(values)) for name, values in candidates.items()
+                if len(values) == 1}
+
+    def power_value(expression):
+        compact = re.sub(r'\s+', '', expression)
+        match = re.fullmatch(
+            r'2\^\{?([A-Za-z_]\w*|\d+)\}?(?:([+-])(\d+))?', compact)
+        if not match:
+            return expression
+        exponent = match.group(1)
+        if exponent.isdigit():
+            exponent_value = int(exponent)
+        elif exponent in bindings and bindings[exponent] == int(bindings[exponent]):
+            exponent_value = int(bindings[exponent])
+        else:
+            return compact
+        if not 0 <= exponent_value <= 4096:
+            return compact
+        value = 1 << exponent_value
+        if match.group(2):
+            offset = int(match.group(3))
+            value += offset if match.group(2) == '+' else -offset
+        return Decimal(value)
+
     found = []
-    for pattern in (SYMBOLIC, WORDS):
+    masked = text
+    for pattern in (POWER_SYMBOLIC, POWER_WORDS):
         for match in pattern.finditer(text):
+            found.append((OPERATORS[match.group('op').lower()],
+                          power_value(match.group('number'))))
+            padding = ' ' * (match.end() - match.start())
+            masked = masked[:match.start()] + padding + masked[match.end():]
+    for pattern in (SYMBOLIC, WORDS):
+        for match in pattern.finditer(masked):
             found.append((OPERATORS[match.group('op').lower()], number(match.group('number'))))
     return set(found)
 

@@ -1,0 +1,110 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Brix Money_qy7NXr77sDh",
+    "audit_uid": "qy7NXr77sDh",
+    "requested_submission_uid": "hX7p7s459Aw",
+    "requested_finding_uid": "Nxh87eHBt9G",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Brix_Money_qy7NXr77sDh/20260618_144946/findings.json",
+    "source_submission_uid": "hX7p7s459Aw",
+    "source_finding_uid": "Nxh87eHBt9G",
+    "original_report_path": "Brix Money_qy7NXr77sDh\\low_valid_hX7p7s459Aw.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "hX7p7s459Aw",
+  "finding_uid": "Nxh87eHBt9G",
+  "finding_number": "28",
+  "title": "Blacklisted users can call unstake() and lock the funds in the adapter forever.",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "Tarnished",
+  "body": "## Finding description and impact\n\n``_beforeTokenTransfer()`` in ``iTryTokenOFT.sol`` prevents ``blacklisted`` users from transferring any token:\n\nhttps://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/iTRY/crosschain/iTryTokenOFT.sol#L139-L177\n\n``unstake()`` on ``unstakeMessenger.sol`` can be called even by ``blacklisted`` users.\n\nhttps://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/wiTRY/crosschain/UnstakeMessenger.sol#L108-L151\n\nThe whole flow works as follows:\n1. Blacklisted user Alice completes cooldown for ``100`` iTRY tokens.\n2. Alice calls ``UnstakeMessenger.unstake(0.05 ETH)``  \n    - Pays 0.1 ETH total (0.05 for spoke→hub, 0.05 for return) │\n    - Message: UnstakeMessage({user: Alice, ...})               │\n    - LayerZero message sent to hub    \n3. LayerZero Endpoint calls ``wiTryVaultComposer._lzReceive()``\n4. ``_lzReceive()`` decodes message and calls ``_handleUnstake()``\n```solidity\nfunction _handleUnstake(..., UnstakeMessage{user: Alice}) {\n    // Check cooldown completed   \n    uint256 assets = StakediTryCrosschain.unstakeThroughComposer(Alice);                                 \n```\n5. StakediTryCrosschain.unstakeThroughComposer(Alice) is called\n6. ``_handleUnstake()`` continues\n```solidity\n        SendParam memory _sendParam = SendParam({\n            dstEid: _origin.srcEid,\n            to: bytes32(uint256(uint160(user))),\n            amountLD: assets,\n            minAmountLD: assets,\n            extraOptions: options,\n            composeMsg: \"\",\n            oftCmd: \"\"\n        });\n\n        _send(ASSET_OFT, _sendParam, address(this));\n```\n7. ``iTryTokenOFTAdapter.send()`` is called\n```solidity\n    - Locks 100 iTRY in adapter\n```\n8. LayerZero Endpoint delivers message \n    - Calls: iTryTokenOFT._lzReceive()\n9. ``iTryTokenOFT._lzReceive()`` executes:\n```solidity\n   address toAddress = Alice\n   uint256 amountReceivedLD = _credit(Alice, 100 iTRY, ...)\n```\n10. ``_credit()`` calls ``_mint()``\n11. ``_mint()`` triggers ``_beforeTokenTransfer()`` which ``reverts()``.\n\nThis is how ``unstake()`` of ``unstakeMessenger.sol`` calls ``_beforeTokenTransfer()`` on ``iTryTokenOFT.sol``.\n\nNow the main problem is when our ``_credit()`` fails due to ``blacklisted``,  our ``100 iTRY`` tokens are still locked in ``iTryTokenOFTAdapter()`` with no ``rescue`` mechanism.\n            \n\n## Recommended mitigation steps\n\nSimilar to ``wiTRYOFT.sol``, ``_mint`` the funds to ``owner()`` when blacklisted users transfer:\n```solidity\n./wiTRYOFT.sol\n\n    function _credit(address _to, uint256 _amountLD, uint32 _srcEid)\n        internal\n        virtual\n        override\n        returns (uint256 amountReceivedLD)\n    {\n        // If the recipient is blacklisted, emit an event, redistribute funds, and credit the owner\n        if (blackList[_to]) {\n            emit RedistributeFunds(_to, _amountLD);\n            return super._credit(owner(), _amountLD, _srcEid);\n        } else {\n            return super._credit(_to, _amountLD, _srcEid);\n        }\n    }\n```",
+  "proof_of_concept": "As ``_beforeTokenTransfer()`` and ``blacklisted`` is only checked in ``step 11`` anyone with a valid ``position`` can call ``unstake()`` for ``cross chain claiming``. Here a ``PoC`` to prove that:\n```solidity\n    function test_poc() public {\n        // Setup: Configure hub peer\n        vm.prank(owner);\n        messenger.setPeer(hubEid, hubPeer);\n\n        // Set mock quote\n        uint256 leg1BaseFee = 0.01 ether;\n        mockEndpoint.setQuote(leg1BaseFee, 0);\n\n        // Get exact quote for the return trip value we want to send\n        (uint256 exactFee,) = messenger.quoteUnstakeWithReturnValue(0.00001 ether);\n\n        // Execute unstake with exact quoted fee for any user\n        vm.prank(user);\n        bytes32 guid = messenger.unstake{value: exactFee}(0.00001 ether);\n\n        // Verify guid returned \n        assertTrue(guid != bytes32(0), \"GUID should not be zero\");\n    }\n```\nPaste the above ``PoC`` in ``UnstakeMessenger.t.sol`` and run it using:\n```solidity\nforge test --match-test test_poc -vvv\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/wiTRY/crosschain/UnstakeMessenger.sol#L108",
+    "https://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/iTRY/crosschain/iTryTokenOFT.sol#L140-L178"
+  ],
+  "source_record": {
+    "project_id": "qy7NXr77sDh",
+    "submission_index": "714",
+    "api_submission_id": "",
+    "uid": "hX7p7s459Aw",
+    "number": "714",
+    "title": "Blacklisted users can call unstake() and lock the funds in the adapter forever.",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "",
+    "handle": "Tarnished",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/wiTRY/crosschain/UnstakeMessenger.sol#L108",
+      "https://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/iTRY/crosschain/iTryTokenOFT.sol#L140-L178"
+    ],
+    "body": "## Finding description and impact\n\n``_beforeTokenTransfer()`` in ``iTryTokenOFT.sol`` prevents ``blacklisted`` users from transferring any token:\n\nhttps://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/iTRY/crosschain/iTryTokenOFT.sol#L139-L177\n\n``unstake()`` on ``unstakeMessenger.sol`` can be called even by ``blacklisted`` users.\n\nhttps://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/wiTRY/crosschain/UnstakeMessenger.sol#L108-L151\n\nThe whole flow works as follows:\n1. Blacklisted user Alice completes cooldown for ``100`` iTRY tokens.\n2. Alice calls ``UnstakeMessenger.unstake(0.05 ETH)``  \n    - Pays 0.1 ETH total (0.05 for spoke→hub, 0.05 for return) │\n    - Message: UnstakeMessage({user: Alice, ...})               │\n    - LayerZero message sent to hub    \n3. LayerZero Endpoint calls ``wiTryVaultComposer._lzReceive()``\n4. ``_lzReceive()`` decodes message and calls ``_handleUnstake()``\n```solidity\nfunction _handleUnstake(..., UnstakeMessage{user: Alice}) {\n    // Check cooldown completed   \n    uint256 assets = StakediTryCrosschain.unstakeThroughComposer(Alice);                                 \n```\n5. StakediTryCrosschain.unstakeThroughComposer(Alice) is called\n6. ``_handleUnstake()`` continues\n```solidity\n        SendParam memory _sendParam = SendParam({\n            dstEid: _origin.srcEid,\n            to: bytes32(uint256(uint160(user))),\n            amountLD: assets,\n            minAmountLD: assets,\n            extraOptions: options,\n            composeMsg: \"\",\n            oftCmd: \"\"\n        });\n\n        _send(ASSET_OFT, _sendParam, address(this));\n```\n7. ``iTryTokenOFTAdapter.send()`` is called\n```solidity\n    - Locks 100 iTRY in adapter\n```\n8. LayerZero Endpoint delivers message \n    - Calls: iTryTokenOFT._lzReceive()\n9. ``iTryTokenOFT._lzReceive()`` executes:\n```solidity\n   address toAddress = Alice\n   uint256 amountReceivedLD = _credit(Alice, 100 iTRY, ...)\n```\n10. ``_credit()`` calls ``_mint()``\n11. ``_mint()`` triggers ``_beforeTokenTransfer()`` which ``reverts()``.\n\nThis is how ``unstake()`` of ``unstakeMessenger.sol`` calls ``_beforeTokenTransfer()`` on ``iTryTokenOFT.sol``.\n\nNow the main problem is when our ``_credit()`` fails due to ``blacklisted``,  our ``100 iTRY`` tokens are still locked in ``iTryTokenOFTAdapter()`` with no ``rescue`` mechanism.\n            \n\n## Recommended mitigation steps\n\nSimilar to ``wiTRYOFT.sol``, ``_mint`` the funds to ``owner()`` when blacklisted users transfer:\n```solidity\n./wiTRYOFT.sol\n\n    function _credit(address _to, uint256 _amountLD, uint32 _srcEid)\n        internal\n        virtual\n        override\n        returns (uint256 amountReceivedLD)\n    {\n        // If the recipient is blacklisted, emit an event, redistribute funds, and credit the owner\n        if (blackList[_to]) {\n            emit RedistributeFunds(_to, _amountLD);\n            return super._credit(owner(), _amountLD, _srcEid);\n        } else {\n            return super._credit(_to, _amountLD, _srcEid);\n        }\n    }\n```",
+    "proof_of_concept": "As ``_beforeTokenTransfer()`` and ``blacklisted`` is only checked in ``step 11`` anyone with a valid ``position`` can call ``unstake()`` for ``cross chain claiming``. Here a ``PoC`` to prove that:\n```solidity\n    function test_poc() public {\n        // Setup: Configure hub peer\n        vm.prank(owner);\n        messenger.setPeer(hubEid, hubPeer);\n\n        // Set mock quote\n        uint256 leg1BaseFee = 0.01 ether;\n        mockEndpoint.setQuote(leg1BaseFee, 0);\n\n        // Get exact quote for the return trip value we want to send\n        (uint256 exactFee,) = messenger.quoteUnstakeWithReturnValue(0.00001 ether);\n\n        // Execute unstake with exact quoted fee for any user\n        vm.prank(user);\n        bytes32 guid = messenger.unstake{value: exactFee}(0.00001 ether);\n\n        // Verify guid returned \n        assertTrue(guid != bytes32(0), \"GUID should not be zero\");\n    }\n```\nPaste the above ``PoC`` in ``UnstakeMessenger.t.sol`` and run it using:\n```solidity\nforge test --match-test test_poc -vvv\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/qy7NXr77sDh/submissions/714",
+    "raw": {
+      "auditUid": "qy7NXr77sDh",
+      "createdAt": "2025-12-03T18:58:29.889Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "brL36Xyx67j",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-02T10:10:09.637Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "Nxh87eHBt9G"
+        },
+        {
+          "uid": "idb2kHQ84MY",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-02T10:10:12.066Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "Nxh87eHBt9G"
+        }
+      ],
+      "finding": {
+        "uid": "Nxh87eHBt9G",
+        "number": 28,
+        "duplicates": 45
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2026-01-23T17:06:29.086Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Blacklisted users can call unstake() and lock the funds in the adapter forever.",
+      "uid": "hX7p7s459Aw",
+      "updatedAt": "2025-12-03T18:58:29.889Z",
+      "user": {
+        "uid": "P5Wgt6MpvXA",
+        "handle": "Tarnished"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\n``_beforeTokenTransfer()`` in ``iTryTokenOFT.sol`` prevents ``blacklisted`` users from transferring any token:\n\nhttps://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/iTRY/crosschain/iTryTokenOFT.sol#L139-L177\n\n``unstake()`` on ``unstakeMessenger.sol`` can be called even by ``blacklisted`` users.\n\nhttps://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/wiTRY/crosschain/UnstakeMessenger.sol#L108-L151\n\nThe whole flow works as follows:\n1. Blacklisted user Alice completes cooldown for ``100`` iTRY tokens.\n2. Alice calls ``UnstakeMessenger.unstake(0.05 ETH)``  \n    - Pays 0.1 ETH total (0.05 for spoke→hub, 0.05 for return) │\n    - Message: UnstakeMessage({user: Alice, ...})               │\n    - LayerZero message sent to hub    \n3. LayerZero Endpoint calls ``wiTryVaultComposer._lzReceive()``\n4. ``_lzReceive()`` decodes message and calls ``_handleUnstake()``\n```solidity\nfunction _handleUnstake(..., UnstakeMessage{user: Alice}) {\n    // Check cooldown completed   \n    uint256 assets = StakediTryCrosschain.unstakeThroughComposer(Alice);                                 \n```\n5. StakediTryCrosschain.unstakeThroughComposer(Alice) is called\n6. ``_handleUnstake()`` continues\n```solidity\n        SendParam memory _sendParam = SendParam({\n            dstEid: _origin.srcEid,\n            to: bytes32(uint256(uint160(user))),\n            amountLD: assets,\n            minAmountLD: assets,\n            extraOptions: options,\n            composeMsg: \"\",\n            oftCmd: \"\"\n        });\n\n        _send(ASSET_OFT, _sendParam, address(this));\n```\n7. ``iTryTokenOFTAdapter.send()`` is called\n```solidity\n    - Locks 100 iTRY in adapter\n```\n8. LayerZero Endpoint delivers message \n    - Calls: iTryTokenOFT._lzReceive()\n9. ``iTryTokenOFT._lzReceive()`` executes:\n```solidity\n   address toAddress = Alice\n   uint256 amountReceivedLD = _credit(Alice, 100 iTRY, ...)\n```\n10. ``_credit()`` calls ``_mint()``\n11. ``_mint()`` triggers ``_beforeTokenTransfer()`` which ``reverts()``.\n\nThis is how ``unstake()`` of ``unstakeMessenger.sol`` calls ``_beforeTokenTransfer()`` on ``iTryTokenOFT.sol``.\n\nNow the main problem is when our ``_credit()`` fails due to ``blacklisted``,  our ``100 iTRY`` tokens are still locked in ``iTryTokenOFTAdapter()`` with no ``rescue`` mechanism.\n            \n\n## Recommended mitigation steps\n\nSimilar to ``wiTRYOFT.sol``, ``_mint`` the funds to ``owner()`` when blacklisted users transfer:\n```solidity\n./wiTRYOFT.sol\n\n    function _credit(address _to, uint256 _amountLD, uint32 _srcEid)\n        internal\n        virtual\n        override\n        returns (uint256 amountReceivedLD)\n    {\n        // If the recipient is blacklisted, emit an event, redistribute funds, and credit the owner\n        if (blackList[_to]) {\n            emit RedistributeFunds(_to, _amountLD);\n            return super._credit(owner(), _amountLD, _srcEid);\n        } else {\n            return super._credit(_to, _amountLD, _srcEid);\n        }\n    }\n```",
+      "proofOfConcept": "As ``_beforeTokenTransfer()`` and ``blacklisted`` is only checked in ``step 11`` anyone with a valid ``position`` can call ``unstake()`` for ``cross chain claiming``. Here a ``PoC`` to prove that:\n```solidity\n    function test_poc() public {\n        // Setup: Configure hub peer\n        vm.prank(owner);\n        messenger.setPeer(hubEid, hubPeer);\n\n        // Set mock quote\n        uint256 leg1BaseFee = 0.01 ether;\n        mockEndpoint.setQuote(leg1BaseFee, 0);\n\n        // Get exact quote for the return trip value we want to send\n        (uint256 exactFee,) = messenger.quoteUnstakeWithReturnValue(0.00001 ether);\n\n        // Execute unstake with exact quoted fee for any user\n        vm.prank(user);\n        bytes32 guid = messenger.unstake{value: exactFee}(0.00001 ether);\n\n        // Verify guid returned \n        assertTrue(guid != bytes32(0), \"GUID should not be zero\");\n    }\n```\nPaste the above ``PoC`` in ``UnstakeMessenger.t.sol`` and run it using:\n```solidity\nforge test --match-test test_poc -vvv\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/wiTRY/crosschain/UnstakeMessenger.sol#L108,https://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/iTRY/crosschain/iTryTokenOFT.sol#L140-L178",
+      "number": 714,
+      "aiExplanation": null,
+      "_index": 714
+    }
+  }
+}

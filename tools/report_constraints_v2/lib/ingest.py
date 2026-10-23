@@ -8,6 +8,7 @@
 """
 import copy
 import json
+import re
 
 from lib import report_only as r
 from lib.semantic_core import require, strings
@@ -29,6 +30,106 @@ def build_catalog(text):
                               'line': text.count('\n', 0, start) + 1})
         offset += len(line)
     return {'schema_version': 'report-evidence/1', 'source_sha256': digest, 'fragments': fragments}
+
+
+_MARKDOWN_HEADING = re.compile(r'^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$')
+_BOLD_HEADING = re.compile(r'^\s{0,3}(?:\*\*|__)(.+?)(?:\*\*|__)\s*:?[ \t]*$')
+_INLINE_IMPACT = re.compile(
+    r'^\s*(?:[-+*]\s+)?(?:\*\*|__)?\s*impact(?:\s+assessment)?\s*:'
+    r'\s*(?:\*\*|__)?\s*(.*)$', re.IGNORECASE)
+
+
+def _impact_heading_title(title):
+    cleaned = re.sub(r'[`*_]', '', title).strip().rstrip(':').strip().lower()
+    words = re.findall(r'[a-z]+', cleaned)
+    return bool(words and (
+        words[0] == 'impact' or words[-1] == 'impact' or
+        ('impact' in words and any(word in words for word in
+                                   ('finding', 'description', 'vulnerability')))))
+
+
+def explicit_impact_ranges(text):
+    """Return character ranges covered by explicitly labeled Impact areas.
+
+    Supported forms include Markdown headings, standalone bold labels, combined
+    "finding description and impact" headings, and inline ``Impact:`` labels.
+    Unlabeled prose is never promoted into an Impact source range.
+    """
+    lines = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        lines.append((offset, offset + len(line), line))
+        offset += len(line)
+    ranges = []
+    active_start = None
+    active_level = None
+
+    def close_section(end):
+        nonlocal active_start, active_level
+        if active_start is not None and end > active_start:
+            ranges.append((active_start, end))
+        active_start = None
+        active_level = None
+
+    for start, end, line in lines:
+        content = line.rstrip('\r\n')
+        heading = _MARKDOWN_HEADING.match(content)
+        bold = _BOLD_HEADING.match(content)
+        is_boundary = heading is not None or bold is not None
+        if is_boundary:
+            heading_level = (len(heading.group(0).lstrip().split(maxsplit=1)[0])
+                             if heading else None)
+            if (heading is not None and active_start is not None and
+                    active_level is not None and
+                    heading_level > active_level):
+                # Subheadings within a marked combined area remain in scope;
+                # the section ends at the next peer or parent heading.
+                continue
+            close_section(start)
+            title = heading.group(1) if heading else bold.group(1)
+            if _impact_heading_title(title):
+                active_start = end
+                active_level = heading_level
+            continue
+        inline = _INLINE_IMPACT.match(content)
+        if inline:
+            close_section(start)
+            # The full source line remains the evidence fragment; the range
+            # begins at the labeled content so adjacent prose is excluded.
+            label_end = content.find(':') + 1
+            body_start = start + label_end
+            if content[label_end:].strip():
+                ranges.append((body_start, end))
+            else:
+                active_start = end
+            continue
+        if active_start is not None and content.strip().startswith('->'):
+            # Direct/Multi-User Impact sublabels belong to their parent section.
+            continue
+    close_section(len(text))
+    return ranges
+
+
+def explicit_impact_evidence_ids(catalog, text):
+    """List evidence fragments overlapping explicitly marked Impact ranges."""
+    require(catalog == build_catalog(text), 'catalog does not match this report')
+    ranges = explicit_impact_ranges(text)
+    return [row['id'] for row in catalog['fragments']
+            if any(row['start'] < end and row['end'] > start
+                   for start, end in ranges)]
+
+
+def validate_impact_evidence(elements, allowed_ids):
+    """Reject impact statements citing prose outside marked Impact areas."""
+    allowed = set(allowed_ids)
+    for row in elements.get('statements', []):
+        if row.get('kind') != 'impact':
+            continue
+        ids = row.get('evidence_ids')
+        require(isinstance(ids, list) and bool(ids),
+                f"impact statement {row.get('id')} lacks Impact evidence")
+        require(set(ids) <= allowed,
+                f"impact statement {row.get('id')} cites evidence outside marked Impact areas")
 
 
 def resolve(ids, catalog, text):
@@ -76,10 +177,14 @@ DIMENSIONS = (
 )
 STATUSES = {'present', 'missing', 'uncertain'}
 
-PROMPT = '''You are a conservative INPUT-SUFFICIENCY gate for vulnerability reports.
+PROMPT = '''You are a conservative REPORT-NARRATIVE-SUFFICIENCY gate for vulnerability reports.
 Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
-whether the supplied numbered report fragments contain enough information for a later
-model to derive a report-grounded P/I/V candidate.
+whether the supplied numbered report fragments explain the affected subject, trigger,
+direct effect, and safety-relation basis well enough to attempt P/I/V formalization.
+"ready" means only that the narrative is sufficient to try. It does not mean the
+current rule grammar can express the relation, that numeric variables and units are
+available, or that a model will successfully generate complete formulas. Those are
+judged separately from the subsequent per-impact formalization results.
 
 Required dimensions:
 1. affected_subject: identifiable affected component, function, state, asset, or actor.
@@ -88,15 +193,19 @@ Required dimensions:
    or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
 4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
    numeric, temporal, conservation, or state-transition safety relationship can be derived.
-   The report need not explicitly say "invariant", but the relation must not be invented.
+   The report need not explicitly say "invariant". A NatSpec rule, quoted standard
+   requirement, or mitigation that directly states expected behavior can support this
+   dimension; implementation steps alone cannot. The relation must not be invented.
 
 Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
 Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
 dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
 list every dimension whose status is missing OR uncertain, in the required dimension
 order. decision is ready only when all four dimensions are present; otherwise decision
-is insufficient. Do not treat
-PoC availability, code availability, severity labels, or a proposed fix as substitutes.
+is insufficient. A proposed fix may support only the safety-relation dimension when its
+text directly states the expected property; it cannot replace evidence of the affected
+subject, trigger, or direct effect. Do not treat PoC availability, code availability,
+or severity labels as substitutes.
 Return JSON only with exactly:
 {"schema_version":"report-readiness/1","decision":"ready|insufficient",
  "dimensions":{

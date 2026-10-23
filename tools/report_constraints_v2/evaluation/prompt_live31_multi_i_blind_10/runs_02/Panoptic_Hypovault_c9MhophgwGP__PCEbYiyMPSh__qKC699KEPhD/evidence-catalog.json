@@ -1,0 +1,209 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "64f370ef08bf41a15422104d7b0d79d28cf55fdb4c3539ed4730007055ae629f",
+  "fragments": [
+    {
+      "id": "e_64f370ef08bf_0001",
+      "text": "Division by zero in `executeWithdrawal` leads to permanently locked funds",
+      "start": 0,
+      "end": 73,
+      "line": 1
+    },
+    {
+      "id": "e_64f370ef08bf_0002",
+      "text": "## Finding description and impact",
+      "start": 75,
+      "end": 108,
+      "line": 3
+    },
+    {
+      "id": "e_64f370ef08bf_0003",
+      "text": "### Summary",
+      "start": 110,
+      "end": 121,
+      "line": 5
+    },
+    {
+      "id": "e_64f370ef08bf_0004",
+      "text": "A missing check in the `HypoVault.executeWithdrawal` function allows a division by zero to occur if a withdrawal epoch is fulfilled with zero shares. A manager can trigger this condition (intentionally or accidentally) by calling `fulfillWithdrawals` with `sharesToFulfill = 0`. This creates a broken state for that epoch where all pending user withdrawals become permanently locked. Affected users cannot execute their withdrawals, as the transaction will always revert, nor can they cancel them, as the cancellation function only operates on the current epoch. This results in a permanent loss of access to user funds for that epoch unless a complex manual intervention is performed by the owner.",
+      "start": 123,
+      "end": 821,
+      "line": 7
+    },
+    {
+      "id": "e_64f370ef08bf_0005",
+      "text": "### Root Cause",
+      "start": 823,
+      "end": 837,
+      "line": 9
+    },
+    {
+      "id": "e_64f370ef08bf_0006",
+      "text": "The vulnerability stems from a sequence of events across three functions:",
+      "start": 839,
+      "end": 912,
+      "line": 11
+    },
+    {
+      "id": "e_64f370ef08bf_0007",
+      "text": "1.  **`fulfillWithdrawals`:** In `src/HypoVault.sol`, the manager can call this function with `sharesToFulfill = 0`. The function will execute successfully, advancing the `withdrawalEpoch` but setting `withdrawalEpochState` for the just-closed epoch with `sharesFulfilled = 0`.",
+      "start": 914,
+      "end": 1191,
+      "line": 13
+    },
+    {
+      "id": "e_64f370ef08bf_0008",
+      "text": "2.  **`executeWithdrawal`:** In `src/HypoVault.sol`, when a user tries to process a withdrawal from this broken epoch, the function attempts to calculate `assetsToWithdraw` using `Math.mulDiv(..., ..., _withdrawalEpochState.sharesFulfilled)`. Since `sharesFulfilled` is `0`, this call results in a division by zero, causing the transaction to revert.",
+      "start": 1192,
+      "end": 1542,
+      "line": 14
+    },
+    {
+      "id": "e_64f370ef08bf_0009",
+      "text": "3.  **`cancelWithdrawal`:** In `src/HypoVault.sol`, this function only operates on the *current* `withdrawalEpoch`. It cannot be used to cancel a withdrawal request that is stuck in a *previous* epoch.",
+      "start": 1543,
+      "end": 1744,
+      "line": 15
+    },
+    {
+      "id": "e_64f370ef08bf_0010",
+      "text": "#### Internal Pre-conditions",
+      "start": 1746,
+      "end": 1774,
+      "line": 17
+    },
+    {
+      "id": "e_64f370ef08bf_0011",
+      "text": "1.  A user has a pending withdrawal request in an active withdrawal epoch, `E`.",
+      "start": 1776,
+      "end": 1855,
+      "line": 19
+    },
+    {
+      "id": "e_64f370ef08bf_0012",
+      "text": "2.  The vault `manager` calls `fulfillWithdrawals` for epoch `E`, passing `sharesToFulfill = 0`.",
+      "start": 1856,
+      "end": 1952,
+      "line": 20
+    },
+    {
+      "id": "e_64f370ef08bf_0013",
+      "text": "### External Pre-conditions",
+      "start": 1954,
+      "end": 1981,
+      "line": 22
+    },
+    {
+      "id": "e_64f370ef08bf_0014",
+      "text": "1.  A user must have previously called `requestWithdrawal`.",
+      "start": 1983,
+      "end": 2042,
+      "line": 24
+    },
+    {
+      "id": "e_64f370ef08bf_0015",
+      "text": "### Attack Path",
+      "start": 2044,
+      "end": 2059,
+      "line": 26
+    },
+    {
+      "id": "e_64f370ef08bf_0016",
+      "text": "This bug can be triggered by a malicious or mistaken manager:",
+      "start": 2061,
+      "end": 2122,
+      "line": 28
+    },
+    {
+      "id": "e_64f370ef08bf_0017",
+      "text": "1.  A user, Alice, has shares in the vault and calls `requestWithdrawal(amount)` during epoch `E`.",
+      "start": 2123,
+      "end": 2221,
+      "line": 29
+    },
+    {
+      "id": "e_64f370ef08bf_0018",
+      "text": "2.  The `manager` calls `fulfillWithdrawals(0, ...)`. This closes epoch `E`, setting `sharesFulfilled` for it to `0`, and advances the active withdrawal epoch to `E+1`.",
+      "start": 2222,
+      "end": 2390,
+      "line": 30
+    },
+    {
+      "id": "e_64f370ef08bf_0019",
+      "text": "3.  Alice calls `executeWithdrawal(Alice, E)` to process her pending request.",
+      "start": 2391,
+      "end": 2468,
+      "line": 31
+    },
+    {
+      "id": "e_64f370ef08bf_0020",
+      "text": "4.  The call to `Math.mulDiv` inside `executeWithdrawal` reverts with a panic code `0x12` (division by zero).",
+      "start": 2469,
+      "end": 2578,
+      "line": 32
+    },
+    {
+      "id": "e_64f370ef08bf_0021",
+      "text": "5.  Alice's withdrawal is now stuck. She cannot successfully call `executeWithdrawal` for epoch `E`.",
+      "start": 2579,
+      "end": 2679,
+      "line": 33
+    },
+    {
+      "id": "e_64f370ef08bf_0022",
+      "text": "6.  She also cannot call `cancelWithdrawal`, as it would only apply to a request in the current epoch, `E+1`.",
+      "start": 2680,
+      "end": 2789,
+      "line": 34
+    },
+    {
+      "id": "e_64f370ef08bf_0023",
+      "text": "7.  **Outcome:** Alice's funds associated with the withdrawal request in epoch `E` are permanently locked and cannot be retrieved via the standard contract functions.",
+      "start": 2790,
+      "end": 2956,
+      "line": 35
+    },
+    {
+      "id": "e_64f370ef08bf_0024",
+      "text": "### Recommendations",
+      "start": 2958,
+      "end": 2977,
+      "line": 37
+    },
+    {
+      "id": "e_64f370ef08bf_0025",
+      "text": "The vulnerability can be fixed by adding a zero-check in `executeWithdrawal` before the `Math.mulDiv` call. This handles the edge case gracefully by recognizing that if zero shares were fulfilled, zero assets should be disbursed, and allows the remaining logic (which moves the request to the next epoch) to proceed without reverting.",
+      "start": 2979,
+      "end": 3313,
+      "line": 39
+    },
+    {
+      "id": "e_64f370ef08bf_0026",
+      "text": "This change should replace the original single-line `assetsToWithdraw` calculation.",
+      "start": 3316,
+      "end": 3399,
+      "line": 42
+    },
+    {
+      "id": "e_64f370ef08bf_0027",
+      "text": "Write a detailed description of the root cause and impact(s) of this finding.",
+      "start": 3401,
+      "end": 3478,
+      "line": 44
+    },
+    {
+      "id": "e_64f370ef08bf_0028",
+      "text": "## Recommended mitigation steps",
+      "start": 3480,
+      "end": 3511,
+      "line": 46
+    },
+    {
+      "id": "e_64f370ef08bf_0029",
+      "text": "Describe the best method(s) to mitigate the finding.",
+      "start": 3513,
+      "end": 3565,
+      "line": 48
+    }
+  ]
+}

@@ -1,0 +1,160 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Forte_ Float128 Solidity Library_evjHaYmvKxh",
+    "audit_uid": "evjHaYmvKxh",
+    "requested_submission_uid": "sCFVQiTXfUR",
+    "requested_finding_uid": "hAkTyQBGSaf",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Forte_Float128_Solidity_Library_evjHaYmvKxh/20260618_143618/findings.json",
+    "source_submission_uid": "sCFVQiTXfUR",
+    "source_finding_uid": "hAkTyQBGSaf",
+    "original_report_path": "Forte_ Float128 Solidity Library_evjHaYmvKxh\\high_valid_sCFVQiTXfUR.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "sCFVQiTXfUR",
+  "finding_uid": "hAkTyQBGSaf",
+  "finding_number": "6",
+  "title": "Comparison functions fail on unnormalized inputs, enabling logic exploits",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "maxzuvex",
+  "body": "## Finding description and impact\n\nThe library's comparison functions (`eq`, `lt`, etc.) incorrectly operate on the raw bit or representation of `packedFloat` inputs, rather than their mathematical value. For example this is the eq() function that does not check if inputs are normalized or not.\n\n```solidity\n// L1070-1072 of Float128.sol\nfunction eq(packedFloat a, packedFloat b) internal pure returns (bool retVal) {\n    retVal = packedFloat.unwrap(a) == packedFloat.unwrap(b);\n}\n```\n\nBecause the type system allows creating `packedFloat` values that are not normalized (e.g., representing `1e7` as `100e5`), comparisons between mathematically equal but differently represented numbers fail. This violates fundamental mathematical expectations and enables critical logic failures in dependent contracts.\n\nThe core issue is that `packedFloat` is an alias for `uint256` (is it defined as `type packedFloat is uint256`), allowing `packedFloat.wrap(any_uint256)`. While the library *intends* usage via `toPackedFloat` which normalizes, it **doesn't enforce** this. The comparison functions skip normalization for gas efficiency but consequently compare internal exponents/mantissas directly. If two inputs, `A` and `B`, represent the same number (e.g., `A = 100e5`, `B = 1e7`) but differ in representation, the comparison yields mathematically wrong results based on the differing raw exponent/mantissa bits.\n\n**IMPACT / HACKER SCENARIO:**\n\nLet's assume a lending protocol liquidates a user's position when their collateral value drops below a required threshold. This vulnerability allows an attacker to trigger wrong liquidations by manipulating the representation of the collateral value, even when its mathematical value is above the threshold.\n\n**Example setup:**\n\n- **Protocol Check:** `if (Float128.lt(pfCollateral, pfThreshold)) { liquidate(); }`\n- **Liquidation Threshold:** `10`\n- **Actual Collateral Value:** `1000` (`1000 > 10`, so no liquidation should occur).\n\n**Representations:**\n\n1. **`pfThreshold` (Value = 10):** Stored normalized value by the protocol. Mantissa: `1e37` | Exponent: `-36`\n  \n2. **`pfCollateral` (Value = 1000):** Attacker influences an oracle to provide `1000` in a specific non-normalized format, which the protocol wraps directly. Mantissa: `1e40` | Exponent: `-37`\n  \n\n\n**Exploitation:**\n\n1. The protocol performs the check: `Float128.lt(pfCollateral, pfThreshold)`.\n2. The `lt` function compares the representations:\n  - Signs match (both positive).\n  - It compares the raw exponents: `pfCollateral`'s (`-37`) vs `pfThreshold`'s (`-36`).\n3. Since `-37 < -36`, the `lt` function incorrectly returns `true`.\n4. **Outcome:** Liquidation is **wrongfully triggered** even though the collateral's mathematical value (`1000`) was much greater than the threshold (`10`). The attacker exploited the comparison function by providing an unnormalized representation with a misleadingly low raw exponent.\n\nBasically the issue is unnormalized inputs are permited by library, and the lack of validation/normalization in the comparison functions is a functional vulnerability with significant potential impact.\n\n## Recommended mitigation\n\nModify comparison functions (`eq`, `lt`, `le`, `gt`, `ge`) to **normalize both inputs** before comparing components. This ensures comparisons are based on mathematical value, providing robustness against different representations allowed by the type system, however it has a higher gas cost.\n\nAlternatively, if increase in gas is not acceptable, clearly document this as a **critical precondition** requiring callers to guarantee normalized inputs. This offloads responsibility to the caller!",
+  "proof_of_concept": "This is the PoC with followed by its output:\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Float128} from \"../src/Float128.sol\";\nimport {packedFloat} from \"../src/Types.sol\";\n\ncontract WrongfulLiquidationPocTest is Test {\n    using Float128 for int256;\n    using Float128 for packedFloat;\n\n    // These two Constants are copied from Float128.sol and needed for manual construction\n    uint constant EXPONENT_BIT = 242;\n    uint constant ZERO_OFFSET = 8192;\n\n    function test_WrongfulLiquidation_UnnormalizedInput() public pure {\n        // --- Setup Threshold (Value = 10) ---\n        // Create using the library's function for normalization\n        packedFloat pfThreshold = Float128.toPackedFloat(10, 0);\n        // Decode to verify its internal representation (for context)\n        (int threshManNorm, int threshExpNorm) = Float128.decode(pfThreshold);\n        // Expected normalized M-size: man=1e37, exp=-36\n        assertEq(threshManNorm, 1e37, \"Threshold Mantissa Normalized Incorrectly\");\n        assertEq(threshExpNorm, -36, \"Threshold Exponent Normalized Incorrectly\");\n        console.log(\"Normalized pfThreshold (Represents 10): Man=\", threshManNorm);\n        console.log(\"Normalized pfThreshold (Represents 10): Exp=\", threshExpNorm);\n\n        // --- Setup Attacker-Influenced Collateral (Value = 1000) ---\n        // Attacker crafts a non-normalized representation for 1000\n        // Target: Mantissa = 1e40, Exponent = -37 (1e40 * 10^-37 = 1e3 = 1000)\n        uint mantissaCollateral = 1e40;\n        int exponentCollateral = -37;\n        uint rawExponentCollateral = uint(exponentCollateral + int(ZERO_OFFSET)); // -37 + 8192 = 8155\n        // Construct the bits manually (assuming positive value, no L-flag)\n        uint256 bitsCollateral = (uint256(rawExponentCollateral) << EXPONENT_BIT) | mantissaCollateral;\n        // Protocol wraps this potentially manipulated representation\n        packedFloat pfCollateral = packedFloat.wrap(bitsCollateral);\n        console.log(\"Unnormalized pfCollateral (Represents 1000): Man=\", mantissaCollateral);\n        console.log(\"Unnormalized pfCollateral (Represents 1000): Exp=\", exponentCollateral);\n        console.log(\"Raw Collateral Bits:\", bitsCollateral);\n\n        // --- Mathematically: Collateral (1000) > Threshold (10) ---\n        // Liquidation check `lt(pfCollateral, pfThreshold)` should be FALSE.\n\n        // --- Exploit Flawed Comparison ---\n        bool ltResult = Float128.lt(pfCollateral, pfThreshold);\n        console.log(\"Float128.lt(pfCollateral(1000), pfThreshold(10)) result:\", ltResult);\n\n        // Since -37 < -36, we expect the function incorrectly returns TRUE.\n        assertTrue(ltResult, \"lt() returned false, this bug is not valid.\");\n\n        console.log(\"\\nCONCLUSION: lt() returned true because pfCollateral's raw exponent (-37)\");\n        console.log(\"is less than pfThreshold's raw exponent (-36), even though\");\n        console.log(\"pfCollateral's mathematical value (1000) is greater than pfThreshold's (10).\");\n    }\n}\n\n```\n\n\nOutput:\n```\nRan 1 test for test/PoC7_2.sol:WrongfulLiquidationPocTest\n[PASS] test_WrongfulLiquidation_UnnormalizedInput() (gas: 16136)\nLogs:\n  Normalized pfThreshold (Represents 10): Man= 10000000000000000000000000000000000000\n  Normalized pfThreshold (Represents 10): Exp= -36\n  Unnormalized pfCollateral (Represents 1000): Man= 10000000000000000000000000000000000000000\n  Unnormalized pfCollateral (Represents 1000): Exp= -37\n  Raw Collateral Bits: 57634551253070896831007164474234001996292524716082690413926794286165257093120\n  Float128.lt(pfCollateral(1000), pfThreshold(10)) result: true\n  \nCONCLUSION: lt() returned true because pfCollateral's raw exponent (-37)\n  is less than pfThreshold's raw exponent (-36), even though\n  pfCollateral's mathematical value (1000) is greater than pfThreshold's (10).\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-04-forte/blob/4d6694f68e80543885da78666e38c0dc7052d992/src/Float128.sol#L1071",
+    "https://github.com/code-423n4/2025-04-forte/blob/4d6694f68e80543885da78666e38c0dc7052d992/src/Types.sol#L11"
+  ],
+  "source_record": {
+    "project_id": "evjHaYmvKxh",
+    "submission_index": "274",
+    "api_submission_id": "",
+    "uid": "sCFVQiTXfUR",
+    "number": "274",
+    "title": "Comparison functions fail on unnormalized inputs, enabling logic exploits",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "maxzuvex",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-04-forte/blob/4d6694f68e80543885da78666e38c0dc7052d992/src/Float128.sol#L1071",
+      "https://github.com/code-423n4/2025-04-forte/blob/4d6694f68e80543885da78666e38c0dc7052d992/src/Types.sol#L11"
+    ],
+    "body": "## Finding description and impact\n\nThe library's comparison functions (`eq`, `lt`, etc.) incorrectly operate on the raw bit or representation of `packedFloat` inputs, rather than their mathematical value. For example this is the eq() function that does not check if inputs are normalized or not.\n\n```solidity\n// L1070-1072 of Float128.sol\nfunction eq(packedFloat a, packedFloat b) internal pure returns (bool retVal) {\n    retVal = packedFloat.unwrap(a) == packedFloat.unwrap(b);\n}\n```\n\nBecause the type system allows creating `packedFloat` values that are not normalized (e.g., representing `1e7` as `100e5`), comparisons between mathematically equal but differently represented numbers fail. This violates fundamental mathematical expectations and enables critical logic failures in dependent contracts.\n\nThe core issue is that `packedFloat` is an alias for `uint256` (is it defined as `type packedFloat is uint256`), allowing `packedFloat.wrap(any_uint256)`. While the library *intends* usage via `toPackedFloat` which normalizes, it **doesn't enforce** this. The comparison functions skip normalization for gas efficiency but consequently compare internal exponents/mantissas directly. If two inputs, `A` and `B`, represent the same number (e.g., `A = 100e5`, `B = 1e7`) but differ in representation, the comparison yields mathematically wrong results based on the differing raw exponent/mantissa bits.\n\n**IMPACT / HACKER SCENARIO:**\n\nLet's assume a lending protocol liquidates a user's position when their collateral value drops below a required threshold. This vulnerability allows an attacker to trigger wrong liquidations by manipulating the representation of the collateral value, even when its mathematical value is above the threshold.\n\n**Example setup:**\n\n- **Protocol Check:** `if (Float128.lt(pfCollateral, pfThreshold)) { liquidate(); }`\n- **Liquidation Threshold:** `10`\n- **Actual Collateral Value:** `1000` (`1000 > 10`, so no liquidation should occur).\n\n**Representations:**\n\n1. **`pfThreshold` (Value = 10):** Stored normalized value by the protocol. Mantissa: `1e37` | Exponent: `-36`\n  \n2. **`pfCollateral` (Value = 1000):** Attacker influences an oracle to provide `1000` in a specific non-normalized format, which the protocol wraps directly. Mantissa: `1e40` | Exponent: `-37`\n  \n\n\n**Exploitation:**\n\n1. The protocol performs the check: `Float128.lt(pfCollateral, pfThreshold)`.\n2. The `lt` function compares the representations:\n  - Signs match (both positive).\n  - It compares the raw exponents: `pfCollateral`'s (`-37`) vs `pfThreshold`'s (`-36`).\n3. Since `-37 < -36`, the `lt` function incorrectly returns `true`.\n4. **Outcome:** Liquidation is **wrongfully triggered** even though the collateral's mathematical value (`1000`) was much greater than the threshold (`10`). The attacker exploited the comparison function by providing an unnormalized representation with a misleadingly low raw exponent.\n\nBasically the issue is unnormalized inputs are permited by library, and the lack of validation/normalization in the comparison functions is a functional vulnerability with significant potential impact.\n\n## Recommended mitigation\n\nModify comparison functions (`eq`, `lt`, `le`, `gt`, `ge`) to **normalize both inputs** before comparing components. This ensures comparisons are based on mathematical value, providing robustness against different representations allowed by the type system, however it has a higher gas cost.\n\nAlternatively, if increase in gas is not acceptable, clearly document this as a **critical precondition** requiring callers to guarantee normalized inputs. This offloads responsibility to the caller!",
+    "proof_of_concept": "This is the PoC with followed by its output:\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Float128} from \"../src/Float128.sol\";\nimport {packedFloat} from \"../src/Types.sol\";\n\ncontract WrongfulLiquidationPocTest is Test {\n    using Float128 for int256;\n    using Float128 for packedFloat;\n\n    // These two Constants are copied from Float128.sol and needed for manual construction\n    uint constant EXPONENT_BIT = 242;\n    uint constant ZERO_OFFSET = 8192;\n\n    function test_WrongfulLiquidation_UnnormalizedInput() public pure {\n        // --- Setup Threshold (Value = 10) ---\n        // Create using the library's function for normalization\n        packedFloat pfThreshold = Float128.toPackedFloat(10, 0);\n        // Decode to verify its internal representation (for context)\n        (int threshManNorm, int threshExpNorm) = Float128.decode(pfThreshold);\n        // Expected normalized M-size: man=1e37, exp=-36\n        assertEq(threshManNorm, 1e37, \"Threshold Mantissa Normalized Incorrectly\");\n        assertEq(threshExpNorm, -36, \"Threshold Exponent Normalized Incorrectly\");\n        console.log(\"Normalized pfThreshold (Represents 10): Man=\", threshManNorm);\n        console.log(\"Normalized pfThreshold (Represents 10): Exp=\", threshExpNorm);\n\n        // --- Setup Attacker-Influenced Collateral (Value = 1000) ---\n        // Attacker crafts a non-normalized representation for 1000\n        // Target: Mantissa = 1e40, Exponent = -37 (1e40 * 10^-37 = 1e3 = 1000)\n        uint mantissaCollateral = 1e40;\n        int exponentCollateral = -37;\n        uint rawExponentCollateral = uint(exponentCollateral + int(ZERO_OFFSET)); // -37 + 8192 = 8155\n        // Construct the bits manually (assuming positive value, no L-flag)\n        uint256 bitsCollateral = (uint256(rawExponentCollateral) << EXPONENT_BIT) | mantissaCollateral;\n        // Protocol wraps this potentially manipulated representation\n        packedFloat pfCollateral = packedFloat.wrap(bitsCollateral);\n        console.log(\"Unnormalized pfCollateral (Represents 1000): Man=\", mantissaCollateral);\n        console.log(\"Unnormalized pfCollateral (Represents 1000): Exp=\", exponentCollateral);\n        console.log(\"Raw Collateral Bits:\", bitsCollateral);\n\n        // --- Mathematically: Collateral (1000) > Threshold (10) ---\n        // Liquidation check `lt(pfCollateral, pfThreshold)` should be FALSE.\n\n        // --- Exploit Flawed Comparison ---\n        bool ltResult = Float128.lt(pfCollateral, pfThreshold);\n        console.log(\"Float128.lt(pfCollateral(1000), pfThreshold(10)) result:\", ltResult);\n\n        // Since -37 < -36, we expect the function incorrectly returns TRUE.\n        assertTrue(ltResult, \"lt() returned false, this bug is not valid.\");\n\n        console.log(\"\\nCONCLUSION: lt() returned true because pfCollateral's raw exponent (-37)\");\n        console.log(\"is less than pfThreshold's raw exponent (-36), even though\");\n        console.log(\"pfCollateral's mathematical value (1000) is greater than pfThreshold's (10).\");\n    }\n}\n\n```\n\n\nOutput:\n```\nRan 1 test for test/PoC7_2.sol:WrongfulLiquidationPocTest\n[PASS] test_WrongfulLiquidation_UnnormalizedInput() (gas: 16136)\nLogs:\n  Normalized pfThreshold (Represents 10): Man= 10000000000000000000000000000000000000\n  Normalized pfThreshold (Represents 10): Exp= -36\n  Unnormalized pfCollateral (Represents 1000): Man= 10000000000000000000000000000000000000000\n  Unnormalized pfCollateral (Represents 1000): Exp= -37\n  Raw Collateral Bits: 57634551253070896831007164474234001996292524716082690413926794286165257093120\n  Float128.lt(pfCollateral(1000), pfThreshold(10)) result: true\n  \nCONCLUSION: lt() returned true because pfCollateral's raw exponent (-37)\n  is less than pfThreshold's raw exponent (-36), even though\n  pfCollateral's mathematical value (1000) is greater than pfThreshold's (10).\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/evjHaYmvKxh/submissions/274",
+    "raw": {
+      "auditUid": "evjHaYmvKxh",
+      "createdAt": "2025-04-08T18:26:22.750Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "Za53NpJY4bq",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-12T17:20:35.661Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "hAkTyQBGSaf"
+        },
+        {
+          "uid": "4SomRhqtUbQ",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-12T17:20:35.661Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "hAkTyQBGSaf"
+        },
+        {
+          "uid": "XCcyZ7UQAqj",
+          "userUid": "oDeW4FDmTKF",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-04-14T16:56:00.652Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "hAkTyQBGSaf"
+        },
+        {
+          "uid": "RYb865oJ5M8",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-16T01:34:48.862Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "sCFVQiTXfUR",
+          "findingUid": null
+        },
+        {
+          "uid": "DCC6Ju2irRf",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:16:40.428Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "hAkTyQBGSaf"
+        },
+        {
+          "uid": "vic43k665NE",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:16:46.039Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "hAkTyQBGSaf"
+        },
+        {
+          "uid": "ENvwWfBQTCB",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:17:37.942Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "sCFVQiTXfUR",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "hAkTyQBGSaf",
+        "number": 6,
+        "duplicates": 20
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-05-07T15:00:47.683Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Comparison functions fail on unnormalized inputs, enabling logic exploits",
+      "uid": "sCFVQiTXfUR",
+      "updatedAt": "2025-04-10T20:03:22.230Z",
+      "user": {
+        "uid": "3hCLiUa6YqM",
+        "handle": "maxzuvex"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe library's comparison functions (`eq`, `lt`, etc.) incorrectly operate on the raw bit or representation of `packedFloat` inputs, rather than their mathematical value. For example this is the eq() function that does not check if inputs are normalized or not.\n\n```solidity\n// L1070-1072 of Float128.sol\nfunction eq(packedFloat a, packedFloat b) internal pure returns (bool retVal) {\n    retVal = packedFloat.unwrap(a) == packedFloat.unwrap(b);\n}\n```\n\nBecause the type system allows creating `packedFloat` values that are not normalized (e.g., representing `1e7` as `100e5`), comparisons between mathematically equal but differently represented numbers fail. This violates fundamental mathematical expectations and enables critical logic failures in dependent contracts.\n\nThe core issue is that `packedFloat` is an alias for `uint256` (is it defined as `type packedFloat is uint256`), allowing `packedFloat.wrap(any_uint256)`. While the library *intends* usage via `toPackedFloat` which normalizes, it **doesn't enforce** this. The comparison functions skip normalization for gas efficiency but consequently compare internal exponents/mantissas directly. If two inputs, `A` and `B`, represent the same number (e.g., `A = 100e5`, `B = 1e7`) but differ in representation, the comparison yields mathematically wrong results based on the differing raw exponent/mantissa bits.\n\n**IMPACT / HACKER SCENARIO:**\n\nLet's assume a lending protocol liquidates a user's position when their collateral value drops below a required threshold. This vulnerability allows an attacker to trigger wrong liquidations by manipulating the representation of the collateral value, even when its mathematical value is above the threshold.\n\n**Example setup:**\n\n- **Protocol Check:** `if (Float128.lt(pfCollateral, pfThreshold)) { liquidate(); }`\n- **Liquidation Threshold:** `10`\n- **Actual Collateral Value:** `1000` (`1000 > 10`, so no liquidation should occur).\n\n**Representations:**\n\n1. **`pfThreshold` (Value = 10):** Stored normalized value by the protocol. Mantissa: `1e37` | Exponent: `-36`\n  \n2. **`pfCollateral` (Value = 1000):** Attacker influences an oracle to provide `1000` in a specific non-normalized format, which the protocol wraps directly. Mantissa: `1e40` | Exponent: `-37`\n  \n\n\n**Exploitation:**\n\n1. The protocol performs the check: `Float128.lt(pfCollateral, pfThreshold)`.\n2. The `lt` function compares the representations:\n  - Signs match (both positive).\n  - It compares the raw exponents: `pfCollateral`'s (`-37`) vs `pfThreshold`'s (`-36`).\n3. Since `-37 < -36`, the `lt` function incorrectly returns `true`.\n4. **Outcome:** Liquidation is **wrongfully triggered** even though the collateral's mathematical value (`1000`) was much greater than the threshold (`10`). The attacker exploited the comparison function by providing an unnormalized representation with a misleadingly low raw exponent.\n\nBasically the issue is unnormalized inputs are permited by library, and the lack of validation/normalization in the comparison functions is a functional vulnerability with significant potential impact.\n\n## Recommended mitigation\n\nModify comparison functions (`eq`, `lt`, `le`, `gt`, `ge`) to **normalize both inputs** before comparing components. This ensures comparisons are based on mathematical value, providing robustness against different representations allowed by the type system, however it has a higher gas cost.\n\nAlternatively, if increase in gas is not acceptable, clearly document this as a **critical precondition** requiring callers to guarantee normalized inputs. This offloads responsibility to the caller!",
+      "proofOfConcept": "This is the PoC with followed by its output:\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Float128} from \"../src/Float128.sol\";\nimport {packedFloat} from \"../src/Types.sol\";\n\ncontract WrongfulLiquidationPocTest is Test {\n    using Float128 for int256;\n    using Float128 for packedFloat;\n\n    // These two Constants are copied from Float128.sol and needed for manual construction\n    uint constant EXPONENT_BIT = 242;\n    uint constant ZERO_OFFSET = 8192;\n\n    function test_WrongfulLiquidation_UnnormalizedInput() public pure {\n        // --- Setup Threshold (Value = 10) ---\n        // Create using the library's function for normalization\n        packedFloat pfThreshold = Float128.toPackedFloat(10, 0);\n        // Decode to verify its internal representation (for context)\n        (int threshManNorm, int threshExpNorm) = Float128.decode(pfThreshold);\n        // Expected normalized M-size: man=1e37, exp=-36\n        assertEq(threshManNorm, 1e37, \"Threshold Mantissa Normalized Incorrectly\");\n        assertEq(threshExpNorm, -36, \"Threshold Exponent Normalized Incorrectly\");\n        console.log(\"Normalized pfThreshold (Represents 10): Man=\", threshManNorm);\n        console.log(\"Normalized pfThreshold (Represents 10): Exp=\", threshExpNorm);\n\n        // --- Setup Attacker-Influenced Collateral (Value = 1000) ---\n        // Attacker crafts a non-normalized representation for 1000\n        // Target: Mantissa = 1e40, Exponent = -37 (1e40 * 10^-37 = 1e3 = 1000)\n        uint mantissaCollateral = 1e40;\n        int exponentCollateral = -37;\n        uint rawExponentCollateral = uint(exponentCollateral + int(ZERO_OFFSET)); // -37 + 8192 = 8155\n        // Construct the bits manually (assuming positive value, no L-flag)\n        uint256 bitsCollateral = (uint256(rawExponentCollateral) << EXPONENT_BIT) | mantissaCollateral;\n        // Protocol wraps this potentially manipulated representation\n        packedFloat pfCollateral = packedFloat.wrap(bitsCollateral);\n        console.log(\"Unnormalized pfCollateral (Represents 1000): Man=\", mantissaCollateral);\n        console.log(\"Unnormalized pfCollateral (Represents 1000): Exp=\", exponentCollateral);\n        console.log(\"Raw Collateral Bits:\", bitsCollateral);\n\n        // --- Mathematically: Collateral (1000) > Threshold (10) ---\n        // Liquidation check `lt(pfCollateral, pfThreshold)` should be FALSE.\n\n        // --- Exploit Flawed Comparison ---\n        bool ltResult = Float128.lt(pfCollateral, pfThreshold);\n        console.log(\"Float128.lt(pfCollateral(1000), pfThreshold(10)) result:\", ltResult);\n\n        // Since -37 < -36, we expect the function incorrectly returns TRUE.\n        assertTrue(ltResult, \"lt() returned false, this bug is not valid.\");\n\n        console.log(\"\\nCONCLUSION: lt() returned true because pfCollateral's raw exponent (-37)\");\n        console.log(\"is less than pfThreshold's raw exponent (-36), even though\");\n        console.log(\"pfCollateral's mathematical value (1000) is greater than pfThreshold's (10).\");\n    }\n}\n\n```\n\n\nOutput:\n```\nRan 1 test for test/PoC7_2.sol:WrongfulLiquidationPocTest\n[PASS] test_WrongfulLiquidation_UnnormalizedInput() (gas: 16136)\nLogs:\n  Normalized pfThreshold (Represents 10): Man= 10000000000000000000000000000000000000\n  Normalized pfThreshold (Represents 10): Exp= -36\n  Unnormalized pfCollateral (Represents 1000): Man= 10000000000000000000000000000000000000000\n  Unnormalized pfCollateral (Represents 1000): Exp= -37\n  Raw Collateral Bits: 57634551253070896831007164474234001996292524716082690413926794286165257093120\n  Float128.lt(pfCollateral(1000), pfThreshold(10)) result: true\n  \nCONCLUSION: lt() returned true because pfCollateral's raw exponent (-37)\n  is less than pfThreshold's raw exponent (-36), even though\n  pfCollateral's mathematical value (1000) is greater than pfThreshold's (10).\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-04-forte/blob/4d6694f68e80543885da78666e38c0dc7052d992/src/Float128.sol#L1071,https://github.com/code-423n4/2025-04-forte/blob/4d6694f68e80543885da78666e38c0dc7052d992/src/Types.sol#L11",
+      "number": 274,
+      "aiExplanation": null,
+      "_index": 274
+    }
+  }
+}

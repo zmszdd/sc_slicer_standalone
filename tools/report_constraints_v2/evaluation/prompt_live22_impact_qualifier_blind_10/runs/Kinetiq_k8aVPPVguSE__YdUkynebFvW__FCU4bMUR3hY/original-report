@@ -1,0 +1,148 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Kinetiq_k8aVPPVguSE",
+    "audit_uid": "k8aVPPVguSE",
+    "requested_submission_uid": "FCU4bMUR3hY",
+    "requested_finding_uid": "YdUkynebFvW",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Kinetiq_k8aVPPVguSE/20260618_143339/findings.json",
+    "source_submission_uid": "FCU4bMUR3hY",
+    "source_finding_uid": "YdUkynebFvW",
+    "original_report_path": "Kinetiq_k8aVPPVguSE\\low_valid_FCU4bMUR3hY.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "FCU4bMUR3hY",
+  "finding_uid": "YdUkynebFvW",
+  "finding_number": "17",
+  "title": "Missing slippage protection on `queueWithdrawal`",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "Infect3d",
+  "body": "## Summary\nWhen withdrawing from the `StakingManager`, users provide `kHYPE` shares to be redeemed, which is converted to an equivalent `HYPE` amount using on-chain informations. This means that a user can queue a withdrawal and receive less `HYPE` than he was expecting when sending the transaction (e.g if slashing happens).\n## Vulnerability details\nFor the execution of [`queueWithdrawal`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L256-L296), the users provide the amount of `kHYPE` they want to redeem, which is then converted to an amount of HYPE by computing the exchange rate through the [`stakingAccountant::kHYPEToHYPE`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingAccountant.sol#L181-L183) function.  \n\nThis exchange rate depends on different values, one of them being the amount of slashed tokens `slashingAmount`.  \nIf a slashing is reported right before the user `queueWithdrawal` tx is executed, he will suffer a worse exchange rate than expected, without any ways for him to prevent this.  \n## Impact\nSlippage on withdrawal.  \nImpact is high as this represent a direct loss of funds for the user, even though its value will depend on the withdrawn amount and the intensity of the slashing.  \nLikelihood is low as such events shouldn't happen regularly.  \n\n\n## Recommended Mitigation Steps\nUpdate the function to allow users to define a maximum slippage:\n```solidity\nfunction queueWithdrawal(uint256 kHYPEAmount, uint256 minHYPEAmount) external nonReentrant whenNotPaused whenWithdrawalNotPaused {\n    // ... some code ...\n    \n    // Convert post-fee kHYPE to HYPE using StakingAccountant\n    uint256 hypeAmount = stakingAccountant.kHYPEToHYPE(postFeeKHYPE);\n    \n    // Add slippage protection\n    require(hypeAmount >= minHYPEAmount, \"Slippage too high\");\n    \n    // ... rest of function ...\n}\n```",
+  "proof_of_concept": "Please add this PoC to `test/StakingManager.t.sol` :\n\n```solidity\n    function testAudit_SlippageOnWithdrawal() public {\n        uint256 stakeAmount = 1 ether;\n\n        // setting fees to 0 for readability\n        vm.startPrank(manager);\n        stakingManager.setUnstakeFeeRate(0);\n\n        // Set up delegation first\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n\n        stakingManager.stake{value: stakeAmount}();\n        uint256 userShares = kHYPE.balanceOf(user);\n\n        console.log(\"kHYPE.balanceOf(user): %e\\n\", userShares);\n\n        uint expectedHYPE = stakingAccountant.kHYPEToHYPE(userShares);\n\n        vm.prank(address(oracleManager));\n        validatorManager.reportSlashingEvent(address(validator), 0.1 ether);\n\n        vm.startPrank(user);\n        kHYPE.approve(address(stakingManager), userShares);\n        stakingManager.queueWithdrawal(userShares);\n        vm.stopPrank();\n\n        IStakingManager.WithdrawalRequest memory req = stakingManager.withdrawalRequests(user, 0);\n        console.log(\"expected HYPE to withdraw: %e\", expectedHYPE);\n        console.log(\"queued HYPE to withdraw: %e\", req.hypeAmount);\n    }    \n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L256-L296"
+  ],
+  "source_record": {
+    "project_id": "k8aVPPVguSE",
+    "submission_index": "899",
+    "api_submission_id": "",
+    "uid": "FCU4bMUR3hY",
+    "number": "899",
+    "title": "Missing slippage protection on `queueWithdrawal`",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "Infect3d",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L256-L296"
+    ],
+    "body": "## Summary\nWhen withdrawing from the `StakingManager`, users provide `kHYPE` shares to be redeemed, which is converted to an equivalent `HYPE` amount using on-chain informations. This means that a user can queue a withdrawal and receive less `HYPE` than he was expecting when sending the transaction (e.g if slashing happens).\n## Vulnerability details\nFor the execution of [`queueWithdrawal`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L256-L296), the users provide the amount of `kHYPE` they want to redeem, which is then converted to an amount of HYPE by computing the exchange rate through the [`stakingAccountant::kHYPEToHYPE`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingAccountant.sol#L181-L183) function.  \n\nThis exchange rate depends on different values, one of them being the amount of slashed tokens `slashingAmount`.  \nIf a slashing is reported right before the user `queueWithdrawal` tx is executed, he will suffer a worse exchange rate than expected, without any ways for him to prevent this.  \n## Impact\nSlippage on withdrawal.  \nImpact is high as this represent a direct loss of funds for the user, even though its value will depend on the withdrawn amount and the intensity of the slashing.  \nLikelihood is low as such events shouldn't happen regularly.  \n\n\n## Recommended Mitigation Steps\nUpdate the function to allow users to define a maximum slippage:\n```solidity\nfunction queueWithdrawal(uint256 kHYPEAmount, uint256 minHYPEAmount) external nonReentrant whenNotPaused whenWithdrawalNotPaused {\n    // ... some code ...\n    \n    // Convert post-fee kHYPE to HYPE using StakingAccountant\n    uint256 hypeAmount = stakingAccountant.kHYPEToHYPE(postFeeKHYPE);\n    \n    // Add slippage protection\n    require(hypeAmount >= minHYPEAmount, \"Slippage too high\");\n    \n    // ... rest of function ...\n}\n```",
+    "proof_of_concept": "Please add this PoC to `test/StakingManager.t.sol` :\n\n```solidity\n    function testAudit_SlippageOnWithdrawal() public {\n        uint256 stakeAmount = 1 ether;\n\n        // setting fees to 0 for readability\n        vm.startPrank(manager);\n        stakingManager.setUnstakeFeeRate(0);\n\n        // Set up delegation first\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n\n        stakingManager.stake{value: stakeAmount}();\n        uint256 userShares = kHYPE.balanceOf(user);\n\n        console.log(\"kHYPE.balanceOf(user): %e\\n\", userShares);\n\n        uint expectedHYPE = stakingAccountant.kHYPEToHYPE(userShares);\n\n        vm.prank(address(oracleManager));\n        validatorManager.reportSlashingEvent(address(validator), 0.1 ether);\n\n        vm.startPrank(user);\n        kHYPE.approve(address(stakingManager), userShares);\n        stakingManager.queueWithdrawal(userShares);\n        vm.stopPrank();\n\n        IStakingManager.WithdrawalRequest memory req = stakingManager.withdrawalRequests(user, 0);\n        console.log(\"expected HYPE to withdraw: %e\", expectedHYPE);\n        console.log(\"queued HYPE to withdraw: %e\", req.hypeAmount);\n    }    \n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/k8aVPPVguSE/submissions/899",
+    "raw": {
+      "auditUid": "k8aVPPVguSE",
+      "createdAt": "2025-04-16T16:39:20.054Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "os5QnDEmAVe",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "FCU4bMUR3hY",
+          "findingUid": null
+        },
+        {
+          "uid": "HYh7yTS4gPT",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "YdUkynebFvW"
+        },
+        {
+          "uid": "eYmAbrfRxCq",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "YdUkynebFvW"
+        },
+        {
+          "uid": "rSX9fSbMThu",
+          "userUid": "tZ7iSgbTXG2",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-04-18T06:58:30.151Z",
+          "type": "validity",
+          "value": "wontfix",
+          "submissionUid": null,
+          "findingUid": "YdUkynebFvW"
+        },
+        {
+          "uid": "SQtsJJW7Xks",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-26T08:36:31.805Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "YdUkynebFvW"
+        },
+        {
+          "uid": "iuW9RuzgJ7G",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-26T13:53:44.854Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "YdUkynebFvW"
+        }
+      ],
+      "finding": {
+        "uid": "YdUkynebFvW",
+        "number": 17,
+        "duplicates": 21
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-05-07T15:00:47.683Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Missing slippage protection on `queueWithdrawal`",
+      "uid": "FCU4bMUR3hY",
+      "updatedAt": "2025-04-16T16:39:20.054Z",
+      "user": {
+        "uid": "igfhmGPkB9j",
+        "handle": "Infect3d"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Summary\nWhen withdrawing from the `StakingManager`, users provide `kHYPE` shares to be redeemed, which is converted to an equivalent `HYPE` amount using on-chain informations. This means that a user can queue a withdrawal and receive less `HYPE` than he was expecting when sending the transaction (e.g if slashing happens).\n## Vulnerability details\nFor the execution of [`queueWithdrawal`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L256-L296), the users provide the amount of `kHYPE` they want to redeem, which is then converted to an amount of HYPE by computing the exchange rate through the [`stakingAccountant::kHYPEToHYPE`](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingAccountant.sol#L181-L183) function.  \n\nThis exchange rate depends on different values, one of them being the amount of slashed tokens `slashingAmount`.  \nIf a slashing is reported right before the user `queueWithdrawal` tx is executed, he will suffer a worse exchange rate than expected, without any ways for him to prevent this.  \n## Impact\nSlippage on withdrawal.  \nImpact is high as this represent a direct loss of funds for the user, even though its value will depend on the withdrawn amount and the intensity of the slashing.  \nLikelihood is low as such events shouldn't happen regularly.  \n\n\n## Recommended Mitigation Steps\nUpdate the function to allow users to define a maximum slippage:\n```solidity\nfunction queueWithdrawal(uint256 kHYPEAmount, uint256 minHYPEAmount) external nonReentrant whenNotPaused whenWithdrawalNotPaused {\n    // ... some code ...\n    \n    // Convert post-fee kHYPE to HYPE using StakingAccountant\n    uint256 hypeAmount = stakingAccountant.kHYPEToHYPE(postFeeKHYPE);\n    \n    // Add slippage protection\n    require(hypeAmount >= minHYPEAmount, \"Slippage too high\");\n    \n    // ... rest of function ...\n}\n```",
+      "proofOfConcept": "Please add this PoC to `test/StakingManager.t.sol` :\n\n```solidity\n    function testAudit_SlippageOnWithdrawal() public {\n        uint256 stakeAmount = 1 ether;\n\n        // setting fees to 0 for readability\n        vm.startPrank(manager);\n        stakingManager.setUnstakeFeeRate(0);\n\n        // Set up delegation first\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n\n        stakingManager.stake{value: stakeAmount}();\n        uint256 userShares = kHYPE.balanceOf(user);\n\n        console.log(\"kHYPE.balanceOf(user): %e\\n\", userShares);\n\n        uint expectedHYPE = stakingAccountant.kHYPEToHYPE(userShares);\n\n        vm.prank(address(oracleManager));\n        validatorManager.reportSlashingEvent(address(validator), 0.1 ether);\n\n        vm.startPrank(user);\n        kHYPE.approve(address(stakingManager), userShares);\n        stakingManager.queueWithdrawal(userShares);\n        vm.stopPrank();\n\n        IStakingManager.WithdrawalRequest memory req = stakingManager.withdrawalRequests(user, 0);\n        console.log(\"expected HYPE to withdraw: %e\", expectedHYPE);\n        console.log(\"queued HYPE to withdraw: %e\", req.hypeAmount);\n    }    \n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L256-L296",
+      "number": 899,
+      "aiExplanation": null,
+      "_index": 899
+    }
+  }
+}

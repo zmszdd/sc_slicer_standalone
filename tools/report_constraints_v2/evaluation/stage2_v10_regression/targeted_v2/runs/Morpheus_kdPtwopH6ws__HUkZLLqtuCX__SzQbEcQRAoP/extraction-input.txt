@@ -1,0 +1,76 @@
+Hardcoded Deadline in L2TokenReceiverV2 Liquidity Functions
+
+L2TokenReceiverV2 contains a critical vulnerability in the increaseLiquidityCurrentRange() function where deadline is hardcoded to block.timestamp, eliminating transaction expiration protection and enabling MEV attacks.
+
+Root Cause
+The function hardcodes deadline: block.timestamp when calling Uniswap V3's increaseLiquidity().
+
+1. Incorrect and Vulnerable:
+
+function increaseLiquidityCurrentRange(
+    uint256 tokenId_,
+    uint256 amountAdd0_,
+    uint256 amountAdd1_,
+    uint256 amountMin0_,
+    uint256 amountMin1_
+) external onlyOwner returns (uint128 liquidity_, uint256 amount0_, uint256 amount1_) {
+    INonfungiblePositionManager.IncreaseLiquidityParams memory params_ = 
+        INonfungiblePositionManager.IncreaseLiquidityParams({
+            tokenId: tokenId_,
+            amount0Desired: amountAdd0_,
+            amount1Desired: amountAdd1_,
+            amount0Min: amountMin0_,
+            amount1Min: amountMin1_,
+            deadline: block.timestamp  // always true, tx never expires
+        });
+    // ...
+}
+
+2. Correct and Secure:
+
+function increaseLiquidityCurrentRange(
+    uint256 tokenId_,
+    uint256 amountAdd0_,
+    uint256 amountAdd1_,
+    uint256 amountMin0_,
+    uint256 amountMin1_,
+    uint256 deadline_  //  User-provided deadline
+) external onlyOwner returns (uint128 liquidity_, uint256 amount0_, uint256 amount1_) {
+    require(block.timestamp <= deadline_, "Transaction expired");  //  Proper expiration check
+    
+    INonfungiblePositionManager.IncreaseLiquidityParams memory params_ = 
+        INonfungiblePositionManager.IncreaseLiquidityParams({
+            tokenId: tokenId_,
+            amount0Desired: amountAdd0_,
+            amount1Desired: amountAdd1_,
+            amount0Min: amountMin0_,
+            amount1Min: amountMin1_,
+            deadline: deadline_  // Uses the caller’s deadline
+        });
+    // ...
+}
+
+
+(Correct Code)
+
+The caller provides a deadline (e.g., block.timestamp + 5 minutes).
+The transaction will expire after 5 minutes if not mined.
+require(block.timestamp <= deadline_) enforces the same security model as Uniswap V3.
+
+(Incorrect Code)
+
+deadline = block.timestamp >>> Uniswap’s check block.timestamp <= deadline is always true.
+MEV bots can hold the transaction indefinitely (1 hour, 1 day, 1 week, 1 month >> still executes).
+This completely disables the purpose of the deadline.
+
+Looking at the two code snippets above, we can clearly see that the correct implementation (with a user provided deadline and explicit require check) follows Uniswap V3’s security design and is safe against delayed execution. In contrast, the incorrect implementation hardcodes the deadline, removes expiration protection, and introduces a serious vulnerability that can be exploited by MEV bots.
+
+Attack Vector
+
+Detection: MEV bot monitors mempool for increaseLiquidityCurrentRange() calls
+Analysis: Bot identifies deadline = block.timestamp vulnerability
+Manipulation: Bot holds transaction until market conditions are unfavorable
+Execution: Transaction executes with stale pricing parameters
+Profit: MEV bot extracts value through arbitrage
+
+The hardcoded deadline: block.timestamp in L2TokenReceiverV2 creates a critical vulnerability allowing MEV bots to manipulate transaction timing for profit. This directly contradicts Uniswap V3's security model and exposes the protocol to significant financial losses. Immediate remediation is required by adding a user controlled deadline parameter.

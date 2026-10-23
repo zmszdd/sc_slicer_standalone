@@ -1,0 +1,22 @@
+Emissions lost when `notifyRewardAmount` runs with zero total weight
+
+## Finding description and impact
+`GaugeManager.notifyRewardAmount` unconditionally pulls the epoch emission from the minter, but it only updates the distribution index when there is non-zero voting weight:
+
+
+When every voter has reset (`totalWeight == 0`), the transfer `HYBR::transferFrom(minter, GaugeManager, amount)` still executes, yet `index` remains unchanged. Later, `_updateForAfterDistribution` calculates each gauge’s share from `index - supplyIndex[gauge]`. Because that delta is zero, `claimable[gauge]` never increases, and the freshly minted HYBR is effectively orphaned inside `GaugeManager`.
+
+The failure follows the normal epoch maintenance playbook:
+1. Voters call `reset` in the next epoch’s window to reclaim bribes, bringing `totalWeight` to zero.
+2. A keeper (or the minter itself) calls `distributeAll()`, which mints and transfers the weekly emission into `GaugeManager`.
+3. Because `index` is unchanged, all gauges remain at `claimable == 0`, and the HYBR balance becomes unrecoverable.
+
+The PoC shows that with current parameters the first weekly emission mints ~2.47M HYBR into `GaugeManager`, leaves `claimable[gauge]` at zero, and later distributions do not touch the stranded balance. There is no refund or recovery mechanism, so every occurrence permanently removes an entire emission cycle from the reward flow. This is a protocol-level loss affecting all liquidity providers and voters, so the severity is **High**.
+
+
+## Recommended mitigation steps
+Before transferring rewards, ensure `totalWeight > 0`. Either:
+- skip the transfer and keep HYBR on the minter until weight is positive, or  
+- immediately return the funds to the minter and log the missed emission, or  
+- store the amount in a dedicated rollover accumulator that is added to the next positive-weight distribution.
+- Add operator tooling/alerts so that if an emission is skipped (zero weight), governance can decide whether to re-run once voting power returns.

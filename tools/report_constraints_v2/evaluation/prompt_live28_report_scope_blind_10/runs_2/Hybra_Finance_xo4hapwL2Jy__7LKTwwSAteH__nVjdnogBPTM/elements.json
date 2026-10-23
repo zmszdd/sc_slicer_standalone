@@ -1,0 +1,211 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "RewardsDistributor funding and weekly checkpoint allocation followed by user claims",
+    "environment": "ve33/RewardsDistributor.sol",
+    "evidence": [
+      "Rewards for weeks with zero veHYBR supply become permanently unclaimable. If the distributor is funded and checkpointed before any ve holders exist, that week’s allocation is fixed to a week where all users had zero balance, so no one can ever claim it later. The tokens remain stranded in `RewardsDistributor`.",
+      "- Minter funds `RewardsDistributor` and calls `checkpoint_token()`, which apportions tokens across weekly buckets.",
+      "- `_checkpoint_token()` credits the current week’s bucket even if there are no ve holders for that week.",
+      "- The claim loop uses historical balance snapshots at that week’s end. If no locks existed for that week, every user’s `balanceOfNFTAt(...)` is zero, so the entire allocation is forever unclaimable.",
+      "- If no ve existed at `week_cursor + WEEK - 1`, `balance_of` is 0 for every tokenId, and the week’s `tokens_per_week` allocation is never claimed.",
+      "- `ve33/contracts/RewardsDistributor.sol`",
+      "- `_checkpoint_token()`: allocates to weeks regardless of current supply state",
+      "- `_claim/_claimable`: strictly reads end‑of‑week snapshots; zero‑supply weeks produce zero claimable"
+    ]
+  },
+  "entities": [
+    {
+      "id": "minter",
+      "name": "Minter",
+      "role": "authority",
+      "evidence": [
+        "- Minter funds `RewardsDistributor` and calls `checkpoint_token()`, which apportions tokens across weekly buckets."
+      ]
+    },
+    {
+      "id": "rewards_distributor",
+      "name": "RewardsDistributor",
+      "role": "contract",
+      "evidence": [
+        "Rewards for weeks with zero veHYBR supply become permanently unclaimable. If the distributor is funded and checkpointed before any ve holders exist, that week’s allocation is fixed to a week where all users had zero balance, so no one can ever claim it later. The tokens remain stranded in `RewardsDistributor`.",
+        "- `ve33/contracts/RewardsDistributor.sol`"
+      ]
+    },
+    {
+      "id": "ve_holders",
+      "name": "veHYBR holders",
+      "role": "victim",
+      "evidence": [
+        "- Later, users with veHYBR can claim by summing their weekly pro‑rata share: `balanceOfNFTAt(...) / totalSupplyAtT(...)`.",
+        "- The claim loop uses historical balance snapshots at that week’s end. If no locks existed for that week, every user’s `balanceOfNFTAt(...)` is zero, so the entire allocation is forever unclaimable."
+      ]
+    },
+    {
+      "id": "reward_tokens",
+      "name": "Reward tokens",
+      "role": "asset",
+      "evidence": [
+        "Rewards for weeks with zero veHYBR supply become permanently unclaimable. If the distributor is funded and checkpointed before any ve holders exist, that week’s allocation is fixed to a week where all users had zero balance, so no one can ever claim it later. The tokens remain stranded in `RewardsDistributor`.",
+        "- A portion of matured weekly rewards becomes permanently stuck in `RewardsDistributor` whenever funding/checkpointing happens before any ve holders exist for that week (including the first/funding week)."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "distributor_funded",
+      "kind": "precondition",
+      "text": "The Minter funds RewardsDistributor with reward tokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "minter",
+        "rewards_distributor",
+        "reward_tokens"
+      ],
+      "evidence": [
+        "- Minter funds `RewardsDistributor` and calls `checkpoint_token()`, which apportions tokens across weekly buckets.",
+        "Rewards for weeks with zero veHYBR supply become permanently unclaimable. If the distributor is funded and checkpointed before any ve holders exist, that week’s allocation is fixed to a week where all users had zero balance, so no one can ever claim it later. The tokens remain stranded in `RewardsDistributor`."
+      ]
+    },
+    {
+      "id": "no_ve_supply_for_week",
+      "kind": "precondition",
+      "text": "No veHYBR locks exist for the week being checkpointed, so totalSupplyAtT(week_end) is zero for that week.",
+      "modality": "potential",
+      "entity_ids": [
+        "rewards_distributor",
+        "ve_holders"
+      ],
+      "evidence": [
+        "- `_checkpoint_token()` credits the current week’s bucket even if there are no ve holders for that week.",
+        "- If no ve existed at `week_cursor + WEEK - 1`, `balance_of` is 0 for every tokenId, and the week’s `tokens_per_week` allocation is never claimed.",
+        "- Moderate. Deployments and initial funding often occur before any user lock exists. Also possible in any week with zero supply (e.g., migration/maintenance windows)."
+      ]
+    },
+    {
+      "id": "checkpoint_token_called",
+      "kind": "action",
+      "text": "The Minter calls checkpoint_token(), which apportions tokens across weekly buckets.",
+      "modality": "asserted",
+      "entity_ids": [
+        "minter",
+        "rewards_distributor"
+      ],
+      "evidence": [
+        "- Minter funds `RewardsDistributor` and calls `checkpoint_token()`, which apportions tokens across weekly buckets."
+      ]
+    },
+    {
+      "id": "claim_attempted",
+      "kind": "action",
+      "text": "Users attempt to claim their weekly pro-rata share via balanceOfNFTAt(...)/totalSupplyAtT(...).",
+      "modality": "potential",
+      "entity_ids": [
+        "ve_holders",
+        "rewards_distributor"
+      ],
+      "evidence": [
+        "- Later, users with veHYBR can claim by summing their weekly pro‑rata share: `balanceOfNFTAt(...) / totalSupplyAtT(...)`.",
+        "- The claim loop uses historical balance snapshots at that week’s end. If no locks existed for that week, every user’s `balanceOfNFTAt(...)` is zero, so the entire allocation is forever unclaimable."
+      ]
+    },
+    {
+      "id": "checkpoint_credits_zero_supply_week",
+      "kind": "root_cause",
+      "text": "_checkpoint_token() credits the current week's bucket even when there are no ve holders for that week, and the claim loop reads end-of-week snapshots where every balanceOfNFTAt(...) is zero.",
+      "modality": "asserted",
+      "entity_ids": [
+        "rewards_distributor"
+      ],
+      "evidence": [
+        "- `_checkpoint_token()` credits the current week’s bucket even if there are no ve holders for that week.",
+        "- The claim loop uses historical balance snapshots at that week’s end. If no locks existed for that week, every user’s `balanceOfNFTAt(...)` is zero, so the entire allocation is forever unclaimable.",
+        "- If no ve existed at `week_cursor + WEEK - 1`, `balance_of` is 0 for every tokenId, and the week’s `tokens_per_week` allocation is never claimed.",
+        "- `_checkpoint_token()`: allocates to weeks regardless of current supply state",
+        "- `_claim/_claimable`: strictly reads end‑of‑week snapshots; zero‑supply weeks produce zero claimable"
+      ]
+    },
+    {
+      "id": "intent_no_stranding",
+      "kind": "security_intent",
+      "text": "Weekly reward allocations must remain claimable by veHYBR holders; allocations for zero-supply weeks must not become permanently unclaimable.",
+      "modality": "asserted",
+      "entity_ids": [
+        "rewards_distributor",
+        "ve_holders",
+        "reward_tokens"
+      ],
+      "evidence": [
+        "Rewards for weeks with zero veHYBR supply become permanently unclaimable. If the distributor is funded and checkpointed before any ve holders exist, that week’s allocation is fixed to a week where all users had zero balance, so no one can ever claim it later. The tokens remain stranded in `RewardsDistributor`.",
+        "- Later, users with veHYBR can claim by summing their weekly pro‑rata share: `balanceOfNFTAt(...) / totalSupplyAtT(...)`.",
+        "- Roll forward zero‑supply allocations: if `totalSupplyAtT(week_end) == 0`, carry `tokens_per_week[week]` into the next week with nonzero supply."
+      ]
+    },
+    {
+      "id": "intent_rollover_zero_supply",
+      "kind": "security_intent",
+      "text": "If totalSupplyAtT(week_end) == 0, tokens_per_week[week] should be carried into the next week with nonzero supply rather than fixed to the zero-supply week.",
+      "modality": "asserted",
+      "entity_ids": [
+        "rewards_distributor",
+        "reward_tokens"
+      ],
+      "evidence": [
+        "- Roll forward zero‑supply allocations: if `totalSupplyAtT(week_end) == 0`, carry `tokens_per_week[week]` into the next week with nonzero supply."
+      ]
+    },
+    {
+      "id": "intent_notified_equals_claimable",
+      "kind": "security_intent",
+      "text": "Per epoch, sum(distributed) + undistributed_rollover should equal notified rewards.",
+      "modality": "asserted",
+      "entity_ids": [
+        "rewards_distributor",
+        "reward_tokens"
+      ],
+      "evidence": [
+        "- Telemetry: assert per epoch that sum(distributed) + undistributed_rollover equals notified.",
+        "- Long‑term value leakage; misalignment between notified and claimable rewards."
+      ]
+    },
+    {
+      "id": "weekly_rewards_permanently_stuck",
+      "kind": "impact",
+      "text": "A portion of matured weekly rewards becomes permanently stuck in `RewardsDistributor` whenever funding/checkpointing happens before any ve holders exist for that week (including the first/funding week).",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- A portion of matured weekly rewards becomes permanently stuck in `RewardsDistributor` whenever funding/checkpointing happens before any ve holders exist for that week (including the first/funding week)."
+      ]
+    },
+    {
+      "id": "long_term_value_leakage",
+      "kind": "impact",
+      "text": "Long‑term value leakage",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- Long‑term value leakage; misalignment between notified and claimable rewards."
+      ]
+    },
+    {
+      "id": "misalignment_notified_claimable_rewards",
+      "kind": "impact",
+      "text": "misalignment between notified and claimable rewards.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- Long‑term value leakage; misalignment between notified and claimable rewards."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "checkpoint_token_called",
+    "claim_attempted"
+  ],
+  "ambiguities": [
+    "Report does not state whether the zero-supply week is the funding week or a later week in the concrete scenario.",
+    "Report does not specify exact numeric allocation amounts or week indices.",
+    "Whether the claim attempt is by any specific user or all users is not fixed; report says every user's balance is zero."
+  ]
+}

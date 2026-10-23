@@ -1,0 +1,104 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "17e62dce5beadb39828e5e3156b9376b877db745be0084c09f6f5325630620df",
+  "fragments": [
+    {
+      "id": "e_17e62dce5bea_0001",
+      "text": "USDC Blacklisting Permanently Locks User Funds in RedeemEscrow With No Recovery Path",
+      "start": 0,
+      "end": 84,
+      "line": 1
+    },
+    {
+      "id": "e_17e62dce5bea_0002",
+      "text": "## Finding description and impact",
+      "start": 86,
+      "end": 119,
+      "line": 3
+    },
+    {
+      "id": "e_17e62dce5bea_0003",
+      "text": "When a user calls [`requestRedeem()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L183-L196), their USDM is transferred to the vault and [`addObligation()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L41-L44) increments `totalOwed` in RedeemEscrow. The operator later calls `fundRedemptions` to move the matching USDC into the escrow. When the user eventually calls [`claimRedeem()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L198-L213), the vault calls [`payOut()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L47-L53) which does `usdc.sa",
+      "start": 121,
+      "end": 821,
+      "line": 5
+    },
+    {
+      "id": "e_17e62dce5bea_0004",
+      "text": "feTransfer(recipient, amount)`.",
+      "start": 821,
+      "end": 852,
+      "line": 5
+    },
+    {
+      "id": "e_17e62dce5bea_0005",
+      "text": "Circle (the USDC issuer) can blacklist any address at any time, including in response to legal orders or theft. If the redeeming user is blacklisted between `requestRedeem` and `claimRedeem`, the `safeTransfer` reverts because USDC enforces a blacklist check on every transfer. There is nothing in the protocol that handles this revert.",
+      "start": 854,
+      "end": 1190,
+      "line": 7
+    },
+    {
+      "id": "e_17e62dce5bea_0006",
+      "text": "The consequences are permanent:",
+      "start": 1192,
+      "end": 1223,
+      "line": 9
+    },
+    {
+      "id": "e_17e62dce5bea_0007",
+      "text": "- `payOut` is the only function that reduces `totalOwed`. With a blacklisted recipient, every call to `payOut` reverts and `totalOwed` can never decrease for that obligation.",
+      "start": 1225,
+      "end": 1399,
+      "line": 11
+    },
+    {
+      "id": "e_17e62dce5bea_0008",
+      "text": "- [`reclaimTo`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/RedeemEscrow.sol#L59-L65) enforces `bal >= amount + totalOwed`. As long as the stuck obligation remains in `totalOwed`, the operator cannot reclaim the corresponding USDC.",
+      "start": 1400,
+      "end": 1653,
+      "line": 12
+    },
+    {
+      "id": "e_17e62dce5bea_0009",
+      "text": "- The user's USDM is sitting in the vault (transferred there at `requestRedeem`) and can never be burned or returned -- there is no refund path.",
+      "start": 1654,
+      "end": 1798,
+      "line": 13
+    },
+    {
+      "id": "e_17e62dce5bea_0010",
+      "text": "- There is no admin or governance function in RedeemEscrow or the vault that can clear a stuck obligation or redirect a payment to an alternative address.",
+      "start": 1799,
+      "end": 1953,
+      "line": 14
+    },
+    {
+      "id": "e_17e62dce5bea_0011",
+      "text": "**Accounting impact.** The stuck USDC stays in RedeemEscrow and is still counted as backing by [`totalBackingSigned()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L135). The corresponding USDM is still in `usdm.totalSupply()` (never burned). So `surplus()` is not distorted -- the accounting stays balanced, just with permanently frozen funds.",
+      "start": 1955,
+      "end": 2349,
+      "line": 16
+    },
+    {
+      "id": "e_17e62dce5bea_0012",
+      "text": "---",
+      "start": 2351,
+      "end": 2354,
+      "line": 18
+    },
+    {
+      "id": "e_17e62dce5bea_0013",
+      "text": "## Mitigation",
+      "start": 2356,
+      "end": 2369,
+      "line": 20
+    },
+    {
+      "id": "e_17e62dce5bea_0014",
+      "text": "The cleanest fix is to allow the redemption owner to specify an alternative recipient in `claimRedeem`. Since the ownership check already ensures only `req.owner` can call it, they can redirect the USDC to any non-blacklisted address they control. This requires no governance intervention and keeps the existing access control intact.",
+      "start": 2371,
+      "end": 2705,
+      "line": 22
+    }
+  ]
+}

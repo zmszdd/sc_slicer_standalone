@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Covenant_d4uY8y2AMSs",
+    "audit_uid": "d4uY8y2AMSs",
+    "requested_submission_uid": "qsMKYntEMMK",
+    "requested_finding_uid": "Jk2Mbvck9TA",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Covenant_d4uY8y2AMSs/20260618_145249/findings.json",
+    "source_submission_uid": "qsMKYntEMMK",
+    "source_finding_uid": "Jk2Mbvck9TA",
+    "original_report_path": "Covenant_d4uY8y2AMSs\\low_valid_qsMKYntEMMK.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "qsMKYntEMMK",
+  "finding_uid": "Jk2Mbvck9TA",
+  "finding_number": "83",
+  "title": "First over-threshold minter can halt new deposits for all users",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "hecker_trieu_tien",
+  "body": "## Summary\nSeeding `lastETWAPBaseSupply` to zero during market init will cause a denial of service for depositors as the first minter to cross the `noCapLimit` threshold will permanently trip the mint cap until the ETWAP decays.\n\n## Root Cause\nIn `src/lex/latentswap/LatentSwapLEX.sol:268` the exchange state seeds `lastETWAPBaseSupply` to `0`, and the first mint does not update the stored exponential TWAP before `_checkMintCap` enforces limits. Combined with `_checkMintCap` in `src/lex/latentswap/libraries/LatentSwapLogic.sol:1054`, the system compares the live supply against a near-zero TWAP, so any follow-up mint after the threshold must fail until the ETWAP catches up.\n\n\n1. Market init seeds ETWAP to zero:\n```solidity\nlexState[marketId] = LexState({\n    lastBaseTokenPrice: currentBasePrice,\n    lastDebtNotionalPrice: FixedPoint.WAD,\n    lastLnRateBias: _initLnRateBias,\n    lastETWAPBaseSupply: 0,\n    lastSqrtPriceX96: uint160(FixedPoint.Q96),\n    lastUpdateTimestamp: uint96(block.timestamp)\n});\n```\n   *Stored ETWAP starts at `0` even though the next mint will add liquidity.*\n\n2. First large mint updates live supply but ETWAP stays ≈0:\n```solidity\n(currentState, ...) = LatentSwapLogic.mintLogic(...);\ncurrentState.lexState.lastETWAPBaseSupply // still ≈ 0 because update uses pre-mint supply\n```\n   *During `_calculateMarketState`, the TWAP update runs before the mint adds to `baseTokenSupply`, so the exponential moving average remains near zero.*\n\n3. Subsequent mint is capped against the stale ETWAP:\n```solidity\n_checkMintCap(\n    marketState.baseTokenSupply,\n    marketState.lexState.lastETWAPBaseSupply,\n    baseTokenAmountIn,\n    marketState.lexConfig.noCapLimit\n);\n```\n   *`marketState.baseTokenSupply` now exceeds `1 << noCapLimit`, but `lastETWAPBaseSupply` is still ≈0, making the condition `marketBaseTokenSupply + mintAmount <= lastETWAPBaseSupply << 1` impossible and reverting with `E_LEX_MintCapExceeded`.*\n\n4. ETWAP only recovers with a 30-minute half-life:\n```solidity\nvars.invUpdateFactor = DebtMath.calculateApproxExponentialUpdate(\n    LN2,\n    vars.elapsedTime,\n    ETWAP_MIN_HALF_LIFE\n);\n```\n   *Even a manual `updateState` call takes ~30 minutes to grow ETWAP by 50%, leaving the market effectively frozen in the interim.*\n\n\n## Impact\nNew deposits are blocked for roughly an hour each time someone adds just over one token, preventing organic liquidity growth.\n\n## Mitigation\nSeed `lastETWAPBaseSupply` with the first mint’s post-action supply (or skip cap enforcement until ETWAP reflects at least the live supply). For example:\n```solidity\nif (lexState.lastETWAPBaseSupply == 0 && marketState.baseTokenSupply > 0) {\n    currentState.lexState.lastETWAPBaseSupply = marketState.baseTokenSupply;\n}\n```\n*Executed after the mint calculation, this ensures the ETWAP baseline matches reality before caps apply.*",
+  "proof_of_concept": "- test/LatentSwapLEX.t.sol\n```solidity\n    function test_mint_cap_freezes_market_after_first_large_mint() external {\n        LatentSwapLEX latentSwapLEX = new LatentSwapLEX(\n            address(this),\n            address(this),\n            P_MAX,\n            P_MIN,\n            P_LIM_H,\n            P_LIM_MAX,\n            LN_RATE_BIAS,\n            DURATION,\n            SWAP_FEE\n        );\n\n        MarketParams memory marketParams = MarketParams({\n            baseToken: _mockBaseAsset,\n            quoteToken: _mockQuoteAsset,\n            curator: _mockOracle,\n            lex: address(latentSwapLEX)\n        });\n\n        MarketId marketId = MarketId.wrap(bytes20(uint160(uint256(keccak256(abi.encode(marketParams))))));\n        latentSwapLEX.initMarket(marketId, marketParams, 0, hex\"\");\n\n        uint256 firstMintAmount = 2e18; // > 1 << default noCapLimit (≈1.15 tokens)\n        MintParams memory mintParams = MintParams({\n            marketId: marketId,\n            marketParams: marketParams,\n            baseAmountIn: firstMintAmount,\n            to: address(this),\n            minATokenAmountOut: 0,\n            minZTokenAmountOut: 0,\n            data: hex\"\",\n            msgValue: 0\n        });\n\n        latentSwapLEX.mint(mintParams, address(this), 0);\n\n        uint256 followUpMintAmount = 0.1e18;\n        mintParams.baseAmountIn = followUpMintAmount;\n\n        vm.expectRevert(LSErrors.E_LEX_MintCapExceeded.selector);\n        latentSwapLEX.mint(mintParams, address(this), firstMintAmount);\n\n        vm.warp(block.timestamp + 30 minutes);\n        latentSwapLEX.updateState(marketId, marketParams, firstMintAmount, hex\"\");\n\n        vm.expectRevert(LSErrors.E_LEX_MintCapExceeded.selector);\n        latentSwapLEX.mint(mintParams, address(this), firstMintAmount);\n\n        vm.warp(block.timestamp + 30 minutes);\n        latentSwapLEX.updateState(marketId, marketParams, firstMintAmount, hex\"\");\n\n        latentSwapLEX.mint(mintParams, address(this), firstMintAmount);\n    }\n\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/lex/latentswap/LatentSwapLEX.sol#L268"
+  ],
+  "source_record": {
+    "project_id": "d4uY8y2AMSs",
+    "submission_index": "348",
+    "api_submission_id": "",
+    "uid": "qsMKYntEMMK",
+    "number": "348",
+    "title": "First over-threshold minter can halt new deposits for all users",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "hecker_trieu_tien",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/lex/latentswap/LatentSwapLEX.sol#L268"
+    ],
+    "body": "## Summary\nSeeding `lastETWAPBaseSupply` to zero during market init will cause a denial of service for depositors as the first minter to cross the `noCapLimit` threshold will permanently trip the mint cap until the ETWAP decays.\n\n## Root Cause\nIn `src/lex/latentswap/LatentSwapLEX.sol:268` the exchange state seeds `lastETWAPBaseSupply` to `0`, and the first mint does not update the stored exponential TWAP before `_checkMintCap` enforces limits. Combined with `_checkMintCap` in `src/lex/latentswap/libraries/LatentSwapLogic.sol:1054`, the system compares the live supply against a near-zero TWAP, so any follow-up mint after the threshold must fail until the ETWAP catches up.\n\n\n1. Market init seeds ETWAP to zero:\n```solidity\nlexState[marketId] = LexState({\n    lastBaseTokenPrice: currentBasePrice,\n    lastDebtNotionalPrice: FixedPoint.WAD,\n    lastLnRateBias: _initLnRateBias,\n    lastETWAPBaseSupply: 0,\n    lastSqrtPriceX96: uint160(FixedPoint.Q96),\n    lastUpdateTimestamp: uint96(block.timestamp)\n});\n```\n   *Stored ETWAP starts at `0` even though the next mint will add liquidity.*\n\n2. First large mint updates live supply but ETWAP stays ≈0:\n```solidity\n(currentState, ...) = LatentSwapLogic.mintLogic(...);\ncurrentState.lexState.lastETWAPBaseSupply // still ≈ 0 because update uses pre-mint supply\n```\n   *During `_calculateMarketState`, the TWAP update runs before the mint adds to `baseTokenSupply`, so the exponential moving average remains near zero.*\n\n3. Subsequent mint is capped against the stale ETWAP:\n```solidity\n_checkMintCap(\n    marketState.baseTokenSupply,\n    marketState.lexState.lastETWAPBaseSupply,\n    baseTokenAmountIn,\n    marketState.lexConfig.noCapLimit\n);\n```\n   *`marketState.baseTokenSupply` now exceeds `1 << noCapLimit`, but `lastETWAPBaseSupply` is still ≈0, making the condition `marketBaseTokenSupply + mintAmount <= lastETWAPBaseSupply << 1` impossible and reverting with `E_LEX_MintCapExceeded`.*\n\n4. ETWAP only recovers with a 30-minute half-life:\n```solidity\nvars.invUpdateFactor = DebtMath.calculateApproxExponentialUpdate(\n    LN2,\n    vars.elapsedTime,\n    ETWAP_MIN_HALF_LIFE\n);\n```\n   *Even a manual `updateState` call takes ~30 minutes to grow ETWAP by 50%, leaving the market effectively frozen in the interim.*\n\n\n## Impact\nNew deposits are blocked for roughly an hour each time someone adds just over one token, preventing organic liquidity growth.\n\n## Mitigation\nSeed `lastETWAPBaseSupply` with the first mint’s post-action supply (or skip cap enforcement until ETWAP reflects at least the live supply). For example:\n```solidity\nif (lexState.lastETWAPBaseSupply == 0 && marketState.baseTokenSupply > 0) {\n    currentState.lexState.lastETWAPBaseSupply = marketState.baseTokenSupply;\n}\n```\n*Executed after the mint calculation, this ensures the ETWAP baseline matches reality before caps apply.*",
+    "proof_of_concept": "- test/LatentSwapLEX.t.sol\n```solidity\n    function test_mint_cap_freezes_market_after_first_large_mint() external {\n        LatentSwapLEX latentSwapLEX = new LatentSwapLEX(\n            address(this),\n            address(this),\n            P_MAX,\n            P_MIN,\n            P_LIM_H,\n            P_LIM_MAX,\n            LN_RATE_BIAS,\n            DURATION,\n            SWAP_FEE\n        );\n\n        MarketParams memory marketParams = MarketParams({\n            baseToken: _mockBaseAsset,\n            quoteToken: _mockQuoteAsset,\n            curator: _mockOracle,\n            lex: address(latentSwapLEX)\n        });\n\n        MarketId marketId = MarketId.wrap(bytes20(uint160(uint256(keccak256(abi.encode(marketParams))))));\n        latentSwapLEX.initMarket(marketId, marketParams, 0, hex\"\");\n\n        uint256 firstMintAmount = 2e18; // > 1 << default noCapLimit (≈1.15 tokens)\n        MintParams memory mintParams = MintParams({\n            marketId: marketId,\n            marketParams: marketParams,\n            baseAmountIn: firstMintAmount,\n            to: address(this),\n            minATokenAmountOut: 0,\n            minZTokenAmountOut: 0,\n            data: hex\"\",\n            msgValue: 0\n        });\n\n        latentSwapLEX.mint(mintParams, address(this), 0);\n\n        uint256 followUpMintAmount = 0.1e18;\n        mintParams.baseAmountIn = followUpMintAmount;\n\n        vm.expectRevert(LSErrors.E_LEX_MintCapExceeded.selector);\n        latentSwapLEX.mint(mintParams, address(this), firstMintAmount);\n\n        vm.warp(block.timestamp + 30 minutes);\n        latentSwapLEX.updateState(marketId, marketParams, firstMintAmount, hex\"\");\n\n        vm.expectRevert(LSErrors.E_LEX_MintCapExceeded.selector);\n        latentSwapLEX.mint(mintParams, address(this), firstMintAmount);\n\n        vm.warp(block.timestamp + 30 minutes);\n        latentSwapLEX.updateState(marketId, marketParams, firstMintAmount, hex\"\");\n\n        latentSwapLEX.mint(mintParams, address(this), firstMintAmount);\n    }\n\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/d4uY8y2AMSs/submissions/348",
+    "raw": {
+      "auditUid": "d4uY8y2AMSs",
+      "createdAt": "2025-11-02T04:00:07.493Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "mgivd89jEKH",
+          "userUid": "6gNcwqYnMhM",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-27T21:08:42.990Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "Jk2Mbvck9TA"
+        },
+        {
+          "uid": "svMxNsWNmTg",
+          "userUid": "6gNcwqYnMhM",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-27T21:08:45.814Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "Jk2Mbvck9TA"
+        },
+        {
+          "uid": "ootxHybDqwp",
+          "userUid": "6gNcwqYnMhM",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-03T09:52:49.596Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "qsMKYntEMMK",
+          "findingUid": null
+        },
+        {
+          "uid": "C68ak4Hddv9",
+          "userUid": "xrsg7LtD2gr",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-11-05T19:24:45.916Z",
+          "type": "validity",
+          "value": "wontfix",
+          "submissionUid": null,
+          "findingUid": "Jk2Mbvck9TA"
+        }
+      ],
+      "finding": {
+        "uid": "Jk2Mbvck9TA",
+        "number": 83,
+        "duplicates": 5
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-11-05T19:24:45.916Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "First over-threshold minter can halt new deposits for all users",
+      "uid": "qsMKYntEMMK",
+      "updatedAt": "2025-11-02T04:00:07.493Z",
+      "user": {
+        "uid": "QzwZRpS2hz8",
+        "handle": "hecker_trieu_tien"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Summary\nSeeding `lastETWAPBaseSupply` to zero during market init will cause a denial of service for depositors as the first minter to cross the `noCapLimit` threshold will permanently trip the mint cap until the ETWAP decays.\n\n## Root Cause\nIn `src/lex/latentswap/LatentSwapLEX.sol:268` the exchange state seeds `lastETWAPBaseSupply` to `0`, and the first mint does not update the stored exponential TWAP before `_checkMintCap` enforces limits. Combined with `_checkMintCap` in `src/lex/latentswap/libraries/LatentSwapLogic.sol:1054`, the system compares the live supply against a near-zero TWAP, so any follow-up mint after the threshold must fail until the ETWAP catches up.\n\n\n1. Market init seeds ETWAP to zero:\n```solidity\nlexState[marketId] = LexState({\n    lastBaseTokenPrice: currentBasePrice,\n    lastDebtNotionalPrice: FixedPoint.WAD,\n    lastLnRateBias: _initLnRateBias,\n    lastETWAPBaseSupply: 0,\n    lastSqrtPriceX96: uint160(FixedPoint.Q96),\n    lastUpdateTimestamp: uint96(block.timestamp)\n});\n```\n   *Stored ETWAP starts at `0` even though the next mint will add liquidity.*\n\n2. First large mint updates live supply but ETWAP stays ≈0:\n```solidity\n(currentState, ...) = LatentSwapLogic.mintLogic(...);\ncurrentState.lexState.lastETWAPBaseSupply // still ≈ 0 because update uses pre-mint supply\n```\n   *During `_calculateMarketState`, the TWAP update runs before the mint adds to `baseTokenSupply`, so the exponential moving average remains near zero.*\n\n3. Subsequent mint is capped against the stale ETWAP:\n```solidity\n_checkMintCap(\n    marketState.baseTokenSupply,\n    marketState.lexState.lastETWAPBaseSupply,\n    baseTokenAmountIn,\n    marketState.lexConfig.noCapLimit\n);\n```\n   *`marketState.baseTokenSupply` now exceeds `1 << noCapLimit`, but `lastETWAPBaseSupply` is still ≈0, making the condition `marketBaseTokenSupply + mintAmount <= lastETWAPBaseSupply << 1` impossible and reverting with `E_LEX_MintCapExceeded`.*\n\n4. ETWAP only recovers with a 30-minute half-life:\n```solidity\nvars.invUpdateFactor = DebtMath.calculateApproxExponentialUpdate(\n    LN2,\n    vars.elapsedTime,\n    ETWAP_MIN_HALF_LIFE\n);\n```\n   *Even a manual `updateState` call takes ~30 minutes to grow ETWAP by 50%, leaving the market effectively frozen in the interim.*\n\n\n## Impact\nNew deposits are blocked for roughly an hour each time someone adds just over one token, preventing organic liquidity growth.\n\n## Mitigation\nSeed `lastETWAPBaseSupply` with the first mint’s post-action supply (or skip cap enforcement until ETWAP reflects at least the live supply). For example:\n```solidity\nif (lexState.lastETWAPBaseSupply == 0 && marketState.baseTokenSupply > 0) {\n    currentState.lexState.lastETWAPBaseSupply = marketState.baseTokenSupply;\n}\n```\n*Executed after the mint calculation, this ensures the ETWAP baseline matches reality before caps apply.*",
+      "proofOfConcept": "- test/LatentSwapLEX.t.sol\n```solidity\n    function test_mint_cap_freezes_market_after_first_large_mint() external {\n        LatentSwapLEX latentSwapLEX = new LatentSwapLEX(\n            address(this),\n            address(this),\n            P_MAX,\n            P_MIN,\n            P_LIM_H,\n            P_LIM_MAX,\n            LN_RATE_BIAS,\n            DURATION,\n            SWAP_FEE\n        );\n\n        MarketParams memory marketParams = MarketParams({\n            baseToken: _mockBaseAsset,\n            quoteToken: _mockQuoteAsset,\n            curator: _mockOracle,\n            lex: address(latentSwapLEX)\n        });\n\n        MarketId marketId = MarketId.wrap(bytes20(uint160(uint256(keccak256(abi.encode(marketParams))))));\n        latentSwapLEX.initMarket(marketId, marketParams, 0, hex\"\");\n\n        uint256 firstMintAmount = 2e18; // > 1 << default noCapLimit (≈1.15 tokens)\n        MintParams memory mintParams = MintParams({\n            marketId: marketId,\n            marketParams: marketParams,\n            baseAmountIn: firstMintAmount,\n            to: address(this),\n            minATokenAmountOut: 0,\n            minZTokenAmountOut: 0,\n            data: hex\"\",\n            msgValue: 0\n        });\n\n        latentSwapLEX.mint(mintParams, address(this), 0);\n\n        uint256 followUpMintAmount = 0.1e18;\n        mintParams.baseAmountIn = followUpMintAmount;\n\n        vm.expectRevert(LSErrors.E_LEX_MintCapExceeded.selector);\n        latentSwapLEX.mint(mintParams, address(this), firstMintAmount);\n\n        vm.warp(block.timestamp + 30 minutes);\n        latentSwapLEX.updateState(marketId, marketParams, firstMintAmount, hex\"\");\n\n        vm.expectRevert(LSErrors.E_LEX_MintCapExceeded.selector);\n        latentSwapLEX.mint(mintParams, address(this), firstMintAmount);\n\n        vm.warp(block.timestamp + 30 minutes);\n        latentSwapLEX.updateState(marketId, marketParams, firstMintAmount, hex\"\");\n\n        latentSwapLEX.mint(mintParams, address(this), firstMintAmount);\n    }\n\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/lex/latentswap/LatentSwapLEX.sol#L268",
+      "number": 348,
+      "aiExplanation": null,
+      "_index": 348
+    }
+  }
+}

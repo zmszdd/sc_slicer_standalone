@@ -1,0 +1,317 @@
+{
+  "schema_version": "stage2-semantic-bundle/1",
+  "core_formalization_status": "formalized_candidate",
+  "acceptance_status": "needs_review",
+  "report_warnings": [
+    "report impacts not assigned to a claim: builder_admin_overwritten",
+    "report has declared ambiguities",
+    "formalization has declared limitations"
+  ],
+  "unassigned_impact_ids": [
+    "builder_admin_overwritten"
+  ],
+  "claims": [
+    {
+      "id": "core_claim",
+      "formalization_status": "needs_review",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity.",
+        "direct_counterexample_status": "passed"
+      },
+      "review_reasons": [
+        "claim is qualified or inferred; not a verified realized effect"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "BuilderWallet is the fee recipient for builder split commissions and can hold accumulated builder fees (shares/tokens) routed to it during settlement.",
+          "expression": {
+            "var": "builder_wallet_holds_fees_occurred"
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "builder_wallet_holds_fees"
+          ],
+          "evidence": [
+            "`BuilderWallet` is the fee recipient for “builder split” commissions. It exposes:",
+            "This is especially impactful because the protocol can route commissions directly to `riskParameters.feeRecipient()` (the builder wallet address) during option mint/burn settlement:",
+            "- In `CollateralTracker.settleMint`, when `riskParameters.feeRecipient() != 0`, shares are split and transferred to both `riskEngine()` (protocol split) and `feeRecipient` (builder split).",
+            "- In `CollateralTracker.settleBurn`, when `riskParameters.feeRecipient() != 0`, shares are similarly split and transferred."
+          ]
+        },
+        "safety": {
+          "text": "Inferred: builderAdmin should only be set through a guarded, one-time initialization so that only the legitimate authority can become builderAdmin and sweep the wallet's fees.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "builder_wallet_holds_fees_occurred"
+                  },
+                  {
+                    "var": "builder_admin_overwritten"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "fees_drained"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_admin_guard"
+          ],
+          "evidence": [
+            "`BuilderWallet.init()` is permissionless and re-initializable, allowing anyone to take over `builderAdmin` and sweep builder fees",
+            "- `init(address _builderAdmin)` (external) which writes `builderAdmin` with **no access control** and **no one-time initialization guard**.",
+            "- `sweep(address token, address to)` which allows the current `builderAdmin` to transfer the wallet’s full token balance."
+          ]
+        },
+        "effects": {
+          "text": "The wallet's full token balance of accumulated builder fees is transferred to the attacker, causing direct loss of funds intended for builders.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "builder_wallet_holds_fees_occurred"
+                  },
+                  {
+                    "var": "builder_admin_overwritten"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "fees_drained"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "fees_drained"
+          ],
+          "evidence": [
+            "- `sweep(address token, address to)` which allows the current `builderAdmin` to transfer the wallet’s full token balance.",
+            "2. Call `BuilderWallet.sweep(token, attacker)` to drain any assets held by the wallet.",
+            "As a result, any accumulated builder fees (shares/tokens) that reach the `BuilderWallet` can be stolen permissionlessly, causing direct loss of funds intended for builders (and any downstream accounting/fee distribution relying on this mechanism)."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "builder_wallet_holds_fees"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_admin_guard"
+          ],
+          "args.0": [
+            "intent_admin_guard"
+          ],
+          "args.1": [
+            "intent_admin_guard"
+          ]
+        },
+        "effects": {
+          "": [
+            "fees_drained"
+          ],
+          "args.0": [
+            "fees_drained"
+          ],
+          "args.1": [
+            "fees_drained"
+          ],
+          "args.1.args.0": [
+            "fees_drained"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "fees_drained",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "scope": "BuilderWallet fee-recipient initialization and sweep of accumulated builder fees",
+      "modality": "potential",
+      "assumptions": [
+        "BuilderWallet is used as feeRecipient for builder split commissions and receives shares/tokens during CollateralTracker settlement.",
+        "The attacker is an unauthorized caller, not the legitimate builderAdmin authority.",
+        "Whether init had already been called by a legitimate admin before the attack is not established by the report."
+      ],
+      "unresolved": []
+    }
+  ],
+  "report_impact_coverage": [
+    {
+      "impact_id": "builder_admin_overwritten",
+      "evidence": [
+        "`BuilderWallet.init()` is permissionless and re-initializable, allowing anyone to take over `builderAdmin` and sweep builder fees",
+        "1. Call `BuilderWallet.init(attacker)` to overwrite `builderAdmin`."
+      ],
+      "claim_ids": [],
+      "status": "unformalized",
+      "reason": "No claim currently formalizes this report impact."
+    },
+    {
+      "impact_id": "fees_drained",
+      "evidence": [
+        "- `sweep(address token, address to)` which allows the current `builderAdmin` to transfer the wallet’s full token balance.",
+        "2. Call `BuilderWallet.sweep(token, attacker)` to drain any assets held by the wallet.",
+        "As a result, any accumulated builder fees (shares/tokens) that reach the `BuilderWallet` can be stolen permissionlessly, causing direct loss of funds intended for builders (and any downstream accounting/fee distribution relying on this mechanism)."
+      ],
+      "claim_ids": [
+        "core_claim"
+      ],
+      "status": "formalized",
+      "reason": "Program-generated exact coverage for selected direct impact."
+    }
+  ],
+  "coverage_is_model_declared_not_semantically_verified": true,
+  "human_semantic_review_required": true,
+  "code_alignment_status": "not_attempted",
+  "execution_ready": false,
+  "consistency_verdict": "not_evaluated",
+  "unassigned_precondition_ids": [],
+  "precondition_coverage_is_structural_not_semantic": true,
+  "piv_completeness_gate": {
+    "claims_present": true,
+    "all_claims_have_p_i_v": true,
+    "relationship_checks_are_structural_only": true,
+    "semantic_fidelity_verified": false
+  },
+  "observability_review": {
+    "schema_version": "observability-review/1",
+    "claims": [
+      {
+        "claim_id": "core_claim",
+        "safety_variables": [
+          "builder_admin_overwritten",
+          "builder_wallet_holds_fees_occurred",
+          "fees_drained"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      }
+    ],
+    "review_status": "no_structural_warning",
+    "observability_established": false,
+    "human_semantic_review_required": true,
+    "limitations": [
+      "I-only Boolean may be a legitimate observation; hints are not automatic errors",
+      "No code binding, predicate-name interpretation or report truth assessment",
+      "Both SAT is a review hint, not a universal UNSAT requirement"
+    ],
+    "model_calls": 0
+  },
+  "provenance": {
+    "code_provided_to_model": false,
+    "contract_file_read": false,
+    "paired_case_checked": true,
+    "case_id": "Panoptic__Next_Core_iqcUwAhCZyD__CUEQdPu878N__b4dfNQM5W4a",
+    "submission_uid": "b4dfNQM5W4a",
+    "finding_uid": "CUEQdPu878N",
+    "target_test": "test_PoC_Finding001_AttackerCanReinitAndSweep",
+    "declared_code_sha256": "ef7d37eb8930d5817e1417afbb24c66dbe0540b9ab8bf0f32284d631eb4ba51c",
+    "report_path": "/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/Panoptic__Next_Core_iqcUwAhCZyD__CUEQdPu878N__b4dfNQM5W4a/report.json",
+    "report_sha256": "5d737205078e166ebd8f9b3a7f08f3022ec0d75b9373143cc3a5f01adcc8d3c1",
+    "report_input_sha256": "72926f8b9fb3d99b4d16d796b26ff04314912f8c499f27b93f150999cd630ed6",
+    "report_input_policy": {
+      "source_format": "report.json",
+      "selected_fields": [
+        "title",
+        "body.description_and_impact"
+      ],
+      "excluded_fields": [
+        "proof_of_concept",
+        "recommended_mitigation",
+        "source_record",
+        "pairing",
+        "contract_code"
+      ],
+      "policy_version": "report-json-input/4",
+      "title_deduplicated": false
+    },
+    "candidate_origin": "assistant_review",
+    "elements_source": "/root/sc_slicer_standalone/tools/report_constraints_v2/evaluation/prompt_live6_fidelity_01/runs/Panoptic__Next_Core_iqcUwAhCZyD__CUEQdPu878N__b4dfNQM5W4a/elements.json",
+    "formalization_source": "/root/sc_slicer_standalone/tools/report_constraints_v2/evaluation/prompt_live6_fidelity_01/runs/Panoptic__Next_Core_iqcUwAhCZyD__CUEQdPu878N__b4dfNQM5W4a/formalization.json",
+    "prompt_version": "semantic-live",
+    "prompt_features": {
+      "strict_piv": true,
+      "plan_synthesis": true,
+      "structured_unresolved": true,
+      "numeric_guard": true,
+      "address_guard": true,
+      "lean_formal_input": true,
+      "step_normalization": true,
+      "core_count": true,
+      "id_normalization": true,
+      "relation_alignment": true,
+      "local_repair": true,
+      "referenced_catalog": true,
+      "allowed_statement_ids": true,
+      "protocol_identifier_exclusion": false,
+      "assumption_numeric_relief": true,
+      "duplicate_predicate_gate": true,
+      "requirement_source_review": true,
+      "intent_scope_review": true,
+      "partial_formalization": true,
+      "example_pinning_review": true,
+      "placeholder_predicate_review": true,
+      "semantic_faithfulness_audit": true,
+      "mixed_unit_scaling_review": true,
+      "symbol_table_review": true
+    },
+    "claim_verdict_policy": "legacy",
+    "acceptance_policy_version": "complete-piv-v1"
+  },
+  "external_model_invocations": 0
+}

@@ -1,0 +1,204 @@
+{
+  "schema_version": "report-formal-plan/7",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "limit_order_match_attempted",
+    "matched_amounts_disjoint_bits"
+  ],
+  "intent_id": "intent_legitimate_trades_succeed",
+  "impact_ids": [
+    "legitimate_trades_fail_misleading_error"
+  ],
+  "symbols": {
+    "limit_order_match_in_progress": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a limit order match (partial or full) is being processed in _processLimitBidOrder or _processLimitAskOrder",
+      "checkpoint": "before the zero-cost trade validation of the match",
+      "entity_ids": [
+        "clob_contract",
+        "limit_order_matching"
+      ],
+      "source_ids": [
+        "limit_order_match_attempted"
+      ]
+    },
+    "matched_base_amount": {
+      "sort": "int",
+      "unit": "base token amount",
+      "meaning": "base amount of the matched limit order",
+      "checkpoint": "before the zero-cost trade validation of the match",
+      "entity_ids": [
+        "matched_base_amount"
+      ],
+      "source_ids": [
+        "matched_amounts_disjoint_bits"
+      ]
+    },
+    "matched_quote_amount": {
+      "sort": "int",
+      "unit": "quote token amount",
+      "meaning": "quote amount of the matched limit order",
+      "checkpoint": "before the zero-cost trade validation of the match",
+      "entity_ids": [
+        "matched_quote_amount"
+      ],
+      "source_ids": [
+        "matched_amounts_disjoint_bits"
+      ]
+    },
+    "matched_amounts_bitwise_and": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "bitwise AND of matched base amount and matched quote amount (zero iff no overlapping 1-bits)",
+      "checkpoint": "before the zero-cost trade validation of the match",
+      "entity_ids": [
+        "matched_base_amount",
+        "matched_quote_amount"
+      ],
+      "source_ids": [
+        "matched_amounts_disjoint_bits"
+      ]
+    },
+    "zero_cost_trade_reverted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the legitimate limit order match reverted with ZeroCostTrade()",
+      "checkpoint": "after the zero-cost trade validation of the match",
+      "entity_ids": [
+        "clob_contract",
+        "limit_order_matching",
+        "trader"
+      ],
+      "source_ids": [
+        "legitimate_trades_fail_misleading_error"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "limit_order_match_attempted",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "limit_order_match_in_progress",
+        "value": true
+      }
+    },
+    {
+      "source_id": "matched_amounts_disjoint_bits",
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "comparison",
+            "left": "matched_base_amount",
+            "operator": "eq",
+            "right": {
+              "const": 256
+            }
+          },
+          {
+            "kind": "comparison",
+            "left": "matched_quote_amount",
+            "operator": "ge",
+            "right": {
+              "const": 1
+            }
+          },
+          {
+            "kind": "comparison",
+            "left": "matched_quote_amount",
+            "operator": "le",
+            "right": {
+              "const": 255
+            }
+          },
+          {
+            "kind": "comparison",
+            "left": "matched_amounts_bitwise_and",
+            "operator": "eq",
+            "right": {
+              "const": 0
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "impact_context_terms": [
+    {
+      "source_id": "legitimate_trades_fail_misleading_error",
+      "qualifier_types": [
+        "state"
+      ],
+      "predicate": {
+        "kind": "truth",
+        "symbol": "zero_cost_trade_reverted",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "required_effect",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "limit_order_match_in_progress",
+          "value": true
+        },
+        {
+          "kind": "comparison",
+          "left": "matched_base_amount",
+          "operator": "gt",
+          "right": {
+            "const": 0
+          }
+        },
+        {
+          "kind": "comparison",
+          "left": "matched_quote_amount",
+          "operator": "gt",
+          "right": {
+            "const": 0
+          }
+        }
+      ]
+    },
+    "effect": {
+      "kind": "truth",
+      "symbol": "zero_cost_trade_reverted",
+      "value": false
+    }
+  },
+  "assumptions": [
+    "The matched base and quote amounts are nonzero for a legitimate trade, as stated by the intent source.",
+    "The zero-cost trade validation is the check that can revert with ZeroCostTrade() during the match."
+  ],
+  "unresolved": [
+    {
+      "category": "unsupported_relation",
+      "description": "The report does not state the exact code-level condition (omitted lines 503-504 and 544-545) that maps disjoint 1-bits to the ZeroCostTrade() revert, so the causal link between the disjoint-bits precondition and the revert cannot be encoded as a report-grounded relation.",
+      "source_ids": [
+        "matched_amounts_disjoint_bits",
+        "legitimate_trades_fail_misleading_error"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "Whether the disjoint-bit matched amounts are attacker-chosen or arise naturally in legitimate matching is not stated; the scenario's trigger is left as a potential precondition.",
+      "source_ids": [
+        "matched_amounts_disjoint_bits"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The bitwise-AND observable is a symbolic encoding of the report's 'no overlapping 1-bits' wording; its concrete computation is deferred to code binding.",
+    "The impact's 'misleading error' and market-efficiency damage are qualitative and are represented only by the ZeroCostTrade() revert occurrence.",
+    "Caller identity and authorization for triggering the match are not specified by the report and are not encoded."
+  ]
+}

@@ -1,0 +1,237 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "value_relation",
+  "precondition_ids": [
+    "get_emas_returns_order",
+    "twap_feeds_liquidation_checks",
+    "short_horizon_movement_condition"
+  ],
+  "intent_id": "intent_twap_uses_correct_ema_blend",
+  "impact_ids": [
+    "incorrect_liquidations_solvent_flagged"
+  ],
+  "symbols": {
+    "twap_used": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "TWAP value returned by PanopticPool.getTWAP() and fed into liquidation solvency checks",
+      "checkpoint": "twap_used",
+      "entity_ids": [
+        "twap_value",
+        "panoptic_pool"
+      ],
+      "source_ids": [
+        "twap_feeds_liquidation_checks",
+        "intent_twap_uses_correct_ema_blend",
+        "incorrect_liquidations_solvent_flagged"
+      ]
+    },
+    "intended_twap": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "intended blend (6*fastEMA + 3*slowEMA + eonsEMA)/10 used for liquidation and pricing checks",
+      "checkpoint": "derived_intended_twap",
+      "entity_ids": [
+        "twap_value",
+        "risk_engine"
+      ],
+      "source_ids": [
+        "intent_twap_uses_correct_ema_blend",
+        "get_emas_returns_order"
+      ]
+    },
+    "fast_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "fastEMA value returned by OraclePack.getEMAs()",
+      "checkpoint": "fast_ema",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "get_emas_returns_order",
+        "intent_twap_uses_correct_ema_blend"
+      ]
+    },
+    "slow_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "slowEMA value returned by OraclePack.getEMAs()",
+      "checkpoint": "slow_ema",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "get_emas_returns_order",
+        "intent_twap_uses_correct_ema_blend"
+      ]
+    },
+    "eons_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "eonsEMA value returned by OraclePack.getEMAs()",
+      "checkpoint": "eons_ema",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "get_emas_returns_order",
+        "intent_twap_uses_correct_ema_blend"
+      ]
+    },
+    "solvent_account_flagged_insolvent": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "borderline solvent account is flagged as insolvent by the liquidation solvency check",
+      "checkpoint": "solvent_account_flagged_insolvent",
+      "entity_ids": [
+        "solvent_account",
+        "panoptic_pool"
+      ],
+      "source_ids": [
+        "incorrect_liquidations_solvent_flagged",
+        "twap_feeds_liquidation_checks"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "get_emas_returns_order",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "solvent_account_flagged_insolvent",
+        "value": false
+      }
+    },
+    {
+      "source_id": "twap_feeds_liquidation_checks",
+      "predicate": {
+        "kind": "comparison",
+        "left": "twap_used",
+        "operator": "eq",
+        "right": {
+          "symbol": "intended_twap"
+        }
+      }
+    },
+    {
+      "source_id": "short_horizon_movement_condition",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "solvent_account_flagged_insolvent",
+        "value": false
+      }
+    }
+  ],
+  "derived_definitions": [
+    {
+      "symbol": "intended_twap",
+      "expression": {
+        "op": "mul",
+        "args": [
+          {
+            "op": "add",
+            "args": [
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "const": 6
+                      },
+                      {
+                        "symbol": "fast_ema"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "const": 3
+                      },
+                      {
+                        "symbol": "slow_ema"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "symbol": "eons_ema"
+              }
+            ]
+          },
+          {
+            "const": 1
+          }
+        ]
+      },
+      "source_ids": [
+        "intent_twap_uses_correct_ema_blend",
+        "get_emas_returns_order"
+      ]
+    }
+  ],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "comparison",
+          "left": "twap_used",
+          "operator": "eq",
+          "right": {
+            "symbol": "intended_twap"
+          }
+        },
+        {
+          "kind": "truth",
+          "symbol": "solvent_account_flagged_insolvent",
+          "value": false
+        }
+      ]
+    },
+    "relation": {
+      "kind": "comparison",
+      "left": "twap_used",
+      "operator": "eq",
+      "right": {
+        "symbol": "intended_twap"
+      }
+    }
+  },
+  "assumptions": [
+    "The intended smoothed TWAP is assumed to be a robust feed for solvency checks.",
+    "Short-horizon price movement propagates into spotEMA faster than into longer-horizon EMAs.",
+    "The liquidation solvency check uses twap_used as atTicks[1]."
+  ],
+  "unresolved": [
+    {
+      "category": "unsupported_relation",
+      "description": "The report does not give a numeric definition of the solvency threshold or the account's collateral/debt values, so the exact condition under which a borderline solvent account is flagged insolvent cannot be expressed; only the qualitative flag is bound.",
+      "source_ids": [
+        "incorrect_liquidations_solvent_flagged",
+        "twap_feeds_liquidation_checks"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "missing_report_definition",
+      "description": "The report does not state concrete EMA values or the tickDeltaLiquidation constant, so the numeric divergence between twap_used and intended_twap is symbolic.",
+      "source_ids": [
+        "get_emas_returns_order",
+        "intent_twap_uses_correct_ema_blend"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The impact is stated as potential ('may flag'), so the plan formalizes the forbidden outcome conditionally, not an observed incident.",
+    "The intended blend is encoded as a derived quantity; the division by 10 is represented by the report's stated weights without a divisor operator, so the relation is expressed at the weighted-sum level.",
+    "Only the incorrect_liquidations_solvent_flagged impact is formalized; stale-oracle and bad-debt impacts are out of scope for this plan."
+  ]
+}

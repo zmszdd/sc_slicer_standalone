@@ -1,0 +1,39 @@
+You are a conservative REPORT-NARRATIVE-SUFFICIENCY gate for vulnerability reports.
+Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
+whether the supplied numbered report fragments explain the affected subject, trigger,
+direct effect, and safety-relation basis well enough to attempt P/I/V formalization.
+"ready" means only that the narrative is sufficient to try. It does not mean the
+current rule grammar can express the relation, that numeric variables and units are
+available, or that a model will successfully generate complete formulas. Those are
+judged separately from the subsequent per-impact formalization results.
+
+Required dimensions:
+1. affected_subject: identifiable affected component, function, state, asset, or actor.
+2. trigger_or_action: a concrete triggering condition, operation, call, or state transition.
+3. direct_effect: an immediate unauthorized behavior, state/value change, failed guarantee,
+   or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
+4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
+   numeric, temporal, conservation, or state-transition safety relationship can be derived.
+   The report need not explicitly say "invariant". A NatSpec rule, quoted standard
+   requirement, or mitigation that directly states expected behavior can support this
+   dimension; implementation steps alone cannot. The relation must not be invented.
+
+Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
+Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
+dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
+list every dimension whose status is missing OR uncertain, in the required dimension
+order. decision is ready only when all four dimensions are present; otherwise decision
+is insufficient. A proposed fix may support only the safety-relation dimension when its
+text directly states the expected property; it cannot replace evidence of the affected
+subject, trigger, or direct effect. Do not treat PoC availability, code availability,
+or severity labels as substitutes.
+Return JSON only with exactly:
+{"schema_version":"report-readiness/1","decision":"ready|insufficient",
+ "dimensions":{
+  "affected_subject":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "trigger_or_action":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "direct_effect":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "safety_relation_basis":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"}},
+ "missing_dimensions":[],"summary":"short explanation"}
+REPORT FRAGMENTS:
+{"schema_version":"report-evidence/1","source_sha256":"797794ee56f4ec2f4b25a2dcd86991fcdc66b9f1aaebc7a5a647d5eac8a0a6f1","fragments":[{"id":"e_797794ee56f4_0001","text":"Buy/sell launch tokens leads ==> rewards are paid to `Launchpad` (msg.sender) instead of the user"},{"id":"e_797794ee56f4_0002","text":"## Finding description and impact"},{"id":"e_797794ee56f4_0003","text":"- `Distributor._distributeAssets` sends realized rewards to `msg.sender`. In stake/unstake flows, `msg.sender` is `Launchpad`, not the user."},{"id":"e_797794ee56f4_0004","text":"- `Launchpad` has no ERC20 forwarding or rescue; rewards accumulate on `Launchpad` and users don’t receive them. Accounting reduces `totalPendingRewards`, so value is effectively locked."},{"id":"e_797794ee56f4_0005","text":"- Users can trigger this by causing any update (stake/unstake vis buy/sell) to realize pending; the PoC confirms both paths."},{"id":"e_797794ee56f4_0006","text":"- Setup (stake exists)"},{"id":"e_797794ee56f4_0007","text":"During buy,"},{"id":"e_797794ee56f4_0008","text":"- `LaunchToken.transfer(userA, S)` → `LaunchToken._increaseFeeShares` → `Launchpad.increaseStake(userA, S)` → `Distributor.increaseStake(baseToken, userA, S)`"},{"id":"e_797794ee56f4_0009","text":"- State: `totalShares = S`, `userA.shares = S`"},{"id":"e_797794ee56f4_0010","text":"- Add rewards"},{"id":"e_797794ee56f4_0011","text":"- `Distributor.addRewards(baseToken, quoteToken, 0, R)`"},{"id":"e_797794ee56f4_0012","text":"- State: `pendingQuoteRewards += R`, `totalPendingRewards[quoteToken] += R`"},{"id":"e_797794ee56f4_0013","text":"- Trigger via stake (pays Launchpad)"},{"id":"e_797794ee56f4_0014","text":"- `LaunchToken.transfer(userA, δ)` → `Launchpad.increaseStake(userA, δ)` → `Distributor.increaseStake(baseToken, userA, δ)`"},{"id":"e_797794ee56f4_0015","text":"- Payout: `Distributor._distributeAssets` → `quoteToken.safeTransfer(msg.sender, R)` where `msg.sender == Launchpad`"},{"id":"e_797794ee56f4_0016","text":"- Accounting: `totalPendingRewards[quoteToken] -= R`"},{"id":"e_797794ee56f4_0017","text":"- Trigger via unstake (also pays Launchpad)"},{"id":"e_797794ee56f4_0018","text":"- `LaunchToken.transfer(launchpad, δ)` → `Launchpad.decreaseStake(userA, δ)` → `Distributor.decreaseStake(baseToken, userA, δ)`"},{"id":"e_797794ee56f4_0019","text":"- payout again to `Launchpad` via `safeTransfer(msg.sender, R)`"},{"id":"e_797794ee56f4_0020","text":"- Result"},{"id":"e_797794ee56f4_0021","text":"- User gets 0; `Launchpad` balance of `quoteToken` increases by `R`"},{"id":"e_797794ee56f4_0022","text":"- No ERC20 forward/rescue on `Launchpad` → rewards stuck on `Launchpad`"},{"id":"e_797794ee56f4_0023","text":"### Affected code (root cause)"},{"id":"e_797794ee56f4_0024","text":"https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L170-L175"},{"id":"e_797794ee56f4_0025","text":"https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Launchpad.sol#L423"},{"id":"e_797794ee56f4_0026","text":"https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/LaunchToken.sol#L131"},{"id":"e_797794ee56f4_0027","text":"## Recommended mitigation steps"},{"id":"e_797794ee56f4_0028","text":"- In `Distributor`, change distribution recipient to the actual `account` on stake/unstake:"},{"id":"e_797794ee56f4_0029","text":"- Pass `account` to `increaseStake`/`decreaseStake` internals and use it in `_distributeAssets` instead of `msg.sender`."},{"id":"e_797794ee56f4_0030","text":"- Or, have `Launchpad` capture returned amounts and immediately forward ERC20s to `account`"}]}

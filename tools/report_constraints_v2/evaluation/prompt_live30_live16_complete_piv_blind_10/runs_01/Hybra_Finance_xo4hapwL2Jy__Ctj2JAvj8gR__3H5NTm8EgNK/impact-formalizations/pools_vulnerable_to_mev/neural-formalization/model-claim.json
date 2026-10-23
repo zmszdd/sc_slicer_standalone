@@ -1,0 +1,202 @@
+{
+  "schema_version": "report-formal-plan/7",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "module_max_fee_cap_500000",
+    "factory_rejects_above_100000",
+    "dynamic_fee_above_10pct"
+  ],
+  "intent_id": "intent_caps_aligned",
+  "impact_ids": [
+    "pools_vulnerable_to_mev"
+  ],
+  "symbols": {
+    "module_max_fee_cap": {
+      "sort": "int",
+      "unit": "fee_units_1e6",
+      "meaning": "DynamicSwapFeeModule.MAX_FEE_CAP configured cap value (500,000)",
+      "checkpoint": "before getSwapFee evaluation",
+      "entity_ids": [
+        "dynamic_swap_fee_module"
+      ],
+      "source_ids": [
+        "module_max_fee_cap_500000"
+      ]
+    },
+    "factory_fee_threshold": {
+      "sort": "int",
+      "unit": "fee_units_1e6",
+      "meaning": "CLFactory.getSwapFee() rejection threshold above which fees are rejected (100,000)",
+      "checkpoint": "before getSwapFee evaluation",
+      "entity_ids": [
+        "cl_factory"
+      ],
+      "source_ids": [
+        "factory_rejects_above_100000"
+      ]
+    },
+    "dynamic_fee_value": {
+      "sort": "int",
+      "unit": "fee_units_1e6",
+      "meaning": "dynamically calculated swap fee value produced by DynamicSwapFeeModule",
+      "checkpoint": "before getSwapFee evaluation",
+      "entity_ids": [
+        "dynamic_fee",
+        "dynamic_swap_fee_module"
+      ],
+      "source_ids": [
+        "dynamic_fee_above_10pct"
+      ]
+    },
+    "fee_exceeds_10pct": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the dynamically calculated fee exceeds 10% (above 100,000)",
+      "checkpoint": "before getSwapFee evaluation",
+      "entity_ids": [
+        "dynamic_fee",
+        "dynamic_swap_fee_module"
+      ],
+      "source_ids": [
+        "dynamic_fee_above_10pct"
+      ]
+    },
+    "full_dynamic_fee_allowed": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "CLFactory.getSwapFee() accepts and returns the full dynamic fee rather than rejecting it",
+      "checkpoint": "after getSwapFee evaluation",
+      "entity_ids": [
+        "cl_factory",
+        "dynamic_swap_fee_module"
+      ],
+      "source_ids": [
+        "intent_caps_aligned",
+        "pools_vulnerable_to_mev"
+      ]
+    },
+    "high_volatility": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "market is in a high-volatility regime as stated by the impact",
+      "checkpoint": "during swap fee evaluation",
+      "entity_ids": [],
+      "source_ids": [
+        "pools_vulnerable_to_mev"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "module_max_fee_cap_500000",
+      "predicate": {
+        "kind": "comparison",
+        "left": "module_max_fee_cap",
+        "operator": "eq",
+        "right": {
+          "const": 500000
+        }
+      }
+    },
+    {
+      "source_id": "factory_rejects_above_100000",
+      "predicate": {
+        "kind": "comparison",
+        "left": "factory_fee_threshold",
+        "operator": "eq",
+        "right": {
+          "const": 100000
+        }
+      }
+    },
+    {
+      "source_id": "dynamic_fee_above_10pct",
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "comparison",
+            "left": "dynamic_fee_value",
+            "operator": "gt",
+            "right": {
+              "const": 100000
+            }
+          },
+          {
+            "kind": "truth",
+            "symbol": "fee_exceeds_10pct",
+            "value": true
+          }
+        ]
+      }
+    }
+  ],
+  "impact_context_terms": [
+    {
+      "source_id": "pools_vulnerable_to_mev",
+      "qualifier_types": [
+        "trigger"
+      ],
+      "predicate": {
+        "kind": "truth",
+        "symbol": "high_volatility",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "required_effect",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "comparison",
+          "left": "module_max_fee_cap",
+          "operator": "eq",
+          "right": {
+            "const": 500000
+          }
+        },
+        {
+          "kind": "comparison",
+          "left": "dynamic_fee_value",
+          "operator": "gt",
+          "right": {
+            "const": 100000
+          }
+        },
+        {
+          "kind": "truth",
+          "symbol": "fee_exceeds_10pct",
+          "value": true
+        }
+      ]
+    },
+    "effect": {
+      "kind": "truth",
+      "symbol": "full_dynamic_fee_allowed",
+      "value": true
+    }
+  },
+  "assumptions": [
+    "The dynamic fee value and the factory threshold share the same fee-unit scale (1e6) as stated by the report's 100,000 = 10% and 500,000 = 50% equivalences.",
+    "The impact's high-volatility trigger is a report-stated qualitative condition; its numeric definition is deferred to code binding."
+  ],
+  "unresolved": [
+    {
+      "category": "unsupported_relation",
+      "description": "The impact 'pools vulnerable to MEV during high volatility' is a potential downstream consequence; the report does not state a direct observable execution outcome (e.g., a revert or accepted-fee return) that this claim can bind as V, so the required_effect completion obligation is the closest faithful restatement and the MEV consequence itself is not directly formalized.",
+      "source_ids": [
+        "pools_vulnerable_to_mev",
+        "intent_caps_aligned"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The impact is potential/conditional; the plan encodes only the report-supported scenario (dynamic fee above 10% under high volatility) and does not assert MEV occurs inevitably.",
+    "No concrete dynamic fee value above 100,000 is given; the symbol dynamic_fee_value remains symbolic.",
+    "The intent's 'aligned threshold' is represented as acceptance of the full dynamic fee; the exact numeric alignment relation between the two caps is not separately encoded beyond the stated 500,000 and 100,000 literals."
+  ]
+}

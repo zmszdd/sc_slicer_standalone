@@ -25,9 +25,11 @@ import json
 from pathlib import Path
 
 from lib import report_only as r
+from lib.piv_contract import PIV_PROPERTY_BY_SYMBOL
 
 #: interface role names, in the order stage 3 meets them in the SMT files.
-ROLES = (('preconditions', 'P'), ('safety', 'I'), ('effects', 'V'))
+ROLES = tuple((property_name, symbol)
+              for symbol, property_name in PIV_PROPERTY_BY_SYMBOL.items())
 
 #: query names stage 3 is expected to answer after building the code
 #: transition T.  Mirrors ``code_queries_after_binding`` in stage3-spec.json.
@@ -83,6 +85,11 @@ def binding_contract(formal, claim):
     symbols = []
     for name, item in formal['symbols'].items():
         appears_in = [role for _key, role in ROLES if name in used.get(role, set())]
+        # New impact-level claims carry private symbol namespaces; omit other
+        # claims' unused symbols from this handoff. Keep the historical
+        # core_claim contract byte-stable for offline replay of old bundles.
+        if claim['id'].startswith('impact_claim_') and not appears_in:
+            continue
         symbols.append({
             'symbol': name,
             'sort': item['sort'],

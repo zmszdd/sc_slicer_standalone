@@ -69,7 +69,7 @@ class EvidenceTests(unittest.TestCase):
         elements, _ = id_inputs(); elements['entities'][0]['evidence_ids'] = ['invented']
         with self.assertRaises(ValueError): e.hydrate_elements(elements, e.build_catalog(TEXT), TEXT)
 
-    def test_default_id_neural_orchestration_is_synthetic_only(self):
+    def test_default_id_neural_orchestration_respects_explicit_impact_scope(self):
         elements, _ = id_inputs()
         formal = {
             'schema_version': 'report-formal-plan/4',
@@ -112,21 +112,39 @@ class EvidenceTests(unittest.TestCase):
         }
         def fake(text, output, model, prompt):
             data = json.loads(text)
-            if output.name == 'neural-elements':
+            if output.name == 'impact-inventory':
+                self.assertEqual(set(data), {
+                    'schema_version', 'source_sha256', 'fragments'})
+                value = {
+                    'schema_version': 'report-impact-inventory/1',
+                    'impacts': [
+                        {'id': row['id'], 'text': row['text'],
+                         'modality': row['modality'],
+                         'evidence_ids': [data['fragments'][index %
+                                                            len(data['fragments'])]['id']]}
+                        for index, row in enumerate(elements['statements'])
+                        if row['kind'] == 'impact'],
+                    'ambiguities': [],
+                }
+            elif output.name == 'neural-elements':
                 self.assertIn('fragments', data)
                 value = elements
             elif 'faithfulness-audit' in output.name:
-                # S17: the audit call sees only the narrow per-source payload
-                # and answers with an all-consistent synthetic verdict.
+                # The impact-level audit receives one P/I/V set per claim.
                 self.assertEqual(data['schema_version'],
-                                 'faithfulness-audit-input/1')
+                                 'faithfulness-audit-input/2')
                 value = {'checks': [
-                    {'source_id': term['source_id'], 'verdict': 'consistent',
+                    {'source_id': source['source_id'], 'role': source['role'],
+                     'verdict': 'consistent',
                      'reason': 'synthetic control verdict'}
-                    for term in formal['precondition_terms']]}
+                    for source in data['sources']],
+                    'piv_relation': {
+                        'verdict': 'consistent',
+                        'reason': 'synthetic P/I/V relation verdict'}}
             else:
                 self.assertEqual(set(data), {
-                    'elements', 'evidence_catalog', 'allowed_statement_ids'})
+                    'elements', 'evidence_catalog', 'allowed_statement_ids',
+                    'numeric_fact_inventory'})
                 self.assertEqual(data['elements']['schema_version'], 'report-elements/2')
                 value = formal
             (output / 'model-claim.json').write_text(json.dumps(value))
@@ -136,7 +154,9 @@ class EvidenceTests(unittest.TestCase):
             output = Path(work) / 'out'
             with patch('sys.argv', ['semantic_pipeline.py', '--report', str(source), '--extract', '--allow-report-upload', '--model', 'synthetic_control', '--output', str(output)]), patch.object(p.r, 'extract', side_effect=fake) as call, patch('sys.stdout', io.StringIO()):
                 self.assertEqual(p.main(), 2)
-                self.assertEqual(call.call_count, 3)
+                # The fixture has no separately marked Impact section, so the
+                # pipeline must not create V claims from prose outside it.
+                self.assertEqual(call.call_count, 2)
             self.assertTrue(verify_semantic.verify(output)['offline_verified'])
 
     def test_id_saved_bundle_offline_verifies(self):

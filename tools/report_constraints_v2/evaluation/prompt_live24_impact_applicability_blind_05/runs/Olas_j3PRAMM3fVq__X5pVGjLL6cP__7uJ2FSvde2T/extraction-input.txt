@@ -1,0 +1,96 @@
+Cross-Service Reentrancy in StakingBase::_withdraw Allows Balance Accounting Corruption Leading to Protocol Insolvency
+
+## Finding description and impact
+
+A missing reentrancy guard in `_withdraw()` will cause **balance accounting corruption** for **the staking contract and all future stakers** as **a malicious service owner** will **re-enter during ETH transfer to unstake multiple services, causing only one balance decrement to persist while extracting rewards for all services**.
+
+| Category | Details |
+| :--- | :--- |
+| **Impact** | Protocol Insolvency / Permanent State Corruption |
+| **Vector** | Reentrancy via ETH transfer callback during `unstake()` |
+| **File** | [contracts/staking/StakingBase.sol](https://github.com/valory-xyz/autonolas-registries/blob/be1057a5e37f17f26b13c41311fe0e8e40259484/contracts/staking/StakingBase.sol#L929-L948) (Lines 929-947) |
+| **PoC File** | `test/StakingBaseReentrancyPOC.t.sol` |
+
+A malicious, unprivileged external attacker can corrupt the protocol's balance accounting by exploiting a reentrancy vulnerability in [StakingBase::_withdraw()](https://github.com/valory-xyz/autonolas-registries/blob/be1057a5e37f17f26b13c41311fe0e8e40259484/contracts/staking/StakingBase.sol#L929-L948). The vulnerability allows the attacker to break the core accounting invariant `balance == address(this).balance`, resulting in the contract becoming insolvent.
+
+**This is not:** A complex multi-step attack requiring privileged access or external dependencies.  
+**This is:** A single-transaction reentrancy that corrupts fundamental accounting state.
+
+---
+
+> An unprivileged attacker owning two staked services can call `unstake()` and re-enter during the ETH transfer callback to unstake a second service, causing the `balance` state variable to be decremented only once while ETH is transferred twice.
+
+**Proof:** `PoC L#425-428`:
+
+---
+
+## Violated Core Invariant
+
+> **"Contract balance state variable MUST equal actual ETH held by the contract"**  
+> `balance == address(stakingContract).balance`
+
+**Evidence:** PoC demonstrates post-attack state where:
+- `balance` (storage) = 99,857 mETH
+- `address(this).balance` (actual) = 99,714 mETH
+- **Invariant broken by 142 mETH**
+
+**PoC L#416-417:**
+
+## Impact
+
+The **staking contract and all future stakers** suffer permanent insolvency. The attacker gains the accounting discrepancy (142 mETH demonstrated), which represents rewards that should have been tracked but weren't.
+
+| Impact Type | Description | Evidence |
+|-------------|-------------|----------|
+| **Direct Loss** | Contract believes it has more ETH than it actually holds | `balance > actualETH` post-attack |
+| **Cascading Effect** | Future reward calculations based on inflated `balance` | `availableRewards` derives from `balance` |
+| **Permanent** | No recovery mechanism; requires contract migration | State permanently corrupted |
+
+### Attack Economics
+
+| Metric | Value | PoC Proof |
+|--------|-------|-----------|
+| **Attacker Cost** | ~0.01 ETH (gas for `executeAttack()`) | Gas for single external call |
+| **Attacker Profit** | 285 mETH extracted |  |
+| **Protocol Loss** | 142 mETH accounting corruption |  |
+| **Repeatable?** | Yes, with each new service pair staked | Attacker can deploy new services |
+
+### Severity Justification Matrix
+
+| Criterion | Required for High | This Vulnerability | PoC Proof |
+|-----------|-------------------|-------------------|-----------|
+| State corruption | Yes | Balance accounting broken | L#425: `assertGt(balanceAfter, actualEthAfter)` |
+| Protocol insolvency | Yes | Contract holds less than recorded | 142 mETH discrepancy |
+| Permissionless | Yes | No special roles required | `MaliciousAttacker` is plain contract |
+| No external dependencies | Yes | Pure internal accounting bug | No oracle/external protocol needed |
+
+> 🔗 **PoC Reference:** Balance snapshots enforce `ethSentOut > balanceDecremented` at L#425
+
+## Root Cause
+
+In [StakingBase.sol:929-947](https://github.com/valory-xyz/autonolas-registries/blob/be1057a5e37f17f26b13c41311fe0e8e40259484/contracts/staking/StakingBase.sol#L929-L948), the `_withdraw()` function updates the `balance` state variable **after** all ETH transfers complete, following a vulnerable pattern:
+
+[contracts/staking/StakingBase.sol](https://github.com/valory-xyz/autonolas-registries/blob/be1057a5e37f17f26b13c41311fe0e8e40259484/contracts/staking/StakingBase.sol#L929-L948) (Lines 929-947):
+
+[contracts/staking/StakingNativeToken.sol](https://github.com/valory-xyz/autonolas-registries/blob/be1057a5e37f17f26b13c41311fe0e8e40259484/contracts/staking/StakingNativeToken.sol#L27-L33) (Lines 27-33):
+
+**No reentrancy guard exists on `unstake()`, `claim()`, or any external function in `StakingBase`.**
+
+### Behavior Comparison
+
+| Expected (per invariant) | Actual (PoC demonstrates) | PoC Proof |
+|--------------------------|---------------------------|-----------|
+| `unstake()` decrements balance by reward amount | Balance decremented once for two unstakes | L#425 |
+| `balance == actualETH` always | `balance > actualETH` after attack | L#423 |
+| Single unstake per transaction | Two unstakes via reentrancy | L#79-89 |
+
+### Attack Execution Flow
+
+
+### Distinction from Related Vectors
+
+| Possible Misclassification | Technical Rationale | PoC Evidence |
+|----------------------------|---------------------|--------------|
+| "Classic single-contract reentrancy" | Cross-service attack using two distinct service IDs | L#79-89: `unstake(serviceB)` during `serviceA` callback |
+| "Read-only reentrancy" | State is actively corrupted, not just read | `balance` write collision proven |
+| "Governance attack" | No privileges required | Attacker is plain contract |

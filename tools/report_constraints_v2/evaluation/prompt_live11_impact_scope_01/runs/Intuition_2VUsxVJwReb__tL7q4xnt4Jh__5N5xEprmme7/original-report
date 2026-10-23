@@ -1,0 +1,108 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Intuition_2VUsxVJwReb",
+    "audit_uid": "2VUsxVJwReb",
+    "requested_submission_uid": "5N5xEprmme7",
+    "requested_finding_uid": "tL7q4xnt4Jh",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Intuition_2VUsxVJwReb/20260618_132553/findings.json",
+    "source_submission_uid": "5N5xEprmme7",
+    "source_finding_uid": "tL7q4xnt4Jh",
+    "original_report_path": "Intuition_2VUsxVJwReb\\low_valid_5N5xEprmme7.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "5N5xEprmme7",
+  "finding_uid": "tL7q4xnt4Jh",
+  "finding_number": "13",
+  "title": "Unclaimed AtomWallet Violates ERC-4337 Storage rules by reading MultiVault storage during validation",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "0xDeoGratias",
+  "body": "### Unclaimed AtomWallet Violates ERC-4337 Storage rules by reading MultiVault storage during validation\n\n**Description:** During ERC-4337 validation, `_validateSignature` calls `owner()` to check the signer. If the wallet has not been claimed yet (`isClaimed == false`), `owner()` makes an external call to `multiVault.getAtomWarden()`:\n\n```solidity\nfunction owner() public view override returns (address) {\n    OwnableStorage storage $ = _getAtomWalletOwnerStorage();\n    return isClaimed ? $._owner : multiVault.getAtomWarden();\n}\n```\n\nThis happens on the validation path:\n\n`EntryPoint.handleOps` → `validateUserOp` → `_validateSignature` → `owner()` → `multiVault.getAtomWarden()`\n\nERC-4337 bundlers are expected to enforce validation rules from ERC-7562. Those rules allow reads to the account's own storage and storage tied to that account. But `multiVault.getAtomWarden()` returns `walletConfig.atomWarden`, which not storage tied to this wallet.\n\nSo an unclaimed wallet depends on shared external state during validation. Bundlers that follow ERC-7562 may reject these `UserOperation`s.\n\nThere is also direct support for this in code natspec:\n\n- `lib/account-abstraction/contracts/interfaces/IEntryPointSimulations.sol::simulateValidation` documents that during `simulateValidation`, \"The node must also verify it doesn't use banned opcodes, and that it doesn't reference storage outside the account's data.\"\n\nMore details rules are here: https://eips.ethereum.org/EIPS/eip-7562\n\n**Impact:** This affects wallets before they are claimed.\n\n- Unclaimed wallets may not work with ERC-7562-enforcing bundlers.\n- Claimed wallets are not affected, because after claim the wallet reads the owner from its own storage.\n- Any flow that expects ERC-4337 support before claim may fail.\n\n\n**Recommended Mitigation:** Cache `atomWarden` in the wallet during initialization so `owner()` does not need to read `MultiVault` during validation:\n\n```solidity\naddress private _cachedAtomWarden;\n\nfunction initialize(address anEntryPoint, address _multiVault, bytes32 _termId) external initializer {\n    // ... existing logic ...\n    _cachedAtomWarden = IMultiVault(_multiVault).getAtomWarden();\n}\n\nfunction owner() public view override returns (address) {\n    OwnableStorage storage $ = _getAtomWalletOwnerStorage();\n    return isClaimed ? $._owner : _cachedAtomWarden;\n}\n```\n\nIf `atomWarden` needs to change later, add a permissioned function so `MultiVault` or an admin can update the cached value in each wallet.",
+  "proof_of_concept": "**Proof of Concept:**\n\n1. A new atom is created, deploying an `AtomWallet` proxy. `isClaimed` is `false`, and `owner()` returns `multiVault.getAtomWarden()`.\n2. A `UserOperation` is submitted for the unclaimed wallet.\n3. The bundler simulates the `UserOperation` by calling `simulateValidation`.\n4. During simulation, the trace enters `_validateSignature`, which calls `owner()`, which issues a `STATICCALL` to the `multiVault` contract.\n5. The bundler sees that validation reads shared `MultiVault` storage instead of wallet-local storage.\n6. The bundler may reject the `UserOperation`.\n\nThe POC below shows that `AtomWallet.sol` makes an external call to `MultiVault`. Copy it into `2026-03-intuition/tests/PoCCore.t.sol` and run:\n\n`forge test --mt test_unclaimedWalletValidateUserOpReadsMultiVault`\n\n```solidity\n// SPDX-License-Identifier: BUSL-1.1\npragma solidity 0.8.29;\n\nimport { PackedUserOperation } from \"@account-abstraction/interfaces/PackedUserOperation.sol\";\nimport { SIG_VALIDATION_FAILED } from \"@account-abstraction/core/Helpers.sol\";\n\nimport { AtomWallet } from \"src/protocol/wallet/AtomWallet.sol\";\n\nimport { BaseTest } from \"./BaseTest.t.sol\";\n\ncontract PoCCore is BaseTest {\n    function test_unclaimedWalletValidateUserOpReadsMultiVault() external {\n        AtomWallet wallet = _deployUnclaimedWallet(\"erc4337-poc-unclaimed-read\");\n\n        PackedUserOperation memory userOp = _createUserOp(address(wallet));\n        bytes32 userOpHash = keccak256(abi.encode(userOp));\n        userOp.signature = _signUserOpHash(0xBEEF, userOpHash);\n\n        vm.expectCall(address(protocol.multiVault), abi.encodeWithSelector(protocol.multiVault.getAtomWarden.selector), 1);\n\n        vm.prank(ENTRY_POINT);\n        uint256 validationResult = wallet.validateUserOp(userOp, userOpHash, 0);\n\n        assertEq(validationResult, SIG_VALIDATION_FAILED);\n        assertFalse(wallet.isClaimed());\n    }\n\n    function _deployUnclaimedWallet(string memory atomData) internal returns (AtomWallet wallet) {\n        bytes32 atomId = createSimpleAtom(atomData, getAtomCreationCost(), users.alice);\n        address walletAddress = protocol.atomWalletFactory.deployAtomWallet(atomId);\n        vm.stopPrank();\n        wallet = AtomWallet(payable(walletAddress));\n    }\n\n    function _createUserOp(address sender) internal view returns (PackedUserOperation memory) {\n        return PackedUserOperation({\n            sender: sender,\n            nonce: 0,\n            initCode: \"\",\n            callData: abi.encodeWithSelector(AtomWallet.execute.selector, users.bob, 0, bytes(\"\")),\n            accountGasLimits: bytes32(0),\n            preVerificationGas: 0,\n            gasFees: bytes32(0),\n            paymasterAndData: \"\",\n            signature: \"\"\n        });\n    }\n\n    function _signUserOpHash(uint256 signerPrivateKey, bytes32 userOpHash) internal returns (bytes memory) {\n        bytes32 ethSignedMessageHash = keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", userOpHash));\n        (uint8 signatureV, bytes32 signatureR, bytes32 signatureS) = vm.sign(signerPrivateKey, ethSignedMessageHash);\n        return abi.encodePacked(signatureR, signatureS, signatureV);\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/wallet/AtomWallet.sol#L271"
+  ],
+  "source_record": {
+    "project_id": "2VUsxVJwReb",
+    "submission_index": "737",
+    "api_submission_id": "",
+    "uid": "5N5xEprmme7",
+    "number": "737",
+    "title": "Unclaimed AtomWallet Violates ERC-4337 Storage rules by reading MultiVault storage during validation",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "",
+    "handle": "0xDeoGratias",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/wallet/AtomWallet.sol#L271"
+    ],
+    "body": "### Unclaimed AtomWallet Violates ERC-4337 Storage rules by reading MultiVault storage during validation\n\n**Description:** During ERC-4337 validation, `_validateSignature` calls `owner()` to check the signer. If the wallet has not been claimed yet (`isClaimed == false`), `owner()` makes an external call to `multiVault.getAtomWarden()`:\n\n```solidity\nfunction owner() public view override returns (address) {\n    OwnableStorage storage $ = _getAtomWalletOwnerStorage();\n    return isClaimed ? $._owner : multiVault.getAtomWarden();\n}\n```\n\nThis happens on the validation path:\n\n`EntryPoint.handleOps` → `validateUserOp` → `_validateSignature` → `owner()` → `multiVault.getAtomWarden()`\n\nERC-4337 bundlers are expected to enforce validation rules from ERC-7562. Those rules allow reads to the account's own storage and storage tied to that account. But `multiVault.getAtomWarden()` returns `walletConfig.atomWarden`, which not storage tied to this wallet.\n\nSo an unclaimed wallet depends on shared external state during validation. Bundlers that follow ERC-7562 may reject these `UserOperation`s.\n\nThere is also direct support for this in code natspec:\n\n- `lib/account-abstraction/contracts/interfaces/IEntryPointSimulations.sol::simulateValidation` documents that during `simulateValidation`, \"The node must also verify it doesn't use banned opcodes, and that it doesn't reference storage outside the account's data.\"\n\nMore details rules are here: https://eips.ethereum.org/EIPS/eip-7562\n\n**Impact:** This affects wallets before they are claimed.\n\n- Unclaimed wallets may not work with ERC-7562-enforcing bundlers.\n- Claimed wallets are not affected, because after claim the wallet reads the owner from its own storage.\n- Any flow that expects ERC-4337 support before claim may fail.\n\n\n**Recommended Mitigation:** Cache `atomWarden` in the wallet during initialization so `owner()` does not need to read `MultiVault` during validation:\n\n```solidity\naddress private _cachedAtomWarden;\n\nfunction initialize(address anEntryPoint, address _multiVault, bytes32 _termId) external initializer {\n    // ... existing logic ...\n    _cachedAtomWarden = IMultiVault(_multiVault).getAtomWarden();\n}\n\nfunction owner() public view override returns (address) {\n    OwnableStorage storage $ = _getAtomWalletOwnerStorage();\n    return isClaimed ? $._owner : _cachedAtomWarden;\n}\n```\n\nIf `atomWarden` needs to change later, add a permissioned function so `MultiVault` or an admin can update the cached value in each wallet.",
+    "proof_of_concept": "**Proof of Concept:**\n\n1. A new atom is created, deploying an `AtomWallet` proxy. `isClaimed` is `false`, and `owner()` returns `multiVault.getAtomWarden()`.\n2. A `UserOperation` is submitted for the unclaimed wallet.\n3. The bundler simulates the `UserOperation` by calling `simulateValidation`.\n4. During simulation, the trace enters `_validateSignature`, which calls `owner()`, which issues a `STATICCALL` to the `multiVault` contract.\n5. The bundler sees that validation reads shared `MultiVault` storage instead of wallet-local storage.\n6. The bundler may reject the `UserOperation`.\n\nThe POC below shows that `AtomWallet.sol` makes an external call to `MultiVault`. Copy it into `2026-03-intuition/tests/PoCCore.t.sol` and run:\n\n`forge test --mt test_unclaimedWalletValidateUserOpReadsMultiVault`\n\n```solidity\n// SPDX-License-Identifier: BUSL-1.1\npragma solidity 0.8.29;\n\nimport { PackedUserOperation } from \"@account-abstraction/interfaces/PackedUserOperation.sol\";\nimport { SIG_VALIDATION_FAILED } from \"@account-abstraction/core/Helpers.sol\";\n\nimport { AtomWallet } from \"src/protocol/wallet/AtomWallet.sol\";\n\nimport { BaseTest } from \"./BaseTest.t.sol\";\n\ncontract PoCCore is BaseTest {\n    function test_unclaimedWalletValidateUserOpReadsMultiVault() external {\n        AtomWallet wallet = _deployUnclaimedWallet(\"erc4337-poc-unclaimed-read\");\n\n        PackedUserOperation memory userOp = _createUserOp(address(wallet));\n        bytes32 userOpHash = keccak256(abi.encode(userOp));\n        userOp.signature = _signUserOpHash(0xBEEF, userOpHash);\n\n        vm.expectCall(address(protocol.multiVault), abi.encodeWithSelector(protocol.multiVault.getAtomWarden.selector), 1);\n\n        vm.prank(ENTRY_POINT);\n        uint256 validationResult = wallet.validateUserOp(userOp, userOpHash, 0);\n\n        assertEq(validationResult, SIG_VALIDATION_FAILED);\n        assertFalse(wallet.isClaimed());\n    }\n\n    function _deployUnclaimedWallet(string memory atomData) internal returns (AtomWallet wallet) {\n        bytes32 atomId = createSimpleAtom(atomData, getAtomCreationCost(), users.alice);\n        address walletAddress = protocol.atomWalletFactory.deployAtomWallet(atomId);\n        vm.stopPrank();\n        wallet = AtomWallet(payable(walletAddress));\n    }\n\n    function _createUserOp(address sender) internal view returns (PackedUserOperation memory) {\n        return PackedUserOperation({\n            sender: sender,\n            nonce: 0,\n            initCode: \"\",\n            callData: abi.encodeWithSelector(AtomWallet.execute.selector, users.bob, 0, bytes(\"\")),\n            accountGasLimits: bytes32(0),\n            preVerificationGas: 0,\n            gasFees: bytes32(0),\n            paymasterAndData: \"\",\n            signature: \"\"\n        });\n    }\n\n    function _signUserOpHash(uint256 signerPrivateKey, bytes32 userOpHash) internal returns (bytes memory) {\n        bytes32 ethSignedMessageHash = keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", userOpHash));\n        (uint8 signatureV, bytes32 signatureR, bytes32 signatureS) = vm.sign(signerPrivateKey, ethSignedMessageHash);\n        return abi.encodePacked(signatureR, signatureS, signatureV);\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/2VUsxVJwReb/submissions/737",
+    "raw": {
+      "auditUid": "2VUsxVJwReb",
+      "createdAt": "2026-03-09T17:20:27.273Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "aE7QtxwhXX2",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-05T20:21:40.540Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "tL7q4xnt4Jh"
+        },
+        {
+          "uid": "GYRpWSJ5GoW",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-05T20:21:44.116Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "tL7q4xnt4Jh"
+        }
+      ],
+      "finding": {
+        "uid": "tL7q4xnt4Jh",
+        "number": 13,
+        "duplicates": 14
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2026-04-28T14:24:44.015Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Unclaimed AtomWallet Violates ERC-4337 Storage rules by reading MultiVault storage during validation",
+      "uid": "5N5xEprmme7",
+      "updatedAt": "2026-03-09T17:20:27.273Z",
+      "user": {
+        "uid": "vVVU3mNuKfu",
+        "handle": "0xDeoGratias"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Unclaimed AtomWallet Violates ERC-4337 Storage rules by reading MultiVault storage during validation\n\n**Description:** During ERC-4337 validation, `_validateSignature` calls `owner()` to check the signer. If the wallet has not been claimed yet (`isClaimed == false`), `owner()` makes an external call to `multiVault.getAtomWarden()`:\n\n```solidity\nfunction owner() public view override returns (address) {\n    OwnableStorage storage $ = _getAtomWalletOwnerStorage();\n    return isClaimed ? $._owner : multiVault.getAtomWarden();\n}\n```\n\nThis happens on the validation path:\n\n`EntryPoint.handleOps` → `validateUserOp` → `_validateSignature` → `owner()` → `multiVault.getAtomWarden()`\n\nERC-4337 bundlers are expected to enforce validation rules from ERC-7562. Those rules allow reads to the account's own storage and storage tied to that account. But `multiVault.getAtomWarden()` returns `walletConfig.atomWarden`, which not storage tied to this wallet.\n\nSo an unclaimed wallet depends on shared external state during validation. Bundlers that follow ERC-7562 may reject these `UserOperation`s.\n\nThere is also direct support for this in code natspec:\n\n- `lib/account-abstraction/contracts/interfaces/IEntryPointSimulations.sol::simulateValidation` documents that during `simulateValidation`, \"The node must also verify it doesn't use banned opcodes, and that it doesn't reference storage outside the account's data.\"\n\nMore details rules are here: https://eips.ethereum.org/EIPS/eip-7562\n\n**Impact:** This affects wallets before they are claimed.\n\n- Unclaimed wallets may not work with ERC-7562-enforcing bundlers.\n- Claimed wallets are not affected, because after claim the wallet reads the owner from its own storage.\n- Any flow that expects ERC-4337 support before claim may fail.\n\n\n**Recommended Mitigation:** Cache `atomWarden` in the wallet during initialization so `owner()` does not need to read `MultiVault` during validation:\n\n```solidity\naddress private _cachedAtomWarden;\n\nfunction initialize(address anEntryPoint, address _multiVault, bytes32 _termId) external initializer {\n    // ... existing logic ...\n    _cachedAtomWarden = IMultiVault(_multiVault).getAtomWarden();\n}\n\nfunction owner() public view override returns (address) {\n    OwnableStorage storage $ = _getAtomWalletOwnerStorage();\n    return isClaimed ? $._owner : _cachedAtomWarden;\n}\n```\n\nIf `atomWarden` needs to change later, add a permissioned function so `MultiVault` or an admin can update the cached value in each wallet.",
+      "proofOfConcept": "**Proof of Concept:**\n\n1. A new atom is created, deploying an `AtomWallet` proxy. `isClaimed` is `false`, and `owner()` returns `multiVault.getAtomWarden()`.\n2. A `UserOperation` is submitted for the unclaimed wallet.\n3. The bundler simulates the `UserOperation` by calling `simulateValidation`.\n4. During simulation, the trace enters `_validateSignature`, which calls `owner()`, which issues a `STATICCALL` to the `multiVault` contract.\n5. The bundler sees that validation reads shared `MultiVault` storage instead of wallet-local storage.\n6. The bundler may reject the `UserOperation`.\n\nThe POC below shows that `AtomWallet.sol` makes an external call to `MultiVault`. Copy it into `2026-03-intuition/tests/PoCCore.t.sol` and run:\n\n`forge test --mt test_unclaimedWalletValidateUserOpReadsMultiVault`\n\n```solidity\n// SPDX-License-Identifier: BUSL-1.1\npragma solidity 0.8.29;\n\nimport { PackedUserOperation } from \"@account-abstraction/interfaces/PackedUserOperation.sol\";\nimport { SIG_VALIDATION_FAILED } from \"@account-abstraction/core/Helpers.sol\";\n\nimport { AtomWallet } from \"src/protocol/wallet/AtomWallet.sol\";\n\nimport { BaseTest } from \"./BaseTest.t.sol\";\n\ncontract PoCCore is BaseTest {\n    function test_unclaimedWalletValidateUserOpReadsMultiVault() external {\n        AtomWallet wallet = _deployUnclaimedWallet(\"erc4337-poc-unclaimed-read\");\n\n        PackedUserOperation memory userOp = _createUserOp(address(wallet));\n        bytes32 userOpHash = keccak256(abi.encode(userOp));\n        userOp.signature = _signUserOpHash(0xBEEF, userOpHash);\n\n        vm.expectCall(address(protocol.multiVault), abi.encodeWithSelector(protocol.multiVault.getAtomWarden.selector), 1);\n\n        vm.prank(ENTRY_POINT);\n        uint256 validationResult = wallet.validateUserOp(userOp, userOpHash, 0);\n\n        assertEq(validationResult, SIG_VALIDATION_FAILED);\n        assertFalse(wallet.isClaimed());\n    }\n\n    function _deployUnclaimedWallet(string memory atomData) internal returns (AtomWallet wallet) {\n        bytes32 atomId = createSimpleAtom(atomData, getAtomCreationCost(), users.alice);\n        address walletAddress = protocol.atomWalletFactory.deployAtomWallet(atomId);\n        vm.stopPrank();\n        wallet = AtomWallet(payable(walletAddress));\n    }\n\n    function _createUserOp(address sender) internal view returns (PackedUserOperation memory) {\n        return PackedUserOperation({\n            sender: sender,\n            nonce: 0,\n            initCode: \"\",\n            callData: abi.encodeWithSelector(AtomWallet.execute.selector, users.bob, 0, bytes(\"\")),\n            accountGasLimits: bytes32(0),\n            preVerificationGas: 0,\n            gasFees: bytes32(0),\n            paymasterAndData: \"\",\n            signature: \"\"\n        });\n    }\n\n    function _signUserOpHash(uint256 signerPrivateKey, bytes32 userOpHash) internal returns (bytes memory) {\n        bytes32 ethSignedMessageHash = keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", userOpHash));\n        (uint8 signatureV, bytes32 signatureR, bytes32 signatureS) = vm.sign(signerPrivateKey, ethSignedMessageHash);\n        return abi.encodePacked(signatureR, signatureS, signatureV);\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/wallet/AtomWallet.sol#L271",
+      "number": 737,
+      "aiExplanation": null,
+      "_index": 737
+    }
+  }
+}

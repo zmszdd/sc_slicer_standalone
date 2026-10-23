@@ -1,0 +1,43 @@
+BuyBackBurnerBalancer V3 swaps set amountOutMinimum=1 and sqrtPriceLimitX96=0, allowing MEV bots to extract up to 100% of swap value via sandwich attacks
+
+The `_performSwap` function for V3 (Slipstream) swaps in `BuyBackBurnerBalancer.sol` implements swaps with no effective slippage protection:
+
+
+**Key Issues:**
+1. `amountOutMinimum = 1` - Swap succeeds even if 99.99999999% of value is lost
+2. `sqrtPriceLimitX96 = 0` - No price boundary for the swap
+3. No post-swap validation (unlike V2 implementation)
+
+#### Comparison: V2 vs V3 Protection
+
+| Protection | V2 Swaps | V3 Swaps |
+|------------|----------|----------|
+| Pre-swap oracle check | ✅ `validatePrice()` | ⚠️ TWAP only |
+| In-swap min output | ❌ `limit=0` | ❌ `min=1` |
+| Post-swap validation | ✅ Price bounds check | ❌ NONE |
+
+The V2 implementation compensates for `limit=0` with pre/post checks. V3 has none.
+
+#### Attack Scenario
+
+1. Attacker monitors mempool for `buyBack()` transactions targeting V3 pools
+2. When buyback tx is detected, attacker front-runs with large buy → inflates price
+3. Victim's buyback executes at inflated price, receives minimal OLAS
+4. Attacker back-runs by selling → extracts profit
+5. Protocol receives fraction of fair OLAS value
+
+#### Impact
+
+- **Direct financial loss**: Protocol receives significantly less OLAS than fair value
+- **Repeatable**: Every V3 buyback is exploitable
+- **Cumulative damage**: Undermines entire buyback-and-burn mechanism
+- **No user error**: Bug is in core implementation
+
+### Severity Justification
+
+| Criteria | Assessment |
+|----------|------------|
+| **Direct fund loss** | ✅ Yes - reduced OLAS acquisition |
+| **Attack complexity** | Low - standard MEV technique |
+| **External conditions** | Requires public mempool (mitigable via Flashbots) |
+| **Partial mitigation** | V2 swaps are protected; only V3 affected |

@@ -1,0 +1,230 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "3d4f02f16ebda90dd6184da6902827e5fb825fe0cf124a9b2cd655a21eb2fda2",
+  "fragments": [
+    {
+      "id": "e_3d4f02f16ebd_0001",
+      "text": "Reentrancy / accounting before transfer in Distributor.addRewards — attacker can re-enter and observe/act on updated accounting",
+      "start": 0,
+      "end": 127,
+      "line": 1
+    },
+    {
+      "id": "e_3d4f02f16ebd_0002",
+      "text": "## Finding description and impact",
+      "start": 129,
+      "end": 162,
+      "line": 3
+    },
+    {
+      "id": "e_3d4f02f16ebd_0003",
+      "text": "Distributor.addRewards updates internal pending-reward accounting before performing the external transferFrom call. A malicious token can re-enter during transferFrom and call claimRewards (or other entrypoints) while accounting has already been increased, producing a clear reentrancy window that can be used for griefing and, in some scenarios, monetary extraction.",
+      "start": 164,
+      "end": 531,
+      "line": 5
+    },
+    {
+      "id": "e_3d4f02f16ebd_0004",
+      "text": "Attackers can force the code path to re-enter claimRewards during addRewards, demonstrating an exploitable reentrancy window. This enables griefing and may be combined with other weaknesses to steal tokens.",
+      "start": 533,
+      "end": 739,
+      "line": 7
+    },
+    {
+      "id": "e_3d4f02f16ebd_0005",
+      "text": "If auth checks in claimRewards change or are relaxed in upgrades, the addRewards entrypoint becomes a        direct path for unauthorized forced liquidations/withdrawals or reward theft.",
+      "start": 742,
+      "end": 928,
+      "line": 10
+    },
+    {
+      "id": "e_3d4f02f16ebd_0006",
+      "text": "Direct ability to manipulate reward accounting and to re-enter core flows is High.",
+      "start": 930,
+      "end": 1012,
+      "line": 12
+    },
+    {
+      "id": "e_3d4f02f16ebd_0007",
+      "text": "## Recommended mitigation steps",
+      "start": 1014,
+      "end": 1045,
+      "line": 14
+    },
+    {
+      "id": "e_3d4f02f16ebd_0008",
+      "text": "1) Use OpenZeppelin ReentrancyGuard (or similar) At top of Distributor.sol",
+      "start": 1046,
+      "end": 1120,
+      "line": 15
+    },
+    {
+      "id": "e_3d4f02f16ebd_0009",
+      "text": "Add nonReentrant modifier to external functions that perform transfers and state changes:",
+      "start": 1125,
+      "end": 1214,
+      "line": 17
+    },
+    {
+      "id": "e_3d4f02f16ebd_0010",
+      "text": "function addRewards(...) external nonReentrant {",
+      "start": 1219,
+      "end": 1267,
+      "line": 19
+    },
+    {
+      "id": "e_3d4f02f16ebd_0011",
+      "text": "...",
+      "start": 1272,
+      "end": 1275,
+      "line": 20
+    },
+    {
+      "id": "e_3d4f02f16ebd_0012",
+      "text": "}",
+      "start": 1276,
+      "end": 1277,
+      "line": 21
+    },
+    {
+      "id": "e_3d4f02f16ebd_0013",
+      "text": "function claimRewards(...) external nonReentrant {",
+      "start": 1278,
+      "end": 1328,
+      "line": 22
+    },
+    {
+      "id": "e_3d4f02f16ebd_0014",
+      "text": "...",
+      "start": 1333,
+      "end": 1336,
+      "line": 23
+    },
+    {
+      "id": "e_3d4f02f16ebd_0015",
+      "text": "}",
+      "start": 1337,
+      "end": 1338,
+      "line": 24
+    },
+    {
+      "id": "e_3d4f02f16ebd_0016",
+      "text": "2) Move transferFrom before bookkeeping (preferred order)",
+      "start": 1340,
+      "end": 1397,
+      "line": 26
+    },
+    {
+      "id": "e_3d4f02f16ebd_0017",
+      "text": "// remove this:",
+      "start": 1410,
+      "end": 1425,
+      "line": 28
+    },
+    {
+      "id": "e_3d4f02f16ebd_0018",
+      "text": "-    function addRewards(address token0, address token1, uint128 amount0, uint128 amount1) external {",
+      "start": 1429,
+      "end": 1530,
+      "line": 29
+    },
+    {
+      "id": "e_3d4f02f16ebd_0019",
+      "text": "-        if (launchAssetAmount > 0) {",
+      "start": 1531,
+      "end": 1568,
+      "line": 30
+    },
+    {
+      "id": "e_3d4f02f16ebd_0020",
+      "text": "-            rs.addBaseRewards(launchAsset, launchAssetAmount);",
+      "start": 1569,
+      "end": 1632,
+      "line": 31
+    },
+    {
+      "id": "e_3d4f02f16ebd_0021",
+      "text": "-            _increaseTotalPending(launchAsset, launchAssetAmount);",
+      "start": 1633,
+      "end": 1700,
+      "line": 32
+    },
+    {
+      "id": "e_3d4f02f16ebd_0022",
+      "text": "-            launchAsset.safeTransferFrom(msg.sender, address(this), uint256(launchAssetAmount));",
+      "start": 1701,
+      "end": 1798,
+      "line": 33
+    },
+    {
+      "id": "e_3d4f02f16ebd_0023",
+      "text": "-        }",
+      "start": 1799,
+      "end": 1809,
+      "line": 34
+    },
+    {
+      "id": "e_3d4f02f16ebd_0024",
+      "text": "+    // addRewards: pull tokens first, then update accounting to avoid reentrancy",
+      "start": 1810,
+      "end": 1891,
+      "line": 35
+    },
+    {
+      "id": "e_3d4f02f16ebd_0025",
+      "text": "+    function addRewards(address token0, address token1, uint128 amount0, uint128 amount1) external nonReentrant {",
+      "start": 1892,
+      "end": 2006,
+      "line": 36
+    },
+    {
+      "id": "e_3d4f02f16ebd_0026",
+      "text": "+        if (launchAssetAmount > 0) {",
+      "start": 2007,
+      "end": 2044,
+      "line": 37
+    },
+    {
+      "id": "e_3d4f02f16ebd_0027",
+      "text": "+            // external interaction first (ensure tokens arrive)",
+      "start": 2045,
+      "end": 2110,
+      "line": 38
+    },
+    {
+      "id": "e_3d4f02f16ebd_0028",
+      "text": "+            launchAsset.safeTransferFrom(msg.sender, address(this), uint256(launchAssetAmount));",
+      "start": 2111,
+      "end": 2208,
+      "line": 39
+    },
+    {
+      "id": "e_3d4f02f16ebd_0029",
+      "text": "+            // now record the accounting",
+      "start": 2209,
+      "end": 2250,
+      "line": 40
+    },
+    {
+      "id": "e_3d4f02f16ebd_0030",
+      "text": "+            rs.addBaseRewards(launchAsset, launchAssetAmount);",
+      "start": 2251,
+      "end": 2314,
+      "line": 41
+    },
+    {
+      "id": "e_3d4f02f16ebd_0031",
+      "text": "+            _increaseTotalPending(launchAsset, launchAssetAmount);",
+      "start": 2315,
+      "end": 2382,
+      "line": 42
+    },
+    {
+      "id": "e_3d4f02f16ebd_0032",
+      "text": "+        }",
+      "start": 2383,
+      "end": 2393,
+      "line": 43
+    }
+  ]
+}

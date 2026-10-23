@@ -1,0 +1,39 @@
+You are a conservative REPORT-NARRATIVE-SUFFICIENCY gate for vulnerability reports.
+Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
+whether the supplied numbered report fragments explain the affected subject, trigger,
+direct effect, and safety-relation basis well enough to attempt P/I/V formalization.
+"ready" means only that the narrative is sufficient to try. It does not mean the
+current rule grammar can express the relation, that numeric variables and units are
+available, or that a model will successfully generate complete formulas. Those are
+judged separately from the subsequent per-impact formalization results.
+
+Required dimensions:
+1. affected_subject: identifiable affected component, function, state, asset, or actor.
+2. trigger_or_action: a concrete triggering condition, operation, call, or state transition.
+3. direct_effect: an immediate unauthorized behavior, state/value change, failed guarantee,
+   or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
+4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
+   numeric, temporal, conservation, or state-transition safety relationship can be derived.
+   The report need not explicitly say "invariant". A NatSpec rule, quoted standard
+   requirement, or mitigation that directly states expected behavior can support this
+   dimension; implementation steps alone cannot. The relation must not be invented.
+
+Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
+Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
+dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
+list every dimension whose status is missing OR uncertain, in the required dimension
+order. decision is ready only when all four dimensions are present; otherwise decision
+is insufficient. A proposed fix may support only the safety-relation dimension when its
+text directly states the expected property; it cannot replace evidence of the affected
+subject, trigger, or direct effect. Do not treat PoC availability, code availability,
+or severity labels as substitutes.
+Return JSON only with exactly:
+{"schema_version":"report-readiness/1","decision":"ready|insufficient",
+ "dimensions":{
+  "affected_subject":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "trigger_or_action":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "direct_effect":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "safety_relation_basis":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"}},
+ "missing_dimensions":[],"summary":"short explanation"}
+REPORT FRAGMENTS:
+{"schema_version":"report-evidence/1","source_sha256":"71c98178e3506c9a16144b92404b8ce6f2a525a0138beaaf47b0676ee8d332a9","fragments":[{"id":"e_71c98178e350_0001","text":"Pre-start amountSold accrues due to uint32-before-subtraction in duration clamp"},{"id":"e_71c98178e350_0002","text":"## Finding description and impact"},{"id":"e_71c98178e350_0003","text":"The TWAMM.sol contract allows attackers to accumulate phantom `amountSold` values before an order's designated start time. This occurs due to an arithmetic underflow in an `unchecked` block, combined with a validation check that executes after state has already been corrupted. The vulnerability enables direct theft of user funds through over-refunds and can permanently freeze funds through accounting inconsistencies. The vulnerability exists in the `handleForwardData` function within the TWAMM contract. The entire function operates inside an `unchecked` block,"},{"id":"e_71c98178e350_0004","text":"which disables Solidity's automatic overflow/underflow protection."},{"id":"e_71c98178e350_0005","text":"**Vulnerable Code Location**: `src/extensions/TWAMM.sol:248-271`"},{"id":"e_71c98178e350_0006","text":"### How the bug works"},{"id":"e_71c98178e350_0007","text":"**Step 1: Arithmetic Underflow**"},{"id":"e_71c98178e350_0008","text":"When `block.timestamp < startTime`, the expression on line 259 underflows:"},{"id":"e_71c98178e350_0009","text":"Example with real values:"},{"id":"e_71c98178e350_0010","text":"- `block.timestamp = 1536`"},{"id":"e_71c98178e350_0011","text":"- `startTime = 2048`"},{"id":"e_71c98178e350_0012","text":"- `uint64(1536) - uint64(2048) = underflow`"},{"id":"e_71c98178e350_0013","text":"- Result: `18446744073709551104` (wrapped value)"},{"id":"e_71c98178e350_0014","text":"- `uint32(...)` truncates to: `4294966784` (still huge!)"},{"id":"e_71c98178e350_0015","text":"**Step 2: Incorrect Duration Selection**"},{"id":"e_71c98178e350_0016","text":"The `min()` function then selects the smaller of two values:"},{"id":"e_71c98178e350_0017","text":"**Expected behavior**: Duration should be `0` since the order hasn't started"},{"id":"e_71c98178e350_0018","text":"**Actual behavior**: Duration is `512` (time elapsed since last update)"},{"id":"e_71c98178e350_0019","text":"**Step 3: Phantom AmountSold Accumulation**"},{"id":"e_71c98178e350_0020","text":"The incorrect duration is used to calculate `amountSold`:"},{"id":"e_71c98178e350_0021","text":"This phantom amount is stored to state (line 248-266) **before** the check on line 271 that determines if the order has started."},{"id":"e_71c98178e350_0022","text":"**Step 4: Late Validation Check**"},{"id":"e_71c98178e350_0023","text":"By the time the code reaches line 271:"},{"id":"e_71c98178e350_0024","text":"The corrupted state has already been written, making this check ineffective."},{"id":"e_71c98178e350_0025","text":"### impact"},{"id":"e_71c98178e350_0026","text":"- Direct Fund Theft as Inflated `amountSold` values lead to over-refunds, Attackers can claim tokens never actually sold, Losses scale with `saleRate` and time before start."},{"id":"e_71c98178e350_0027","text":"- Permanent Fund Freezing - Inconsistent accounting state can cause update/settlement functions to revert, Orders may become \"bricked\" with funds locked"},{"id":"e_71c98178e350_0028","text":"- Accounting Corruption as amountSold` no longer reflects reality, Fee calculations become incorrect, Debt settlement logic produces wrong results, Systems relying on order state receive invalid data"},{"id":"e_71c98178e350_0029","text":"## Recommended mitigation steps"},{"id":"e_71c98178e350_0030","text":"Move the start time check BEFORE the duration calculation:"}]}

@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 from lib.ingest import build_catalog, hydrate_elements, hydrate_formalization
 from lib.plan_synthesizer import (_pattern_expressions, structured_unresolved_review,
-                              synthesize_id_formalization)
+                              synthesize_id_formalization,
+                              impact_qualifier_types)
 from lib import report_only as report_math
 from lib import semantic_core
 from cli import semantic_pipeline as pipeline
@@ -54,6 +55,33 @@ def plan():
 
 
 class PlanSynthesisTests(unittest.TestCase):
+    def test_live8_compiles_report_impact_as_independent_v(self):
+        elements, _ = id_inputs()
+        from tests.test_prompt_v317 import expanded_plan
+        candidate = expanded_plan()
+        candidate['schema_version'] = 'report-formal-plan/8'
+        candidate['derived_definitions'] = []
+        candidate['impact_context_terms'] = []
+        candidate['impact_outcome'] = {
+            'source_id': 'impact_revert',
+            'predicate': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+        }
+        formal = synthesize_id_formalization(candidate, elements)
+        claim = formal['claims'][0]
+        self.assertEqual(claim['properties']['effects']['expression'],
+                         {'var': 'fee_revert'})
+        self.assertNotEqual(claim['properties']['effects']['expression'],
+                            claim['properties']['safety']['expression'])
+
+    def test_impact_qualifier_detector_covers_scope_direction_and_duration(self):
+        text = ('Every newly created vault is permanently griefed if the attacker '
+                're-deposits before expiry; users lose more than 50% each day, '
+                'with costs between $10 and $20.')
+        self.assertEqual(
+            set(impact_qualifier_types(text)),
+            {'scope', 'duration_or_repetition', 'trigger', 'temporal',
+             'comparison_direction', 'threshold', 'rate_or_cost', 'range'})
+
     def test_all_logical_patterns_produce_boolean_i_and_v(self):
         symbols = {
             'condition': {'sort': 'bool', 'unit': None},
@@ -95,6 +123,18 @@ class PlanSynthesisTests(unittest.TestCase):
         relation = result['claims'][0]['semantic_relationship']['queries']
         self.assertEqual(relation['P_and_V_and_I'], 'unsat')
         self.assertEqual(relation['P_and_V_and_not_I'], 'sat')
+
+    def test_no_explicit_p_is_compiled_as_unconditional_true(self):
+        elements_raw, _ = id_inputs()
+        from tests.test_prompt_v317 import expanded_plan
+        candidate = expanded_plan()
+        candidate['schema_version'] = 'report-formal-plan/7'
+        candidate['precondition_ids'] = []
+        candidate['precondition_terms'] = []
+        formal = synthesize_id_formalization(candidate, elements_raw)
+        self.assertEqual(
+            formal['claims'][0]['properties']['preconditions']['expression'],
+            {'const': True})
 
     def test_unknown_impact_is_rejected_before_formalization(self):
         elements, _ = id_inputs(); bad = plan(); bad['impact_ids'] = ['invented']
@@ -144,6 +184,40 @@ class PlanSynthesisTests(unittest.TestCase):
             self.assertEqual(call.call_count, 1)
             self.assertEqual(json.loads((output / 'formal-plan.json').read_text()), candidate)
             self.assertTrue((output / 'formalization-ids.json').is_file())
+            self.assertTrue(verify_semantic.verify(output)['offline_verified'])
+
+    def test_mechanical_salvage_run_replays_in_verify(self):
+        # S19 wiring: --mechanical-salvage runs used to write
+        # mechanical-salvage.json that verify never re-applied, so every
+        # salvaged run failed replay with 'neural formal plan changed'.  The
+        # replay now re-applies the drop against the saved audited log.
+        elements, _ = id_inputs(); candidate = plan()
+        candidate['symbols']['zero_address'] = {
+            'sort': 'int', 'unit': None, 'meaning': 'Unused placeholder symbol',
+            'checkpoint': 'call_entry', 'entity_ids': [], 'source_ids': []}
+
+        def fake(payload, output, model, prompt):
+            (output / 'model-claim.json').write_text(json.dumps(candidate))
+            return copy.deepcopy(candidate)
+
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            report = root / 'report.md'; report.write_text(TEXT)
+            saved = root / 'elements.json'; saved.write_text(json.dumps(elements))
+            output = root / 'output'
+            argv = ['semantic_pipeline.py', '--report', str(report), '--formalize-only',
+                    '--elements', str(saved), '--mechanical-salvage',
+                    '--allow-report-upload', '--model', 'synthetic_control',
+                    '--prompt-version', 'semantic-v3.5', '--output', str(output)]
+            with patch('sys.argv', argv), patch.object(pipeline.r, 'extract', side_effect=fake), \
+                    patch('sys.stdout', io.StringIO()):
+                pipeline.main()
+            salvage_log = output / 'neural-formalization' / 'mechanical-salvage.json'
+            self.assertTrue(salvage_log.is_file())
+            repairs = json.loads(salvage_log.read_text())
+            self.assertEqual([row['symbol'] for row in repairs], ['zero_address'])
+            saved_plan = json.loads((output / 'formal-plan.json').read_text())
+            self.assertNotIn('zero_address', saved_plan['symbols'])
             self.assertTrue(verify_semantic.verify(output)['offline_verified'])
 
     def test_prompt_delegates_mechanics_to_program(self):
@@ -241,6 +315,11 @@ class MixedUnitGateSemanticsTests(unittest.TestCase):
     operand's unit, so the scaled comparison passes when both compared
     symbols share one raw unit.  The repair teaching rests on exactly
     these two facts."""
+
+    def setUp(self):
+        # Other pipeline tests toggle this module-level compatibility switch;
+        # restore the unit gate so results do not depend on test order.
+        report_math.set_unit_guard(True)
 
     def test_scaling_symbol_product_unit_is_unpassable(self):
         symbols = {

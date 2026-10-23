@@ -61,6 +61,46 @@ class NumericFidelityTests(unittest.TestCase):
         }]}
         check_numeric_plan(candidate, elements)
 
+    def test_symbolic_power_bound_uses_same_statement_integer_binding(self):
+        elements = {'statements': [{
+            'id': 'small_market_prestate', 'kind': 'precondition',
+            'text': 'The market is small: marketBaseTokenSupply <= '
+                    '2^noCapLimit (approximately ~1 BASE for 18 decimals '
+                    'with noCapLimit = 60).',
+        }]}
+        candidate = {'precondition_terms': [{
+            'source_id': 'small_market_prestate',
+            'predicate': {
+                'kind': 'comparison', 'left': 'market_base_token_supply',
+                'operator': 'le', 'right': {'power_of_two': 60, 'offset': 0},
+            },
+        }]}
+        self.assertEqual(explicit_bounds(elements['statements'][0]['text']),
+                         {('le', Decimal(2**60))})
+        check_numeric_plan(candidate, elements)
+
+    def test_symbolic_power_bound_rejects_missing_or_conflicting_binding(self):
+        for text in (
+                'supply <= 2^limit.',
+                'supply <= 2^limit; limit = 60, but elsewhere limit = 61.'):
+            with self.subTest(text=text):
+                bounds = explicit_bounds(text)
+                self.assertEqual(len(bounds), 1)
+                self.assertIsInstance(next(iter(bounds))[1], str)
+                elements = {'statements': [{
+                    'id': 'p_supply', 'kind': 'precondition', 'text': text,
+                }]}
+                candidate = {'precondition_terms': [{
+                    'source_id': 'p_supply',
+                    'predicate': {
+                        'kind': 'comparison', 'left': 'supply', 'operator': 'le',
+                        'right': {'power_of_two': 60, 'offset': 0},
+                    },
+                }]}
+                with self.assertRaisesRegex(ValueError,
+                                            'numeric P literal or direction changed'):
+                    check_numeric_plan(candidate, elements)
+
     def test_unqualified_exact_literal_cannot_be_replaced(self):
         elements = {'statements': [{
             'id': 'p_order', 'kind': 'precondition',

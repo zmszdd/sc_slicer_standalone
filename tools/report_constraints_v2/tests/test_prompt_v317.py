@@ -45,6 +45,17 @@ class PromptV317Tests(unittest.TestCase):
         self.assertEqual(claim['properties']['safety']['expression']['op'], 'implies')
         self.assertEqual(claim['properties']['effects']['expression']['op'], 'and')
 
+    def test_expanded_malformed_template_is_a_retryable_value_error(self):
+        elements, _ = id_inputs()
+        candidate = expanded_plan()
+        candidate['relation_class'] = 'state_correspondence'
+        candidate['pattern'] = {
+            'kind': 'correspondence',
+            'condition': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+        }
+        with self.assertRaisesRegex(ValueError, 'invalid correspondence pattern'):
+            synthesize_id_formalization(candidate, elements)
+
     def test_relation_class_has_one_expanded_template(self):
         elements, _ = id_inputs()
         candidate = expanded_plan()
@@ -79,6 +90,21 @@ class PromptV317Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'reuse identical predicate'):
             synthesize_id_formalization(candidate, elements)
 
+    def test_live_16_schema_defers_duplicate_predicate_to_fidelity(self):
+        elements, _ = id_inputs()
+        candidate = expanded_plan()
+        candidate['schema_version'] = 'report-formal-plan/7'
+        candidate['precondition_ids'].append('assume_nonnegative')
+        for item in candidate['symbols'].values():
+            if item['sort'] == 'int':
+                item['source_ids'].append('assume_nonnegative')
+        candidate['precondition_terms'].append({
+            'source_id': 'assume_nonnegative',
+            'predicate': copy.deepcopy(candidate['precondition_terms'][0]['predicate']),
+        })
+        self.assertEqual(synthesize_id_formalization(candidate, elements)
+                         ['schema_version'], 'report-formalization/2')
+
     def test_strong_impact_qualifier_is_required_and_conjoined(self):
         elements, _ = id_inputs()
         for row in elements['statements']:
@@ -106,10 +132,11 @@ class PromptV317Tests(unittest.TestCase):
 
     def test_real_failure_phrases_have_structured_qualifier_types(self):
         self.assertEqual(impact_qualifier_types(
-            'After an identical swap, LP value declines.'), ['temporal'])
+            'After an identical swap, LP value declines.'),
+            ['comparison_direction', 'temporal'])
         self.assertEqual(impact_qualifier_types(
             'The guard passes even when deviation exceeds tolerance.'),
-            ['state', 'threshold'])
+            ['comparison_direction', 'state', 'threshold', 'trigger'])
         self.assertEqual(impact_qualifier_types(
             'It reverts even though only dust remains.'), ['state'])
 

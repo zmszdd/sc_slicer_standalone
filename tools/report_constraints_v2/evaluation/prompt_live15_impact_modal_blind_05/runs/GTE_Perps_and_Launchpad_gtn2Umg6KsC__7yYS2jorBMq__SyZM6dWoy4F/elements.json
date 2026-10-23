@@ -1,0 +1,238 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "LaunchToken::_decreaseFeeShares() trigger condition and rewards accrual termination affecting GTELaunchpadV2Pair core functions",
+    "environment": "GTE launchpad protocol: LaunchToken, GTELaunchpadV2Pair, Distributor",
+    "evidence": [
+      "Incorrect trigger condition in LaunchToken::_decreaseFeeShares() causes permanent DoS of GTELaunchpadV2Pair functions",
+      "The `LaunchToken::_decreaseFeeShares()` function contains an incorrect trigger condition that prevents the rewards accrual mechanism from being properly terminated. This issue causes the `GTELaunchpadV2Pair`'s core functions (`mint()`, `burn()`, `swap()`, and `sync()`) to become permanently blocked, rendering the pair contract unusable and freezing all assets locked within it.",
+      "The root cause of this issue is an incorrect trigger condition in the `LaunchToken::_decreaseFeeShares()` function:",
+      "The issue occurs because the condition `if (totalFeeShare == 0 && !unlocked)` is incorrect. During the bonding period (`unlocked = false`), the `totalFeeShare` tends to increase as users buy the launch token. Once the token hits the bonding price, it's graduated and the unbonding period starts (`unlocked = true`).",
+      "The correct condition should be `if (totalFeeShare == 0 && unlocked)` because:",
+      "2. The rewards program should only be ended after the token is graduated (`unlocked = true`) and no more pre-bonding shares exist (`totalFeeShare = 0`).",
+      "4. Eventually, `totalFeeShare` reaches 0, but since `unlocked = true`, the condition `totalFeeShare == 0 && !unlocked` is never satisfied.",
+      "5. `_endRewards()` is never called, so `GTELaunchpadV2Pair::endRewardsAccrual()` is never executed.",
+      "- `Distributor::addRewards()` reverts with `NoSharesToIncentivize` since `rs.totalShares = 0`"
+    ]
+  },
+  "entities": [
+    {
+      "id": "launch_token",
+      "name": "LaunchToken",
+      "role": "contract",
+      "evidence": [
+        "Incorrect trigger condition in LaunchToken::_decreaseFeeShares() causes permanent DoS of GTELaunchpadV2Pair functions",
+        "The root cause of this issue is an incorrect trigger condition in the `LaunchToken::_decreaseFeeShares()` function:",
+        "The issue occurs because the condition `if (totalFeeShare == 0 && !unlocked)` is incorrect. During the bonding period (`unlocked = false`), the `totalFeeShare` tends to increase as users buy the launch token. Once the token hits the bonding price, it's graduated and the unbonding period starts (`unlocked = true`)."
+      ]
+    },
+    {
+      "id": "pair",
+      "name": "GTELaunchpadV2Pair",
+      "role": "contract",
+      "evidence": [
+        "The `LaunchToken::_decreaseFeeShares()` function contains an incorrect trigger condition that prevents the rewards accrual mechanism from being properly terminated. This issue causes the `GTELaunchpadV2Pair`'s core functions (`mint()`, `burn()`, `swap()`, and `sync()`) to become permanently blocked, rendering the pair contract unusable and freezing all assets locked within it.",
+        "The issue affects the following functions in `GTELaunchpadV2Pair`:"
+      ]
+    },
+    {
+      "id": "distributor",
+      "name": "Distributor",
+      "role": "contract",
+      "evidence": [
+        "- `Distributor::addRewards()` reverts with `NoSharesToIncentivize` since `rs.totalShares = 0`",
+        "The revert happens in the `Distributor::addRewards()` function:"
+      ]
+    },
+    {
+      "id": "users",
+      "name": "Token holders / users",
+      "role": "other",
+      "evidence": [
+        "- Users transfer their tokens, decreasing totalFeeShare to zero",
+        "3. After graduation, users transfer all their tokens, causing `_decreaseFeeShares()` to be called multiple times."
+      ]
+    },
+    {
+      "id": "liquidity_providers",
+      "name": "Token launchers and liquidity providers",
+      "role": "victim",
+      "evidence": [
+        "2. All launch/base tokens and quote tokens locked in the affected pairs become permanently frozen, resulting in a complete loss of funds for the token launchers (projects partnering with GTE) and other liquidity providers."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "token_graduated_unlocked_true",
+      "kind": "precondition",
+      "text": "The launch token has reached its bonding price and is graduated, so unlocked = true.",
+      "modality": "asserted",
+      "entity_ids": [
+        "launch_token"
+      ],
+      "evidence": [
+        "- Token reaches bonding price and is graduated (unlocked = true)",
+        "2. The token reaches its bonding price and is graduated (`unlocked = true`)."
+      ]
+    },
+    {
+      "id": "users_transfer_tokens_decreasing_feeshare",
+      "kind": "precondition",
+      "text": "After graduation, users transfer their tokens, causing _decreaseFeeShares() to be called multiple times.",
+      "modality": "asserted",
+      "entity_ids": [
+        "users",
+        "launch_token"
+      ],
+      "evidence": [
+        "- Users transfer their tokens, decreasing totalFeeShare to zero",
+        "3. After graduation, users transfer all their tokens, causing `_decreaseFeeShares()` to be called multiple times."
+      ]
+    },
+    {
+      "id": "totalfeeshare_reaches_zero",
+      "kind": "precondition",
+      "text": "Eventually totalFeeShare reaches 0.",
+      "modality": "asserted",
+      "entity_ids": [
+        "launch_token"
+      ],
+      "evidence": [
+        "4. Eventually, `totalFeeShare` reaches 0, but since `unlocked = true`, the condition `totalFeeShare == 0 && !unlocked` is never satisfied."
+      ]
+    },
+    {
+      "id": "end_rewards_accrual_unavailable",
+      "kind": "precondition",
+      "text": "Once the launch token is graduated (unlocked = true), there is no way to call endRewardsAccrual() to deactivate the rewards pool.",
+      "modality": "asserted",
+      "entity_ids": [
+        "launch_token",
+        "pair"
+      ],
+      "evidence": [
+        "3. Once the launch token is graduated (unlocked = true), there is no way to call `endRewardsAccrual()` to deactivate the rewards pool, which means the issue will inevitably occur when totalFeeShare reaches zero."
+      ]
+    },
+    {
+      "id": "decrease_fee_shares_called",
+      "kind": "action",
+      "text": "_decreaseFeeShares() is called as users transfer tokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "launch_token",
+        "users"
+      ],
+      "evidence": [
+        "3. After graduation, users transfer all their tokens, causing `_decreaseFeeShares()` to be called multiple times."
+      ]
+    },
+    {
+      "id": "pair_core_operation_attempted",
+      "kind": "action",
+      "text": "A user attempts a swap, mint, burn, or sync operation on GTELaunchpadV2Pair.",
+      "modality": "asserted",
+      "entity_ids": [
+        "pair",
+        "users"
+      ],
+      "evidence": [
+        "7. When a user tries to perform a swap, mint, burn, or sync operation, the transaction reverts because:"
+      ]
+    },
+    {
+      "id": "incorrect_trigger_condition",
+      "kind": "root_cause",
+      "text": "The trigger condition `if (totalFeeShare == 0 && !unlocked)` is incorrect; it should be `if (totalFeeShare == 0 && unlocked)`, so when totalFeeShare reaches 0 with unlocked = true the condition is never satisfied and _endRewards() is never called.",
+      "modality": "asserted",
+      "entity_ids": [
+        "launch_token"
+      ],
+      "evidence": [
+        "The root cause of this issue is an incorrect trigger condition in the `LaunchToken::_decreaseFeeShares()` function:",
+        "The issue occurs because the condition `if (totalFeeShare == 0 && !unlocked)` is incorrect. During the bonding period (`unlocked = false`), the `totalFeeShare` tends to increase as users buy the launch token. Once the token hits the bonding price, it's graduated and the unbonding period starts (`unlocked = true`).",
+        "The correct condition should be `if (totalFeeShare == 0 && unlocked)` because:",
+        "4. Eventually, `totalFeeShare` reaches 0, but since `unlocked = true`, the condition `totalFeeShare == 0 && !unlocked` is never satisfied.",
+        "5. `_endRewards()` is never called, so `GTELaunchpadV2Pair::endRewardsAccrual()` is never executed."
+      ]
+    },
+    {
+      "id": "rewards_should_end_after_graduation",
+      "kind": "security_intent",
+      "text": "The rewards program should be ended (via _endRewards()/endRewardsAccrual()) once the token is graduated (unlocked = true) and no more pre-bonding shares exist (totalFeeShare = 0).",
+      "modality": "asserted",
+      "entity_ids": [
+        "launch_token",
+        "pair"
+      ],
+      "evidence": [
+        "The correct condition should be `if (totalFeeShare == 0 && unlocked)` because:",
+        "2. The rewards program should only be ended after the token is graduated (`unlocked = true`) and no more pre-bonding shares exist (`totalFeeShare = 0`)."
+      ]
+    },
+    {
+      "id": "pair_functions_should_remain_usable",
+      "kind": "security_intent",
+      "text": "GTELaunchpadV2Pair core functions (mint, burn, swap, sync) should remain callable and not be permanently blocked.",
+      "modality": "inferred",
+      "entity_ids": [
+        "pair"
+      ],
+      "evidence": [
+        "The `LaunchToken::_decreaseFeeShares()` function contains an incorrect trigger condition that prevents the rewards accrual mechanism from being properly terminated. This issue causes the `GTELaunchpadV2Pair`'s core functions (`mint()`, `burn()`, `swap()`, and `sync()`) to become permanently blocked, rendering the pair contract unusable and freezing all assets locked within it.",
+        "1. The issue causes a permanent denial of service for critical functions of the `GTELaunchpadV2Pair` contract:"
+      ]
+    },
+    {
+      "id": "permanent_dos_critical_functions",
+      "kind": "impact",
+      "text": "The issue causes a permanent denial of service for critical functions of the `GTELaunchpadV2Pair` contract:",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "1. The issue causes a permanent denial of service for critical functions of the `GTELaunchpadV2Pair` contract:"
+      ]
+    },
+    {
+      "id": "mint_impossible",
+      "kind": "impact",
+      "text": "`mint()` - Adding liquidity becomes impossible",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- `mint()` - Adding liquidity becomes impossible"
+      ]
+    },
+    {
+      "id": "burn_impossible",
+      "kind": "impact",
+      "text": "`burn()` - Removing liquidity becomes impossible",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- `burn()` - Removing liquidity becomes impossible"
+      ]
+    },
+    {
+      "id": "swap_impossible",
+      "kind": "impact",
+      "text": "`swap()` - Trading tokens becomes impossible",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- `swap()` - Trading tokens becomes impossible"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "decrease_fee_shares_called",
+    "pair_core_operation_attempted"
+  ],
+  "ambiguities": [
+    "Report does not state who triggers the token transfers or whether the actor is permissionless; only that users transfer tokens.",
+    "The exact checkpoint at which totalFeeShare reaches 0 relative to the attempted pair operation is described narratively, not as a single transaction.",
+    "Whether the pair operation reverts only when accrued fees exist (conditional on _distributeLaunchpadFees being called) is stated conditionally.",
+    "Omitted stated outcomes: `sync()` - Synchronizing reserves becomes impossible; all launch/base tokens and quote tokens locked in the affected pairs become permanently frozen, resulting in a complete loss of funds for the token launchers (projects partnering with GTE) and other liquidity providers; the issue affects all pairs created for all launch tokens, making it a systemic vulnerability across the entire protocol."
+  ]
+}

@@ -1,0 +1,222 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "disputeTree deposit then resolveDispute resolution with a fee-on-transfer disputeToken",
+    "environment": "Solidity protocol with disputeToken, disputeTree, resolveDispute, recoverERC20",
+    "evidence": [
+      "If a fee-on-transfer (FoT) token is configured as the `disputeToken`, the `resolveDispute()` function will permanently revert, leaving the protocol in an unrecoverable bricked state. This occurs because `disputeTree()` records the full `disputeAmount` but the contract receives fewer tokens due to the transfer fee, making it impossible to transfer back the recorded amount during resolution.",
+      "When a user calls `disputeTree()` with a FoT token:",
+      "Step 2 - Dispute Resolution (`resolveDispute`) - ALWAYS REVERTS:",
+      "1. Governor sets `disputeToken` to a FoT token (PAXG, some USDT implementations, deflationary tokens)"
+    ]
+  },
+  "entities": [
+    {
+      "id": "governor",
+      "name": "Governor",
+      "role": "authority",
+      "evidence": [
+        "1. Governor sets `disputeToken` to a FoT token (PAXG, some USDT implementations, deflationary tokens)",
+        "5. Governor attempts to resolve dispute (valid or invalid)"
+      ]
+    },
+    {
+      "id": "disputer",
+      "name": "Honest disputer",
+      "role": "victim",
+      "evidence": [
+        "2. Honest user notices an incorrect Merkle tree",
+        "3. User calls `disputeTree()` - deposits tokens in good faith"
+      ]
+    },
+    {
+      "id": "dispute_token",
+      "name": "Fee-on-transfer disputeToken",
+      "role": "asset",
+      "evidence": [
+        "If a fee-on-transfer (FoT) token is configured as the `disputeToken`, the `resolveDispute()` function will permanently revert, leaving the protocol in an unrecoverable bricked state. This occurs because `disputeTree()` records the full `disputeAmount` but the contract receives fewer tokens due to the transfer fee, making it impossible to transfer back the recorded amount during resolution.",
+        "1. Governor sets `disputeToken` to a FoT token (PAXG, some USDT implementations, deflationary tokens)"
+      ]
+    },
+    {
+      "id": "protocol",
+      "name": "Protocol contract",
+      "role": "contract",
+      "evidence": [
+        "If a fee-on-transfer (FoT) token is configured as the `disputeToken`, the `resolveDispute()` function will permanently revert, leaving the protocol in an unrecoverable bricked state. This occurs because `disputeTree()` records the full `disputeAmount` but the contract receives fewer tokens due to the transfer fee, making it impossible to transfer back the recorded amount during resolution.",
+        "- Contract records `disputer = msg.sender` (no record of actual received amount)"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "fot_token_configured",
+      "kind": "precondition",
+      "text": "A fee-on-transfer token is configured as the disputeToken.",
+      "modality": "potential",
+      "entity_ids": [
+        "dispute_token",
+        "governor"
+      ],
+      "evidence": [
+        "If a fee-on-transfer (FoT) token is configured as the `disputeToken`, the `resolveDispute()` function will permanently revert, leaving the protocol in an unrecoverable bricked state. This occurs because `disputeTree()` records the full `disputeAmount` but the contract receives fewer tokens due to the transfer fee, making it impossible to transfer back the recorded amount during resolution.",
+        "1. Governor sets `disputeToken` to a FoT token (PAXG, some USDT implementations, deflationary tokens)"
+      ]
+    },
+    {
+      "id": "dispute_created",
+      "kind": "precondition",
+      "text": "A user calls disputeTree() and sends disputeAmount tokens (e.g., 1000).",
+      "modality": "potential",
+      "entity_ids": [
+        "disputer",
+        "protocol"
+      ],
+      "evidence": [
+        "When a user calls `disputeTree()` with a FoT token:",
+        "- User sends `disputeAmount` tokens (e.g., 1000 tokens)",
+        "3. User calls `disputeTree()` - deposits tokens in good faith"
+      ]
+    },
+    {
+      "id": "fee_deducted_on_deposit",
+      "kind": "precondition",
+      "text": "The FoT token deducts a transfer fee (e.g., 1% = 10 tokens) so the contract receives only 990 tokens.",
+      "modality": "potential",
+      "entity_ids": [
+        "dispute_token",
+        "protocol"
+      ],
+      "evidence": [
+        "- FoT token deducts transfer fee (e.g., 1% = 10 tokens)",
+        "- Contract receives only 990 tokens",
+        "4. Contract receives fewer tokens than recorded due to transfer fee"
+      ]
+    },
+    {
+      "id": "full_amount_recorded",
+      "kind": "root_cause",
+      "text": "disputeTree() records the full disputeAmount without recording the actual received amount.",
+      "modality": "asserted",
+      "entity_ids": [
+        "protocol"
+      ],
+      "evidence": [
+        "If a fee-on-transfer (FoT) token is configured as the `disputeToken`, the `resolveDispute()` function will permanently revert, leaving the protocol in an unrecoverable bricked state. This occurs because `disputeTree()` records the full `disputeAmount` but the contract receives fewer tokens due to the transfer fee, making it impossible to transfer back the recorded amount during resolution.",
+        "- Contract records `disputer = msg.sender` (no record of actual received amount)"
+      ]
+    },
+    {
+      "id": "resolve_attempts_full_transfer",
+      "kind": "action",
+      "text": "resolveDispute() attempts to transfer the recorded disputeAmount (1000 tokens) in either branch.",
+      "modality": "asserted",
+      "entity_ids": [
+        "governor",
+        "protocol"
+      ],
+      "evidence": [
+        "Step 2 - Dispute Resolution (`resolveDispute`) - ALWAYS REVERTS:",
+        "Both branches attempt to transfer `disputeAmount` (1000 tokens), but:",
+        "5. Governor attempts to resolve dispute (valid or invalid)"
+      ]
+    },
+    {
+      "id": "resolve_reverts",
+      "kind": "impact",
+      "text": "resolveDispute() reverts with \"ERC20: transfer amount exceeds balance\" because the contract holds only 990 tokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "protocol",
+        "governor"
+      ],
+      "evidence": [
+        "- Contract only holds 990 tokens",
+        "- Transfer reverts with \"ERC20: transfer amount exceeds balance\"",
+        "- `resolveDispute(true)` reverts - cannot return stake to valid disputer",
+        "- `resolveDispute(false)` reverts - cannot slash stake to governor"
+      ]
+    },
+    {
+      "id": "disputer_stuck",
+      "kind": "impact",
+      "text": "disputer remains non-zero permanently since resolveDispute() is the only function that clears it and always reverts.",
+      "modality": "asserted",
+      "entity_ids": [
+        "protocol",
+        "disputer"
+      ],
+      "evidence": [
+        "1. `disputer` remains set to the original disputer address (non-zero)",
+        "- `resolveDispute()` is the only function that sets `disputer = address(0)`",
+        "- Since it always reverts, `disputer` is permanently set"
+      ]
+    },
+    {
+      "id": "tree_updates_blocked",
+      "kind": "impact",
+      "text": "No new Merkle trees can be published and tree revocation is blocked, freezing claims on stale data.",
+      "modality": "asserted",
+      "entity_ids": [
+        "protocol"
+      ],
+      "evidence": [
+        "3. All Tree Updates Blocked:",
+        "No new Merkle trees can ever be published.",
+        "5. Claims Frozen on Stale Data:",
+        "- Any new rewards computed off-chain cannot be distributed"
+      ]
+    },
+    {
+      "id": "no_recovery",
+      "kind": "impact",
+      "text": "recoverERC20() cannot help and depositing more tokens does not help; only contract upgrade/migration can recover.",
+      "modality": "asserted",
+      "entity_ids": [
+        "protocol"
+      ],
+      "evidence": [
+        "- `recoverERC20()` cannot help because `resolveDispute()` needs to succeed first to clear `disputer`",
+        "- Even depositing more tokens doesn't help - the FoT token will take fees on the outgoing transfer too",
+        "- Contract upgrade/migration is the only recovery option"
+      ]
+    },
+    {
+      "id": "intent_resolution_succeeds",
+      "kind": "security_intent",
+      "text": "resolveDispute() should complete successfully and clear the disputer for a valid dispute, transferring the recorded amount.",
+      "modality": "inferred",
+      "entity_ids": [
+        "protocol",
+        "governor"
+      ],
+      "evidence": [
+        "Step 2 - Dispute Resolution (`resolveDispute`) - ALWAYS REVERTS:",
+        "- `resolveDispute(true)` reverts - cannot return stake to valid disputer",
+        "- `resolveDispute(false)` reverts - cannot slash stake to governor"
+      ]
+    },
+    {
+      "id": "intent_recorded_matches_received",
+      "kind": "security_intent",
+      "text": "The amount recorded for a dispute should match the amount actually received by the contract.",
+      "modality": "inferred",
+      "entity_ids": [
+        "protocol"
+      ],
+      "evidence": [
+        "If a fee-on-transfer (FoT) token is configured as the `disputeToken`, the `resolveDispute()` function will permanently revert, leaving the protocol in an unrecoverable bricked state. This occurs because `disputeTree()` records the full `disputeAmount` but the contract receives fewer tokens due to the transfer fee, making it impossible to transfer back the recorded amount during resolution.",
+        "- Contract records `disputer = msg.sender` (no record of actual received amount)"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "resolve_attempts_full_transfer"
+  ],
+  "ambiguities": [
+    "Report does not state whether the disputer is authorized or permissionless; disputeTree is described as called by a user in good faith.",
+    "The 990/1000 figures are illustrative examples, not asserted observed values.",
+    "Whether resolveDispute(true) or resolveDispute(false) is attempted first is not specified.",
+    "The report frames this as non-malicious legitimate use, not an attacker-triggered exploit."
+  ]
+}

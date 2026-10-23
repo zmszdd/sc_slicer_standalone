@@ -1,0 +1,35 @@
+You are a conservative REPORT-NARRATIVE-SUFFICIENCY gate for vulnerability reports.
+Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
+whether the supplied numbered report fragments explain the affected subject, trigger,
+direct effect, and safety-relation basis well enough to attempt P/I/V formalization.
+"ready" means only that the narrative is sufficient to try. It does not mean the
+current rule grammar can express the relation, that numeric variables and units are
+available, or that a model will successfully generate complete formulas. Those are
+judged separately from the subsequent per-impact formalization results.
+
+Required dimensions:
+1. affected_subject: identifiable affected component, function, state, asset, or actor.
+2. trigger_or_action: a concrete triggering condition, operation, call, or state transition.
+3. direct_effect: an immediate unauthorized behavior, state/value change, failed guarantee,
+   or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
+4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
+   numeric, temporal, conservation, or state-transition safety relationship can be derived.
+   The report need not explicitly say "invariant", but the relation must not be invented.
+
+Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
+Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
+dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
+list every dimension whose status is missing OR uncertain, in the required dimension
+order. decision is ready only when all four dimensions are present; otherwise decision
+is insufficient. Do not treat
+PoC availability, code availability, severity labels, or a proposed fix as substitutes.
+Return JSON only with exactly:
+{"schema_version":"report-readiness/1","decision":"ready|insufficient",
+ "dimensions":{
+  "affected_subject":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "trigger_or_action":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "direct_effect":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "safety_relation_basis":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"}},
+ "missing_dimensions":[],"summary":"short explanation"}
+REPORT FRAGMENTS:
+{"schema_version":"report-evidence/1","source_sha256":"84b30e1c60ceca3d291cca4440b3c82b51d5518d043e14229c5e794f48cdd3d0","fragments":[{"id":"e_84b30e1c60ce_0001","text":"Swap `amountIn` incorrectly includes prior undistributed accrued fees, leading to distorted K-invariants, unfavorable swap pricing, and over-accrued fees until next-block distribution"},{"id":"e_84b30e1c60ce_0002","text":"## Finding description and impact"},{"id":"e_84b30e1c60ce_0003","text":"**Root cause (3 lines max):** In `swap()`, `amountIn` is calculated as the delta between current balance and reserves (`balance - (_reserve - amountOut)`), but prior `accruedLaunchpadFee` remains in the balance while reserves subtract it in `_update`. This makes prior fees appear as extra current input, inflating `amountIn` for same-block subsequent swaps. The K-invariant check and new fee accrual then use this inflated value, skewing math until fees distribute on next block's first `_update`."},{"id":"e_84b30e1c60ce_0004","text":"**Impacts:**"},{"id":"e_84b30e1c60ce_0005","text":"- Swappers get worse rates (less output for same input) due to \"fake\" higher input in pricing/reserves."},{"id":"e_84b30e1c60ce_0006","text":"- New launchpad fees over-accrue (e.g., 0.1% fee on inflated input), diluting legitimate rewards."},{"id":"e_84b30e1c60ce_0007","text":"- Distorts pool invariants mid-block; potential MEV (frontrun to exploit skewed pricing) or DoS (force bad rates via timed swaps). High impact if high-volume pairs, as it affects all same-block users post-fee accrual."},{"id":"e_84b30e1c60ce_0008","text":"https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol#L232-L252"},{"id":"e_84b30e1c60ce_0009","text":"**Vulnerability flow (step-by-step with PoC math):**"},{"id":"e_84b30e1c60ce_0010","text":"1. Setup: Pool has 100 ETH base/quote reserves, launchpad owns ~100% LP (totalSupply=100 ETH). No prior fees."},{"id":"e_84b30e1c60ce_0011","text":"2. First swap: User sends 10 ETH base input → pair balance_base=110 ETH. Swap outputs ~9.066 ETH quote (997/1000 fee). New fee0 = (10 * 1 * 100%) / (100 * 1000) = 0.01 ETH accrued. Reserves update to balance - totalFee0 = 110 - 0.01 = 109.99 ETH base (quote ~90.933 ETH). Event: `Swap(amount0In=10 ETH)`."},{"id":"e_84b30e1c60ce_0012","text":"3. Same-block second swap: User sends actual 10 ETH base → pair balance_base=120 ETH (110 prior + 10 new). But reserves still reflect prior subtraction (109.99 base), so detected amount0In = 120 - (109.99 - 0) = 10.01 ETH (actual 10 + prior 0.01 fee). Outputs ~7.557 ETH quote (worse rate due to skewed reserves). New fee0 = (10.01 * 1 * 100%) / (100 * 1000) ≈ 0.01001 ETH (over-accrued on inflation). Reserves: 120 - 0.02001 totalFee0 ≈ 119.979 ETH base. Event: `Swap(amount0In=10.01 ETH)` (verifies inflation)."},{"id":"e_84b30e1c60ce_0013","text":"4. Next block: First `_update` (e.g., sync/swap) distributes 0.02001 ETH fees to distributor, resetting accrued=0 and aligning reserves=balances. Until then, mid-block swaps suffer distorted pricing."}]}

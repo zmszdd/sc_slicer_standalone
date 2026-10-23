@@ -1,0 +1,201 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "claimRewards() epoch reward share computation using balance snapshot at epochTimestampEnd(prevEpoch)",
+    "environment": "TrustBonding / VotingEscrow emissions contract",
+    "evidence": [
+      "[claimRewards()](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L361) computes rewards for `prevEpoch = currentEpoch - 1`. The user's reward share is determined by their balance at `epochTimestampEnd(prevEpoch)`:",
+      "- [userBondedBalanceAtEpochEnd](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L212) → `_balanceOf(account, _epochTimestampEnd(epoch))`",
+      "- [totalBondedBalanceAtEpochEnd](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L199) → `_totalSupply(_epochTimestampEnd(epoch))`",
+      "1. **Shared boundary timestamp:** `epochTimestampEnd(N)` equals `epochTimestampStart(N+1)` since `_calculateEpochTimestampEnd(epoch) = START + epoch * LENGTH + LENGTH`, which is identical to `_calculateEpochTimestampStart(epoch + 1) = START + (epoch + 1) * LENGTH`.",
+      "2. **Inclusive VotingEscrow lookup:** The binary search in `_find_user_timestamp_epoch` uses `<=` comparison (`user_point_history[addr][_mid].ts <= _ts`), so a checkpoint created exactly at the boundary timestamp is included in the lookup for epoch N's end.",
+      "Therefore, a user who creates a lock at the exact epoch boundary (`block.timestamp == epochTimestampEnd(N) == epochTimestampStart(N+1)`) will:",
+      "- Be in epoch N+1 (so `currentEpoch = N+1`, `prevEpoch = N`)",
+      "- Have their checkpoint at ts = boundary included in the epoch N balance snapshot",
+      "- Successfully claim epoch N rewards despite never being bonded during epoch N"
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "lock creator / reward claimant",
+      "role": "attacker",
+      "evidence": [
+        "Therefore, a user who creates a lock at the exact epoch boundary (`block.timestamp == epochTimestampEnd(N) == epochTimestampStart(N+1)`) will:",
+        "An attacker can capture prior-epoch emissions by timing lock creation to the exact epoch boundary. This directly dilutes rewards of honest stakers who were bonded throughout the earning epoch. In the PoC, the attacker captures ~50% of epoch 0 emissions (~504.85 ETH) by creating a lock at the boundary and claiming in the same transaction."
+      ]
+    },
+    {
+      "id": "honest_stakers",
+      "name": "honest stakers bonded throughout earning epoch",
+      "role": "victim",
+      "evidence": [
+        "An attacker can capture prior-epoch emissions by timing lock creation to the exact epoch boundary. This directly dilutes rewards of honest stakers who were bonded throughout the earning epoch. In the PoC, the attacker captures ~50% of epoch 0 emissions (~504.85 ETH) by creating a lock at the boundary and claiming in the same transaction."
+      ]
+    },
+    {
+      "id": "trust_bonding",
+      "name": "TrustBonding contract",
+      "role": "contract",
+      "evidence": [
+        "[claimRewards()](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L361) computes rewards for `prevEpoch = currentEpoch - 1`. The user's reward share is determined by their balance at `epochTimestampEnd(prevEpoch)`:"
+      ]
+    },
+    {
+      "id": "voting_escrow",
+      "name": "VotingEscrow balance lookup",
+      "role": "contract",
+      "evidence": [
+        "2. **Inclusive VotingEscrow lookup:** The binary search in `_find_user_timestamp_epoch` uses `<=` comparison (`user_point_history[addr][_mid].ts <= _ts`), so a checkpoint created exactly at the boundary timestamp is included in the lookup for epoch N's end."
+      ]
+    },
+    {
+      "id": "epoch_rewards",
+      "name": "epoch emissions / rewards",
+      "role": "asset",
+      "evidence": [
+        "- Successfully claim epoch N rewards despite never being bonded during epoch N",
+        "An attacker can capture prior-epoch emissions by timing lock creation to the exact epoch boundary. This directly dilutes rewards of honest stakers who were bonded throughout the earning epoch. In the PoC, the attacker captures ~50% of epoch 0 emissions (~504.85 ETH) by creating a lock at the boundary and claiming in the same transaction."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "epoch_boundary_shared_timestamp",
+      "kind": "precondition",
+      "text": "epochTimestampEnd(N) equals epochTimestampStart(N+1) at the shared boundary timestamp.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trust_bonding"
+      ],
+      "evidence": [
+        "1. **Shared boundary timestamp:** `epochTimestampEnd(N)` equals `epochTimestampStart(N+1)` since `_calculateEpochTimestampEnd(epoch) = START + epoch * LENGTH + LENGTH`, which is identical to `_calculateEpochTimestampStart(epoch + 1) = START + (epoch + 1) * LENGTH`."
+      ]
+    },
+    {
+      "id": "lock_created_at_boundary",
+      "kind": "precondition",
+      "text": "A user creates a lock at block.timestamp equal to the exact epoch boundary epochTimestampEnd(N) == epochTimestampStart(N+1).",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "voting_escrow"
+      ],
+      "evidence": [
+        "Therefore, a user who creates a lock at the exact epoch boundary (`block.timestamp == epochTimestampEnd(N) == epochTimestampStart(N+1)`) will:"
+      ]
+    },
+    {
+      "id": "claim_uses_prev_epoch_snapshot",
+      "kind": "precondition",
+      "text": "claimRewards() computes rewards for prevEpoch = currentEpoch - 1 using the user's balance at epochTimestampEnd(prevEpoch).",
+      "modality": "asserted",
+      "entity_ids": [
+        "trust_bonding"
+      ],
+      "evidence": [
+        "[claimRewards()](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L361) computes rewards for `prevEpoch = currentEpoch - 1`. The user's reward share is determined by their balance at `epochTimestampEnd(prevEpoch)`:",
+        "- [userBondedBalanceAtEpochEnd](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L212) → `_balanceOf(account, _epochTimestampEnd(epoch))`",
+        "- [totalBondedBalanceAtEpochEnd](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L199) → `_totalSupply(_epochTimestampEnd(epoch))`"
+      ]
+    },
+    {
+      "id": "create_lock_at_boundary",
+      "kind": "action",
+      "text": "User creates a lock at the exact epoch boundary timestamp.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "voting_escrow"
+      ],
+      "evidence": [
+        "Therefore, a user who creates a lock at the exact epoch boundary (`block.timestamp == epochTimestampEnd(N) == epochTimestampStart(N+1)`) will:"
+      ]
+    },
+    {
+      "id": "claim_epoch_n_rewards",
+      "kind": "action",
+      "text": "User calls claimRewards() to claim epoch N rewards.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "trust_bonding"
+      ],
+      "evidence": [
+        "- Successfully claim epoch N rewards despite never being bonded during epoch N",
+        "An attacker can capture prior-epoch emissions by timing lock creation to the exact epoch boundary. This directly dilutes rewards of honest stakers who were bonded throughout the earning epoch. In the PoC, the attacker captures ~50% of epoch 0 emissions (~504.85 ETH) by creating a lock at the boundary and claiming in the same transaction."
+      ]
+    },
+    {
+      "id": "inclusive_boundary_lookup",
+      "kind": "root_cause",
+      "text": "The VotingEscrow binary search uses <= comparison so a checkpoint created exactly at the boundary timestamp is included in the epoch N end-of-epoch balance snapshot.",
+      "modality": "asserted",
+      "entity_ids": [
+        "voting_escrow",
+        "trust_bonding"
+      ],
+      "evidence": [
+        "2. **Inclusive VotingEscrow lookup:** The binary search in `_find_user_timestamp_epoch` uses `<=` comparison (`user_point_history[addr][_mid].ts <= _ts`), so a checkpoint created exactly at the boundary timestamp is included in the lookup for epoch N's end.",
+        "- Have their checkpoint at ts = boundary included in the epoch N balance snapshot"
+      ]
+    },
+    {
+      "id": "intent_no_prior_epoch_capture",
+      "kind": "security_intent",
+      "text": "A user who was not bonded during epoch N must not receive epoch N reward share based on a lock created at the epoch N/N+1 boundary.",
+      "modality": "inferred",
+      "entity_ids": [
+        "trust_bonding",
+        "epoch_rewards"
+      ],
+      "evidence": [
+        "- Successfully claim epoch N rewards despite never being bonded during epoch N",
+        "An attacker can capture prior-epoch emissions by timing lock creation to the exact epoch boundary. This directly dilutes rewards of honest stakers who were bonded throughout the earning epoch. In the PoC, the attacker captures ~50% of epoch 0 emissions (~504.85 ETH) by creating a lock at the boundary and claiming in the same transaction."
+      ]
+    },
+    {
+      "id": "intent_snapshot_excludes_boundary_checkpoint",
+      "kind": "security_intent",
+      "text": "The epoch N end-of-epoch balance snapshot must exclude checkpoints created at the boundary timestamp belonging to epoch N+1.",
+      "modality": "inferred",
+      "entity_ids": [
+        "voting_escrow",
+        "trust_bonding"
+      ],
+      "evidence": [
+        "2. **Inclusive VotingEscrow lookup:** The binary search in `_find_user_timestamp_epoch` uses `<=` comparison (`user_point_history[addr][_mid].ts <= _ts`), so a checkpoint created exactly at the boundary timestamp is included in the lookup for epoch N's end.",
+        "- Have their checkpoint at ts = boundary included in the epoch N balance snapshot"
+      ]
+    },
+    {
+      "id": "diluted_honest_staker_rewards",
+      "kind": "impact",
+      "text": "This directly dilutes rewards of honest stakers who were bonded throughout the earning epoch.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "An attacker can capture prior-epoch emissions by timing lock creation to the exact epoch boundary. This directly dilutes rewards of honest stakers who were bonded throughout the earning epoch. In the PoC, the attacker captures ~50% of epoch 0 emissions (~504.85 ETH) by creating a lock at the boundary and claiming in the same transaction."
+      ]
+    },
+    {
+      "id": "attacker_captures_prior_epoch_emissions",
+      "kind": "impact",
+      "text": "An attacker can capture prior-epoch emissions by timing lock creation to the exact epoch boundary.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "An attacker can capture prior-epoch emissions by timing lock creation to the exact epoch boundary. This directly dilutes rewards of honest stakers who were bonded throughout the earning epoch. In the PoC, the attacker captures ~50% of epoch 0 emissions (~504.85 ETH) by creating a lock at the boundary and claiming in the same transaction."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "create_lock_at_boundary",
+    "claim_epoch_n_rewards"
+  ],
+  "ambiguities": [
+    "Report does not state whether lock creation and claim occur in the same transaction as a required precondition; PoC mentions same transaction but this is an outcome detail.",
+    "No explicit authorization/permission condition is stated for claimRewards beyond the user being the claimant.",
+    "Whether the attacker must be a distinct actor from honest stakers is not specified."
+  ]
+}

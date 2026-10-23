@@ -1,0 +1,244 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Oracle extension maybeInsertSnapshot storage key generation and snapshot/counts writes",
+    "environment": "src/extensions/Oracle.sol Oracle extension using raw assembly sstore",
+    "evidence": [
+      "The Oracle extension uses raw assembly `sstore` to save `Counts` (metadata) and `Snapshot` (price history) data. The storage key generation logic does not cryptographically hash the keys (e.g., using `keccak256`). Instead, it uses simple bitwise operations on the token address.",
+      "This deterministic mapping allows an attacker to generate a specific token address (TokenA with leading zeros) and a derived token address (TokenB), such that the storage slot for TokenB's `Counts` collides exactly with the storage slot for TokenA's `Snapshot` (at index 0).",
+      "The vulnerability is located in the `maybeInsertSnapshot` function within `src/extensions/Oracle.sol` (lines 139-142). The function uses inline assembly to store the `Counts` struct using the raw token address as the key, and the `Snapshot` struct using `(token << 32) | index` as the key. This deterministic mapping without hashing allows for storage collisions.",
+      "- **Snapshot Key for TokenA (Index 0):** `(TokenA << 32) | 0 = TokenB`.",
+      "- **Result:** The storage key is identical. Writing `Counts` for TokenB overwrites the `Snapshot` for TokenA. Conversely, writing a `Snapshot` for TokenA corrupts the `Counts` metadata for TokenB."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "attacker",
+      "role": "attacker",
+      "evidence": [
+        "This deterministic mapping allows an attacker to generate a specific token address (TokenA with leading zeros) and a derived token address (TokenB), such that the storage slot for TokenB's `Counts` collides exactly with the storage slot for TokenA's `Snapshot` (at index 0).",
+        "- **Data Corruption:** An attacker can permanently corrupt the price history of a pool using TokenA by initializing a pool for TokenB.",
+        "- **Oracle Manipulation:** If TokenA is a legitimate token (but happens to have leading zeros), a malicious actor can deploy TokenB to manipulate the oracle data used by other protocols."
+      ]
+    },
+    {
+      "id": "token_a",
+      "name": "TokenA (leading-zeros token)",
+      "role": "asset",
+      "evidence": [
+        "This deterministic mapping allows an attacker to generate a specific token address (TokenA with leading zeros) and a derived token address (TokenB), such that the storage slot for TokenB's `Counts` collides exactly with the storage slot for TokenA's `Snapshot` (at index 0).",
+        "- Let `TokenA = 0x00000000...01`.",
+        "- **Snapshot Key for TokenA (Index 0):** `(TokenA << 32) | 0 = TokenB`."
+      ]
+    },
+    {
+      "id": "token_b",
+      "name": "TokenB (derived token)",
+      "role": "asset",
+      "evidence": [
+        "This deterministic mapping allows an attacker to generate a specific token address (TokenA with leading zeros) and a derived token address (TokenB), such that the storage slot for TokenB's `Counts` collides exactly with the storage slot for TokenA's `Snapshot` (at index 0).",
+        "- Let `TokenB = TokenA << 32` (Left shift by 32 bits).",
+        "- **Counts Key for TokenB:** `TokenB`."
+      ]
+    },
+    {
+      "id": "oracle_extension",
+      "name": "Oracle extension contract",
+      "role": "contract",
+      "evidence": [
+        "The Oracle extension uses raw assembly `sstore` to save `Counts` (metadata) and `Snapshot` (price history) data. The storage key generation logic does not cryptographically hash the keys (e.g., using `keccak256`). Instead, it uses simple bitwise operations on the token address.",
+        "The vulnerability is located in the `maybeInsertSnapshot` function within `src/extensions/Oracle.sol` (lines 139-142). The function uses inline assembly to store the `Counts` struct using the raw token address as the key, and the `Snapshot` struct using `(token << 32) | index` as the key. This deterministic mapping without hashing allows for storage collisions."
+      ]
+    },
+    {
+      "id": "counts_struct",
+      "name": "Counts metadata struct",
+      "role": "asset",
+      "evidence": [
+        "The Oracle extension uses raw assembly `sstore` to save `Counts` (metadata) and `Snapshot` (price history) data. The storage key generation logic does not cryptographically hash the keys (e.g., using `keccak256`). Instead, it uses simple bitwise operations on the token address.",
+        "- **Counts Key for TokenB:** `TokenB`.",
+        "- **Denial of Service:** Corrupting the `Counts` struct (which tracks capacity and count) can permanently break the oracle for TokenB."
+      ]
+    },
+    {
+      "id": "snapshot_struct",
+      "name": "Snapshot price history struct",
+      "role": "asset",
+      "evidence": [
+        "The Oracle extension uses raw assembly `sstore` to save `Counts` (metadata) and `Snapshot` (price history) data. The storage key generation logic does not cryptographically hash the keys (e.g., using `keccak256`). Instead, it uses simple bitwise operations on the token address.",
+        "- **Snapshot Key for TokenA (Index 0):** `(TokenA << 32) | 0 = TokenB`.",
+        "- **Data Corruption:** An attacker can permanently corrupt the price history of a pool using TokenA by initializing a pool for TokenB."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_token_a_leading_zeros",
+      "kind": "precondition",
+      "text": "TokenA is a token address with leading zeros (e.g., 0x00000000...01).",
+      "modality": "asserted",
+      "entity_ids": [
+        "token_a"
+      ],
+      "evidence": [
+        "This deterministic mapping allows an attacker to generate a specific token address (TokenA with leading zeros) and a derived token address (TokenB), such that the storage slot for TokenB's `Counts` collides exactly with the storage slot for TokenA's `Snapshot` (at index 0).",
+        "- Let `TokenA = 0x00000000...01`."
+      ]
+    },
+    {
+      "id": "p_token_b_derived",
+      "kind": "precondition",
+      "text": "TokenB is derived as TokenA << 32.",
+      "modality": "asserted",
+      "entity_ids": [
+        "token_b",
+        "token_a"
+      ],
+      "evidence": [
+        "This deterministic mapping allows an attacker to generate a specific token address (TokenA with leading zeros) and a derived token address (TokenB), such that the storage slot for TokenB's `Counts` collides exactly with the storage slot for TokenA's `Snapshot` (at index 0).",
+        "- Let `TokenB = TokenA << 32` (Left shift by 32 bits)."
+      ]
+    },
+    {
+      "id": "p_counts_key_token_b",
+      "kind": "precondition",
+      "text": "The Counts storage key for TokenB equals TokenB.",
+      "modality": "asserted",
+      "entity_ids": [
+        "counts_struct",
+        "token_b"
+      ],
+      "evidence": [
+        "- **Counts Key for TokenB:** `TokenB`."
+      ]
+    },
+    {
+      "id": "p_snapshot_key_token_a",
+      "kind": "precondition",
+      "text": "The Snapshot storage key for TokenA at index 0 equals (TokenA << 32) | 0 = TokenB.",
+      "modality": "asserted",
+      "entity_ids": [
+        "snapshot_struct",
+        "token_a",
+        "token_b"
+      ],
+      "evidence": [
+        "- **Snapshot Key for TokenA (Index 0):** `(TokenA << 32) | 0 = TokenB`."
+      ]
+    },
+    {
+      "id": "a_init_pool_token_b",
+      "kind": "action",
+      "text": "Attacker initializes a pool for TokenB, writing Counts for TokenB.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "token_b",
+        "counts_struct"
+      ],
+      "evidence": [
+        "- **Result:** The storage key is identical. Writing `Counts` for TokenB overwrites the `Snapshot` for TokenA. Conversely, writing a `Snapshot` for TokenA corrupts the `Counts` metadata for TokenB.",
+        "- **Data Corruption:** An attacker can permanently corrupt the price history of a pool using TokenA by initializing a pool for TokenB."
+      ]
+    },
+    {
+      "id": "a_write_snapshot_token_a",
+      "kind": "action",
+      "text": "A Snapshot for TokenA is written, corrupting Counts metadata for TokenB.",
+      "modality": "potential",
+      "entity_ids": [
+        "snapshot_struct",
+        "token_a",
+        "counts_struct",
+        "token_b"
+      ],
+      "evidence": [
+        "- **Result:** The storage key is identical. Writing `Counts` for TokenB overwrites the `Snapshot` for TokenA. Conversely, writing a `Snapshot` for TokenA corrupts the `Counts` metadata for TokenB."
+      ]
+    },
+    {
+      "id": "rc_unhashed_key_mapping",
+      "kind": "root_cause",
+      "text": "maybeInsertSnapshot uses raw assembly sstore with deterministic unhashed keys (raw token address for Counts, (token << 32) | index for Snapshot), allowing storage collisions.",
+      "modality": "asserted",
+      "entity_ids": [
+        "oracle_extension",
+        "counts_struct",
+        "snapshot_struct"
+      ],
+      "evidence": [
+        "The Oracle extension uses raw assembly `sstore` to save `Counts` (metadata) and `Snapshot` (price history) data. The storage key generation logic does not cryptographically hash the keys (e.g., using `keccak256`). Instead, it uses simple bitwise operations on the token address.",
+        "The vulnerability is located in the `maybeInsertSnapshot` function within `src/extensions/Oracle.sol` (lines 139-142). The function uses inline assembly to store the `Counts` struct using the raw token address as the key, and the `Snapshot` struct using `(token << 32) | index` as the key. This deterministic mapping without hashing allows for storage collisions."
+      ]
+    },
+    {
+      "id": "i_distinct_slots",
+      "kind": "security_intent",
+      "text": "Storage slots for distinct token data (Counts of one token and Snapshot of another) must not collide; key generation should be collision-resistant.",
+      "modality": "asserted",
+      "entity_ids": [
+        "oracle_extension",
+        "counts_struct",
+        "snapshot_struct"
+      ],
+      "evidence": [
+        "The Oracle extension uses raw assembly `sstore` to save `Counts` (metadata) and `Snapshot` (price history) data. The storage key generation logic does not cryptographically hash the keys (e.g., using `keccak256`). Instead, it uses simple bitwise operations on the token address.",
+        "Replace the deterministic inline assembly key generation with standard `keccak256` hashing. This ensures that the storage slots are uniformly distributed and resistant to collision attacks, regardless of the token address pattern."
+      ]
+    },
+    {
+      "id": "i_no_cross_token_corruption",
+      "kind": "security_intent",
+      "text": "Writing Counts for TokenB must not overwrite the Snapshot for TokenA, and writing a Snapshot for TokenA must not corrupt Counts metadata for TokenB.",
+      "modality": "asserted",
+      "entity_ids": [
+        "counts_struct",
+        "snapshot_struct",
+        "token_a",
+        "token_b"
+      ],
+      "evidence": [
+        "- **Result:** The storage key is identical. Writing `Counts` for TokenB overwrites the `Snapshot` for TokenA. Conversely, writing a `Snapshot` for TokenA corrupts the `Counts` metadata for TokenB."
+      ]
+    },
+    {
+      "id": "data_corruption_price_history",
+      "kind": "impact",
+      "text": "An attacker can permanently corrupt the price history of a pool using TokenA by initializing a pool for TokenB.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- **Data Corruption:** An attacker can permanently corrupt the price history of a pool using TokenA by initializing a pool for TokenB."
+      ]
+    },
+    {
+      "id": "oracle_manipulation",
+      "kind": "impact",
+      "text": "If TokenA is a legitimate token (but happens to have leading zeros), a malicious actor can deploy TokenB to manipulate the oracle data used by other protocols.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "- **Oracle Manipulation:** If TokenA is a legitimate token (but happens to have leading zeros), a malicious actor can deploy TokenB to manipulate the oracle data used by other protocols."
+      ]
+    },
+    {
+      "id": "denial_of_service_oracle",
+      "kind": "impact",
+      "text": "Corrupting the `Counts` struct (which tracks capacity and count) can permanently break the oracle for TokenB.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "- **Denial of Service:** Corrupting the `Counts` struct (which tracks capacity and count) can permanently break the oracle for TokenB."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_init_pool_token_b"
+  ],
+  "ambiguities": [
+    "Report does not state whether the attacker is permissionless or authorized to initialize pools.",
+    "Report does not establish a prior on-chain state (existing TokenA pool/snapshot) before the collision write; collision is described conditionally.",
+    "Whether TokenA already has a populated Snapshot at index 0 before the attack is not explicitly established."
+  ]
+}

@@ -1,0 +1,39 @@
+Oracle Bypass via Stale Observation and Failure Fallback
+
+## Finding description and impact
+
+The protocol's safety reliance on `checkPoolAndGetCenterPrice` creates a false sense of security. 
+
+
+The `checkPoolAndGetCenterPrice` function contains a logic flaw where it returns `centerSqrtPriceX96` (Spot Price) directly, bypassing all deviation checks under two conditions:
+
+*  1. When `oldestTimestamp + SECONDS_AGO < block.timestamp` (TWAP window expired).
+
+
+*  2. When the oracle query fails (`!success`).
+
+
+The protocol's safety reliance on `checkPoolAndGetCenterPrice` creates a false sense of security. The function contains a critical logic flaw where it silently falls back to the `centerSqrtPriceX96` (Spot Price), bypassing all deviation checks and providing any downstream contract (like `LiquidityManager`) with a poisoned baseline.
+
+
+**1. The Vulnerable Oracle Logic (Silent Bypass)**
+
+The internal logic contains two critical bypasses where it returns the manipulated `slot0` price instead of reverting on invalid or stale data:
+
+
+**2. Downstream Impact on Execution**
+
+When the Oracle bypass occurs, the calling contract (the "Victim") receives the manipulated price as if it were a validated "Center Price."
+
+
+**Root Cause**
+
+The fundamental issue is the non-linear relationship between `sqrtPriceX96` and actual price $P$.
+
+Price Derivation: $P = (\frac{sqrtPriceX96}{2^{96}})^2$
+
+Deviation Calculation: 
+
+$$
+\Delta P = \left( \frac{\text{sqrtPriceX96}_{spot}^{2}}{\text{sqrtPriceX96}_{TWAP}^{2}} - 1 \right) \times 100\%
+$$

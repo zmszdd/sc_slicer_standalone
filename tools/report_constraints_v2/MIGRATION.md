@@ -567,3 +567,51 @@ power_of_two 不标/symbol×symbol 不标、未引用符号标记/同源近重
 乘积单位必拒与内联常量可过两例钉死门语义、修复教学四短语）。
 S18 前后 420→430 全绿；S17 基线先单独提交（420 绿），S18 改动
 在其后单独成commit，两段历史可独立复核。
+
+## 2026-10-18：S19 —— 四处接线缺口闭合（重放完整性）
+
+全面缺陷巡检（批 08 之后）发现的 P1 + 3×P2 接线缺口，全部是
+"管线写了、验证器没接"形态——产出物存在但不可重放/不入哈希链，
+`verify` 的零模型调用重放对它们视而不见。修复不新增任何模型调用、
+不动门。
+
+1. **`run` 入口注入 `--readiness-retries 1`**（仓库根 `main.py`）
+   - 盲批 08 根因闭合：DeepSeek 网关故障窗口内 readiness 首答
+     JSON 截断（409 tokens 处 finish=stop），该步骤此前由 `run`
+     入口注入的预算为 0（`batch` 默认 1）——同一故障在单案例路径
+     直接死亡
+   - 注入的冲突旗标为 `--provider`（子解析器把该旗标守卫为
+     "requires DeepSeek full extraction"）：显式改换传输方的调用
+     自行决定预算，与 `batch` 的按 provider 转发语义一致
+2. **example-pinning advisory 入哈希链 + 重放**（盲批 05 之前
+   落地该 feature 时漏接的两处）
+   - `semantic_pipeline.py` stage3-spec 哈希链元组补
+     `example-pinning-review.json`；`batch_verify.py` 补
+     `features.get('example_pinning_review', False)` 等值重放
+     （录制键早于该 feature 的 run 无产物、自然跳过）
+3. **S18 两键哈希校验**：`verify` 的接口哈希循环此前只核对
+   `requirement_source_review` / `intent_scope_review` /
+   `placeholder_predicate_review` / `semantic_faithfulness_audit`
+   四键，管线已写入哈希链的 `mixed_unit_scaling_review` /
+   `symbol_table_review` 无校验——补齐（含 example-pinning 共
+   三键），篡改可检
+4. **`--mechanical-salvage` 产出可重放**（双侧）
+   - 形式化侧：`neural-formalization/mechanical-salvage.json` 此前
+     写而不验，被修复的 run 重放必失败（"neural formal plan
+     changed"）——按管线实际顺序（normalize→salvage→partial）在
+     归一化重放之后、部分形式化重放之前补 `drop_unused_invalid_symbols`
+     重放并对账落盘日志
+   - 元素侧：`mechanical-salvage-elements.json` 同理，在
+     `element-format-normalization` 重放之后补
+     `normalize_element_ids` 重放
+   - 两处均按文件存在路由：无旗标/无修复的 run 零改动
+5. **批预算公式补 S17 审计调用**：`batch` 的
+   `maximum_model_invocations` 此前不数语义忠实审计（1 次 + 至多
+   1 次格式重试），prompt 版本带 `semantic_faithfulness_audit`
+   feature 时每案例 +2，恢复对外调用量如实计数纪律
+
+测试：`test_main_entry.py` 五处更新（注入序含 readiness、
+formalize-only/offline 不注入、显式 provider 自持预算）；新增
+`test_mechanical_salvage_run_replays_in_verify` 集成测试（带
+`entity_ids: []` 未引用符号的计划经 `--mechanical-salvage` 落盘、
+verify 重放必须通过——修复前该场景不可验证）。

@@ -1,0 +1,211 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "RiskEngine.twapEMA() tuple unpacking of OraclePack.getEMAs() and downstream use of twapTick in PanopticPool.dispatchFrom()",
+    "environment": "Solidity smart contract protocol (RiskEngine, OraclePack, PanopticPool)",
+    "evidence": [
+      "RiskEngine.twapEMA() computes the wrong TWAP tick due to incorrect tuple unpacking of OraclePack.getEMAs()",
+      "`OraclePack.getEMAs()` has a well-defined return order:",
+      "However, `RiskEngine.twapEMA()` unpacks this tuple in the wrong order:",
+      "So the function does not compute the intended `0.6*fast + 0.3*slow + 0.1*eons`.It instead computes `(6 * slow + 3 * fast + spot) / 10`",
+      "This incorrect TWAP tick is consumed by the protocol via `PanopticPool.getTWAP()`:",
+      "`twapTick` is then used in `dispatchFrom()` (liquidations/force exercises/settlements):",
+      "As a result, the system’s liquidation/dispatch logic relies on a TWAP that is mathematically different than intended. This can cause false positives/negatives in `StaleOracle()` checks, potentially allowing operations when the intended TWAP would block them, or blocking operations when the intended TWAP would allow them.",
+      "It can also cause incorrect solvency classification at the TWAP checkpoint (since one of the four price points in the solvency grid is wrong) ans also incorrect liquidation bonus / conversion pricing inputs (since `getLiquidationBonus` is fed `sqrtRatioAtTick(twapTick)`)."
+    ]
+  },
+  "entities": [
+    {
+      "id": "risk_engine",
+      "name": "RiskEngine",
+      "role": "contract",
+      "evidence": [
+        "RiskEngine.twapEMA() computes the wrong TWAP tick due to incorrect tuple unpacking of OraclePack.getEMAs()",
+        "However, `RiskEngine.twapEMA()` unpacks this tuple in the wrong order:",
+        "This is further confirmed by `RiskEngine.isSafeMode()`, which unpacks `getEMAs()` using the correct order:"
+      ]
+    },
+    {
+      "id": "oracle_pack",
+      "name": "OraclePack",
+      "role": "contract",
+      "evidence": [
+        "`OraclePack.getEMAs()` has a well-defined return order:",
+        "So the tuple returned by getEMAs() is:"
+      ]
+    },
+    {
+      "id": "panoptic_pool",
+      "name": "PanopticPool",
+      "role": "contract",
+      "evidence": [
+        "This incorrect TWAP tick is consumed by the protocol via `PanopticPool.getTWAP()`:",
+        "`twapTick` is then used in `dispatchFrom()` (liquidations/force exercises/settlements):"
+      ]
+    },
+    {
+      "id": "twap_tick",
+      "name": "twapTick",
+      "role": "asset",
+      "evidence": [
+        "This incorrect TWAP tick is consumed by the protocol via `PanopticPool.getTWAP()`:",
+        "`twapTick` is then used in `dispatchFrom()` (liquidations/force exercises/settlements):"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_getemas_order",
+      "kind": "precondition",
+      "text": "OraclePack.getEMAs() returns a tuple ordered spotEMA (0), fastEMA (1), slowEMA (2), eonsEMA (3), medianTick (4).",
+      "modality": "asserted",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "evidence": [
+        "`OraclePack.getEMAs()` has a well-defined return order:",
+        "So the tuple returned by getEMAs() is:",
+        "`spotEMA` (index 0)",
+        "`fastEMA` (index 1)",
+        "`slowEMA` (index 2)",
+        "`eonsEMA` (index 3)",
+        "`medianTick` (index 4)"
+      ]
+    },
+    {
+      "id": "p_intended_formula",
+      "kind": "precondition",
+      "text": "The intended twapEMA computation is 0.6*fast + 0.3*slow + 0.1*eons.",
+      "modality": "asserted",
+      "entity_ids": [
+        "risk_engine"
+      ],
+      "evidence": [
+        "So the function does not compute the intended `0.6*fast + 0.3*slow + 0.1*eons`.It instead computes `(6 * slow + 3 * fast + spot) / 10`"
+      ]
+    },
+    {
+      "id": "a_twapema_unpack",
+      "kind": "action",
+      "text": "RiskEngine.twapEMA() unpacks the getEMAs() tuple positionally in the wrong order.",
+      "modality": "asserted",
+      "entity_ids": [
+        "risk_engine",
+        "oracle_pack"
+      ],
+      "evidence": [
+        "However, `RiskEngine.twapEMA()` unpacks this tuple in the wrong order:",
+        "Solidity tuple assignment is positional, therefore this code assigns:"
+      ]
+    },
+    {
+      "id": "a_twapema_compute",
+      "kind": "action",
+      "text": "twapEMA() computes (6 * slow + 3 * fast + spot) / 10 instead of the intended weighted formula.",
+      "modality": "asserted",
+      "entity_ids": [
+        "risk_engine"
+      ],
+      "evidence": [
+        "So the function does not compute the intended `0.6*fast + 0.3*slow + 0.1*eons`.It instead computes `(6 * slow + 3 * fast + spot) / 10`"
+      ]
+    },
+    {
+      "id": "a_dispatch_consume",
+      "kind": "action",
+      "text": "PanopticPool.getTWAP() supplies the incorrect twapTick to dispatchFrom() for liquidations, force exercises and settlements.",
+      "modality": "asserted",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_tick"
+      ],
+      "evidence": [
+        "This incorrect TWAP tick is consumed by the protocol via `PanopticPool.getTWAP()`:",
+        "`twapTick` is then used in `dispatchFrom()` (liquidations/force exercises/settlements):"
+      ]
+    },
+    {
+      "id": "rc_wrong_unpack",
+      "kind": "root_cause",
+      "text": "Positional tuple assignment maps eonsEMA<-spotEMA, slowEMA<-fastEMA, fastEMA<-slowEMA, so twapEMA() uses the wrong EMA values.",
+      "modality": "asserted",
+      "entity_ids": [
+        "risk_engine",
+        "oracle_pack"
+      ],
+      "evidence": [
+        "Solidity tuple assignment is positional, therefore this code assigns:",
+        "`eonsEMA <- spotEMA`",
+        "`slowEMA <- fastEMA`",
+        "`fastEMA <- slowEMA`"
+      ]
+    },
+    {
+      "id": "i_stale_oracle_mismatch",
+      "kind": "impact",
+      "text": "The StaleOracle() manipulation/staleness guard can produce false positives or false negatives, allowing operations the intended TWAP would block or blocking operations the intended TWAP would allow.",
+      "modality": "potential",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_tick"
+      ],
+      "evidence": [
+        "- Manipulation / staleness guard uses `twapTick`:",
+        "As a result, the system’s liquidation/dispatch logic relies on a TWAP that is mathematically different than intended. This can cause false positives/negatives in `StaleOracle()` checks, potentially allowing operations when the intended TWAP would block them, or blocking operations when the intended TWAP would allow them."
+      ]
+    },
+    {
+      "id": "i_solvency_misclass",
+      "kind": "impact",
+      "text": "Solvency classification at the TWAP checkpoint can be incorrect because one of the four price points in the solvency grid is wrong.",
+      "modality": "potential",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_tick"
+      ],
+      "evidence": [
+        "- Solvency is explicitly checked at `twapTick`:",
+        "It can also cause incorrect solvency classification at the TWAP checkpoint (since one of the four price points in the solvency grid is wrong) ans also incorrect liquidation bonus / conversion pricing inputs (since `getLiquidationBonus` is fed `sqrtRatioAtTick(twapTick)`)."
+      ]
+    },
+    {
+      "id": "i_liquidation_pricing",
+      "kind": "impact",
+      "text": "Liquidation bonus and conversion pricing inputs can be incorrect because getLiquidationBonus is fed sqrtRatioAtTick(twapTick).",
+      "modality": "potential",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_tick"
+      ],
+      "evidence": [
+        "- Liquidation pricing and bonus use `twapTick`:",
+        "It can also cause incorrect solvency classification at the TWAP checkpoint (since one of the four price points in the solvency grid is wrong) ans also incorrect liquidation bonus / conversion pricing inputs (since `getLiquidationBonus` is fed `sqrtRatioAtTick(twapTick)`)."
+      ]
+    },
+    {
+      "id": "si_twap_matches_intended",
+      "kind": "security_intent",
+      "text": "twapEMA() should compute the intended weighted TWAP 0.6*fast + 0.3*slow + 0.1*eons consistent with the system's own interpretation of getEMAs().",
+      "modality": "inferred",
+      "entity_ids": [
+        "risk_engine",
+        "oracle_pack"
+      ],
+      "evidence": [
+        "So the function does not compute the intended `0.6*fast + 0.3*slow + 0.1*eons`.It instead computes `(6 * slow + 3 * fast + spot) / 10`",
+        "This is further confirmed by `RiskEngine.isSafeMode()`, which unpacks `getEMAs()` using the correct order:",
+        "Meaning `twapEMA()` is internally inconsistent with the rest of the system’s own interpretation of `getEMAs()`."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_twapema_unpack",
+    "a_twapema_compute",
+    "a_dispatch_consume"
+  ],
+  "ambiguities": [
+    "No concrete transaction or caller is described; the scenario is a code-level defect rather than an observed exploit.",
+    "Whether the incorrect TWAP actually causes a harmful liquidation or settlement in practice is not established.",
+    "The report does not specify who triggers twapEMA() or under what authorization."
+  ]
+}

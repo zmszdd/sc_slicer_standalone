@@ -1,0 +1,494 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "c95d8b175_order_appended": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a new order was appended to the doubly linked list for the price level",
+      "checkpoint": "before removal of a non-head order",
+      "entity_ids": [
+        "book_contract",
+        "price_level_list"
+      ],
+      "evidence": "The limit-order book stores all orders for a given price in a doubly linked list:"
+    },
+    "c95d8b175_non_head_order_present": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a non-head order exists in the price-level list",
+      "checkpoint": "before removal of a non-head order",
+      "entity_ids": [
+        "price_level_list"
+      ],
+      "evidence": "As a result, every non-head order has `prevOrderId == 0` when later read from"
+    },
+    "c95d8b175_order_reachable": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the earlier order is addressable via the limit's headOrder/tailOrder chain (visible to traversal, matching and user cancels)",
+      "checkpoint": "after append/removal operations on the price level",
+      "entity_ids": [
+        "price_level_list",
+        "rival_orders"
+      ],
+      "evidence": "This violates the intended invariant documented by the surrounding logic:"
+    },
+    "c95d8b175_order_counted_in_open_interest": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the order is still counted in numBids/numAsks and open-interest counters",
+      "checkpoint": "after append/removal operations on the price level",
+      "entity_ids": [
+        "open_interest",
+        "rival_orders"
+      ],
+      "evidence": "The earlier orders become **orphaned**:"
+    },
+    "cf7ea242f_order_appended": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a new order has been appended to the doubly linked list for the price level",
+      "checkpoint": "before append completes",
+      "entity_ids": [
+        "book_contract",
+        "price_level_list"
+      ],
+      "evidence": "The limit-order book stores all orders for a given price in a doubly linked list:"
+    },
+    "cf7ea242f_non_head_order_present": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a non-head order exists in the price-level list",
+      "checkpoint": "before removal of that order",
+      "entity_ids": [
+        "price_level_list"
+      ],
+      "evidence": "As a result, every non-head order has `prevOrderId == 0` when later read from"
+    },
+    "cf7ea242f_open_interest_counter": {
+      "sort": "int",
+      "unit": "order_count",
+      "meaning": "value of the open-interest counter (numBids/numAsks) for the price level",
+      "checkpoint": "after the append/removal transition",
+      "entity_ids": [
+        "open_interest"
+      ],
+      "evidence": "This violates the intended invariant documented by the surrounding logic:"
+    },
+    "cf7ea242f_reachable_order_count": {
+      "sort": "int",
+      "unit": "order_count",
+      "meaning": "number of orders actually addressable via the limit's headOrder/tailOrder chain",
+      "checkpoint": "after the append/removal transition",
+      "entity_ids": [
+        "price_level_list",
+        "open_interest"
+      ],
+      "evidence": "This violates the intended invariant documented by the surrounding logic:"
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_best_price_sentinel_4a554bd8",
+      "scope": "Limit-order book append and removal for a price level in Book._updateLimitPostOrder",
+      "modality": "potential",
+      "impact_ids": [
+        "best_price_sentinel"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "A new order is appended to the doubly linked list for a given price level.; A non-head order exists in the price-level list.; The corruption persists because every operation is wrapped in a successful transaction.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "new_order_appended",
+            "non_head_order_exists",
+            "assumption_persistent_corruption"
+          ],
+          "evidence": [
+            "The limit-order book stores all orders for a given price in a doubly linked list:",
+            "When a new order is appended, the contract must update both links:",
+            "As a result, every non-head order has `prevOrderId == 0` when later read from",
+            "* Cancelling or matching a non-head order makes the removal routine believe it is the head, so it blindly moves `limit.headOrder` past the real head.",
+            "* The corruption persists forever because every operation is wrapped in a successful transaction;"
+          ]
+        },
+        "safety": {
+          "text": "Every order should be addressable via the limit's headOrder/tailOrder chain, and open-interest counters must reflect reachable orders only.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "intent_reachable_chain"
+          ],
+          "evidence": [
+            "This violates the intended invariant documented by the surrounding logic:",
+            "- every order should be addressable via the limit’s `headOrder`/`tailOrder` chain, and open-interest counters must reflect *reachable* orders only."
+          ]
+        },
+        "effects": {
+          "text": "After the last phantom order is deleted, getBestBid/Ask returns the MAX_UINT sentinel, disabling taker fills for that side of the book.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "best_price_sentinel"
+          ],
+          "evidence": [
+            "Once the last phantom order is deleted, `getBestBid/Ask` flips to the",
+            "`MAX_UINT` sentinel, breaking taker fills and freezing that side",
+            "of the book.",
+            "* After the final orphaned order is deleted (e.g. via expiry or a user-initiated cancel that happens to succeed), the RB-tree node is removed and `getBestBid/Ask` returns the `MAX_UINT` sentinel, effectively disabling taker fills for that side of the book."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "best_price_sentinel",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_reachable_chain other_mismatch: The statement is about addressability via head/tail chain and counters, but the predicate encodes sentinel and taker-fill conditions instead.; best_price_sentinel other_mismatch: The statement is about sentinel return after last phantom deletion, but the predicate asserts order-appended/non-head presence plus negation of sentinel conditi; P/I/V relation other_mismatch: V does not contradict I; it conjoins P with the negation of I's consequent, which is not a direct violation of the reachability intent."
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_reachable_chain other_mismatch: The statement is about addressability via head/tail chain and counters, but the predicate encodes sentinel and taker-fill conditions instead.; best_price_sentinel other_mismatch: The statement is about sentinel return after last phantom deletion, but the predicate asserts order-appended/non-head presence plus negation of sentinel conditi; P/I/V relation other_mismatch: V does not contradict I; it conjoins P with the negation of I's consequent, which is not a direct violation of the reachability intent."
+      ]
+    },
+    {
+      "id": "impact_claim_open_interest_misstated_f23a14bd",
+      "scope": "Limit-order book append and removal for a price level in Book._updateLimitPostOrder",
+      "modality": "potential",
+      "impact_ids": [
+        "open_interest_misstated"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "A new order is appended to the doubly linked list for a given price level.; A non-head order exists in the price-level list.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "cf7ea242f_order_appended"
+              },
+              {
+                "var": "cf7ea242f_non_head_order_present"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "new_order_appended",
+            "non_head_order_exists"
+          ],
+          "evidence": [
+            "The limit-order book stores all orders for a given price in a doubly linked list:",
+            "When a new order is appended, the contract must update both links:",
+            "As a result, every non-head order has `prevOrderId == 0` when later read from",
+            "* Cancelling or matching a non-head order makes the removal routine believe it is the head, so it blindly moves `limit.headOrder` past the real head."
+          ]
+        },
+        "safety": {
+          "text": "Every order should be addressable via the limit's headOrder/tailOrder chain, and open-interest counters must reflect reachable orders only.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "cf7ea242f_order_appended"
+                  },
+                  {
+                    "var": "cf7ea242f_non_head_order_present"
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "cf7ea242f_open_interest_counter"
+                  },
+                  {
+                    "var": "cf7ea242f_reachable_order_count"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_reachable_chain"
+          ],
+          "evidence": [
+            "This violates the intended invariant documented by the surrounding logic:",
+            "- every order should be addressable via the limit’s `headOrder`/`tailOrder` chain, and open-interest counters must reflect *reachable* orders only."
+          ]
+        },
+        "effects": {
+          "text": "Open-interest can be inflated or deflated, leading to wrong fee accrual and possible withdrawal failures.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "cf7ea242f_order_appended"
+                  },
+                  {
+                    "var": "cf7ea242f_non_head_order_present"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "cf7ea242f_open_interest_counter"
+                      },
+                      {
+                        "var": "cf7ea242f_reachable_order_count"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "open_interest_misstated"
+          ],
+          "evidence": [
+            "- inflate / deflate open-interest, leading to wrong fee accrual and possible",
+            "withdrawal failures."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "new_order_appended",
+            "non_head_order_exists"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_reachable_chain"
+          ],
+          "args.0": [
+            "intent_reachable_chain"
+          ],
+          "args.1": [
+            "intent_reachable_chain"
+          ]
+        },
+        "effects": {
+          "": [
+            "open_interest_misstated"
+          ],
+          "args.0": [
+            "open_interest_misstated"
+          ],
+          "args.1": [
+            "open_interest_misstated"
+          ],
+          "args.1.args.0": [
+            "open_interest_misstated"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "open_interest_misstated",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The corruption persists because every operation is wrapped in a successful transaction.",
+        "The open-interest counter is the numBids/numAsks counter for the affected price level.",
+        "Reachable orders are those addressable via the limit's headOrder/tailOrder chain."
+      ],
+      "unresolved": []
+    },
+    {
+      "id": "impact_claim_orders_orphaned_0c9d3383",
+      "scope": "Limit-order book append and removal for a price level in Book._updateLimitPostOrder",
+      "modality": "asserted",
+      "impact_ids": [
+        "orders_orphaned"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "A new order is appended to the doubly linked list for a given price level.; A non-head order exists in the price-level list.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c95d8b175_order_appended"
+              },
+              {
+                "var": "c95d8b175_non_head_order_present"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "new_order_appended",
+            "non_head_order_exists"
+          ],
+          "evidence": [
+            "The limit-order book stores all orders for a given price in a doubly linked list:",
+            "When a new order is appended, the contract must update both links:",
+            "As a result, every non-head order has `prevOrderId == 0` when later read from",
+            "* Cancelling or matching a non-head order makes the removal routine believe it is the head, so it blindly moves `limit.headOrder` past the real head."
+          ]
+        },
+        "safety": {
+          "text": "Every order should be addressable via the limit's headOrder/tailOrder chain, and open-interest counters must reflect reachable orders only.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c95d8b175_order_appended"
+                  },
+                  {
+                    "var": "c95d8b175_non_head_order_present"
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c95d8b175_order_reachable"
+                  },
+                  {
+                    "var": "c95d8b175_order_counted_in_open_interest"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_reachable_chain"
+          ],
+          "evidence": [
+            "This violates the intended invariant documented by the surrounding logic:",
+            "- every order should be addressable via the limit’s `headOrder`/`tailOrder` chain, and open-interest counters must reflect *reachable* orders only."
+          ]
+        },
+        "effects": {
+          "text": "Earlier orders become orphaned: invisible to traversal, matching and user cancels, yet still counted in numBids/Asks and open-interest.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c95d8b175_order_appended"
+                  },
+                  {
+                    "var": "c95d8b175_non_head_order_present"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "var": "c95d8b175_order_reachable"
+                      },
+                      {
+                        "var": "c95d8b175_order_counted_in_open_interest"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "orders_orphaned"
+          ],
+          "evidence": [
+            "The earlier orders become **orphaned**:",
+            "– invisible to traversal, matching and user cancels",
+            "– still counted in `numBids/Asks`, `*_OpenInterest`"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "new_order_appended",
+            "non_head_order_exists"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_reachable_chain"
+          ],
+          "args.0": [
+            "intent_reachable_chain"
+          ],
+          "args.1": [
+            "intent_reachable_chain"
+          ]
+        },
+        "effects": {
+          "": [
+            "orders_orphaned"
+          ],
+          "args.0": [
+            "orders_orphaned"
+          ],
+          "args.1": [
+            "orders_orphaned"
+          ],
+          "args.1.args.0": [
+            "orders_orphaned"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "orders_orphaned",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The corruption persists because every operation is wrapped in a successful transaction.",
+        "The removal routine is invoked when cancelling or matching a non-head order.",
+        "Appending updates the forward link tail.next = newOrder and the back link newOrder.prev = tail."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Reachability and open-interest counting are represented as grounded Booleans because the report omits numeric counter definitions.",
+    "The plan formalizes only the orders_orphaned impact; best-price sentinel and open-interest misstatement are separate impacts not covered here.",
+    "The exact removal routine behavior is described but not shown in code fragments; runtime binding is deferred.",
+    "Only the open_interest_misstated impact is formalized; orphaning, traversal invisibility and MAX_UINT sentinel outcomes are not covered by this claim.",
+    "The correspondence is stated at the counter level; per-order identity of counted entries is not encoded.",
+    "best_price_sentinel: No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_reachable_chain other_mismatch: The statement is about addressability via head/tail chain and counters, but the predicate encodes sentinel and taker-fill conditions instead.; best_price_sentinel other_mismatch: The statement is about sentinel return after last phantom deletion, but the predicate asserts order-appended/non-head presence plus negation of sentinel conditi; P/I/V relation other_mismatch: V does not contradict I; it conjoins P with the negation of I's consequent, which is not a direct violation of the reachability intent."
+  ]
+}

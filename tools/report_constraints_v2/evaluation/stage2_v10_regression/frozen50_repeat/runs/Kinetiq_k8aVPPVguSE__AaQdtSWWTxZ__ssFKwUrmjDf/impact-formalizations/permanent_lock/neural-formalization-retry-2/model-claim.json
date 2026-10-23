@@ -1,0 +1,162 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "conservation",
+  "precondition_ids": [
+    "cancel_records_amount",
+    "manager_role_caller"
+  ],
+  "intent_id": "intent_no_remainder_loss",
+  "impact_ids": [
+    "permanent_lock"
+  ],
+  "symbols": {
+    "cancelled_withdrawal_amount": {
+      "sort": "int",
+      "unit": "wei HYPE",
+      "meaning": "totalHypeValueReturned recorded in _cancelledWithdrawalAmount when the user cancels the withdrawal request",
+      "checkpoint": "before redelegateWithdrawnHYPE",
+      "entity_ids": [
+        "user",
+        "hype",
+        "staking_manager"
+      ],
+      "source_ids": [
+        "cancel_records_amount"
+      ]
+    },
+    "manager_holds_role": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the caller of redelegateWithdrawnHYPE holds MANAGER_ROLE privileges",
+      "checkpoint": "before redelegateWithdrawnHYPE",
+      "entity_ids": [
+        "manager"
+      ],
+      "source_ids": [
+        "manager_role_caller"
+      ]
+    },
+    "redelegated_amount": {
+      "sort": "int",
+      "unit": "wei HYPE",
+      "meaning": "HYPE amount actually re-delegated through _distributeStake SpotDeposit after truncating conversion",
+      "checkpoint": "after redelegateWithdrawnHYPE",
+      "entity_ids": [
+        "staking_manager",
+        "hype"
+      ],
+      "source_ids": [
+        "intent_no_remainder_loss",
+        "permanent_lock"
+      ]
+    },
+    "stranded_amount": {
+      "sort": "int",
+      "unit": "wei HYPE",
+      "meaning": "HYPE permanently stranded in StakingManager outside totalStaked and hypeBuffer, accumulating across cancel-and-redelegate operations",
+      "checkpoint": "after redelegateWithdrawnHYPE",
+      "entity_ids": [
+        "staking_manager",
+        "hype"
+      ],
+      "source_ids": [
+        "intent_no_remainder_loss",
+        "permanent_lock"
+      ]
+    },
+    "truncation_divisor": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "the 1e10 wei divisor used by _convertTo8Decimals truncation",
+      "checkpoint": "constant",
+      "entity_ids": [
+        "staking_manager"
+      ],
+      "source_ids": [
+        "intent_no_remainder_loss"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "cancel_records_amount",
+      "predicate": {
+        "kind": "comparison",
+        "left": "cancelled_withdrawal_amount",
+        "operator": "ge",
+        "right": {
+          "const": 0
+        }
+      }
+    },
+    {
+      "source_id": "manager_role_caller",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "manager_holds_role",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "conservation",
+    "trigger": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "manager_holds_role",
+          "value": true
+        },
+        {
+          "kind": "comparison",
+          "left": "cancelled_withdrawal_amount",
+          "operator": "ge",
+          "right": {
+            "const": 0
+          }
+        }
+      ]
+    },
+    "before": {
+      "kind": "comparison",
+      "left": "cancelled_withdrawal_amount",
+      "operator": "ge",
+      "right": {
+        "const": 0
+      }
+    },
+    "after": {
+      "kind": "relation",
+      "left": {
+        "symbol": "redelegated_amount"
+      },
+      "operator": "eq",
+      "right": {
+        "symbol": "cancelled_withdrawal_amount"
+      }
+    }
+  },
+  "assumptions": [
+    "The cancel-then-redelegate sequence is the scenario under analysis; the report does not fix a concrete prior amount.",
+    "The remainder loss occurs when _cancelledWithdrawalAmount is not a multiple of 1e10 wei HYPE.",
+    "Whether stranded HYPE is recoverable by any admin function is unspecified."
+  ],
+  "unresolved": [
+    {
+      "category": "unsupported_relation",
+      "description": "The report states the lost remainder is _cancelledWithdrawalAmount % 1e10 wei HYPE and that it accumulates as permanently stranded HYPE, but the predicate grammar has no modulo operator; the exact remainder magnitude cannot be encoded as a derived quantity, so the conservation relation is stated at the amount level (redelegated == cancelled) and the modulo remainder is recorded here.",
+      "source_ids": [
+        "intent_no_remainder_loss",
+        "permanent_lock"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The conservation relation is expressed as redelegated_amount == cancelled_withdrawal_amount; the report's modulo remainder (amount % 1e10) cannot be encoded directly and is recorded as a nonblocking unresolved item.",
+    "The permanent-lock impact is potential and accumulates over many operations; the plan formalizes a single cancel-then-redelegate transition.",
+    "Concrete prior amounts and observed losses are not required for symbolic formalization."
+  ]
+}

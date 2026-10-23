@@ -1,0 +1,179 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "access_control",
+  "precondition_ids": [
+    "p_validator_role",
+    "p_standard_kyc_gate",
+    "p_verified_holder_funds"
+  ],
+  "intent_id": "si_kyc_gate_all_transfers",
+  "impact_ids": [
+    "i_kyc_bypass_single_key"
+  ],
+  "symbols": {
+    "caller_is_validator": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the caller of the batch settlement function is the validator role",
+      "checkpoint": "before batch settlement call",
+      "entity_ids": [
+        "validator",
+        "batch_transfers",
+        "rbatch_transfers"
+      ],
+      "source_ids": [
+        "p_validator_role"
+      ]
+    },
+    "recipient_is_kyc_verified": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the destination (creditor) address of the batch balance movement is marked isKycVerified",
+      "checkpoint": "before batch settlement call",
+      "entity_ids": [
+        "non_kyc_recipient",
+        "share_token"
+      ],
+      "source_ids": [
+        "p_standard_kyc_gate"
+      ]
+    },
+    "holder_is_kyc_verified": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the source (debtor) address whose funds are moved is marked isKycVerified",
+      "checkpoint": "before batch settlement call",
+      "entity_ids": [
+        "kyc_verified_holder",
+        "share_token"
+      ],
+      "source_ids": [
+        "p_verified_holder_funds"
+      ]
+    },
+    "batch_moves_funds": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the validator batch call directly debits and credits _balances for the debtor/creditor pair, moving funds",
+      "checkpoint": "at batch settlement execution",
+      "entity_ids": [
+        "validator",
+        "batch_transfers",
+        "rbatch_transfers"
+      ],
+      "source_ids": [
+        "i_kyc_bypass_single_key",
+        "si_kyc_gate_all_transfers"
+      ]
+    },
+    "funds_reach_non_kyc_destination": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "funds from a KYC-verified address are routed to an unverified or sanctioned destination in the batch call",
+      "checkpoint": "after batch settlement execution",
+      "entity_ids": [
+        "validator",
+        "kyc_verified_holder",
+        "non_kyc_recipient"
+      ],
+      "source_ids": [
+        "i_kyc_bypass_single_key",
+        "si_kyc_gate_all_transfers"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_validator_role",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "caller_is_validator",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_standard_kyc_gate",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "recipient_is_kyc_verified",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_verified_holder_funds",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "holder_is_kyc_verified",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "caller_is_validator",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "batch_moves_funds",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "holder_is_kyc_verified",
+          "value": true
+        }
+      ]
+    },
+    "relation": {
+      "kind": "any_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "recipient_is_kyc_verified",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "funds_reach_non_kyc_destination",
+          "value": false
+        }
+      ]
+    }
+  },
+  "assumptions": [
+    "The validator is compromised or malicious, as the report frames the bypass as a single-key compliance failure.",
+    "The batch settlement call is the batchTransfers or rBatchTransfers helper that directly mutates _balances/_rBalances.",
+    "KYC-verified addresses hold funds that a validator batch call can move."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "Report does not state whether the token was actually paused during any observed batch call; pause bypass is conditional and is not part of this KYC-gate claim.",
+      "source_ids": [
+        "i_pause_bypass",
+        "si_pause_respected"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "missing_report_definition",
+      "description": "No concrete amounts, addresses, or transaction hashes are given for the claimed fund movement; symbolic observables are used.",
+      "source_ids": [
+        "i_kyc_bypass_single_key"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Formalizes only the KYC-gate bypass impact i_kyc_bypass_single_key; pause bypass, onward routing, and integrator exposure are handled in separate passes.",
+    "The KYC verification status of the destination is represented as a grounded Boolean because the report states the isKycVerified condition qualitatively without numeric definition.",
+    "Whether the validator is actually malicious versus merely capable is not established by an observed incident; the malicious-validator assumption is recorded separately."
+  ]
+}

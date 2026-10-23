@@ -1,0 +1,148 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Kinetiq_k8aVPPVguSE",
+    "audit_uid": "k8aVPPVguSE",
+    "requested_submission_uid": "9bsTwrtqCED",
+    "requested_finding_uid": "RgR7qqbXSj5",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Kinetiq_k8aVPPVguSE/20260618_143339/findings.json",
+    "source_submission_uid": "9bsTwrtqCED",
+    "source_finding_uid": "RgR7qqbXSj5",
+    "original_report_path": "Kinetiq_k8aVPPVguSE\\low_valid_9bsTwrtqCED.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "9bsTwrtqCED",
+  "finding_uid": "RgR7qqbXSj5",
+  "finding_number": "15",
+  "title": "Front-Running Reward and Slashing Events to Exploit Exchange Ratio Calculations",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "Agorist",
+  "body": "## Finding description and impact\n\nThe protocol’s conversion of HYPE to kHYPE relies on an exchange ratio computed in `StakingAccountant::_getExchangeRatio` based on the aggregate of the total staked amount, rewards, claimed funds, and slashing amounts as reported by the `ValidatorManager`. Because the rewards and slashing amounts are read on demand from an external source, an attacker can front-run rewards and slashing events and potentially game the system.\n\nIf rewards are accredited in intervals longer than `StakingManager::withdrawalDelay`, attackers can exploit front-running reward events. If staked amounts are sufficiently large, front-running slashing event is always profitable as the cost of calling the `queueWithdrawal` is lower than the penalty avoided.\n\nFor example:\n - When a rewards event is about to be recorded, the exchange ratio (totalHYPE/totalKHYPESupply) is lower since the rewards have not yet been added. Users can just wait for the reward event to occur to front-run it and `stake` and receive the rewards instead of staking in the intended way.\n\n - Conversely, a user can front-run the slashing event and `queueWithdrawal` the funds to avoid the penalization.\n\nUsers are incentivized to stake immediately before rewards events occur, which undermines the protocol’s intended distribution of rewards. Similarly, users could `queueWithdrawal` their funds just prior to a slashing event to avoid incurring the associated penalties, compromising the protocol’s fairness and stability.\n\nFor sufficiently large amounts, exploiting this vulnerability can yield significant profits.\n\n## Recommended mitigation steps\n\nFixing this is not trivial, one potential approach could be to not rely on external sources.",
+  "proof_of_concept": "``` javascript\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\nimport \"./Base.t.sol\";\nimport \"../src/interfaces/IStakingManager.sol\";\n\ncontract StakingManagerTest is BaseTest {\n    address public validator;\n\n    function setUp() public override {\n        super.setUp();\n\n        // Setup validator addresses\n        validator = makeAddr(\"validator\");\n\n        // Grant roles\n        vm.startPrank(admin);\n        stakingManager.grantRole(stakingManager.OPERATOR_ROLE(), operator);\n        stakingManager.grantRole(stakingManager.MANAGER_ROLE(), manager);\n        vm.stopPrank();\n    }\n\n    function testAvoidSlashing() public {\n        address user2 = makeAddr(\"user2\");\n\n        // Setup initial stake and withdrawal\n        uint256 stakeAmount = 1 ether;\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n        stakingManager.stake{value: stakeAmount}();\n\n        vm.deal(user2, stakeAmount);\n        vm.prank(user2);\n        stakingManager.stake{value: stakeAmount}();\n\n        // User front-runs slashing event\n        uint256 hyperUser = stakingManager.stakingAccountant().kHYPEToHYPE(kHYPE.balanceOf(user));\n        console.log(\"User front-running slashing event will receive: \", hyperUser);\n\n        // Slashing event is reported\n        vm.prank(address(oracleManager));\n        validatorManager.reportSlashingEvent(validator, 500);\n\n        // User2 queue withdrawal after slashing event\n        uint256 hyperUser2 = stakingManager.stakingAccountant().kHYPEToHYPE(kHYPE.balanceOf(user2));\n        console.log(\"User2 will receive after slashing event: \", hyperUser2);\n    }\n\n    function testRewards() public {\n        address user2 = makeAddr(\"user2\");\n\n        // Setup initial stake and withdrawal\n        uint256 stakeAmount = 1 ether;\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        // User2 stakes\n        vm.deal(user2, stakeAmount);\n        vm.prank(user2);\n        stakingManager.stake{value: stakeAmount}();\n\n        // 1 month latter User front-runs rewards event\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n        stakingManager.stake{value: stakeAmount}();\n\n        // Rewards event is reported\n        vm.prank(address(oracleManager));\n        validatorManager.reportRewardEvent(validator, 500);\n\n        uint256 hyperUser = stakingManager.stakingAccountant().kHYPEToHYPE(kHYPE.balanceOf(user));\n\n        uint256 hyperUser2 = stakingManager.stakingAccountant().kHYPEToHYPE(kHYPE.balanceOf(user2));\n        \n        // Both users have the same rewards even though user2 staked 1 month before\n        assert(hyperUser == hyperUser2);\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingAccountant.sol#L216"
+  ],
+  "source_record": {
+    "project_id": "k8aVPPVguSE",
+    "submission_index": "267",
+    "api_submission_id": "",
+    "uid": "9bsTwrtqCED",
+    "number": "267",
+    "title": "Front-Running Reward and Slashing Events to Exploit Exchange Ratio Calculations",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "Agorist",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingAccountant.sol#L216"
+    ],
+    "body": "## Finding description and impact\n\nThe protocol’s conversion of HYPE to kHYPE relies on an exchange ratio computed in `StakingAccountant::_getExchangeRatio` based on the aggregate of the total staked amount, rewards, claimed funds, and slashing amounts as reported by the `ValidatorManager`. Because the rewards and slashing amounts are read on demand from an external source, an attacker can front-run rewards and slashing events and potentially game the system.\n\nIf rewards are accredited in intervals longer than `StakingManager::withdrawalDelay`, attackers can exploit front-running reward events. If staked amounts are sufficiently large, front-running slashing event is always profitable as the cost of calling the `queueWithdrawal` is lower than the penalty avoided.\n\nFor example:\n - When a rewards event is about to be recorded, the exchange ratio (totalHYPE/totalKHYPESupply) is lower since the rewards have not yet been added. Users can just wait for the reward event to occur to front-run it and `stake` and receive the rewards instead of staking in the intended way.\n\n - Conversely, a user can front-run the slashing event and `queueWithdrawal` the funds to avoid the penalization.\n\nUsers are incentivized to stake immediately before rewards events occur, which undermines the protocol’s intended distribution of rewards. Similarly, users could `queueWithdrawal` their funds just prior to a slashing event to avoid incurring the associated penalties, compromising the protocol’s fairness and stability.\n\nFor sufficiently large amounts, exploiting this vulnerability can yield significant profits.\n\n## Recommended mitigation steps\n\nFixing this is not trivial, one potential approach could be to not rely on external sources.",
+    "proof_of_concept": "``` javascript\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\nimport \"./Base.t.sol\";\nimport \"../src/interfaces/IStakingManager.sol\";\n\ncontract StakingManagerTest is BaseTest {\n    address public validator;\n\n    function setUp() public override {\n        super.setUp();\n\n        // Setup validator addresses\n        validator = makeAddr(\"validator\");\n\n        // Grant roles\n        vm.startPrank(admin);\n        stakingManager.grantRole(stakingManager.OPERATOR_ROLE(), operator);\n        stakingManager.grantRole(stakingManager.MANAGER_ROLE(), manager);\n        vm.stopPrank();\n    }\n\n    function testAvoidSlashing() public {\n        address user2 = makeAddr(\"user2\");\n\n        // Setup initial stake and withdrawal\n        uint256 stakeAmount = 1 ether;\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n        stakingManager.stake{value: stakeAmount}();\n\n        vm.deal(user2, stakeAmount);\n        vm.prank(user2);\n        stakingManager.stake{value: stakeAmount}();\n\n        // User front-runs slashing event\n        uint256 hyperUser = stakingManager.stakingAccountant().kHYPEToHYPE(kHYPE.balanceOf(user));\n        console.log(\"User front-running slashing event will receive: \", hyperUser);\n\n        // Slashing event is reported\n        vm.prank(address(oracleManager));\n        validatorManager.reportSlashingEvent(validator, 500);\n\n        // User2 queue withdrawal after slashing event\n        uint256 hyperUser2 = stakingManager.stakingAccountant().kHYPEToHYPE(kHYPE.balanceOf(user2));\n        console.log(\"User2 will receive after slashing event: \", hyperUser2);\n    }\n\n    function testRewards() public {\n        address user2 = makeAddr(\"user2\");\n\n        // Setup initial stake and withdrawal\n        uint256 stakeAmount = 1 ether;\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        // User2 stakes\n        vm.deal(user2, stakeAmount);\n        vm.prank(user2);\n        stakingManager.stake{value: stakeAmount}();\n\n        // 1 month latter User front-runs rewards event\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n        stakingManager.stake{value: stakeAmount}();\n\n        // Rewards event is reported\n        vm.prank(address(oracleManager));\n        validatorManager.reportRewardEvent(validator, 500);\n\n        uint256 hyperUser = stakingManager.stakingAccountant().kHYPEToHYPE(kHYPE.balanceOf(user));\n\n        uint256 hyperUser2 = stakingManager.stakingAccountant().kHYPEToHYPE(kHYPE.balanceOf(user2));\n        \n        // Both users have the same rewards even though user2 staked 1 month before\n        assert(hyperUser == hyperUser2);\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/k8aVPPVguSE/submissions/267",
+    "raw": {
+      "auditUid": "k8aVPPVguSE",
+      "createdAt": "2025-04-13T01:32:21.943Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "9rqykoKuTLz",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "RgR7qqbXSj5"
+        },
+        {
+          "uid": "QJRhAViMNCH",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "RgR7qqbXSj5"
+        },
+        {
+          "uid": "Gtj7fPpv7gS",
+          "userUid": "tZ7iSgbTXG2",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-04-18T01:51:25.381Z",
+          "type": "validity",
+          "value": "invalid",
+          "submissionUid": null,
+          "findingUid": "RgR7qqbXSj5"
+        },
+        {
+          "uid": "LeotZB4Ficb",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-22T12:52:18.423Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "9bsTwrtqCED",
+          "findingUid": null
+        },
+        {
+          "uid": "LwLG7w5v45a",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-26T07:24:46.661Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "RgR7qqbXSj5"
+        },
+        {
+          "uid": "sGw4HnDnSVa",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-26T08:28:24.703Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "RgR7qqbXSj5"
+        }
+      ],
+      "finding": {
+        "uid": "RgR7qqbXSj5",
+        "number": 15,
+        "duplicates": 16
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-05-07T15:00:47.683Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Front-Running Reward and Slashing Events to Exploit Exchange Ratio Calculations",
+      "uid": "9bsTwrtqCED",
+      "updatedAt": "2025-04-13T09:33:47.779Z",
+      "user": {
+        "uid": "xRTYCztCQfz",
+        "handle": "Agorist"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe protocol’s conversion of HYPE to kHYPE relies on an exchange ratio computed in `StakingAccountant::_getExchangeRatio` based on the aggregate of the total staked amount, rewards, claimed funds, and slashing amounts as reported by the `ValidatorManager`. Because the rewards and slashing amounts are read on demand from an external source, an attacker can front-run rewards and slashing events and potentially game the system.\n\nIf rewards are accredited in intervals longer than `StakingManager::withdrawalDelay`, attackers can exploit front-running reward events. If staked amounts are sufficiently large, front-running slashing event is always profitable as the cost of calling the `queueWithdrawal` is lower than the penalty avoided.\n\nFor example:\n - When a rewards event is about to be recorded, the exchange ratio (totalHYPE/totalKHYPESupply) is lower since the rewards have not yet been added. Users can just wait for the reward event to occur to front-run it and `stake` and receive the rewards instead of staking in the intended way.\n\n - Conversely, a user can front-run the slashing event and `queueWithdrawal` the funds to avoid the penalization.\n\nUsers are incentivized to stake immediately before rewards events occur, which undermines the protocol’s intended distribution of rewards. Similarly, users could `queueWithdrawal` their funds just prior to a slashing event to avoid incurring the associated penalties, compromising the protocol’s fairness and stability.\n\nFor sufficiently large amounts, exploiting this vulnerability can yield significant profits.\n\n## Recommended mitigation steps\n\nFixing this is not trivial, one potential approach could be to not rely on external sources.",
+      "proofOfConcept": "``` javascript\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\nimport \"./Base.t.sol\";\nimport \"../src/interfaces/IStakingManager.sol\";\n\ncontract StakingManagerTest is BaseTest {\n    address public validator;\n\n    function setUp() public override {\n        super.setUp();\n\n        // Setup validator addresses\n        validator = makeAddr(\"validator\");\n\n        // Grant roles\n        vm.startPrank(admin);\n        stakingManager.grantRole(stakingManager.OPERATOR_ROLE(), operator);\n        stakingManager.grantRole(stakingManager.MANAGER_ROLE(), manager);\n        vm.stopPrank();\n    }\n\n    function testAvoidSlashing() public {\n        address user2 = makeAddr(\"user2\");\n\n        // Setup initial stake and withdrawal\n        uint256 stakeAmount = 1 ether;\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n        stakingManager.stake{value: stakeAmount}();\n\n        vm.deal(user2, stakeAmount);\n        vm.prank(user2);\n        stakingManager.stake{value: stakeAmount}();\n\n        // User front-runs slashing event\n        uint256 hyperUser = stakingManager.stakingAccountant().kHYPEToHYPE(kHYPE.balanceOf(user));\n        console.log(\"User front-running slashing event will receive: \", hyperUser);\n\n        // Slashing event is reported\n        vm.prank(address(oracleManager));\n        validatorManager.reportSlashingEvent(validator, 500);\n\n        // User2 queue withdrawal after slashing event\n        uint256 hyperUser2 = stakingManager.stakingAccountant().kHYPEToHYPE(kHYPE.balanceOf(user2));\n        console.log(\"User2 will receive after slashing event: \", hyperUser2);\n    }\n\n    function testRewards() public {\n        address user2 = makeAddr(\"user2\");\n\n        // Setup initial stake and withdrawal\n        uint256 stakeAmount = 1 ether;\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        // User2 stakes\n        vm.deal(user2, stakeAmount);\n        vm.prank(user2);\n        stakingManager.stake{value: stakeAmount}();\n\n        // 1 month latter User front-runs rewards event\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n        stakingManager.stake{value: stakeAmount}();\n\n        // Rewards event is reported\n        vm.prank(address(oracleManager));\n        validatorManager.reportRewardEvent(validator, 500);\n\n        uint256 hyperUser = stakingManager.stakingAccountant().kHYPEToHYPE(kHYPE.balanceOf(user));\n\n        uint256 hyperUser2 = stakingManager.stakingAccountant().kHYPEToHYPE(kHYPE.balanceOf(user2));\n        \n        // Both users have the same rewards even though user2 staked 1 month before\n        assert(hyperUser == hyperUser2);\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingAccountant.sol#L216",
+      "number": 267,
+      "aiExplanation": null,
+      "_index": 267
+    }
+  }
+}

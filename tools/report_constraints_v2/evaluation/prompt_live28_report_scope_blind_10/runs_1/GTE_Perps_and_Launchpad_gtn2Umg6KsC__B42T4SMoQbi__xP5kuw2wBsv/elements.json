@@ -1,0 +1,232 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Launchpad stake/unstake (via LaunchToken transfer fee shares) triggering Distributor reward distribution",
+    "environment": "GTE perps launchpad contracts (Distributor, Launchpad, LaunchToken)",
+    "evidence": [
+      "Buy/sell launch tokens leads ==> rewards are paid to `Launchpad` (msg.sender) instead of the user",
+      "- `Distributor._distributeAssets` sends realized rewards to `msg.sender`. In stake/unstake flows, `msg.sender` is `Launchpad`, not the user.",
+      "- `Launchpad` has no ERC20 forwarding or rescue; rewards accumulate on `Launchpad` and users don’t receive them. Accounting reduces `totalPendingRewards`, so value is effectively locked.",
+      "- Users can trigger this by causing any update (stake/unstake vis buy/sell) to realize pending; the PoC confirms both paths.",
+      "- Payout: `Distributor._distributeAssets` → `quoteToken.safeTransfer(msg.sender, R)` where `msg.sender == Launchpad`",
+      "- In `Distributor`, change distribution recipient to the actual `account` on stake/unstake:",
+      "- Pass `account` to `increaseStake`/`decreaseStake` internals and use it in `_distributeAssets` instead of `msg.sender`."
+    ]
+  },
+  "entities": [
+    {
+      "id": "user",
+      "name": "user (staker)",
+      "role": "victim",
+      "evidence": [
+        "Buy/sell launch tokens leads ==> rewards are paid to `Launchpad` (msg.sender) instead of the user",
+        "- `LaunchToken.transfer(userA, S)` → `LaunchToken._increaseFeeShares` → `Launchpad.increaseStake(userA, S)` → `Distributor.increaseStake(baseToken, userA, S)`",
+        "- `LaunchToken.transfer(userA, δ)` → `Launchpad.increaseStake(userA, δ)` → `Distributor.increaseStake(baseToken, userA, δ)`",
+        "- `LaunchToken.transfer(launchpad, δ)` → `Launchpad.decreaseStake(userA, δ)` → `Distributor.decreaseStake(baseToken, userA, δ)`"
+      ]
+    },
+    {
+      "id": "launchpad",
+      "name": "Launchpad contract",
+      "role": "contract",
+      "evidence": [
+        "- `Distributor._distributeAssets` sends realized rewards to `msg.sender`. In stake/unstake flows, `msg.sender` is `Launchpad`, not the user.",
+        "- `Launchpad` has no ERC20 forwarding or rescue; rewards accumulate on `Launchpad` and users don’t receive them. Accounting reduces `totalPendingRewards`, so value is effectively locked.",
+        "- Payout: `Distributor._distributeAssets` → `quoteToken.safeTransfer(msg.sender, R)` where `msg.sender == Launchpad`",
+        "- No ERC20 forward/rescue on `Launchpad` → rewards stuck on `Launchpad`"
+      ]
+    },
+    {
+      "id": "distributor",
+      "name": "Distributor contract",
+      "role": "contract",
+      "evidence": [
+        "- `Distributor._distributeAssets` sends realized rewards to `msg.sender`. In stake/unstake flows, `msg.sender` is `Launchpad`, not the user.",
+        "- Payout: `Distributor._distributeAssets` → `quoteToken.safeTransfer(msg.sender, R)` where `msg.sender == Launchpad`",
+        "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L170-L175"
+      ]
+    },
+    {
+      "id": "launchtoken",
+      "name": "LaunchToken contract",
+      "role": "contract",
+      "evidence": [
+        "- `LaunchToken.transfer(userA, S)` → `LaunchToken._increaseFeeShares` → `Launchpad.increaseStake(userA, S)` → `Distributor.increaseStake(baseToken, userA, S)`",
+        "- `LaunchToken.transfer(userA, δ)` → `Launchpad.increaseStake(userA, δ)` → `Distributor.increaseStake(baseToken, userA, δ)`",
+        "- `LaunchToken.transfer(launchpad, δ)` → `Launchpad.decreaseStake(userA, δ)` → `Distributor.decreaseStake(baseToken, userA, δ)`"
+      ]
+    },
+    {
+      "id": "quote_token",
+      "name": "quoteToken reward asset",
+      "role": "asset",
+      "evidence": [
+        "- `Distributor.addRewards(baseToken, quoteToken, 0, R)`",
+        "- Payout: `Distributor._distributeAssets` → `quoteToken.safeTransfer(msg.sender, R)` where `msg.sender == Launchpad`",
+        "- User gets 0; `Launchpad` balance of `quoteToken` increases by `R`"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "stake_exists",
+      "kind": "precondition",
+      "text": "A stake exists for the user (totalShares = S, userA.shares = S) before the triggering update.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "launchpad"
+      ],
+      "evidence": [
+        "- Setup (stake exists)",
+        "- State: `totalShares = S`, `userA.shares = S`"
+      ]
+    },
+    {
+      "id": "rewards_added",
+      "kind": "precondition",
+      "text": "Rewards R are added to the Distributor (pendingQuoteRewards += R, totalPendingRewards[quoteToken] += R) before the triggering update.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distributor",
+        "quote_token"
+      ],
+      "evidence": [
+        "- Add rewards",
+        "- `Distributor.addRewards(baseToken, quoteToken, 0, R)`",
+        "- State: `pendingQuoteRewards += R`, `totalPendingRewards[quoteToken] += R`"
+      ]
+    },
+    {
+      "id": "trigger_update",
+      "kind": "action",
+      "text": "A stake or unstake update is triggered via LaunchToken transfer, calling Launchpad.increaseStake/decreaseStake and Distributor.increaseStake/decreaseStake.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "launchtoken",
+        "launchpad",
+        "distributor"
+      ],
+      "evidence": [
+        "- Users can trigger this by causing any update (stake/unstake vis buy/sell) to realize pending; the PoC confirms both paths.",
+        "- Trigger via stake (pays Launchpad)",
+        "- `LaunchToken.transfer(userA, δ)` → `Launchpad.increaseStake(userA, δ)` → `Distributor.increaseStake(baseToken, userA, δ)`",
+        "- Trigger via unstake (also pays Launchpad)",
+        "- `LaunchToken.transfer(launchpad, δ)` → `Launchpad.decreaseStake(userA, δ)` → `Distributor.decreaseStake(baseToken, userA, δ)`"
+      ]
+    },
+    {
+      "id": "distribute_to_msg_sender",
+      "kind": "root_cause",
+      "text": "Distributor._distributeAssets sends realized rewards to msg.sender, which in stake/unstake flows is Launchpad rather than the user account.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distributor",
+        "launchpad",
+        "user"
+      ],
+      "evidence": [
+        "- `Distributor._distributeAssets` sends realized rewards to `msg.sender`. In stake/unstake flows, `msg.sender` is `Launchpad`, not the user.",
+        "- Payout: `Distributor._distributeAssets` → `quoteToken.safeTransfer(msg.sender, R)` where `msg.sender == Launchpad`",
+        "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L170-L175",
+        "- Pass `account` to `increaseStake`/`decreaseStake` internals and use it in `_distributeAssets` instead of `msg.sender`."
+      ]
+    },
+    {
+      "id": "no_forwarding",
+      "kind": "root_cause",
+      "text": "Launchpad has no ERC20 forwarding or rescue mechanism, so rewards transferred to it are not passed on to the user.",
+      "modality": "asserted",
+      "entity_ids": [
+        "launchpad",
+        "quote_token"
+      ],
+      "evidence": [
+        "- `Launchpad` has no ERC20 forwarding or rescue; rewards accumulate on `Launchpad` and users don’t receive them. Accounting reduces `totalPendingRewards`, so value is effectively locked.",
+        "- No ERC20 forward/rescue on `Launchpad` → rewards stuck on `Launchpad`",
+        "- Or, have `Launchpad` capture returned amounts and immediately forward ERC20s to `account`"
+      ]
+    },
+    {
+      "id": "intent_recipient_is_account",
+      "kind": "security_intent",
+      "text": "When stake/unstake realizes pending rewards, the distribution recipient should be the actual account (the user), not msg.sender/Launchpad.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distributor",
+        "user",
+        "launchpad"
+      ],
+      "evidence": [
+        "Buy/sell launch tokens leads ==> rewards are paid to `Launchpad` (msg.sender) instead of the user",
+        "- In `Distributor`, change distribution recipient to the actual `account` on stake/unstake:",
+        "- Pass `account` to `increaseStake`/`decreaseStake` internals and use it in `_distributeAssets` instead of `msg.sender`."
+      ]
+    },
+    {
+      "id": "intent_user_receives_rewards",
+      "kind": "security_intent",
+      "text": "Users should receive the realized rewards rather than having them accumulate on Launchpad.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "launchpad",
+        "quote_token"
+      ],
+      "evidence": [
+        "- `Launchpad` has no ERC20 forwarding or rescue; rewards accumulate on `Launchpad` and users don’t receive them. Accounting reduces `totalPendingRewards`, so value is effectively locked.",
+        "- User gets 0; `Launchpad` balance of `quoteToken` increases by `R`",
+        "- Or, have `Launchpad` capture returned amounts and immediately forward ERC20s to `account`"
+      ]
+    },
+    {
+      "id": "rewards_accumulate_on_launchpad",
+      "kind": "impact",
+      "text": "rewards accumulate on `Launchpad` and users don’t receive them",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- `Launchpad` has no ERC20 forwarding or rescue; rewards accumulate on `Launchpad` and users don’t receive them. Accounting reduces `totalPendingRewards`, so value is effectively locked."
+      ]
+    },
+    {
+      "id": "value_effectively_locked",
+      "kind": "impact",
+      "text": "Accounting reduces `totalPendingRewards`, so value is effectively locked.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- `Launchpad` has no ERC20 forwarding or rescue; rewards accumulate on `Launchpad` and users don’t receive them. Accounting reduces `totalPendingRewards`, so value is effectively locked."
+      ]
+    },
+    {
+      "id": "user_gets_zero",
+      "kind": "impact",
+      "text": "User gets 0",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- User gets 0; `Launchpad` balance of `quoteToken` increases by `R`"
+      ]
+    },
+    {
+      "id": "rewards_stuck_on_launchpad",
+      "kind": "impact",
+      "text": "No ERC20 forward/rescue on `Launchpad` → rewards stuck on `Launchpad`",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- No ERC20 forward/rescue on `Launchpad` → rewards stuck on `Launchpad`"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "trigger_update"
+  ],
+  "ambiguities": [
+    "Report does not state whether the triggering update is permissionless or restricted to the user; no explicit anyone-can-call statement.",
+    "Whether rewards are fully locked versus recoverable by an admin is not specified beyond 'no ERC20 forwarding or rescue'.",
+    "Exact numeric value of R and δ not given; treated as symbolic."
+  ]
+}

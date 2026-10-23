@@ -1,0 +1,158 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Forte_ Float128 Solidity Library_evjHaYmvKxh",
+    "audit_uid": "evjHaYmvKxh",
+    "requested_submission_uid": "k2rzk7biJbx",
+    "requested_finding_uid": "Vf4PgEph2hf",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Forte_Float128_Solidity_Library_evjHaYmvKxh/20260618_143618/findings.json",
+    "source_submission_uid": "k2rzk7biJbx",
+    "source_finding_uid": "Vf4PgEph2hf",
+    "original_report_path": "Forte_ Float128 Solidity Library_evjHaYmvKxh\\high_valid_k2rzk7biJbx.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "k2rzk7biJbx",
+  "finding_uid": "Vf4PgEph2hf",
+  "finding_number": "3",
+  "title": "Float128.sqrt(0) incorrectly uses stop() instead of returning 0, halting execution",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "maxzuvex",
+  "body": "## Finding description and impact\n\nThe `Float128.sqrt` function calculates the square root of a `packedFloat`. Mathematically, `sqrt(0)` should return `0`.\n\nThe function includes an explicit check for the zero input case within its assembly block:\n\n```solidity\n    // https://github.com/code-423n4/2025-04-forte/blob/main/src/Float128.sol#L711-L713\n    if iszero(a) {\n        stop() // <-- Incorrect handling for zero input\n    }\n```\n\nInstead of returning the correct result `packedFloat.wrap(0)`, the code executes the `stop()` opcode when the input `a` is zero. The `stop()` opcode unconditionally stops execution of the code without returning a value or indicating an error through a revert. This is the only place in the library where the `stop()` opcode is used!\n\n**Existing Test (`testEncoded_sqrt_0`)**\n\nThe protocol includes a test specifically for this case (`testEncoded_sqrt_0` in `FloatCommon.sol`).\n\n```solidity\n    // L157-L162 of FloatCommon.sol\n    function testEncoded_sqrt_0() public pure {\n        packedFloat a = Float128.toPackedFloat(0, ZERO_OFFSET_NEG);\n\n        // sqrt of 0 = 0\n        packedFloat result = Float128.sqrt(a);\n        (int rMan, int rExp) = Float128.decode(result);\n        assertEq(rMan, 0, \"Solidity result is not consistent with zero rules\");\n        assertEq(rExp, ZERO_OFFSET_NEG, \"Solidity result is not consistent with zero rules\");\n    }\n```\n\nTrace output:\n\n```\n[PASS] testEncoded_sqrt_0() (gas: 314)\nTraces:\n  [314] FloatCommon::testEncoded_sqrt_0()\n    └─ ← [Stop]\n```\n\nThis test calls `Float128.sqrt(0)`, and includes assertions intended to verify that the result is zero. However, because the `sqrt(0)` call executes the `stop()` opcode, the test function's execution halts immediately within that call. Consequently, the subsequent lines of code containing the `decode` call and the `assertEq` checks for the zero result are **never reached**.\n\nThe test passes because `stop()` is considered a successful execution halt by the EVM and the Foundry test runner. This creates a misleading situation where the test appears to validate the correct behavior (`sqrt(0) == 0`, as indicated by the comment and assertions) while, in reality, it only confirms that `sqrt(0)` doesn't revert but fails to verify the return value due to the execution halt. The test comment `// sqrt of 0 = 0` correctly states the mathematical expectation, but the test itself doesn't actually ensure the code implements it.\n\n**Impact:**\n\n1. **Incorrect Behavior & Mathematical Violation:** The function fails to return the mathematically correct result (`0`) for the valid input `0`. While the existing test *intends* to check this, the `stop()` prevents the verification.\n2. **Abnormal Transaction Halt / Silent Failure:** Calling `Float128.sqrt(packedFloat.wrap(0))` causes the transaction to halt immediately and silently. Unlike `revert()`, `stop()` does not unwind state changes made earlier in the transaction and does not return error data. This masks the point of failure and can lead to inconsistent states. Off-chain services might misinterpret the transaction's outcome.\n3. **Denial of Service (DoS):** Any contract or protocol logic that relies on `Float128.sqrt` will halt if it encounters a zero input. If calculating `sqrt(0)` is a necessary step for a function to complete, this bug effectively creates a DoS condition for that functionality, impacting protocol availability. The misleading passing test further hides this potential DoS from developers relying on the test suite.\n\n## Recommended mitigation steps\n\nYou can add a check for the zero input at the beginning of the `sqrt` function using standard Solidity, similar to the pattern used in other functions like `mul` and `div`. This avoids entering the assembly block entirely for the zero case and bypass the incorrect `stop()` usage.\n\n```solidity\n    function sqrt(packedFloat a) internal pure returns (packedFloat r) {\n        // This is the standard pattern used in mul/div.\n        if (packedFloat.unwrap(a) == 0) {\n            return packedFloat.wrap(0);\n        }\n```\n\n#",
+  "proof_of_concept": "Because `stop()` doesn't revert in a way that `vm.expectRevert` catches, and it prevents further execution in the test function, using assert function is not a good idea because it never reach to it. You can test the `stop()` behavior by this sample code (or by enabling the verbose of `forge test -vvvv` to track the execution of `testEncoded_sqrt_0` test of the library as showed above)\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Float128} from \"../src/Float128.sol\";\nimport {packedFloat} from \"../src/Types.sol\";\n\ncontract SqrtZeroTest is Test {\n    // This test is expected to pass, but the second log proves the halt.\n    function test_SqrtZeroHaltsExecution() public {\n        packedFloat zero_input = packedFloat.wrap(0);\n\n        console.log(\"Step 1: Before calling Float128.sqrt(0)...\");\n\n        // Call the function expected to halt with stop()\n        Float128.sqrt(zero_input);\n\n        // This log should be UNREACHABLE if stop() was executed.\n        // The test runner might not show this log if execution stops.\n        console.log(\"Step 2: After calling Float128.sqrt(0) (THIS SHOULD NOT APPEAR)\");\n    }\n}\n```\n\n```\nTraces:\n  [3533] SqrtZeroTest::test_SqrtWrapZeroHaltsExecution()\n    ├─ [0] console::log(\"Step 1: Before calling Float128.sqrt(0)...\") [staticcall]\n    │   └─ ← [Stop]\n    └─ ← [Stop]\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-04-forte/blob/main/src/Float128.sol#L711-L713"
+  ],
+  "source_record": {
+    "project_id": "evjHaYmvKxh",
+    "submission_index": "105",
+    "api_submission_id": "",
+    "uid": "k2rzk7biJbx",
+    "number": "105",
+    "title": "Float128.sqrt(0) incorrectly uses stop() instead of returning 0, halting execution",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "maxzuvex",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-04-forte/blob/main/src/Float128.sol#L711-L713"
+    ],
+    "body": "## Finding description and impact\n\nThe `Float128.sqrt` function calculates the square root of a `packedFloat`. Mathematically, `sqrt(0)` should return `0`.\n\nThe function includes an explicit check for the zero input case within its assembly block:\n\n```solidity\n    // https://github.com/code-423n4/2025-04-forte/blob/main/src/Float128.sol#L711-L713\n    if iszero(a) {\n        stop() // <-- Incorrect handling for zero input\n    }\n```\n\nInstead of returning the correct result `packedFloat.wrap(0)`, the code executes the `stop()` opcode when the input `a` is zero. The `stop()` opcode unconditionally stops execution of the code without returning a value or indicating an error through a revert. This is the only place in the library where the `stop()` opcode is used!\n\n**Existing Test (`testEncoded_sqrt_0`)**\n\nThe protocol includes a test specifically for this case (`testEncoded_sqrt_0` in `FloatCommon.sol`).\n\n```solidity\n    // L157-L162 of FloatCommon.sol\n    function testEncoded_sqrt_0() public pure {\n        packedFloat a = Float128.toPackedFloat(0, ZERO_OFFSET_NEG);\n\n        // sqrt of 0 = 0\n        packedFloat result = Float128.sqrt(a);\n        (int rMan, int rExp) = Float128.decode(result);\n        assertEq(rMan, 0, \"Solidity result is not consistent with zero rules\");\n        assertEq(rExp, ZERO_OFFSET_NEG, \"Solidity result is not consistent with zero rules\");\n    }\n```\n\nTrace output:\n\n```\n[PASS] testEncoded_sqrt_0() (gas: 314)\nTraces:\n  [314] FloatCommon::testEncoded_sqrt_0()\n    └─ ← [Stop]\n```\n\nThis test calls `Float128.sqrt(0)`, and includes assertions intended to verify that the result is zero. However, because the `sqrt(0)` call executes the `stop()` opcode, the test function's execution halts immediately within that call. Consequently, the subsequent lines of code containing the `decode` call and the `assertEq` checks for the zero result are **never reached**.\n\nThe test passes because `stop()` is considered a successful execution halt by the EVM and the Foundry test runner. This creates a misleading situation where the test appears to validate the correct behavior (`sqrt(0) == 0`, as indicated by the comment and assertions) while, in reality, it only confirms that `sqrt(0)` doesn't revert but fails to verify the return value due to the execution halt. The test comment `// sqrt of 0 = 0` correctly states the mathematical expectation, but the test itself doesn't actually ensure the code implements it.\n\n**Impact:**\n\n1. **Incorrect Behavior & Mathematical Violation:** The function fails to return the mathematically correct result (`0`) for the valid input `0`. While the existing test *intends* to check this, the `stop()` prevents the verification.\n2. **Abnormal Transaction Halt / Silent Failure:** Calling `Float128.sqrt(packedFloat.wrap(0))` causes the transaction to halt immediately and silently. Unlike `revert()`, `stop()` does not unwind state changes made earlier in the transaction and does not return error data. This masks the point of failure and can lead to inconsistent states. Off-chain services might misinterpret the transaction's outcome.\n3. **Denial of Service (DoS):** Any contract or protocol logic that relies on `Float128.sqrt` will halt if it encounters a zero input. If calculating `sqrt(0)` is a necessary step for a function to complete, this bug effectively creates a DoS condition for that functionality, impacting protocol availability. The misleading passing test further hides this potential DoS from developers relying on the test suite.\n\n## Recommended mitigation steps\n\nYou can add a check for the zero input at the beginning of the `sqrt` function using standard Solidity, similar to the pattern used in other functions like `mul` and `div`. This avoids entering the assembly block entirely for the zero case and bypass the incorrect `stop()` usage.\n\n```solidity\n    function sqrt(packedFloat a) internal pure returns (packedFloat r) {\n        // This is the standard pattern used in mul/div.\n        if (packedFloat.unwrap(a) == 0) {\n            return packedFloat.wrap(0);\n        }\n```\n\n#",
+    "proof_of_concept": "Because `stop()` doesn't revert in a way that `vm.expectRevert` catches, and it prevents further execution in the test function, using assert function is not a good idea because it never reach to it. You can test the `stop()` behavior by this sample code (or by enabling the verbose of `forge test -vvvv` to track the execution of `testEncoded_sqrt_0` test of the library as showed above)\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Float128} from \"../src/Float128.sol\";\nimport {packedFloat} from \"../src/Types.sol\";\n\ncontract SqrtZeroTest is Test {\n    // This test is expected to pass, but the second log proves the halt.\n    function test_SqrtZeroHaltsExecution() public {\n        packedFloat zero_input = packedFloat.wrap(0);\n\n        console.log(\"Step 1: Before calling Float128.sqrt(0)...\");\n\n        // Call the function expected to halt with stop()\n        Float128.sqrt(zero_input);\n\n        // This log should be UNREACHABLE if stop() was executed.\n        // The test runner might not show this log if execution stops.\n        console.log(\"Step 2: After calling Float128.sqrt(0) (THIS SHOULD NOT APPEAR)\");\n    }\n}\n```\n\n```\nTraces:\n  [3533] SqrtZeroTest::test_SqrtWrapZeroHaltsExecution()\n    ├─ [0] console::log(\"Step 1: Before calling Float128.sqrt(0)...\") [staticcall]\n    │   └─ ← [Stop]\n    └─ ← [Stop]\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/evjHaYmvKxh/submissions/105",
+    "raw": {
+      "auditUid": "evjHaYmvKxh",
+      "createdAt": "2025-04-04T14:19:04.114Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "WrVFJ5WoCuD",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-12T17:20:35.661Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "Vf4PgEph2hf"
+        },
+        {
+          "uid": "Uay4nM6QFVq",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-12T17:20:35.661Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "Vf4PgEph2hf"
+        },
+        {
+          "uid": "yRcisCk84UL",
+          "userUid": "oDeW4FDmTKF",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-04-14T16:56:14.220Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "Vf4PgEph2hf"
+        },
+        {
+          "uid": "rzySRF3sAKY",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-16T01:34:48.862Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "k2rzk7biJbx",
+          "findingUid": null
+        },
+        {
+          "uid": "WcBrdNn4hPN",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:24:35.683Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "Vf4PgEph2hf"
+        },
+        {
+          "uid": "T3md556Hghs",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:24:37.752Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "Vf4PgEph2hf"
+        },
+        {
+          "uid": "zc2qzZJX4ST",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:25:56.197Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "k2rzk7biJbx",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "Vf4PgEph2hf",
+        "number": 3,
+        "duplicates": 20
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-05-07T15:00:47.683Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Float128.sqrt(0) incorrectly uses stop() instead of returning 0, halting execution",
+      "uid": "k2rzk7biJbx",
+      "updatedAt": "2025-04-10T20:25:48.278Z",
+      "user": {
+        "uid": "3hCLiUa6YqM",
+        "handle": "maxzuvex"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe `Float128.sqrt` function calculates the square root of a `packedFloat`. Mathematically, `sqrt(0)` should return `0`.\n\nThe function includes an explicit check for the zero input case within its assembly block:\n\n```solidity\n    // https://github.com/code-423n4/2025-04-forte/blob/main/src/Float128.sol#L711-L713\n    if iszero(a) {\n        stop() // <-- Incorrect handling for zero input\n    }\n```\n\nInstead of returning the correct result `packedFloat.wrap(0)`, the code executes the `stop()` opcode when the input `a` is zero. The `stop()` opcode unconditionally stops execution of the code without returning a value or indicating an error through a revert. This is the only place in the library where the `stop()` opcode is used!\n\n**Existing Test (`testEncoded_sqrt_0`)**\n\nThe protocol includes a test specifically for this case (`testEncoded_sqrt_0` in `FloatCommon.sol`).\n\n```solidity\n    // L157-L162 of FloatCommon.sol\n    function testEncoded_sqrt_0() public pure {\n        packedFloat a = Float128.toPackedFloat(0, ZERO_OFFSET_NEG);\n\n        // sqrt of 0 = 0\n        packedFloat result = Float128.sqrt(a);\n        (int rMan, int rExp) = Float128.decode(result);\n        assertEq(rMan, 0, \"Solidity result is not consistent with zero rules\");\n        assertEq(rExp, ZERO_OFFSET_NEG, \"Solidity result is not consistent with zero rules\");\n    }\n```\n\nTrace output:\n\n```\n[PASS] testEncoded_sqrt_0() (gas: 314)\nTraces:\n  [314] FloatCommon::testEncoded_sqrt_0()\n    └─ ← [Stop]\n```\n\nThis test calls `Float128.sqrt(0)`, and includes assertions intended to verify that the result is zero. However, because the `sqrt(0)` call executes the `stop()` opcode, the test function's execution halts immediately within that call. Consequently, the subsequent lines of code containing the `decode` call and the `assertEq` checks for the zero result are **never reached**.\n\nThe test passes because `stop()` is considered a successful execution halt by the EVM and the Foundry test runner. This creates a misleading situation where the test appears to validate the correct behavior (`sqrt(0) == 0`, as indicated by the comment and assertions) while, in reality, it only confirms that `sqrt(0)` doesn't revert but fails to verify the return value due to the execution halt. The test comment `// sqrt of 0 = 0` correctly states the mathematical expectation, but the test itself doesn't actually ensure the code implements it.\n\n**Impact:**\n\n1. **Incorrect Behavior & Mathematical Violation:** The function fails to return the mathematically correct result (`0`) for the valid input `0`. While the existing test *intends* to check this, the `stop()` prevents the verification.\n2. **Abnormal Transaction Halt / Silent Failure:** Calling `Float128.sqrt(packedFloat.wrap(0))` causes the transaction to halt immediately and silently. Unlike `revert()`, `stop()` does not unwind state changes made earlier in the transaction and does not return error data. This masks the point of failure and can lead to inconsistent states. Off-chain services might misinterpret the transaction's outcome.\n3. **Denial of Service (DoS):** Any contract or protocol logic that relies on `Float128.sqrt` will halt if it encounters a zero input. If calculating `sqrt(0)` is a necessary step for a function to complete, this bug effectively creates a DoS condition for that functionality, impacting protocol availability. The misleading passing test further hides this potential DoS from developers relying on the test suite.\n\n## Recommended mitigation steps\n\nYou can add a check for the zero input at the beginning of the `sqrt` function using standard Solidity, similar to the pattern used in other functions like `mul` and `div`. This avoids entering the assembly block entirely for the zero case and bypass the incorrect `stop()` usage.\n\n```solidity\n    function sqrt(packedFloat a) internal pure returns (packedFloat r) {\n        // This is the standard pattern used in mul/div.\n        if (packedFloat.unwrap(a) == 0) {\n            return packedFloat.wrap(0);\n        }\n```\n\n#",
+      "proofOfConcept": "Because `stop()` doesn't revert in a way that `vm.expectRevert` catches, and it prevents further execution in the test function, using assert function is not a good idea because it never reach to it. You can test the `stop()` behavior by this sample code (or by enabling the verbose of `forge test -vvvv` to track the execution of `testEncoded_sqrt_0` test of the library as showed above)\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Float128} from \"../src/Float128.sol\";\nimport {packedFloat} from \"../src/Types.sol\";\n\ncontract SqrtZeroTest is Test {\n    // This test is expected to pass, but the second log proves the halt.\n    function test_SqrtZeroHaltsExecution() public {\n        packedFloat zero_input = packedFloat.wrap(0);\n\n        console.log(\"Step 1: Before calling Float128.sqrt(0)...\");\n\n        // Call the function expected to halt with stop()\n        Float128.sqrt(zero_input);\n\n        // This log should be UNREACHABLE if stop() was executed.\n        // The test runner might not show this log if execution stops.\n        console.log(\"Step 2: After calling Float128.sqrt(0) (THIS SHOULD NOT APPEAR)\");\n    }\n}\n```\n\n```\nTraces:\n  [3533] SqrtZeroTest::test_SqrtWrapZeroHaltsExecution()\n    ├─ [0] console::log(\"Step 1: Before calling Float128.sqrt(0)...\") [staticcall]\n    │   └─ ← [Stop]\n    └─ ← [Stop]\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-04-forte/blob/main/src/Float128.sol#L711-L713",
+      "number": 105,
+      "aiExplanation": null,
+      "_index": 105
+    }
+  }
+}

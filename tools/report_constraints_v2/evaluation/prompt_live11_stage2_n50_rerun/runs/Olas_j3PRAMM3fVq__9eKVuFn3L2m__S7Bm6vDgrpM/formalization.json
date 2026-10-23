@@ -1,0 +1,302 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "c4c143d1f_spot_price_manipulable": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "attacker can transiently move the Uniswap V2 spot price (tradePrice) to an attacker-controlled level before the swap",
+      "checkpoint": "before swap execution",
+      "entity_ids": [
+        "attacker",
+        "oracle"
+      ],
+      "evidence": "`UniswapPriceOracle.validatePrice` (autonolas-tokenomics/contracts/oracles/UniswapPriceOracle.sol) reproduces a “TWAP” by adding `tradePrice * elapsedTime` to the last cumulative price and immediately subtracts the same value, so `derivation` is calculated against `tradePrice` itself. Any flash-loan or MEV attack that pushes `tradePrice` to an attacker-controlled level passes the slippage guard, meaning subsequent swaps or liquidity removals execute at manipulated prices. This affects buybacks and liquidity actions that rely on this oracle and results in value loss."
+    },
+    "c4c143d1f_guard_used_for_flows": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "buybacks and liquidity operations rely on UniswapPriceOracle.validatePrice as their slippage guard",
+      "checkpoint": "before swap execution",
+      "entity_ids": [
+        "oracle",
+        "buyback_liquidity_flows"
+      ],
+      "evidence": "`UniswapPriceOracle.validatePrice` (autonolas-tokenomics/contracts/oracles/UniswapPriceOracle.sol) reproduces a “TWAP” by adding `tradePrice * elapsedTime` to the last cumulative price and immediately subtracts the same value, so `derivation` is calculated against `tradePrice` itself. Any flash-loan or MEV attack that pushes `tradePrice` to an attacker-controlled level passes the slippage guard, meaning subsequent swaps or liquidity removals execute at manipulated prices. This affects buybacks and liquidity actions that rely on this oracle and results in value loss."
+    },
+    "c4c143d1f_guard_rejects_manipulated_price": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "validatePrice compares the current price against a historical time-weighted average and rejects a transiently manipulated spot price as outside slippage limits",
+      "checkpoint": "at validatePrice evaluation",
+      "entity_ids": [
+        "oracle"
+      ],
+      "evidence": "Uniswap V2 oracle TWAP check collapses to spot"
+    },
+    "c4c143d1f_economic_loss_occurs": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "protocol funds are swapped or rebalanced at manipulated rates causing immediate economic loss in Autonolas buyback/liquidity flows",
+      "checkpoint": "after swap execution",
+      "entity_ids": [
+        "protocol_reserves",
+        "buyback_liquidity_flows"
+      ],
+      "evidence": "- Protocol funds are swapped or rebalanced at manipulated rates, leading to immediate economic loss unique to Autonolas’ buyback/liquidity flows."
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_economic_loss_5379a62b",
+      "scope": "UniswapPriceOracle.validatePrice TWAP slippage guard used by buyback/liquidity operations",
+      "modality": "potential",
+      "impact_ids": [
+        "economic_loss"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "An attacker can transiently move the Uniswap V2 spot price (tradePrice) to an attacker-controlled level via flash loan or MEV before the swap.; Buybacks and liquidity operations rely on UniswapPriceOracle.validatePrice as their slippage guard.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c4c143d1f_spot_price_manipulable"
+              },
+              {
+                "var": "c4c143d1f_guard_used_for_flows"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "spot_price_movable",
+            "oracle_guard_used"
+          ],
+          "evidence": [
+            "`UniswapPriceOracle.validatePrice` (autonolas-tokenomics/contracts/oracles/UniswapPriceOracle.sol) reproduces a “TWAP” by adding `tradePrice * elapsedTime` to the last cumulative price and immediately subtracts the same value, so `derivation` is calculated against `tradePrice` itself. Any flash-loan or MEV attack that pushes `tradePrice` to an attacker-controlled level passes the slippage guard, meaning subsequent swaps or liquidity removals execute at manipulated prices. This affects buybacks and liquidity actions that rely on this oracle and results in value loss.",
+            "Even though `cumulativePrice` and `timeWeightedAverage` are meant to capture history, the math cancels out. The guard therefore enforces no protection, and an attacker can transiently move the spot price before the swap; the oracle still reports everything inside slippage limits.",
+            "- Protocol funds are swapped or rebalanced at manipulated rates, leading to immediate economic loss unique to Autonolas’ buyback/liquidity flows."
+          ]
+        },
+        "safety": {
+          "text": "The validatePrice slippage guard should compare the current price against a historical time-weighted average so that a transiently manipulated spot price is rejected as outside slippage limits.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c4c143d1f_spot_price_manipulable"
+                  },
+                  {
+                    "var": "c4c143d1f_guard_used_for_flows"
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c4c143d1f_guard_rejects_manipulated_price"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c4c143d1f_economic_loss_occurs"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_twap_guard"
+          ],
+          "evidence": [
+            "Uniswap V2 oracle TWAP check collapses to spot",
+            "The function recomputes the same price twice and never uses historical data, so rebound slippage is computed between `tradePrice` and `timeWeightedAverage` that are identical:",
+            "Even though `cumulativePrice` and `timeWeightedAverage` are meant to capture history, the math cancels out. The guard therefore enforces no protection, and an attacker can transiently move the spot price before the swap; the oracle still reports everything inside slippage limits.",
+            "1. Sample the previous cumulative price from the prior observation (`trade_price_last` stored separately) instead of recomputing `tradePrice` twice.",
+            "2. Store the historical cumulative price in state and use the delta between now and then, instead of deriving from the just-read spot price."
+          ]
+        },
+        "effects": {
+          "text": "Protocol funds are swapped or rebalanced at manipulated rates, causing immediate economic loss in Autonolas buyback/liquidity flows.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c4c143d1f_spot_price_manipulable"
+                  },
+                  {
+                    "var": "c4c143d1f_guard_used_for_flows"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "var": "c4c143d1f_guard_rejects_manipulated_price"
+                      },
+                      {
+                        "op": "not",
+                        "args": [
+                          {
+                            "var": "c4c143d1f_economic_loss_occurs"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "economic_loss"
+          ],
+          "evidence": [
+            "- Protocol funds are swapped or rebalanced at manipulated rates, leading to immediate economic loss unique to Autonolas’ buyback/liquidity flows."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "spot_price_movable",
+            "oracle_guard_used"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_twap_guard"
+          ],
+          "args.0": [
+            "intent_twap_guard"
+          ],
+          "args.1": [
+            "intent_twap_guard"
+          ],
+          "args.1.args.1": [
+            "intent_twap_guard"
+          ]
+        },
+        "effects": {
+          "": [
+            "economic_loss"
+          ],
+          "args.0": [
+            "economic_loss"
+          ],
+          "args.1": [
+            "economic_loss"
+          ],
+          "args.1.args.0": [
+            "economic_loss"
+          ],
+          "args.1.args.0.args.1": [
+            "economic_loss"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "economic_loss",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The oracle is intended to provide TWAP-based manipulation resistance for dependent buyback and liquidity operations.",
+        "The attacker is an external flash-loan or MEV actor able to move the Uniswap V2 spot price before the swap."
+      ],
+      "unresolved": []
+    },
+    {
+      "id": "impact_claim_reserves_drained_8e91aa7c",
+      "scope": "UniswapPriceOracle.validatePrice TWAP slippage guard used by buyback/liquidity operations",
+      "modality": "potential",
+      "impact_ids": [
+        "reserves_drained"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "An attacker can transiently move the Uniswap V2 spot price (tradePrice) to an attacker-controlled level via flash loan or MEV before the swap.; Buybacks and liquidity operations rely on UniswapPriceOracle.validatePrice as their slippage guard.; The report assumes the oracle is intended to provide TWAP-based manipulation resistance for dependent buyback and liquidity operations.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "spot_price_movable",
+            "oracle_guard_used",
+            "assumption_guard_expected"
+          ],
+          "evidence": [
+            "`UniswapPriceOracle.validatePrice` (autonolas-tokenomics/contracts/oracles/UniswapPriceOracle.sol) reproduces a “TWAP” by adding `tradePrice * elapsedTime` to the last cumulative price and immediately subtracts the same value, so `derivation` is calculated against `tradePrice` itself. Any flash-loan or MEV attack that pushes `tradePrice` to an attacker-controlled level passes the slippage guard, meaning subsequent swaps or liquidity removals execute at manipulated prices. This affects buybacks and liquidity actions that rely on this oracle and results in value loss.",
+            "Even though `cumulativePrice` and `timeWeightedAverage` are meant to capture history, the math cancels out. The guard therefore enforces no protection, and an attacker can transiently move the spot price before the swap; the oracle still reports everything inside slippage limits.",
+            "- Protocol funds are swapped or rebalanced at manipulated rates, leading to immediate economic loss unique to Autonolas’ buyback/liquidity flows.",
+            "Uniswap V2 oracle TWAP check collapses to spot"
+          ]
+        },
+        "safety": {
+          "text": "The validatePrice slippage guard should compare the current price against a historical time-weighted average so that a transiently manipulated spot price is rejected as outside slippage limits.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "intent_twap_guard"
+          ],
+          "evidence": [
+            "Uniswap V2 oracle TWAP check collapses to spot",
+            "The function recomputes the same price twice and never uses historical data, so rebound slippage is computed between `tradePrice` and `timeWeightedAverage` that are identical:",
+            "Even though `cumulativePrice` and `timeWeightedAverage` are meant to capture history, the math cancels out. The guard therefore enforces no protection, and an attacker can transiently move the spot price before the swap; the oracle still reports everything inside slippage limits.",
+            "1. Sample the previous cumulative price from the prior observation (`trade_price_last` stored separately) instead of recomputing `tradePrice` twice.",
+            "2. Store the historical cumulative price in state and use the delta between now and then, instead of deriving from the just-read spot price."
+          ]
+        },
+        "effects": {
+          "text": "Protocol-owned reserves can be drained through liquidity manager operations or buybacks executed at attacker-determined prices.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "reserves_drained"
+          ],
+          "evidence": [
+            "- Liquidity manager operations or buybacks can be executed at attacker-determined prices, allowing drain of protocol-owned reserves."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "reserves_drained",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_twap_guard other_mismatch: The statement requires comparing against a historical time-weighted average to reject manipulation, but the predicate only asserts no drain occurs and never enc; P/I/V relation other_mismatch: I is a conditional that forbids drain while V asserts drain under the same P, so V contradicts I, but I omits the TWAP guard mechanism the intent requires."
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_twap_guard other_mismatch: The statement requires comparing against a historical time-weighted average to reject manipulation, but the predicate only asserts no drain occurs and never enc; P/I/V relation other_mismatch: I is a conditional that forbids drain while V asserts drain under the same P, so V contradicts I, but I omits the TWAP guard mechanism the intent requires."
+      ]
+    }
+  ],
+  "limitations": [
+    "The claim formalizes only the economic_loss impact; other impacts are handled in separate passes.",
+    "The guard-rejection and loss-occurrence relations are Boolean because the report omits numeric slippage bounds and loss amounts.",
+    "The condition is narrowed to the report-stated scenario where the spot price is manipulable and the guard is used by buyback/liquidity flows.",
+    "reserves_drained: No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_twap_guard other_mismatch: The statement requires comparing against a historical time-weighted average to reject manipulation, but the predicate only asserts no drain occurs and never enc; P/I/V relation other_mismatch: I is a conditional that forbids drain while V asserts drain under the same P, so V contradicts I, but I omits the TWAP guard mechanism the intent requires."
+  ]
+}

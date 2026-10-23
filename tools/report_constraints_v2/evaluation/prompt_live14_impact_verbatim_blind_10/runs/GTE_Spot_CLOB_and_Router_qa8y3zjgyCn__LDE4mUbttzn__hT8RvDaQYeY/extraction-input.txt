@@ -1,0 +1,19 @@
+Fill Or Kill Orders Do Not Properly Round Down To Nearest Lot Causing Reverted Transactions
+
+## Finding description and impact
+According to the contest README:
+
+"On CLOB fill, filled amounts are rounded down to the nearest lot. FOK fill orders should not revert if only the amount rounded off is left unfilled, and the user is not charged for the dust."
+
+However, this does not match the actual behavior of a CLOB fill in the protocol when amountIsBase is true. When amountIsBase is false, there is logic in _matchIncomingOrder() that handles any excess amount of input token that is worth less than one lot of base. There is no equivalent logic when amountIsBase is true, which means that any order with its amount set to any value not divisible by lot size will revert.
+
+The following code in _matchIncomingOrder() shows this discrepancy, please note how matchData.matchedAmount is set.
+
+
+This value eventually flows to a while loop in _matchIncomingBid() which modifies the incoming order's amount by subtracting the matchedAmount set by the previous function. The remainder is kept in in the second branch of that snippet of code which allows incomingOrder.amount to zero out, but no such logic exists for the other branch.
+
+
+This value is then read inside of _processFillBidOrder(), which reverts if newOrder.amount is greater than zero.
+
+
+This means that FOK orders will revert because of rounded off input amounts, contrary to the stated design specifications in the README. This inconsistency makes FOK behavior unpredictable for users, violating the protocol's dust tolerance guarantee.

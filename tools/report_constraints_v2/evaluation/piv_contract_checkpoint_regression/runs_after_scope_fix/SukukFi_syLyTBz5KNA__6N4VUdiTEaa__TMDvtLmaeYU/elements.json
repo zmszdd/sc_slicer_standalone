@@ -1,0 +1,269 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "validator-only batch settlement (batchTransfers/rBatchTransfers) versus KYC-gated standard transfer flows in WERC7575ShareToken",
+    "environment": "WERC7575ShareToken contract with validator role, isKycVerified mapping, and whenNotPaused pause mechanism",
+    "evidence": [
+      "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+      "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+      "This vulnerability is a KYC enforcement and access control logic flaw in the `WERC7575ShareToken` contract’s validator-only batch transfer mechanisms. The token enforces KYC checks via the isKycVerified mapping in its standard `transfer`, `transferFrom`, `mint`, and `burn` functions, but the `batchTransfers` and `rBatchTransfers` functions, which are restricted to the validator role, directly mutate `_balances` and `_rBalances` without consulting isKycVerified. As a result, these privileged batch operations bypass the on-chain KYC gating applied to normal user flows.",
+      "- [`src/WERC7575ShareToken.sol:700-734`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L700-L734)  `batchTransfers` mutates `_balances` with no KYC or pause check.",
+      "- [`src/WERC7575ShareToken.sol:1119-1183`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L1119-L1183)  `rBatchTransfers` mutates `_balances`/`_rBalances` with no KYC or pause check.",
+      "- This standard transfer function enforces the KYC policy: it requires `whenNotPaused` and explicitly reverts if the recipient `to` is not marked `isKycVerified`. This establishes the intended invariant that all token transfers must be KYC-gated, which the validator batch functions later violate.",
+      "- The `batchTransfers` validator-only function directly debits and credits `_balances` for multiple accounts without any `isKycVerified` checks and without `whenNotPaused`. A compromised/malicious validator can use this to move balances between arbitrary addresses, including non‑KYCed ones, bypassing the KYC restrictions applied in `transfer`/`transferFrom`.",
+      "- The `rBatchTransfers` validator-only function similarly consolidates transfers and iterates over aggregated accounts to update balances, again with no KYC verification on recipients or participants. This snippet shows the function entry and loop that processes accounts, illustrating that privileged batch settlement logic can mutate balances (and later `_rBalances`) without enforcing the on-chain KYC gating used in normal flows.",
+      "- **KYC bypass by a single key**: Validator can route funds to unverified/sanctioned destinations in one call, nullifying the compliance invariant.",
+      "- **Pause bypass**: `batchTransfers`/`rBatchTransfers` ignore `whenNotPaused`, allowing fund movement even while the token is paused.",
+      "- **Regulatory/operational risk**: On-chain KYC guarantees become unreliable; downstream integrators relying on transfer gating are exposed."
+    ]
+  },
+  "entities": [
+    {
+      "id": "validator",
+      "name": "validator (privileged caller of batch transfer helpers)",
+      "role": "attacker",
+      "evidence": [
+        "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+        "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+        "- The `batchTransfers` validator-only function directly debits and credits `_balances` for multiple accounts without any `isKycVerified` checks and without `whenNotPaused`. A compromised/malicious validator can use this to move balances between arbitrary addresses, including non‑KYCed ones, bypassing the KYC restrictions applied in `transfer`/`transferFrom`."
+      ]
+    },
+    {
+      "id": "kyc_verified_holder",
+      "name": "KYC-verified address holding funds",
+      "role": "victim",
+      "evidence": [
+        "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+        "- The `batchTransfers` validator-only function directly debits and credits `_balances` for multiple accounts without any `isKycVerified` checks and without `whenNotPaused`. A compromised/malicious validator can use this to move balances between arbitrary addresses, including non‑KYCed ones, bypassing the KYC restrictions applied in `transfer`/`transferFrom`."
+      ]
+    },
+    {
+      "id": "non_kyc_recipient",
+      "name": "non-KYC or sanctioned destination address",
+      "role": "other",
+      "evidence": [
+        "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+        "- **KYC bypass by a single key**: Validator can route funds to unverified/sanctioned destinations in one call, nullifying the compliance invariant."
+      ]
+    },
+    {
+      "id": "share_token",
+      "name": "WERC7575ShareToken contract",
+      "role": "contract",
+      "evidence": [
+        "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+        "This vulnerability is a KYC enforcement and access control logic flaw in the `WERC7575ShareToken` contract’s validator-only batch transfer mechanisms. The token enforces KYC checks via the isKycVerified mapping in its standard `transfer`, `transferFrom`, `mint`, and `burn` functions, but the `batchTransfers` and `rBatchTransfers` functions, which are restricted to the validator role, directly mutate `_balances` and `_rBalances` without consulting isKycVerified. As a result, these privileged batch operations bypass the on-chain KYC gating applied to normal user flows.",
+        "- [`src/WERC7575ShareToken.sol:700-734`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L700-L734)  `batchTransfers` mutates `_balances` with no KYC or pause check.",
+        "- [`src/WERC7575ShareToken.sol:1119-1183`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L1119-L1183)  `rBatchTransfers` mutates `_balances`/`_rBalances` with no KYC or pause check."
+      ]
+    },
+    {
+      "id": "balances",
+      "name": "_balances and _rBalances ledger",
+      "role": "asset",
+      "evidence": [
+        "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+        "- [`src/WERC7575ShareToken.sol:700-734`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L700-L734)  `batchTransfers` mutates `_balances` with no KYC or pause check.",
+        "- [`src/WERC7575ShareToken.sol:1119-1183`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L1119-L1183)  `rBatchTransfers` mutates `_balances`/`_rBalances` with no KYC or pause check."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_validator_role",
+      "kind": "precondition",
+      "text": "The caller of batchTransfers/rBatchTransfers holds the validator role.",
+      "modality": "asserted",
+      "entity_ids": [
+        "validator",
+        "share_token"
+      ],
+      "evidence": [
+        "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+        "This vulnerability is a KYC enforcement and access control logic flaw in the `WERC7575ShareToken` contract’s validator-only batch transfer mechanisms. The token enforces KYC checks via the isKycVerified mapping in its standard `transfer`, `transferFrom`, `mint`, and `burn` functions, but the `batchTransfers` and `rBatchTransfers` functions, which are restricted to the validator role, directly mutate `_balances` and `_rBalances` without consulting isKycVerified. As a result, these privileged batch operations bypass the on-chain KYC gating applied to normal user flows.",
+        "- The `batchTransfers` validator-only function directly debits and credits `_balances` for multiple accounts without any `isKycVerified` checks and without `whenNotPaused`. A compromised/malicious validator can use this to move balances between arbitrary addresses, including non‑KYCed ones, bypassing the KYC restrictions applied in `transfer`/`transferFrom`."
+      ]
+    },
+    {
+      "id": "p_kyc_verified_source",
+      "kind": "precondition",
+      "text": "Funds to be moved are held at KYC-verified addresses.",
+      "modality": "asserted",
+      "entity_ids": [
+        "kyc_verified_holder",
+        "balances"
+      ],
+      "evidence": [
+        "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`."
+      ]
+    },
+    {
+      "id": "p_non_kyc_destination",
+      "kind": "precondition",
+      "text": "The destination address is not marked isKycVerified (non-KYC or sanctioned).",
+      "modality": "asserted",
+      "entity_ids": [
+        "non_kyc_recipient"
+      ],
+      "evidence": [
+        "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+        "- **KYC bypass by a single key**: Validator can route funds to unverified/sanctioned destinations in one call, nullifying the compliance invariant."
+      ]
+    },
+    {
+      "id": "p_standard_flow_kyc_gate",
+      "kind": "precondition",
+      "text": "Standard transfer/transferFrom/mint/burn revert when the recipient (and for mint/burn the holder) is not isKycVerified, and standard transfer requires whenNotPaused.",
+      "modality": "asserted",
+      "entity_ids": [
+        "share_token"
+      ],
+      "evidence": [
+        "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+        "- [`src/WERC7575ShareToken.sol:472-491`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L472-L491)  Standard `transfer` enforces `isKycVerified[to]` under `whenNotPaused`.",
+        "- This standard transfer function enforces the KYC policy: it requires `whenNotPaused` and explicitly reverts if the recipient `to` is not marked `isKycVerified`. This establishes the intended invariant that all token transfers must be KYC-gated, which the validator batch functions later violate."
+      ]
+    },
+    {
+      "id": "a_batch_transfer",
+      "kind": "action",
+      "text": "Validator calls batchTransfers to debit and credit _balances for arbitrary debtor/creditor pairs.",
+      "modality": "asserted",
+      "entity_ids": [
+        "validator",
+        "share_token",
+        "balances"
+      ],
+      "evidence": [
+        "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+        "- [`src/WERC7575ShareToken.sol:700-734`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L700-L734)  `batchTransfers` mutates `_balances` with no KYC or pause check.",
+        "- The `batchTransfers` validator-only function directly debits and credits `_balances` for multiple accounts without any `isKycVerified` checks and without `whenNotPaused`. A compromised/malicious validator can use this to move balances between arbitrary addresses, including non‑KYCed ones, bypassing the KYC restrictions applied in `transfer`/`transferFrom`."
+      ]
+    },
+    {
+      "id": "a_rbatch_transfer",
+      "kind": "action",
+      "text": "Validator calls rBatchTransfers, which iterates aggregated accounts and updates _balances and _rBalances.",
+      "modality": "asserted",
+      "entity_ids": [
+        "validator",
+        "share_token",
+        "balances"
+      ],
+      "evidence": [
+        "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+        "- [`src/WERC7575ShareToken.sol:1119-1183`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L1119-L1183)  `rBatchTransfers` mutates `_balances`/`_rBalances` with no KYC or pause check.",
+        "- The `rBatchTransfers` validator-only function similarly consolidates transfers and iterates over aggregated accounts to update balances, again with no KYC verification on recipients or participants. This snippet shows the function entry and loop that processes accounts, illustrating that privileged batch settlement logic can mutate balances (and later `_rBalances`) without enforcing the on-chain KYC gating used in normal flows."
+      ]
+    },
+    {
+      "id": "rc_no_kyc_no_pause",
+      "kind": "root_cause",
+      "text": "batchTransfers and rBatchTransfers directly mutate _balances (and _rBalances) without consulting isKycVerified and without whenNotPaused.",
+      "modality": "asserted",
+      "entity_ids": [
+        "share_token",
+        "balances"
+      ],
+      "evidence": [
+        "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+        "- [`src/WERC7575ShareToken.sol:700-734`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L700-L734)  `batchTransfers` mutates `_balances` with no KYC or pause check.",
+        "- [`src/WERC7575ShareToken.sol:1119-1183`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L1119-L1183)  `rBatchTransfers` mutates `_balances`/`_rBalances` with no KYC or pause check.",
+        "- The `batchTransfers` validator-only function directly debits and credits `_balances` for multiple accounts without any `isKycVerified` checks and without `whenNotPaused`. A compromised/malicious validator can use this to move balances between arbitrary addresses, including non‑KYCed ones, bypassing the KYC restrictions applied in `transfer`/`transferFrom`.",
+        "- The `rBatchTransfers` validator-only function similarly consolidates transfers and iterates over aggregated accounts to update balances, again with no KYC verification on recipients or participants. This snippet shows the function entry and loop that processes accounts, illustrating that privileged batch settlement logic can mutate balances (and later `_rBalances`) without enforcing the on-chain KYC gating used in normal flows."
+      ]
+    },
+    {
+      "id": "i_kyc_gate_all_transfers",
+      "kind": "security_intent",
+      "text": "All token transfers, including validator batch settlement paths, must be KYC-gated so funds cannot be moved to a non-isKycVerified recipient.",
+      "modality": "inferred",
+      "entity_ids": [
+        "share_token",
+        "non_kyc_recipient"
+      ],
+      "evidence": [
+        "- This standard transfer function enforces the KYC policy: it requires `whenNotPaused` and explicitly reverts if the recipient `to` is not marked `isKycVerified`. This establishes the intended invariant that all token transfers must be KYC-gated, which the validator batch functions later violate.",
+        "This vulnerability is a KYC enforcement and access control logic flaw in the `WERC7575ShareToken` contract’s validator-only batch transfer mechanisms. The token enforces KYC checks via the isKycVerified mapping in its standard `transfer`, `transferFrom`, `mint`, and `burn` functions, but the `batchTransfers` and `rBatchTransfers` functions, which are restricted to the validator role, directly mutate `_balances` and `_rBalances` without consulting isKycVerified. As a result, these privileged batch operations bypass the on-chain KYC gating applied to normal user flows."
+      ]
+    },
+    {
+      "id": "i_pause_blocks_movement",
+      "kind": "security_intent",
+      "text": "While the token is paused, no fund movement should occur, including via validator batch paths.",
+      "modality": "inferred",
+      "entity_ids": [
+        "share_token"
+      ],
+      "evidence": [
+        "- **Pause bypass**: `batchTransfers`/`rBatchTransfers` ignore `whenNotPaused`, allowing fund movement even while the token is paused.",
+        "- This standard transfer function enforces the KYC policy: it requires `whenNotPaused` and explicitly reverts if the recipient `to` is not marked `isKycVerified`. This establishes the intended invariant that all token transfers must be KYC-gated, which the validator batch functions later violate."
+      ]
+    },
+    {
+      "id": "v_kyc_bypass_single_call",
+      "kind": "impact",
+      "text": "A validator moves funds from KYC-verified addresses to non-KYC or sanctioned destinations in one call, nullifying the on-chain compliance invariant.",
+      "modality": "asserted",
+      "entity_ids": [
+        "validator",
+        "kyc_verified_holder",
+        "non_kyc_recipient",
+        "balances"
+      ],
+      "evidence": [
+        "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+        "- **KYC bypass by a single key**: Validator can route funds to unverified/sanctioned destinations in one call, nullifying the compliance invariant."
+      ]
+    },
+    {
+      "id": "v_pause_bypass",
+      "kind": "impact",
+      "text": "batchTransfers/rBatchTransfers allow fund movement even while the token is paused.",
+      "modality": "potential",
+      "entity_ids": [
+        "share_token",
+        "balances"
+      ],
+      "evidence": [
+        "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+        "- **Pause bypass**: `batchTransfers`/`rBatchTransfers` ignore `whenNotPaused`, allowing fund movement even while the token is paused."
+      ]
+    },
+    {
+      "id": "v_onward_routing",
+      "kind": "impact",
+      "text": "Non-KYC recipients can route received funds onward to KYC accounts using normal transfers, which only check the recipient.",
+      "modality": "potential",
+      "entity_ids": [
+        "non_kyc_recipient",
+        "kyc_verified_holder"
+      ],
+      "evidence": [
+        "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`."
+      ]
+    },
+    {
+      "id": "v_regulatory_risk",
+      "kind": "impact",
+      "text": "On-chain KYC guarantees become unreliable, exposing downstream integrators that rely on transfer gating.",
+      "modality": "potential",
+      "entity_ids": [
+        "share_token"
+      ],
+      "evidence": [
+        "- **Regulatory/operational risk**: On-chain KYC guarantees become unreliable; downstream integrators relying on transfer gating are exposed."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_batch_transfer",
+    "a_rbatch_transfer"
+  ],
+  "ambiguities": [
+    "Report does not state whether the validator is malicious/compromised in an observed transaction or only hypothetically; bypass is described as possible via a privileged key.",
+    "No concrete amounts, token quantities, or specific addresses are given for the moved funds.",
+    "Whether the token was actually paused at the time of a batch transfer is not established; pause bypass is stated as a capability.",
+    "Report does not specify whether batchTransfers and rBatchTransfers are both required or either alone suffices for the bypass."
+  ]
+}

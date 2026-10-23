@@ -1,0 +1,196 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "StakingNativeToken._withdraw() balance accounting across reentrant claim() during ETH transfer",
+    "environment": "StakingNativeToken / StakingBase staking contract with ServiceOwner reward distribution",
+    "evidence": [
+      "StakingNativeToken._withdraw() Balance Corruption via Reentrancy Causes Contract Insolvency and DoS for All Stakers",
+      "The `_withdraw()` function in `StakingBase` (lines 929-948) reads the `balance` state variable into a local variable at the start, makes multiple external ETH transfers in a loop via `_transfer()`, and only writes the updated balance back to storage **after all transfers complete**. For `StakingNativeToken`, each `_transfer()` call sends ETH via `to.call{value: amount}(\"\")` (line 29), giving execution control to the recipient.",
+      "If a reward recipient re-enters the staking contract during `_transfer()` (e.g., by calling `claim()` for a **different** service they own), the inner `_withdraw()` reads the **stale** `balance` from storage (outer hasn't written yet). When the outer `_withdraw()` resumes, it **overwrites** the inner write with its own stale local variable, permanently corrupting the `balance` accounting.",
+      "1. Attacker owns two services (A and B), both staked in the same `StakingNativeToken` contract. Both use `RewardDistributionType.ServiceOwner`. Contract `balance = 100 ETH`.",
+      "**Note on reentrancy guard**: Neither `_claim()`, `_unstake()`, `_withdraw()`, nor `_stake()` have reentrancy guards. The comment on line 564 says \"the reentrancy is not possible since the reward is set to zero\" — but this only prevents re-claiming the **same** service. Claiming a **different** service owned by the same attacker is not prevented."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "Attacker owning two services",
+      "role": "attacker",
+      "evidence": [
+        "1. Attacker owns two services (A and B), both staked in the same `StakingNativeToken` contract. Both use `RewardDistributionType.ServiceOwner`. Contract `balance = 100 ETH`.",
+        "3. **Attacker's `receive()` triggers**, calling `claim(serviceB)`:"
+      ]
+    },
+    {
+      "id": "staking_contract",
+      "name": "StakingNativeToken staking contract",
+      "role": "contract",
+      "evidence": [
+        "The `_withdraw()` function in `StakingBase` (lines 929-948) reads the `balance` state variable into a local variable at the start, makes multiple external ETH transfers in a loop via `_transfer()`, and only writes the updated balance back to storage **after all transfers complete**. For `StakingNativeToken`, each `_transfer()` call sends ETH via `to.call{value: amount}(\"\")` (line 29), giving execution control to the recipient.",
+        "1. Attacker owns two services (A and B), both staked in the same `StakingNativeToken` contract. Both use `RewardDistributionType.ServiceOwner`. Contract `balance = 100 ETH`."
+      ]
+    },
+    {
+      "id": "service_a",
+      "name": "Service A (attacker-owned, staked)",
+      "role": "asset",
+      "evidence": [
+        "1. Attacker owns two services (A and B), both staked in the same `StakingNativeToken` contract. Both use `RewardDistributionType.ServiceOwner`. Contract `balance = 100 ETH`.",
+        "2. Attacker calls `unstake(serviceA)` which triggers `_withdraw()`:"
+      ]
+    },
+    {
+      "id": "service_b",
+      "name": "Service B (attacker-owned, staked)",
+      "role": "asset",
+      "evidence": [
+        "1. Attacker owns two services (A and B), both staked in the same `StakingNativeToken` contract. Both use `RewardDistributionType.ServiceOwner`. Contract `balance = 100 ETH`.",
+        "3. **Attacker's `receive()` triggers**, calling `claim(serviceB)`:"
+      ]
+    },
+    {
+      "id": "victim",
+      "name": "Reward recipient of service B",
+      "role": "victim",
+      "evidence": [
+        "- `_transfer(victim, 5 ETH)` sends 5 ETH."
+      ]
+    },
+    {
+      "id": "balance_state",
+      "name": "Contract balance state variable",
+      "role": "other",
+      "evidence": [
+        "The `_withdraw()` function in `StakingBase` (lines 929-948) reads the `balance` state variable into a local variable at the start, makes multiple external ETH transfers in a loop via `_transfer()`, and only writes the updated balance back to storage **after all transfers complete**. For `StakingNativeToken`, each `_transfer()` call sends ETH via `to.call{value: amount}(\"\")` (line 29), giving execution control to the recipient.",
+        "If a reward recipient re-enters the staking contract during `_transfer()` (e.g., by calling `claim()` for a **different** service they own), the inner `_withdraw()` reads the **stale** `balance` from storage (outer hasn't written yet). When the outer `_withdraw()` resumes, it **overwrites** the inner write with its own stale local variable, permanently corrupting the `balance` accounting.",
+        "- But `balance = 95` instead of correct `90`."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "attacker_owns_two_services",
+      "kind": "precondition",
+      "text": "Attacker owns two services A and B, both staked in the same StakingNativeToken contract using RewardDistributionType.ServiceOwner.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "service_a",
+        "service_b",
+        "staking_contract"
+      ],
+      "evidence": [
+        "1. Attacker owns two services (A and B), both staked in the same `StakingNativeToken` contract. Both use `RewardDistributionType.ServiceOwner`. Contract `balance = 100 ETH`."
+      ]
+    },
+    {
+      "id": "contract_balance_100",
+      "kind": "precondition",
+      "text": "Contract balance state is 100 ETH before the outer _withdraw() begins.",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_contract",
+        "balance_state"
+      ],
+      "evidence": [
+        "1. Attacker owns two services (A and B), both staked in the same `StakingNativeToken` contract. Both use `RewardDistributionType.ServiceOwner`. Contract `balance = 100 ETH`.",
+        "- **Outer `_withdraw()`**: reads `updatedBalance = 100` from storage."
+      ]
+    },
+    {
+      "id": "no_reentrancy_guard",
+      "kind": "precondition",
+      "text": "Neither _claim(), _unstake(), _withdraw(), nor _stake() have reentrancy guards, and the reward-zeroing comment only prevents re-claiming the same service.",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_contract"
+      ],
+      "evidence": [
+        "**Note on reentrancy guard**: Neither `_claim()`, `_unstake()`, `_withdraw()`, nor `_stake()` have reentrancy guards. The comment on line 564 says \"the reentrancy is not possible since the reward is set to zero\" — but this only prevents re-claiming the **same** service. Claiming a **different** service owned by the same attacker is not prevented."
+      ]
+    },
+    {
+      "id": "call_unstake_service_a",
+      "kind": "action",
+      "text": "Attacker calls unstake(serviceA), triggering the outer _withdraw().",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "service_a",
+        "staking_contract"
+      ],
+      "evidence": [
+        "2. Attacker calls `unstake(serviceA)` which triggers `_withdraw()`:"
+      ]
+    },
+    {
+      "id": "receive_reenters_claim_service_b",
+      "kind": "action",
+      "text": "During the ETH transfer to the attacker, the attacker's receive() re-enters by calling claim(serviceB).",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "service_b",
+        "staking_contract"
+      ],
+      "evidence": [
+        "- `_transfer(attacker, 5 ETH)` sends ETH to attacker's contract.",
+        "3. **Attacker's `receive()` triggers**, calling `claim(serviceB)`:"
+      ]
+    },
+    {
+      "id": "stale_balance_writeback",
+      "kind": "root_cause",
+      "text": "_withdraw() reads balance into a local variable, performs external ETH transfers, and writes the updated balance back to storage only after all transfers complete, so the outer _withdraw() overwrites the inner write with its own stale local value.",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_contract",
+        "balance_state"
+      ],
+      "evidence": [
+        "The `_withdraw()` function in `StakingBase` (lines 929-948) reads the `balance` state variable into a local variable at the start, makes multiple external ETH transfers in a loop via `_transfer()`, and only writes the updated balance back to storage **after all transfers complete**. For `StakingNativeToken`, each `_transfer()` call sends ETH via `to.call{value: amount}(\"\")` (line 29), giving execution control to the recipient.",
+        "If a reward recipient re-enters the staking contract during `_transfer()` (e.g., by calling `claim()` for a **different** service they own), the inner `_withdraw()` reads the **stale** `balance` from storage (outer hasn't written yet). When the outer `_withdraw()` resumes, it **overwrites** the inner write with its own stale local variable, permanently corrupting the `balance` accounting.",
+        "- Writes **`balance = 95`** to storage (its own stale local).",
+        "- **Overwrites** the inner write."
+      ]
+    },
+    {
+      "id": "intent_balance_reflects_transfers",
+      "kind": "security_intent",
+      "text": "After _withdraw() completes, the stored balance must reflect all ETH actually transferred out, i.e. balance must be decremented for every transfer performed.",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_contract",
+        "balance_state"
+      ],
+      "evidence": [
+        "- But `balance = 95` instead of correct `90`.",
+        "**Option 1 (Preferred)**: Update `balance` in storage **before each transfer**, not after the loop:"
+      ]
+    },
+    {
+      "id": "intent_no_reentrant_corruption",
+      "kind": "security_intent",
+      "text": "A reentrant claim() for a different service during _transfer() must not corrupt the balance accounting of the outer _withdraw().",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_contract",
+        "balance_state"
+      ],
+      "evidence": [
+        "If a reward recipient re-enters the staking contract during `_transfer()` (e.g., by calling `claim()` for a **different** service they own), the inner `_withdraw()` reads the **stale** `balance` from storage (outer hasn't written yet). When the outer `_withdraw()` resumes, it **overwrites** the inner write with its own stale local variable, permanently corrupting the `balance` accounting.",
+        "**Note on reentrancy guard**: Neither `_claim()`, `_unstake()`, `_withdraw()`, nor `_stake()` have reentrancy guards. The comment on line 564 says \"the reentrancy is not possible since the reward is set to zero\" — but this only prevents re-claiming the **same** service. Claiming a **different** service owned by the same attacker is not prevented.",
+        "**Option 2**: Add a reentrancy guard to `_withdraw`, `_claim`, `_unstake`, and `_stake`:"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "call_unstake_service_a",
+    "receive_reenters_claim_service_b"
+  ],
+  "ambiguities": [
+    "Report does not state whether the attacker's receive() is a contract or EOA; reentrancy requires a contract recipient.",
+    "Report does not specify the exact reward amounts for service A and B beyond the illustrative 5 ETH each.",
+    "Report does not state whether claim(serviceB) itself requires the reward to be nonzero at the time of the reentrant call."
+  ]
+}

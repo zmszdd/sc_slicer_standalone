@@ -1,0 +1,234 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "RiskEngine.twapEMA() EMA tuple destructuring feeding PanopticPool.getTWAP() liquidation and pricing checks",
+    "environment": "Panoptic RiskEngine/OraclePack/PanopticPool contracts",
+    "evidence": [
+      "RiskEngine.twapEMA() tuple destructuring mismatch ignores eonsEMA and includes spotEMA, breaking TWAP manipulation resistance used in liquidation checks",
+      "`RiskEngine.twapEMA()` ([RiskEngine.sol#L836-L840](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/RiskEngine.sol#L836-L840)) destructures the return values of `OraclePack.getEMAs()` ([OraclePack.sol#L209-L214](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/types/OraclePack.sol#L209-L214)) in the wrong order.",
+      "**`getEMAs()` returns:** `(spotEMA, fastEMA, slowEMA, eonsEMA, medianTick)`",
+      "**`twapEMA()` destructures as:** `(eonsEMA, slowEMA, fastEMA, , )`",
+      "**Intended formula:** `(6 * fastEMA + 3 * slowEMA + eonsEMA) / 10`",
+      "**Actual formula:** `(6 * slowEMA + 3 * fastEMA + spotEMA) / 10`",
+      "**However, the implementation computes a 60/30/10 blend of (slow, fast, spot) instead of (fast, slow, eons). `eonsEMA` has zero influence on the returned TWAP.**",
+      "This TWAP is used in `PanopticPool.getTWAP()` ([PanopticPool.sol#L1944-L1945](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/PanopticPool.sol#L1944-L1945)) which feeds into:",
+      "- Liquidation solvency checks (`atTicks[1] = twapTick`) ([PanopticPool.sol#L1392-L1397](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/PanopticPool.sol#L1392-L1397))",
+      "- `StaleOracle` gate: `|currentTick - twapTick| > tickDeltaLiquidation` ([PanopticPool.sol#L1378-L1389](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/PanopticPool.sol#L1378-L1389))",
+      "If short-horizon price movement propagates into `spotEMA` faster than longer-horizon EMAs:",
+      "1. The buggy TWAP incorporates that movement with 10% weight (should be 0%)",
+      "2. This alters outcomes of the `StaleOracle` safety boundary and solvency evaluation",
+      "3. System may proceed when it should revert as stale, or revert when it should proceed",
+      "- Blocked liquidations → bad debt may accumulate",
+      "- Incorrect liquidations → borderline solvent accounts may be flagged insolvent"
+    ]
+  },
+  "entities": [
+    {
+      "id": "risk_engine",
+      "name": "RiskEngine",
+      "role": "contract",
+      "evidence": [
+        "RiskEngine.twapEMA() tuple destructuring mismatch ignores eonsEMA and includes spotEMA, breaking TWAP manipulation resistance used in liquidation checks",
+        "`RiskEngine.twapEMA()` ([RiskEngine.sol#L836-L840](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/RiskEngine.sol#L836-L840)) destructures the return values of `OraclePack.getEMAs()` ([OraclePack.sol#L209-L214](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/types/OraclePack.sol#L209-L214)) in the wrong order."
+      ]
+    },
+    {
+      "id": "oracle_pack",
+      "name": "OraclePack",
+      "role": "contract",
+      "evidence": [
+        "`RiskEngine.twapEMA()` ([RiskEngine.sol#L836-L840](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/RiskEngine.sol#L836-L840)) destructures the return values of `OraclePack.getEMAs()` ([OraclePack.sol#L209-L214](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/types/OraclePack.sol#L209-L214)) in the wrong order.",
+        "**`getEMAs()` returns:** `(spotEMA, fastEMA, slowEMA, eonsEMA, medianTick)`",
+        "The helper accessors in [OraclePack.sol#L169-L200](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/types/OraclePack.sol#L169-L200) confirm the correct return order."
+      ]
+    },
+    {
+      "id": "panoptic_pool",
+      "name": "PanopticPool",
+      "role": "contract",
+      "evidence": [
+        "This TWAP is used in `PanopticPool.getTWAP()` ([PanopticPool.sol#L1944-L1945](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/PanopticPool.sol#L1944-L1945)) which feeds into:",
+        "- Liquidation solvency checks (`atTicks[1] = twapTick`) ([PanopticPool.sol#L1392-L1397](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/PanopticPool.sol#L1392-L1397))",
+        "- `StaleOracle` gate: `|currentTick - twapTick| > tickDeltaLiquidation` ([PanopticPool.sol#L1378-L1389](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/PanopticPool.sol#L1378-L1389))",
+        "- `_settlePremium()` and `_forceExercise()` pricing"
+      ]
+    },
+    {
+      "id": "twap_value",
+      "name": "Returned TWAP value",
+      "role": "asset",
+      "evidence": [
+        "**Actual formula:** `(6 * slowEMA + 3 * fastEMA + spotEMA) / 10`",
+        "**However, the implementation computes a 60/30/10 blend of (slow, fast, spot) instead of (fast, slow, eons). `eonsEMA` has zero influence on the returned TWAP.**"
+      ]
+    },
+    {
+      "id": "solvent_account",
+      "name": "Borderline solvent account",
+      "role": "victim",
+      "evidence": [
+        "- Incorrect liquidations → borderline solvent accounts may be flagged insolvent"
+      ]
+    },
+    {
+      "id": "protocol",
+      "name": "Protocol solvency",
+      "role": "other",
+      "evidence": [
+        "- Blocked liquidations → bad debt may accumulate"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "get_emas_returns_order",
+      "kind": "precondition",
+      "text": "OraclePack.getEMAs() returns values in order (spotEMA, fastEMA, slowEMA, eonsEMA, medianTick).",
+      "modality": "asserted",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "evidence": [
+        "**`getEMAs()` returns:** `(spotEMA, fastEMA, slowEMA, eonsEMA, medianTick)`",
+        "The helper accessors in [OraclePack.sol#L169-L200](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/types/OraclePack.sol#L169-L200) confirm the correct return order."
+      ]
+    },
+    {
+      "id": "twap_ema_destructures_wrong_order",
+      "kind": "root_cause",
+      "text": "RiskEngine.twapEMA() destructures getEMAs() as (eonsEMA, slowEMA, fastEMA, , ), binding spotEMA to eonsEMA, fastEMA to slowEMA, slowEMA to fastEMA, and discarding eonsEMA.",
+      "modality": "asserted",
+      "entity_ids": [
+        "risk_engine",
+        "oracle_pack"
+      ],
+      "evidence": [
+        "`RiskEngine.twapEMA()` ([RiskEngine.sol#L836-L840](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/RiskEngine.sol#L836-L840)) destructures the return values of `OraclePack.getEMAs()` ([OraclePack.sol#L209-L214](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/types/OraclePack.sol#L209-L214)) in the wrong order.",
+        "**`twapEMA()` destructures as:** `(eonsEMA, slowEMA, fastEMA, , )`",
+        "| 1st | `_spotEMA` | `eonsEMA` | **spotEMA** ❌ | 10% |",
+        "| 2nd | `_fastEMA` | `slowEMA` | **fastEMA** ❌ | 30% |",
+        "| 3rd | `_slowEMA` | `fastEMA` | **slowEMA** ❌ | 60% |",
+        "| 4th | `_eonsEMA` | *(ignored)* | **discarded!** ❌ | 0% |"
+      ]
+    },
+    {
+      "id": "actual_formula_wrong_weights",
+      "kind": "impact",
+      "text": "The computed TWAP is (6*slowEMA + 3*fastEMA + spotEMA)/10 instead of the intended (6*fastEMA + 3*slowEMA + eonsEMA)/10, giving spotEMA 10% weight and eonsEMA zero influence.",
+      "modality": "asserted",
+      "entity_ids": [
+        "twap_value",
+        "risk_engine"
+      ],
+      "evidence": [
+        "**Intended formula:** `(6 * fastEMA + 3 * slowEMA + eonsEMA) / 10`",
+        "**Actual formula:** `(6 * slowEMA + 3 * fastEMA + spotEMA) / 10`",
+        "**However, the implementation computes a 60/30/10 blend of (slow, fast, spot) instead of (fast, slow, eons). `eonsEMA` has zero influence on the returned TWAP.**",
+        "1. The buggy TWAP incorporates that movement with 10% weight (should be 0%)"
+      ]
+    },
+    {
+      "id": "twap_feeds_liquidation_checks",
+      "kind": "precondition",
+      "text": "The TWAP from PanopticPool.getTWAP() feeds liquidation solvency checks (atTicks[1] = twapTick), the StaleOracle gate |currentTick - twapTick| > tickDeltaLiquidation, and _settlePremium()/_forceExercise() pricing.",
+      "modality": "asserted",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_value"
+      ],
+      "evidence": [
+        "This TWAP is used in `PanopticPool.getTWAP()` ([PanopticPool.sol#L1944-L1945](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/PanopticPool.sol#L1944-L1945)) which feeds into:",
+        "- Liquidation solvency checks (`atTicks[1] = twapTick`) ([PanopticPool.sol#L1392-L1397](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/PanopticPool.sol#L1392-L1397))",
+        "- `StaleOracle` gate: `|currentTick - twapTick| > tickDeltaLiquidation` ([PanopticPool.sol#L1378-L1389](https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/PanopticPool.sol#L1378-L1389))",
+        "- `_settlePremium()` and `_forceExercise()` pricing"
+      ]
+    },
+    {
+      "id": "short_horizon_movement_condition",
+      "kind": "precondition",
+      "text": "Short-horizon price movement propagates into spotEMA faster than into the longer-horizon EMAs.",
+      "modality": "potential",
+      "entity_ids": [
+        "twap_value"
+      ],
+      "evidence": [
+        "If short-horizon price movement propagates into `spotEMA` faster than longer-horizon EMAs:"
+      ]
+    },
+    {
+      "id": "stale_oracle_outcome_altered",
+      "kind": "impact",
+      "text": "The altered TWAP changes outcomes of the StaleOracle safety boundary and solvency evaluation, so the system may proceed when it should revert as stale or revert when it should proceed.",
+      "modality": "potential",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_value"
+      ],
+      "evidence": [
+        "2. This alters outcomes of the `StaleOracle` safety boundary and solvency evaluation",
+        "3. System may proceed when it should revert as stale, or revert when it should proceed"
+      ]
+    },
+    {
+      "id": "blocked_liquidations_bad_debt",
+      "kind": "impact",
+      "text": "Blocked liquidations may allow bad debt to accumulate.",
+      "modality": "potential",
+      "entity_ids": [
+        "protocol",
+        "panoptic_pool"
+      ],
+      "evidence": [
+        "- Blocked liquidations → bad debt may accumulate"
+      ]
+    },
+    {
+      "id": "incorrect_liquidations_solvent_flagged",
+      "kind": "impact",
+      "text": "Incorrect liquidations may flag borderline solvent accounts as insolvent.",
+      "modality": "potential",
+      "entity_ids": [
+        "solvent_account",
+        "panoptic_pool"
+      ],
+      "evidence": [
+        "- Incorrect liquidations → borderline solvent accounts may be flagged insolvent"
+      ]
+    },
+    {
+      "id": "intent_twap_uses_correct_ema_blend",
+      "kind": "security_intent",
+      "text": "The TWAP used in liquidation and pricing checks should be the intended blend (6*fastEMA + 3*slowEMA + eonsEMA)/10, with eonsEMA included and spotEMA excluded.",
+      "modality": "inferred",
+      "entity_ids": [
+        "risk_engine",
+        "twap_value"
+      ],
+      "evidence": [
+        "**Intended formula:** `(6 * fastEMA + 3 * slowEMA + eonsEMA) / 10`",
+        "Per the NatSpec: *\"This heavily smoothed value is designed to be highly resistant to manipulation and serves as a robust price feed for critical system functions like solvency checks.\"*",
+        "**However, the implementation computes a 60/30/10 blend of (slow, fast, spot) instead of (fast, slow, eons). `eonsEMA` has zero influence on the returned TWAP.**"
+      ]
+    },
+    {
+      "id": "assumption_manipulation_resistance",
+      "kind": "assumption",
+      "text": "The intended smoothed TWAP is assumed to be highly manipulation-resistant and a robust feed for solvency checks.",
+      "modality": "inferred",
+      "entity_ids": [
+        "twap_value",
+        "panoptic_pool"
+      ],
+      "evidence": [
+        "Per the NatSpec: *\"This heavily smoothed value is designed to be highly resistant to manipulation and serves as a robust price feed for critical system functions like solvency checks.\"*"
+      ]
+    }
+  ],
+  "attack_steps": [],
+  "ambiguities": [
+    "No concrete transaction or actor is described; the scenario is conditional on short-horizon price movement propagating into spotEMA faster than longer-horizon EMAs.",
+    "Whether the StaleOracle gate actually proceeds or reverts incorrectly is stated as may, not observed.",
+    "Bad debt accumulation and misflagging of solvent accounts are potential downstream harms, not asserted incidents.",
+    "No attacker, authorization, or permissionless-call condition is stated in the report."
+  ]
+}

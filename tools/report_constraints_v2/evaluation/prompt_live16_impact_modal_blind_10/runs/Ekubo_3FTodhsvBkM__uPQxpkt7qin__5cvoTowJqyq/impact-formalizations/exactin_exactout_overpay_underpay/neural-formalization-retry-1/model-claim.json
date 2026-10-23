@@ -1,0 +1,242 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "proportional_fairness",
+  "precondition_ids": [
+    "pool_at_tick_x_at_block_start",
+    "mev_capture_records_block_start_tick"
+  ],
+  "intent_id": "intent_equal_fee_for_equal_output",
+  "impact_ids": [
+    "exactin_exactout_overpay_underpay"
+  ],
+  "symbols": {
+    "begin_block_tick": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "pool tick X recorded at the beginning of the block",
+      "checkpoint": "beginning of block, before swap",
+      "entity_ids": [
+        "pool",
+        "mev_capture"
+      ],
+      "source_ids": [
+        "pool_at_tick_x_at_block_start",
+        "mev_capture_records_block_start_tick"
+      ]
+    },
+    "post_swap_tick": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "pool tick after the swap, from which the tick distance to the beginning-of-block tick is measured",
+      "checkpoint": "after swap",
+      "entity_ids": [
+        "pool",
+        "mev_capture"
+      ],
+      "source_ids": [
+        "mev_capture_records_block_start_tick"
+      ]
+    },
+    "exactin_fee": {
+      "sort": "int",
+      "unit": "token amount",
+      "meaning": "MevCapture additional fee charged on the exactIn swap path for the received output amount",
+      "checkpoint": "after exactIn swap fee application",
+      "entity_ids": [
+        "mev_capture",
+        "exact_in_swap"
+      ],
+      "source_ids": [
+        "exactin_fee_on_output",
+        "intent_equal_fee_for_equal_output"
+      ]
+    },
+    "exactout_fee": {
+      "sort": "int",
+      "unit": "token amount",
+      "meaning": "MevCapture additional fee charged on the exactOut swap path for the same received output amount",
+      "checkpoint": "after exactOut swap fee application",
+      "entity_ids": [
+        "mev_capture",
+        "exact_out_swap"
+      ],
+      "source_ids": [
+        "exactout_fee_on_input",
+        "intent_equal_fee_for_equal_output"
+      ]
+    },
+    "exactin_tick_distance": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "absolute tick distance moved by the exactIn swap from the beginning-of-block tick",
+      "checkpoint": "after exactIn swap",
+      "entity_ids": [
+        "pool",
+        "exact_in_swap"
+      ],
+      "source_ids": [
+        "mev_capture_records_block_start_tick",
+        "intent_fee_proportional_to_tick_distance"
+      ]
+    },
+    "exactout_tick_distance": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "absolute tick distance moved by the exactOut swap from the beginning-of-block tick",
+      "checkpoint": "after exactOut swap",
+      "entity_ids": [
+        "pool",
+        "exact_out_swap"
+      ],
+      "source_ids": [
+        "mev_capture_records_block_start_tick",
+        "intent_fee_proportional_to_tick_distance"
+      ]
+    },
+    "fee_per_tick": {
+      "sort": "int",
+      "unit": "token amount per tick",
+      "meaning": "MevCapture fee rate applied per unit of tick distance",
+      "checkpoint": "constant fee parameter",
+      "entity_ids": [
+        "mev_capture"
+      ],
+      "source_ids": [
+        "mev_capture_records_block_start_tick",
+        "intent_fee_proportional_to_tick_distance"
+      ]
+    },
+    "paths_fee_mismatch": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the exactIn and exactOut paths charge unequal MevCapture additional fees for the same received output amount, so one path overpays or underpays relative to the other",
+      "checkpoint": "after both swap paths evaluated for equal output",
+      "entity_ids": [
+        "exact_in_swap",
+        "exact_out_swap",
+        "mev_capture"
+      ],
+      "source_ids": [
+        "intent_equal_fee_for_equal_output",
+        "exactin_exactout_overpay_underpay"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "pool_at_tick_x_at_block_start",
+      "predicate": {
+        "kind": "comparison",
+        "left": "begin_block_tick",
+        "operator": "eq",
+        "right": {
+          "symbol": "begin_block_tick"
+        }
+      }
+    },
+    {
+      "source_id": "mev_capture_records_block_start_tick",
+      "predicate": {
+        "kind": "relation",
+        "left": {
+          "symbol": "exactin_fee"
+        },
+        "operator": "eq",
+        "right": {
+          "op": "mul",
+          "args": [
+            {
+              "symbol": "exactin_tick_distance"
+            },
+            {
+              "symbol": "fee_per_tick"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "comparison",
+          "left": "begin_block_tick",
+          "operator": "eq",
+          "right": {
+            "symbol": "begin_block_tick"
+          }
+        },
+        {
+          "kind": "relation",
+          "left": {
+            "symbol": "exactin_fee"
+          },
+          "operator": "eq",
+          "right": {
+            "op": "mul",
+            "args": [
+              {
+                "symbol": "exactin_tick_distance"
+              },
+              {
+                "symbol": "fee_per_tick"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "relation": {
+      "kind": "any_of",
+      "terms": [
+        {
+          "kind": "relation",
+          "left": {
+            "symbol": "exactin_fee"
+          },
+          "operator": "eq",
+          "right": {
+            "symbol": "exactout_fee"
+          }
+        },
+        {
+          "kind": "truth",
+          "symbol": "paths_fee_mismatch",
+          "value": false
+        }
+      ]
+    }
+  },
+  "assumptions": [
+    "Both swap paths are evaluated for the same received output amount, as stated by the security intent.",
+    "The MevCapture fee is charged proportionally to the absolute tick distance from the beginning-of-block tick for both paths.",
+    "The scenario is hypothetical; no concrete transaction or caller is supplied."
+  ],
+  "unresolved": [
+    {
+      "category": "missing_report_definition",
+      "description": "No concrete numeric values for X, Z, G, fee, amountIn or amountOut are given, so the quantitative overpay/underpay magnitude is not fixed; only the qualitative mismatch is formalized.",
+      "source_ids": [
+        "exactin_exactout_overpay_underpay",
+        "intent_equal_fee_for_equal_output"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "Report describes a hypothetical scenario rather than an observed transaction; no actual trigger or caller is supplied.",
+      "source_ids": [
+        "exactin_exactout_overpay_underpay"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The proportional_fairness relation is expressed at the fee-amount level using the report-grounded fee_per_tick and tick-distance symbols; the exact fee formula is not numerically fixed by the report.",
+    "The impact is asserted as occurring 'most of the time', so the formalization captures the qualitative mismatch rather than an unconditional inequality."
+  ]
+}

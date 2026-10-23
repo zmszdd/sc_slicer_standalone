@@ -1,0 +1,272 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "limit-order book append and removal via Book._updateLimitPostOrder",
+    "environment": "GTE CLOB limit-order book contract",
+    "evidence": [
+      "The limit-order book stores all orders for a given price in a doubly linked list:",
+      "When a new order is appended, the contract must update both links:",
+      "* `tail.next = newOrder`               (forward link)",
+      "* `newOrder.prev = tail`               (back link)",
+      "However, only the forward link is saved to storage; the back-link is written to a **memory copy** and discarded:",
+      "[Book._updateLimitPostOrder](https://github.com/code-423n4/2025-07-gte-clob/blob/main/contracts/clob/types/Book.sol#L281):",
+      "As a result, every non-head order has `prevOrderId == 0` when later read from",
+      "storage.",
+      "* Cancelling or matching a non-head order makes the removal routine believe it is the head, so it blindly moves `limit.headOrder` past the real head.",
+      "The earlier orders become **orphaned**:",
+      "– invisible to traversal, matching and user cancels",
+      "– still counted in `numBids/Asks`, `*_OpenInterest`",
+      "* Attackers can repeatedly orphan liquidity to:",
+      "- hide rival orders and front-run flow",
+      "- leave corrupted price levels with `numOrders > 0` but `headOrder = 0`.",
+      "Once the last phantom order is deleted, `getBestBid/Ask` flips to the",
+      "`MAX_UINT` sentinel, breaking taker fills and freezing that side",
+      "of the book.",
+      "- inflate / deflate open-interest, leading to wrong fee accrual and possible",
+      "withdrawal failures.",
+      "* The corruption persists forever because every operation is wrapped in a successful transaction;",
+      "* After the final orphaned order is deleted (e.g. via expiry or a user-initiated cancel that happens to succeed), the RB-tree node is removed and `getBestBid/Ask` returns the `MAX_UINT` sentinel, effectively disabling taker fills for that side of the book.",
+      "This violates the intended invariant documented by the surrounding logic:",
+      "- every order should be addressable via the limit’s `headOrder`/`tailOrder` chain, and open-interest counters must reflect *reachable* orders only."
+    ]
+  },
+  "entities": [
+    {
+      "id": "book_contract",
+      "name": "Book / limit-order book contract",
+      "role": "contract",
+      "evidence": [
+        "The limit-order book stores all orders for a given price in a doubly linked list:",
+        "[Book._updateLimitPostOrder](https://github.com/code-423n4/2025-07-gte-clob/blob/main/contracts/clob/types/Book.sol#L281):"
+      ]
+    },
+    {
+      "id": "price_level_list",
+      "name": "Per-price doubly linked order list",
+      "role": "asset",
+      "evidence": [
+        "The limit-order book stores all orders for a given price in a doubly linked list:",
+        "As a result, every non-head order has `prevOrderId == 0` when later read from",
+        "storage."
+      ]
+    },
+    {
+      "id": "attacker",
+      "name": "Attacker orphaning liquidity",
+      "role": "attacker",
+      "evidence": [
+        "* Attackers can repeatedly orphan liquidity to:",
+        "- hide rival orders and front-run flow"
+      ]
+    },
+    {
+      "id": "rival_orders",
+      "name": "Rival orders / liquidity",
+      "role": "victim",
+      "evidence": [
+        "The earlier orders become **orphaned**:",
+        "– invisible to traversal, matching and user cancels",
+        "- hide rival orders and front-run flow"
+      ]
+    },
+    {
+      "id": "open_interest_counters",
+      "name": "numBids/Asks and open-interest counters",
+      "role": "asset",
+      "evidence": [
+        "– still counted in `numBids/Asks`, `*_OpenInterest`",
+        "- inflate / deflate open-interest, leading to wrong fee accrual and possible",
+        "- every order should be addressable via the limit’s `headOrder`/`tailOrder` chain, and open-interest counters must reflect *reachable* orders only."
+      ]
+    },
+    {
+      "id": "best_price_lookup",
+      "name": "getBestBid/Ask RB-tree lookup",
+      "role": "contract",
+      "evidence": [
+        "Once the last phantom order is deleted, `getBestBid/Ask` flips to the",
+        "`MAX_UINT` sentinel, breaking taker fills and freezing that side",
+        "* After the final orphaned order is deleted (e.g. via expiry or a user-initiated cancel that happens to succeed), the RB-tree node is removed and `getBestBid/Ask` returns the `MAX_UINT` sentinel, effectively disabling taker fills for that side of the book."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_nonhead_order_exists",
+      "kind": "precondition",
+      "text": "A non-head order exists in a price level's doubly linked list.",
+      "modality": "asserted",
+      "entity_ids": [
+        "price_level_list"
+      ],
+      "evidence": [
+        "The limit-order book stores all orders for a given price in a doubly linked list:",
+        "As a result, every non-head order has `prevOrderId == 0` when later read from",
+        "storage."
+      ]
+    },
+    {
+      "id": "p_append_new_order",
+      "kind": "precondition",
+      "text": "A new order is appended to a price level, requiring both forward and back links to be updated.",
+      "modality": "asserted",
+      "entity_ids": [
+        "book_contract",
+        "price_level_list"
+      ],
+      "evidence": [
+        "When a new order is appended, the contract must update both links:",
+        "* `tail.next = newOrder`               (forward link)",
+        "* `newOrder.prev = tail`               (back link)"
+      ]
+    },
+    {
+      "id": "a_append_order",
+      "kind": "action",
+      "text": "Append a new order to the price level via Book._updateLimitPostOrder.",
+      "modality": "asserted",
+      "entity_ids": [
+        "book_contract",
+        "price_level_list"
+      ],
+      "evidence": [
+        "However, only the forward link is saved to storage; the back-link is written to a **memory copy** and discarded:",
+        "[Book._updateLimitPostOrder](https://github.com/code-423n4/2025-07-gte-clob/blob/main/contracts/clob/types/Book.sol#L281):"
+      ]
+    },
+    {
+      "id": "a_remove_nonhead_order",
+      "kind": "action",
+      "text": "Cancel or match a non-head order, invoking the removal routine.",
+      "modality": "asserted",
+      "entity_ids": [
+        "book_contract",
+        "price_level_list"
+      ],
+      "evidence": [
+        "* Cancelling or matching a non-head order makes the removal routine believe it is the head, so it blindly moves `limit.headOrder` past the real head."
+      ]
+    },
+    {
+      "id": "a_repeatedly_orphan",
+      "kind": "action",
+      "text": "Repeatedly orphan liquidity by triggering the faulty removal on non-head orders.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "price_level_list"
+      ],
+      "evidence": [
+        "* Attackers can repeatedly orphan liquidity to:"
+      ]
+    },
+    {
+      "id": "rc_backlink_memory_copy",
+      "kind": "root_cause",
+      "text": "Only the forward link is saved to storage; the back-link is written to a memory copy and discarded, so non-head orders read prevOrderId == 0.",
+      "modality": "asserted",
+      "entity_ids": [
+        "book_contract",
+        "price_level_list"
+      ],
+      "evidence": [
+        "However, only the forward link is saved to storage; the back-link is written to a **memory copy** and discarded:",
+        "As a result, every non-head order has `prevOrderId == 0` when later read from",
+        "storage."
+      ]
+    },
+    {
+      "id": "i_head_moved_past_real_head",
+      "kind": "impact",
+      "text": "Removal of a non-head order makes the routine believe it is the head and blindly moves limit.headOrder past the real head, orphaning earlier orders.",
+      "modality": "asserted",
+      "entity_ids": [
+        "price_level_list",
+        "rival_orders"
+      ],
+      "evidence": [
+        "* Cancelling or matching a non-head order makes the removal routine believe it is the head, so it blindly moves `limit.headOrder` past the real head.",
+        "The earlier orders become **orphaned**:"
+      ]
+    },
+    {
+      "id": "i_orphaned_orders_invisible",
+      "kind": "impact",
+      "text": "Orphaned orders become invisible to traversal, matching and user cancels while still counted in numBids/Asks and open-interest.",
+      "modality": "asserted",
+      "entity_ids": [
+        "rival_orders",
+        "open_interest_counters"
+      ],
+      "evidence": [
+        "– invisible to traversal, matching and user cancels",
+        "– still counted in `numBids/Asks`, `*_OpenInterest`"
+      ]
+    },
+    {
+      "id": "i_best_price_sentinel",
+      "kind": "impact",
+      "text": "After the final orphaned order is deleted, the RB-tree node is removed and getBestBid/Ask returns the MAX_UINT sentinel, disabling taker fills for that side.",
+      "modality": "potential",
+      "entity_ids": [
+        "best_price_lookup"
+      ],
+      "evidence": [
+        "Once the last phantom order is deleted, `getBestBid/Ask` flips to the",
+        "`MAX_UINT` sentinel, breaking taker fills and freezing that side",
+        "* After the final orphaned order is deleted (e.g. via expiry or a user-initiated cancel that happens to succeed), the RB-tree node is removed and `getBestBid/Ask` returns the `MAX_UINT` sentinel, effectively disabling taker fills for that side of the book."
+      ]
+    },
+    {
+      "id": "i_open_interest_misstated",
+      "kind": "impact",
+      "text": "Open-interest counters can be inflated or deflated, leading to wrong fee accrual and possible withdrawal failures.",
+      "modality": "potential",
+      "entity_ids": [
+        "open_interest_counters"
+      ],
+      "evidence": [
+        "- inflate / deflate open-interest, leading to wrong fee accrual and possible",
+        "withdrawal failures."
+      ]
+    },
+    {
+      "id": "si_chain_and_counters",
+      "kind": "security_intent",
+      "text": "Every order should be addressable via the limit's headOrder/tailOrder chain, and open-interest counters must reflect reachable orders only.",
+      "modality": "asserted",
+      "entity_ids": [
+        "price_level_list",
+        "open_interest_counters"
+      ],
+      "evidence": [
+        "This violates the intended invariant documented by the surrounding logic:",
+        "- every order should be addressable via the limit’s `headOrder`/`tailOrder` chain, and open-interest counters must reflect *reachable* orders only."
+      ]
+    },
+    {
+      "id": "as_corruption_persists",
+      "kind": "assumption",
+      "text": "The corruption persists because every operation is wrapped in a successful transaction.",
+      "modality": "asserted",
+      "entity_ids": [
+        "book_contract"
+      ],
+      "evidence": [
+        "* The corruption persists forever because every operation is wrapped in a successful transaction;"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_append_order",
+    "a_remove_nonhead_order",
+    "a_repeatedly_orphan"
+  ],
+  "ambiguities": [
+    "Report does not state who may call append/removal or any authorization requirement; no unauthorized-caller condition is supported.",
+    "No concrete prior transaction or initial allocation establishing a non-head order is given; p_nonhead_order_exists is a structural condition, not an observed history.",
+    "The MAX_UINT sentinel outcome is described as occurring after the final orphaned order is deleted, a conditional future state, not an observed event.",
+    "Wrong fee accrual and withdrawal failures are stated as possible downstream harms without quantitative detail.",
+    "No explicit numeric bound or expected-versus-actual values are provided beyond prevOrderId == 0."
+  ]
+}

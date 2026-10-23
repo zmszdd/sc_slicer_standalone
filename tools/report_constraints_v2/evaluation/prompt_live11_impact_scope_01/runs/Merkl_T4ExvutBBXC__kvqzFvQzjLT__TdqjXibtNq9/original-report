@@ -1,0 +1,132 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Merkl_T4ExvutBBXC",
+    "audit_uid": "T4ExvutBBXC",
+    "requested_submission_uid": "TdqjXibtNq9",
+    "requested_finding_uid": "kvqzFvQzjLT",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Merkl_T4ExvutBBXC/20260618_144946/findings.json",
+    "source_submission_uid": "TdqjXibtNq9",
+    "source_finding_uid": "kvqzFvQzjLT",
+    "original_report_path": "Merkl_T4ExvutBBXC\\medium_valid_TdqjXibtNq9.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "TdqjXibtNq9",
+  "finding_uid": "kvqzFvQzjLT",
+  "finding_number": "1",
+  "title": "Net reward floor can be bypassed because minimum is checked before fees, causing underfunded campaigns.",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "th3_hybrid",
+  "body": "## Finding description and impact\n\n**Description:**  \nThe guardian-configured whitelist floor `rewardTokenMinAmounts` is enforced on the **gross** [amount](https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L527-L535) supplied by the campaign creator, but protocol fees are computed and subtracted [after](https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L620-L628) this check. The resulting **net** amount (`campaignAmountMinusFees`) is what gets stored in [newCampaign.amount](https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L537-L539) and actually distributed, yet there is no second validation that this net amount still satisfies the minimum per-epoch constraint. As a result, a campaign that is exactly at the minimum per hour when measured on the gross amount will pass validation, but once fees are applied the stored/distributed amount falls below `rewardTokenMinAmounts`, breaking the intended invariant.\n\n**Impact:**  \nCampaigns can be created that appear to satisfy the guardian’s minimum emission requirement but in practice emit less than `rewardTokenMinAmounts` per epoch:\n\n- Recipients are systematically underpaid relative to the whitelist floor and to what governance/guardian intended to enforce.    \n- The protocol’s policy lever (“no campaign below X per epoch”) is weakened: non-zero fees silently push actual emissions below the configured threshold whenever creators choose the minimum “valid” gross amount.\n\nThere is no direct theft of funds beyond the configured fee, but this constitutes a broken protocol-level guarantee and can lead to underfunded reward programs and incorrect economic assumptions.\n\n## Recommended mitigation steps\n\nRecompute and enforce the minimum per-hour constraint on the net amount (`campaignAmountMinusFees`) or pre-gross up the user-supplied amount so that the net meets `rewardTokenMinAmounts`. Reject creations where net < floor.",
+  "proof_of_concept": "**Proof of Concept:** \n1. Copy the the code below into `test/c4/C4PoC.t.sol`:\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\n\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\n\ncontract C4PoC is Fixture {\n    uint256 internal constant maxDistribForOOG = 1e4;\n    uint256 internal constant nbrDistrib = 10;\n    uint32 internal initStartTime;\n    uint32 internal initEndTime;\n    uint32 internal startTime;\n    uint32 internal endTime;\n    uint32 internal numEpoch;\n\n    function setUp() public override {\n        super.setUp();\n\n        initStartTime = uint32(block.timestamp);\n        numEpoch = 25;\n        initEndTime = startTime + numEpoch * EPOCH_DURATION;\n\n        vm.prank(governor);\n        creator.setFeeRecipient(dylan);\n\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 1e8;\n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        angle.mint(address(alice), 1e22);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n\n        vm.stopPrank();\n    }\n\n    function test_submissionValidity() external {\n        // Given whitelist min set to 1e8 (setUp) and default fee 10%\n        CampaignParameters memory p;\n        p.rewardToken = address(angle);\n        p.amount = 1e8; // exactly at whitelist floor (gross)\n        p.campaignType = 0;\n        p.startTimestamp = uint32(block.timestamp);\n        p.duration = EPOCH_DURATION; // 1 hour\n\n        vm.prank(alice);\n        bytes32 id = creator.createCampaign(p); // passes because check uses gross amount\n\n        CampaignParameters memory stored = creator.campaign(id);\n        uint256 minPerHour = creator.rewardTokenMinAmounts(address(angle));\n\n        // Fees (10%) reduced the stored amount below the whitelist floor -> invariant broken\n        assertEq(stored.amount, 9e7);\n        assertLt(stored.amount, minPerHour);\n\n        // Distributor (bob) only received the net amount, proving underfunding\n        assertEq(angle.balanceOf(bob), 9e7);\n    }\n}\n```\n\n2. Run `forge test --match-test submissionValidity`. \n\nThe test sets the whitelist floor to `1e8` and default fees to 10%, creates a 1-hour campaign with `amount=1e8`, and observes `stored.amount == 9e7 < rewardTokenMinAmounts`. The distributor (`bob`) only receives `9e7`, proving the floor was bypassed by fees.",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L527-L535",
+    "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L620-L628",
+    "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L537-L539"
+  ],
+  "source_record": {
+    "project_id": "T4ExvutBBXC",
+    "submission_index": "200",
+    "api_submission_id": "",
+    "uid": "TdqjXibtNq9",
+    "number": "200",
+    "title": "Net reward floor can be bypassed because minimum is checked before fees, causing underfunded campaigns.",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "th3_hybrid",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L527-L535",
+      "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L620-L628",
+      "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L537-L539"
+    ],
+    "body": "## Finding description and impact\n\n**Description:**  \nThe guardian-configured whitelist floor `rewardTokenMinAmounts` is enforced on the **gross** [amount](https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L527-L535) supplied by the campaign creator, but protocol fees are computed and subtracted [after](https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L620-L628) this check. The resulting **net** amount (`campaignAmountMinusFees`) is what gets stored in [newCampaign.amount](https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L537-L539) and actually distributed, yet there is no second validation that this net amount still satisfies the minimum per-epoch constraint. As a result, a campaign that is exactly at the minimum per hour when measured on the gross amount will pass validation, but once fees are applied the stored/distributed amount falls below `rewardTokenMinAmounts`, breaking the intended invariant.\n\n**Impact:**  \nCampaigns can be created that appear to satisfy the guardian’s minimum emission requirement but in practice emit less than `rewardTokenMinAmounts` per epoch:\n\n- Recipients are systematically underpaid relative to the whitelist floor and to what governance/guardian intended to enforce.    \n- The protocol’s policy lever (“no campaign below X per epoch”) is weakened: non-zero fees silently push actual emissions below the configured threshold whenever creators choose the minimum “valid” gross amount.\n\nThere is no direct theft of funds beyond the configured fee, but this constitutes a broken protocol-level guarantee and can lead to underfunded reward programs and incorrect economic assumptions.\n\n## Recommended mitigation steps\n\nRecompute and enforce the minimum per-hour constraint on the net amount (`campaignAmountMinusFees`) or pre-gross up the user-supplied amount so that the net meets `rewardTokenMinAmounts`. Reject creations where net < floor.",
+    "proof_of_concept": "**Proof of Concept:** \n1. Copy the the code below into `test/c4/C4PoC.t.sol`:\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\n\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\n\ncontract C4PoC is Fixture {\n    uint256 internal constant maxDistribForOOG = 1e4;\n    uint256 internal constant nbrDistrib = 10;\n    uint32 internal initStartTime;\n    uint32 internal initEndTime;\n    uint32 internal startTime;\n    uint32 internal endTime;\n    uint32 internal numEpoch;\n\n    function setUp() public override {\n        super.setUp();\n\n        initStartTime = uint32(block.timestamp);\n        numEpoch = 25;\n        initEndTime = startTime + numEpoch * EPOCH_DURATION;\n\n        vm.prank(governor);\n        creator.setFeeRecipient(dylan);\n\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 1e8;\n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        angle.mint(address(alice), 1e22);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n\n        vm.stopPrank();\n    }\n\n    function test_submissionValidity() external {\n        // Given whitelist min set to 1e8 (setUp) and default fee 10%\n        CampaignParameters memory p;\n        p.rewardToken = address(angle);\n        p.amount = 1e8; // exactly at whitelist floor (gross)\n        p.campaignType = 0;\n        p.startTimestamp = uint32(block.timestamp);\n        p.duration = EPOCH_DURATION; // 1 hour\n\n        vm.prank(alice);\n        bytes32 id = creator.createCampaign(p); // passes because check uses gross amount\n\n        CampaignParameters memory stored = creator.campaign(id);\n        uint256 minPerHour = creator.rewardTokenMinAmounts(address(angle));\n\n        // Fees (10%) reduced the stored amount below the whitelist floor -> invariant broken\n        assertEq(stored.amount, 9e7);\n        assertLt(stored.amount, minPerHour);\n\n        // Distributor (bob) only received the net amount, proving underfunding\n        assertEq(angle.balanceOf(bob), 9e7);\n    }\n}\n```\n\n2. Run `forge test --match-test submissionValidity`. \n\nThe test sets the whitelist floor to `1e8` and default fees to 10%, creates a 1-hour campaign with `amount=1e8`, and observes `stored.amount == 9e7 < rewardTokenMinAmounts`. The distributor (`bob`) only receives `9e7`, proving the floor was bypassed by fees.",
+    "detail_url": "https://code4rena.com/api/v1/audits/T4ExvutBBXC/submissions/200",
+    "raw": {
+      "auditUid": "T4ExvutBBXC",
+      "createdAt": "2025-11-27T11:56:31.040Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "jY74wx8XzB2",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T08:54:36.667Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "kvqzFvQzjLT"
+        },
+        {
+          "uid": "j5FMrRBgaWQ",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-08T17:03:32.767Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "TdqjXibtNq9",
+          "findingUid": null
+        },
+        {
+          "uid": "D5h73PEwKLh",
+          "userUid": "V5DsSDYbiY2",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-12-11T16:00:04.151Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "kvqzFvQzjLT"
+        },
+        {
+          "uid": "y9ekfzYpmA3",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-13T00:57:19.970Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "kvqzFvQzjLT"
+        }
+      ],
+      "finding": {
+        "uid": "kvqzFvQzjLT",
+        "number": 1,
+        "duplicates": 16
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2026-01-13T00:57:19.970Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Net reward floor can be bypassed because minimum is checked before fees, causing underfunded campaigns.",
+      "uid": "TdqjXibtNq9",
+      "updatedAt": "2025-11-27T11:56:31.040Z",
+      "user": {
+        "uid": "jW3tcgRNGYT",
+        "handle": "th3_hybrid"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\n**Description:**  \nThe guardian-configured whitelist floor `rewardTokenMinAmounts` is enforced on the **gross** [amount](https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L527-L535) supplied by the campaign creator, but protocol fees are computed and subtracted [after](https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L620-L628) this check. The resulting **net** amount (`campaignAmountMinusFees`) is what gets stored in [newCampaign.amount](https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L537-L539) and actually distributed, yet there is no second validation that this net amount still satisfies the minimum per-epoch constraint. As a result, a campaign that is exactly at the minimum per hour when measured on the gross amount will pass validation, but once fees are applied the stored/distributed amount falls below `rewardTokenMinAmounts`, breaking the intended invariant.\n\n**Impact:**  \nCampaigns can be created that appear to satisfy the guardian’s minimum emission requirement but in practice emit less than `rewardTokenMinAmounts` per epoch:\n\n- Recipients are systematically underpaid relative to the whitelist floor and to what governance/guardian intended to enforce.    \n- The protocol’s policy lever (“no campaign below X per epoch”) is weakened: non-zero fees silently push actual emissions below the configured threshold whenever creators choose the minimum “valid” gross amount.\n\nThere is no direct theft of funds beyond the configured fee, but this constitutes a broken protocol-level guarantee and can lead to underfunded reward programs and incorrect economic assumptions.\n\n## Recommended mitigation steps\n\nRecompute and enforce the minimum per-hour constraint on the net amount (`campaignAmountMinusFees`) or pre-gross up the user-supplied amount so that the net meets `rewardTokenMinAmounts`. Reject creations where net < floor.",
+      "proofOfConcept": "**Proof of Concept:** \n1. Copy the the code below into `test/c4/C4PoC.t.sol`:\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\n\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\n\ncontract C4PoC is Fixture {\n    uint256 internal constant maxDistribForOOG = 1e4;\n    uint256 internal constant nbrDistrib = 10;\n    uint32 internal initStartTime;\n    uint32 internal initEndTime;\n    uint32 internal startTime;\n    uint32 internal endTime;\n    uint32 internal numEpoch;\n\n    function setUp() public override {\n        super.setUp();\n\n        initStartTime = uint32(block.timestamp);\n        numEpoch = 25;\n        initEndTime = startTime + numEpoch * EPOCH_DURATION;\n\n        vm.prank(governor);\n        creator.setFeeRecipient(dylan);\n\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 1e8;\n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        angle.mint(address(alice), 1e22);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n\n        vm.stopPrank();\n    }\n\n    function test_submissionValidity() external {\n        // Given whitelist min set to 1e8 (setUp) and default fee 10%\n        CampaignParameters memory p;\n        p.rewardToken = address(angle);\n        p.amount = 1e8; // exactly at whitelist floor (gross)\n        p.campaignType = 0;\n        p.startTimestamp = uint32(block.timestamp);\n        p.duration = EPOCH_DURATION; // 1 hour\n\n        vm.prank(alice);\n        bytes32 id = creator.createCampaign(p); // passes because check uses gross amount\n\n        CampaignParameters memory stored = creator.campaign(id);\n        uint256 minPerHour = creator.rewardTokenMinAmounts(address(angle));\n\n        // Fees (10%) reduced the stored amount below the whitelist floor -> invariant broken\n        assertEq(stored.amount, 9e7);\n        assertLt(stored.amount, minPerHour);\n\n        // Distributor (bob) only received the net amount, proving underfunding\n        assertEq(angle.balanceOf(bob), 9e7);\n    }\n}\n```\n\n2. Run `forge test --match-test submissionValidity`. \n\nThe test sets the whitelist floor to `1e8` and default fees to 10%, creates a 1-hour campaign with `amount=1e8`, and observes `stored.amount == 9e7 < rewardTokenMinAmounts`. The distributor (`bob`) only receives `9e7`, proving the floor was bypassed by fees.",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L527-L535,https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L620-L628,https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L537-L539",
+      "number": 200,
+      "aiExplanation": null,
+      "_index": 200
+    }
+  }
+}

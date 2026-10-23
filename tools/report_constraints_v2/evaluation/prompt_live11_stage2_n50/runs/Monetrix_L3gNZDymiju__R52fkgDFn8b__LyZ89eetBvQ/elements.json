@@ -1,0 +1,211 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "executeHedge with PM active registers a spot asset in vaultSupplied without verifying a BLP reserve exists, then accounting reads revert",
+    "environment": "MonetrixVault/MonetrixAccountant on HyperEVM with HyperLiquid PM active and 0x811 precompile",
+    "evidence": [
+      "When [`executeHedge()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L276) is called with PM active, it buys the spot asset on L1 and immediately registers it in the accountant's [`vaultSupplied`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L70) registry via `notifyVaultSupply`:",
+      "The registration is unconditional. There is no check that BLP actually has an active reserve for this token. Under PM, HyperLiquid auto-supplies spot assets to BLP only if a BLP reserve exists for that token. If no reserve exists, the auto-supply silently does nothing on L1, but the EVM state still records the token as supplied.",
+      "[`_readL1Backing()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L138-L172) later iterates `vaultSupplied` and calls [`suppliedBalance()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L85-L91) for each entry, which queries the 0x811 precompile. The function enforces a hard requirement on the response:",
+      "On HyperEVM, querying 0x811 for a token that was never actually supplied to BLP produces a failure response. This causes `suppliedBalance` to revert. The revert propagates through the entire call stack:",
+      "- [`totalBackingSigned()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L135) calls `_readL1Backing`, reverts.",
+      "- [`surplus()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L180-L182) calls `totalBackingSigned`, reverts.",
+      "- [`distributableSurplus()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L187-L192) calls `surplus`, reverts.",
+      "- [`settleDailyPnL`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L213-L214) gate 3 calls `distributableSurplus`, reverts.",
+      "Every accounting read and yield settlement call is permanently bricked. The only recovery path is for an operator to call `removeSuppliedEntry` to remove the bad registry entry."
+    ]
+  },
+  "entities": [
+    {
+      "id": "monetrix_vault",
+      "name": "MonetrixVault",
+      "role": "contract",
+      "evidence": [
+        "When [`executeHedge()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L276) is called with PM active, it buys the spot asset on L1 and immediately registers it in the accountant's [`vaultSupplied`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L70) registry via `notifyVaultSupply`:"
+      ]
+    },
+    {
+      "id": "monetrix_accountant",
+      "name": "MonetrixAccountant",
+      "role": "contract",
+      "evidence": [
+        "When [`executeHedge()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L276) is called with PM active, it buys the spot asset on L1 and immediately registers it in the accountant's [`vaultSupplied`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L70) registry via `notifyVaultSupply`:",
+        "The registration is unconditional. There is no check that BLP actually has an active reserve for this token. Under PM, HyperLiquid auto-supplies spot assets to BLP only if a BLP reserve exists for that token. If no reserve exists, the auto-supply silently does nothing on L1, but the EVM state still records the token as supplied.",
+        "[`_readL1Backing()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L138-L172) later iterates `vaultSupplied` and calls [`suppliedBalance()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L85-L91) for each entry, which queries the 0x811 precompile. The function enforces a hard requirement on the response:"
+      ]
+    },
+    {
+      "id": "vault_supplied_registry",
+      "name": "vaultSupplied registry",
+      "role": "asset",
+      "evidence": [
+        "When [`executeHedge()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L276) is called with PM active, it buys the spot asset on L1 and immediately registers it in the accountant's [`vaultSupplied`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L70) registry via `notifyVaultSupply`:",
+        "The registration is unconditional. There is no check that BLP actually has an active reserve for this token. Under PM, HyperLiquid auto-supplies spot assets to BLP only if a BLP reserve exists for that token. If no reserve exists, the auto-supply silently does nothing on L1, but the EVM state still records the token as supplied."
+      ]
+    },
+    {
+      "id": "blp",
+      "name": "BLP reserve",
+      "role": "other",
+      "evidence": [
+        "The registration is unconditional. There is no check that BLP actually has an active reserve for this token. Under PM, HyperLiquid auto-supplies spot assets to BLP only if a BLP reserve exists for that token. If no reserve exists, the auto-supply silently does nothing on L1, but the EVM state still records the token as supplied."
+      ]
+    },
+    {
+      "id": "precompile_0x811",
+      "name": "0x811 precompile",
+      "role": "contract",
+      "evidence": [
+        "[`_readL1Backing()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L138-L172) later iterates `vaultSupplied` and calls [`suppliedBalance()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L85-L91) for each entry, which queries the 0x811 precompile. The function enforces a hard requirement on the response:",
+        "On HyperEVM, querying 0x811 for a token that was never actually supplied to BLP produces a failure response. This causes `suppliedBalance` to revert. The revert propagates through the entire call stack:"
+      ]
+    },
+    {
+      "id": "spot_asset",
+      "name": "spot asset",
+      "role": "asset",
+      "evidence": [
+        "When [`executeHedge()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L276) is called with PM active, it buys the spot asset on L1 and immediately registers it in the accountant's [`vaultSupplied`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L70) registry via `notifyVaultSupply`:",
+        "The registration is unconditional. There is no check that BLP actually has an active reserve for this token. Under PM, HyperLiquid auto-supplies spot assets to BLP only if a BLP reserve exists for that token. If no reserve exists, the auto-supply silently does nothing on L1, but the EVM state still records the token as supplied."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "pm_active",
+      "kind": "precondition",
+      "text": "executeHedge is called while PM is active.",
+      "modality": "asserted",
+      "entity_ids": [
+        "monetrix_vault"
+      ],
+      "evidence": [
+        "When [`executeHedge()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L276) is called with PM active, it buys the spot asset on L1 and immediately registers it in the accountant's [`vaultSupplied`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L70) registry via `notifyVaultSupply`:"
+      ]
+    },
+    {
+      "id": "no_blp_reserve",
+      "kind": "precondition",
+      "text": "No BLP reserve exists for the spot asset token being hedged.",
+      "modality": "potential",
+      "entity_ids": [
+        "blp",
+        "spot_asset"
+      ],
+      "evidence": [
+        "The registration is unconditional. There is no check that BLP actually has an active reserve for this token. Under PM, HyperLiquid auto-supplies spot assets to BLP only if a BLP reserve exists for that token. If no reserve exists, the auto-supply silently does nothing on L1, but the EVM state still records the token as supplied."
+      ]
+    },
+    {
+      "id": "execute_hedge_buys_spot",
+      "kind": "action",
+      "text": "executeHedge buys the spot asset on L1.",
+      "modality": "asserted",
+      "entity_ids": [
+        "monetrix_vault",
+        "spot_asset"
+      ],
+      "evidence": [
+        "When [`executeHedge()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L276) is called with PM active, it buys the spot asset on L1 and immediately registers it in the accountant's [`vaultSupplied`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L70) registry via `notifyVaultSupply`:"
+      ]
+    },
+    {
+      "id": "unconditional_registration",
+      "kind": "action",
+      "text": "executeHedge registers the bought token in the accountant's vaultSupplied registry via notifyVaultSupply without checking for an active BLP reserve.",
+      "modality": "asserted",
+      "entity_ids": [
+        "monetrix_vault",
+        "monetrix_accountant",
+        "vault_supplied_registry"
+      ],
+      "evidence": [
+        "When [`executeHedge()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L276) is called with PM active, it buys the spot asset on L1 and immediately registers it in the accountant's [`vaultSupplied`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L70) registry via `notifyVaultSupply`:",
+        "The registration is unconditional. There is no check that BLP actually has an active reserve for this token. Under PM, HyperLiquid auto-supplies spot assets to BLP only if a BLP reserve exists for that token. If no reserve exists, the auto-supply silently does nothing on L1, but the EVM state still records the token as supplied."
+      ]
+    },
+    {
+      "id": "auto_supply_noop",
+      "kind": "root_cause",
+      "text": "With no BLP reserve, HyperLiquid auto-supply silently does nothing on L1 while EVM state still records the token as supplied.",
+      "modality": "asserted",
+      "entity_ids": [
+        "blp",
+        "vault_supplied_registry",
+        "spot_asset"
+      ],
+      "evidence": [
+        "The registration is unconditional. There is no check that BLP actually has an active reserve for this token. Under PM, HyperLiquid auto-supplies spot assets to BLP only if a BLP reserve exists for that token. If no reserve exists, the auto-supply silently does nothing on L1, but the EVM state still records the token as supplied."
+      ]
+    },
+    {
+      "id": "supplied_balance_reverts",
+      "kind": "impact",
+      "text": "_readL1Backing iterates vaultSupplied and suppliedBalance reverts when querying 0x811 for a token never actually supplied to BLP.",
+      "modality": "asserted",
+      "entity_ids": [
+        "monetrix_accountant",
+        "precompile_0x811",
+        "vault_supplied_registry"
+      ],
+      "evidence": [
+        "[`_readL1Backing()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L138-L172) later iterates `vaultSupplied` and calls [`suppliedBalance()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L85-L91) for each entry, which queries the 0x811 precompile. The function enforces a hard requirement on the response:",
+        "On HyperEVM, querying 0x811 for a token that was never actually supplied to BLP produces a failure response. This causes `suppliedBalance` to revert. The revert propagates through the entire call stack:",
+        "- [`totalBackingSigned()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L135) calls `_readL1Backing`, reverts."
+      ]
+    },
+    {
+      "id": "accounting_bricked",
+      "kind": "impact",
+      "text": "The revert propagates through surplus, distributableSurplus and settleDailyPnL gate 3, permanently bricking every accounting read and yield settlement call.",
+      "modality": "asserted",
+      "entity_ids": [
+        "monetrix_accountant"
+      ],
+      "evidence": [
+        "- [`surplus()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L180-L182) calls `totalBackingSigned`, reverts.",
+        "- [`distributableSurplus()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L187-L192) calls `surplus`, reverts.",
+        "- [`settleDailyPnL`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L213-L214) gate 3 calls `distributableSurplus`, reverts.",
+        "Every accounting read and yield settlement call is permanently bricked. The only recovery path is for an operator to call `removeSuppliedEntry` to remove the bad registry entry."
+      ]
+    },
+    {
+      "id": "intent_reserve_check",
+      "kind": "security_intent",
+      "text": "A token should be registered in vaultSupplied only if BLP actually has an active reserve for it, so accounting reads do not revert.",
+      "modality": "inferred",
+      "entity_ids": [
+        "monetrix_accountant",
+        "vault_supplied_registry",
+        "blp"
+      ],
+      "evidence": [
+        "The registration is unconditional. There is no check that BLP actually has an active reserve for this token. Under PM, HyperLiquid auto-supplies spot assets to BLP only if a BLP reserve exists for that token. If no reserve exists, the auto-supply silently does nothing on L1, but the EVM state still records the token as supplied.",
+        "[`_readL1Backing()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L138-L172) later iterates `vaultSupplied` and calls [`suppliedBalance()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L85-L91) for each entry, which queries the 0x811 precompile. The function enforces a hard requirement on the response:",
+        "On HyperEVM, querying 0x811 for a token that was never actually supplied to BLP produces a failure response. This causes `suppliedBalance` to revert. The revert propagates through the entire call stack:"
+      ]
+    },
+    {
+      "id": "assumption_operator_recovery",
+      "kind": "assumption",
+      "text": "Recovery requires an operator to call removeSuppliedEntry to remove the bad registry entry.",
+      "modality": "asserted",
+      "entity_ids": [
+        "monetrix_accountant",
+        "vault_supplied_registry"
+      ],
+      "evidence": [
+        "Every accounting read and yield settlement call is permanently bricked. The only recovery path is for an operator to call `removeSuppliedEntry` to remove the bad registry entry."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "execute_hedge_buys_spot",
+    "unconditional_registration"
+  ],
+  "ambiguities": [
+    "Report does not state who calls executeHedge or whether it is permissionless.",
+    "No explicit prior transaction or initial state establishing the missing BLP reserve beyond the conditional 'if no reserve exists'.",
+    "Whether the spot asset bought always lacks a BLP reserve is not asserted; scenario is conditional."
+  ]
+}

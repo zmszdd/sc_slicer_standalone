@@ -1,0 +1,31 @@
+Undistributed accrued launchpad fee leads to fee-on-fee calculations and Lauchpad fee theft
+
+## Finding description and impact
+
+The `GTELaunchpadV2Pair` contract functions as a liquidity pair for the GTE AMM, similar to Uniswap V2 pairs. It also modifies the Uniswap V2 Pair logic by charging an additional **launchpad fee**. This fee should normally be distributed directly to the launchpad whenever `_update` is called. However, if two or more state-changing calls (e.g., swap, mint+swap, or burn+swap) occur within the same block, then `timeElapsed == 0`. In that case, instead of being distributed, the launchpad fee is only accrued and virtually subtracted from reserves.
+
+The problem arises because this undistributed fee is reflected in the reserves (can be reserve0 or reserve1) because it is artificially subtracted but not in the balances because the `balanceOf` function provides full balances. 
+
+`_update` function's fee accrual logic:-
+
+The undistributed fee completely breaks the fee mechanism, depletes LP shares value and leads to Indirect Fee theft.
+This happens when there is some accrued fee which is undistributed (because of same block execution of transactions), **if the very next call to the contract happens to be a `swap` function call, then the undistributed fee in the contract is counted as `amountIn` (can be amount0In or amount1In) for this call because of how amountIns are counted**. 
+
+How `amountIns` are calculated in `swap` function
+
+Worse, because the inflated `amountIn` also generates new launchpad fees, the system enters a **fee-on-fee feedback loop**. Over time this depletes LP share value, corrupts pricing, and enables direct financial exploitation
+
+Impact:-
+
+**1. Financial Loss and Dilution**: The pool over-deducts fees (e.g., 1e13 per incident in the PoC,       scaling to 1e15+ for large swaps), transferring extra to the launchpad and diluting LP shares (K increases less than expected, eroding value over time).
+
+**2. Exploitation for Profit**: Attackers can front-run to trigger fee-on-fee and claim inflated outputs/LP tokens (e.g., netting 1e13-1e14 per large tx via precise amountOut). Sync theft allows stealing undistributed fees (e.g., 1e15 from a big accrual) by inflating reserves for LPs.
+
+**3. Broader Risks**: Skews price oracles (TWAP), enables griefing (force over-deduction to manipulate prices), and erodes trust in the AMM. In high-volume pools, cumulative losses could reach significant values; exploitable via MEV for repeated attacks.
+
+## Recommended mitigation steps
+
+Modify `amountIn` calculation to exclude accrued fees e.g.,
+Compute new fees only on true deposits, then add to accrued for distribution.
+
+This looks the best method as of now.

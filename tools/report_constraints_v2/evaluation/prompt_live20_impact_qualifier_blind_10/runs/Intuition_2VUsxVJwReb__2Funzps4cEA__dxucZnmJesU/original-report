@@ -1,0 +1,108 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Intuition_2VUsxVJwReb",
+    "audit_uid": "2VUsxVJwReb",
+    "requested_submission_uid": "dxucZnmJesU",
+    "requested_finding_uid": "2Funzps4cEA",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Intuition_2VUsxVJwReb/20260618_132553/findings.json",
+    "source_submission_uid": "dxucZnmJesU",
+    "source_finding_uid": "2Funzps4cEA",
+    "original_report_path": "Intuition_2VUsxVJwReb\\low_valid_dxucZnmJesU.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "dxucZnmJesU",
+  "finding_uid": "2Funzps4cEA",
+  "finding_number": "11",
+  "title": "`abi.decodestrict bounds-checking on memory slices insideAtomWallet guarantees EVM revert, permanently bricking all ERC-4337 relayed transactions",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "Veritas",
+  "body": "Vulnerability details\n\nFinding description and impact\n\nRoot Cause In \nAtomWallet.sol\n, the abstract account intercepts ERC-4337 validateUserOp requests through _validateSignature and subsequently calls extractValidUntilAndValidAfter to decode transaction expiration bounds from the first 24 bytes of the callData payload.\n\nTo achieve this, the contract attempts to slice the calldata into 12-byte chunks and dynamically decodes them using abi.decode:\n\nsolidity\nvalidUntil = abi.decode(callData[:12], (uint256));\nvalidAfter = abi.decode(callData[12:24], (uint256));\nThis is fundamentally invalid in Solidity. abi.decode strictly enforces EVM ABI encoding specifications. For a statically-sized type like uint256, the EVM expects exactly 32 bytes (1 padded word) of input data. Providing a 12-byte slice (callData[:12]) violates length bounds-checking.\n\nAs a result, abi.decode throws an out-of-bounds InsufficientDataBytes error and guarantees a revert on every execution attempt.\n\nImpact Because extractValidUntilAndValidAfter is inextricably linked to the core _validateSignature ERC-4337 flow, this single strict bounds violation causes every single validateUserOp sequence to crash.\n\nThe transaction EntryPoint evaluator will irrevocably reject all relayed/gasless operations. This permanently locks all users out of ERC-4337 execution abstractions globally across the protocol and completely bricks the AtomWallet smart wallet infrastructure.\n\nRecommended mitigation steps\nRemove the inflexible abi.decode engine in favor of explicit byte-casting logic. This correctly right-pads the 12-byte slice into a standard 32-byte uint256 capacity without triggering explicit bounds-checking validation:\n\ndiff\n-        validUntil = abi.decode(callData[:12], (uint256));\n-        validAfter = abi.decode(callData[12:24], (uint256));\n+        validUntil = uint256(uint96(bytes12(callData[:12])));\n+        validAfter = uint256(uint96(bytes12(callData[12:24])));",
+  "proof_of_concept": "To empirically demonstrate that abi.decode explicitly reverts when receiving less than 32 bytes for a uint256, run the following Foundry test.\n\nSave it in the test/unit/ folder and run forge test --match-contract AtomWalletDecodeFail. The test succeeds, guaranteeing the EVM revert behavior:\n\nsolidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.21;\nimport \"forge-std/Test.sol\";\ncontract AtomWalletDecodeFail is Test {\n    \n    // Simulates exactly what extractValidUntilAndValidAfter does\n    function extractValidUntilAndValidAfter(bytes calldata callData) \n        internal \n        pure \n        returns (uint256 validUntil, uint256 validAfter) \n    {\n        // abi.decode strictly checks if the input is >= 32 bytes.\n        // The slice is 12 bytes long. This is guaranteed to revert.\n        validUntil = abi.decode(callData[:12], (uint256));\n        validAfter = abi.decode(callData[12:24], (uint256));\n        \n        return (validUntil, validAfter);\n    }\n    // External wrapper to pass memory payload as calldata, identical to entryPoint flow\n    function _validateSignatureMock(bytes calldata callData) external pure {\n        extractValidUntilAndValidAfter(callData);\n    }\n    function test_validateUserOp_AlwaysRevertsOnDecode() public {\n        // Create an empty payload >= 24 bytes, mirroring ERC-4337 validation payloads\n        bytes memory mockPayload = new bytes(64);\n        \n        // The ERC-4337 _validateSignature hook processes the payload. It will reliably REVERT.\n        vm.expectRevert(); \n        this._validateSignatureMock(mockPayload);\n    }\n}",
+  "lines_of_code": [
+    "https://github.com/code4rena/2026-03-intuition/blob/main/src/AtomWallet.sol#L238-L239"
+  ],
+  "source_record": {
+    "project_id": "2VUsxVJwReb",
+    "submission_index": "217",
+    "api_submission_id": "",
+    "uid": "dxucZnmJesU",
+    "number": "217",
+    "title": "`abi.decodestrict bounds-checking on memory slices insideAtomWallet guarantees EVM revert, permanently bricking all ERC-4337 relayed transactions",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "",
+    "handle": "Veritas",
+    "lines_of_code": [
+      "https://github.com/code4rena/2026-03-intuition/blob/main/src/AtomWallet.sol#L238-L239"
+    ],
+    "body": "Vulnerability details\n\nFinding description and impact\n\nRoot Cause In \nAtomWallet.sol\n, the abstract account intercepts ERC-4337 validateUserOp requests through _validateSignature and subsequently calls extractValidUntilAndValidAfter to decode transaction expiration bounds from the first 24 bytes of the callData payload.\n\nTo achieve this, the contract attempts to slice the calldata into 12-byte chunks and dynamically decodes them using abi.decode:\n\nsolidity\nvalidUntil = abi.decode(callData[:12], (uint256));\nvalidAfter = abi.decode(callData[12:24], (uint256));\nThis is fundamentally invalid in Solidity. abi.decode strictly enforces EVM ABI encoding specifications. For a statically-sized type like uint256, the EVM expects exactly 32 bytes (1 padded word) of input data. Providing a 12-byte slice (callData[:12]) violates length bounds-checking.\n\nAs a result, abi.decode throws an out-of-bounds InsufficientDataBytes error and guarantees a revert on every execution attempt.\n\nImpact Because extractValidUntilAndValidAfter is inextricably linked to the core _validateSignature ERC-4337 flow, this single strict bounds violation causes every single validateUserOp sequence to crash.\n\nThe transaction EntryPoint evaluator will irrevocably reject all relayed/gasless operations. This permanently locks all users out of ERC-4337 execution abstractions globally across the protocol and completely bricks the AtomWallet smart wallet infrastructure.\n\nRecommended mitigation steps\nRemove the inflexible abi.decode engine in favor of explicit byte-casting logic. This correctly right-pads the 12-byte slice into a standard 32-byte uint256 capacity without triggering explicit bounds-checking validation:\n\ndiff\n-        validUntil = abi.decode(callData[:12], (uint256));\n-        validAfter = abi.decode(callData[12:24], (uint256));\n+        validUntil = uint256(uint96(bytes12(callData[:12])));\n+        validAfter = uint256(uint96(bytes12(callData[12:24])));",
+    "proof_of_concept": "To empirically demonstrate that abi.decode explicitly reverts when receiving less than 32 bytes for a uint256, run the following Foundry test.\n\nSave it in the test/unit/ folder and run forge test --match-contract AtomWalletDecodeFail. The test succeeds, guaranteeing the EVM revert behavior:\n\nsolidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.21;\nimport \"forge-std/Test.sol\";\ncontract AtomWalletDecodeFail is Test {\n    \n    // Simulates exactly what extractValidUntilAndValidAfter does\n    function extractValidUntilAndValidAfter(bytes calldata callData) \n        internal \n        pure \n        returns (uint256 validUntil, uint256 validAfter) \n    {\n        // abi.decode strictly checks if the input is >= 32 bytes.\n        // The slice is 12 bytes long. This is guaranteed to revert.\n        validUntil = abi.decode(callData[:12], (uint256));\n        validAfter = abi.decode(callData[12:24], (uint256));\n        \n        return (validUntil, validAfter);\n    }\n    // External wrapper to pass memory payload as calldata, identical to entryPoint flow\n    function _validateSignatureMock(bytes calldata callData) external pure {\n        extractValidUntilAndValidAfter(callData);\n    }\n    function test_validateUserOp_AlwaysRevertsOnDecode() public {\n        // Create an empty payload >= 24 bytes, mirroring ERC-4337 validation payloads\n        bytes memory mockPayload = new bytes(64);\n        \n        // The ERC-4337 _validateSignature hook processes the payload. It will reliably REVERT.\n        vm.expectRevert(); \n        this._validateSignatureMock(mockPayload);\n    }\n}",
+    "detail_url": "https://code4rena.com/api/v1/audits/2VUsxVJwReb/submissions/217",
+    "raw": {
+      "auditUid": "2VUsxVJwReb",
+      "createdAt": "2026-03-06T05:11:42.435Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "Nr9HEwmubmD",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T12:45:12.429Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "2Funzps4cEA"
+        },
+        {
+          "uid": "DmEFYPigkvz",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T12:45:21.488Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "2Funzps4cEA"
+        }
+      ],
+      "finding": {
+        "uid": "2Funzps4cEA",
+        "number": 11,
+        "duplicates": 19
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2026-04-28T14:24:44.015Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "`abi.decodestrict bounds-checking on memory slices insideAtomWallet guarantees EVM revert, permanently bricking all ERC-4337 relayed transactions",
+      "uid": "dxucZnmJesU",
+      "updatedAt": "2026-03-06T05:11:42.435Z",
+      "user": {
+        "uid": "LCxogr2gyKW",
+        "handle": "Veritas"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "Vulnerability details\n\nFinding description and impact\n\nRoot Cause In \nAtomWallet.sol\n, the abstract account intercepts ERC-4337 validateUserOp requests through _validateSignature and subsequently calls extractValidUntilAndValidAfter to decode transaction expiration bounds from the first 24 bytes of the callData payload.\n\nTo achieve this, the contract attempts to slice the calldata into 12-byte chunks and dynamically decodes them using abi.decode:\n\nsolidity\nvalidUntil = abi.decode(callData[:12], (uint256));\nvalidAfter = abi.decode(callData[12:24], (uint256));\nThis is fundamentally invalid in Solidity. abi.decode strictly enforces EVM ABI encoding specifications. For a statically-sized type like uint256, the EVM expects exactly 32 bytes (1 padded word) of input data. Providing a 12-byte slice (callData[:12]) violates length bounds-checking.\n\nAs a result, abi.decode throws an out-of-bounds InsufficientDataBytes error and guarantees a revert on every execution attempt.\n\nImpact Because extractValidUntilAndValidAfter is inextricably linked to the core _validateSignature ERC-4337 flow, this single strict bounds violation causes every single validateUserOp sequence to crash.\n\nThe transaction EntryPoint evaluator will irrevocably reject all relayed/gasless operations. This permanently locks all users out of ERC-4337 execution abstractions globally across the protocol and completely bricks the AtomWallet smart wallet infrastructure.\n\nRecommended mitigation steps\nRemove the inflexible abi.decode engine in favor of explicit byte-casting logic. This correctly right-pads the 12-byte slice into a standard 32-byte uint256 capacity without triggering explicit bounds-checking validation:\n\ndiff\n-        validUntil = abi.decode(callData[:12], (uint256));\n-        validAfter = abi.decode(callData[12:24], (uint256));\n+        validUntil = uint256(uint96(bytes12(callData[:12])));\n+        validAfter = uint256(uint96(bytes12(callData[12:24])));",
+      "proofOfConcept": "To empirically demonstrate that abi.decode explicitly reverts when receiving less than 32 bytes for a uint256, run the following Foundry test.\n\nSave it in the test/unit/ folder and run forge test --match-contract AtomWalletDecodeFail. The test succeeds, guaranteeing the EVM revert behavior:\n\nsolidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.21;\nimport \"forge-std/Test.sol\";\ncontract AtomWalletDecodeFail is Test {\n    \n    // Simulates exactly what extractValidUntilAndValidAfter does\n    function extractValidUntilAndValidAfter(bytes calldata callData) \n        internal \n        pure \n        returns (uint256 validUntil, uint256 validAfter) \n    {\n        // abi.decode strictly checks if the input is >= 32 bytes.\n        // The slice is 12 bytes long. This is guaranteed to revert.\n        validUntil = abi.decode(callData[:12], (uint256));\n        validAfter = abi.decode(callData[12:24], (uint256));\n        \n        return (validUntil, validAfter);\n    }\n    // External wrapper to pass memory payload as calldata, identical to entryPoint flow\n    function _validateSignatureMock(bytes calldata callData) external pure {\n        extractValidUntilAndValidAfter(callData);\n    }\n    function test_validateUserOp_AlwaysRevertsOnDecode() public {\n        // Create an empty payload >= 24 bytes, mirroring ERC-4337 validation payloads\n        bytes memory mockPayload = new bytes(64);\n        \n        // The ERC-4337 _validateSignature hook processes the payload. It will reliably REVERT.\n        vm.expectRevert(); \n        this._validateSignatureMock(mockPayload);\n    }\n}",
+      "linesOfCode": "https://github.com/code4rena/2026-03-intuition/blob/main/src/AtomWallet.sol#L238-L239",
+      "number": 217,
+      "aiExplanation": null,
+      "_index": 217
+    }
+  }
+}

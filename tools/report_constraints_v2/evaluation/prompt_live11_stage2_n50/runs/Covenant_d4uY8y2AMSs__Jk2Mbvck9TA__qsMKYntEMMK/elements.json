@@ -1,0 +1,202 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "LatentSwapLEX market initialization and mint cap enforcement via exponential TWAP base supply",
+    "environment": "LatentSwapLEX.sol and LatentSwapLogic.sol on-chain market",
+    "evidence": [
+      "Seeding `lastETWAPBaseSupply` to zero during market init will cause a denial of service for depositors as the first minter to cross the `noCapLimit` threshold will permanently trip the mint cap until the ETWAP decays.",
+      "In `src/lex/latentswap/LatentSwapLEX.sol:268` the exchange state seeds `lastETWAPBaseSupply` to `0`, and the first mint does not update the stored exponential TWAP before `_checkMintCap` enforces limits. Combined with `_checkMintCap` in `src/lex/latentswap/libraries/LatentSwapLogic.sol:1054`, the system compares the live supply against a near-zero TWAP, so any follow-up mint after the threshold must fail until the ETWAP catches up.",
+      "*Stored ETWAP starts at `0` even though the next mint will add liquidity.*",
+      "*During `_calculateMarketState`, the TWAP update runs before the mint adds to `baseTokenSupply`, so the exponential moving average remains near zero.*",
+      "*`marketState.baseTokenSupply` now exceeds `1 << noCapLimit`, but `lastETWAPBaseSupply` is still ≈0, making the condition `marketBaseTokenSupply + mintAmount <= lastETWAPBaseSupply << 1` impossible and reverting with `E_LEX_MintCapExceeded`.*",
+      "*Even a manual `updateState` call takes ~30 minutes to grow ETWAP by 50%, leaving the market effectively frozen in the interim.*",
+      "New deposits are blocked for roughly an hour each time someone adds just over one token, preventing organic liquidity growth."
+    ]
+  },
+  "entities": [
+    {
+      "id": "market",
+      "name": "LatentSwap market",
+      "role": "contract",
+      "evidence": [
+        "Seeding `lastETWAPBaseSupply` to zero during market init will cause a denial of service for depositors as the first minter to cross the `noCapLimit` threshold will permanently trip the mint cap until the ETWAP decays.",
+        "In `src/lex/latentswap/LatentSwapLEX.sol:268` the exchange state seeds `lastETWAPBaseSupply` to `0`, and the first mint does not update the stored exponential TWAP before `_checkMintCap` enforces limits. Combined with `_checkMintCap` in `src/lex/latentswap/libraries/LatentSwapLogic.sol:1054`, the system compares the live supply against a near-zero TWAP, so any follow-up mint after the threshold must fail until the ETWAP catches up."
+      ]
+    },
+    {
+      "id": "first_minter",
+      "name": "First over-threshold minter",
+      "role": "attacker",
+      "evidence": [
+        "Seeding `lastETWAPBaseSupply` to zero during market init will cause a denial of service for depositors as the first minter to cross the `noCapLimit` threshold will permanently trip the mint cap until the ETWAP decays.",
+        "2. First large mint updates live supply but ETWAP stays ≈0:"
+      ]
+    },
+    {
+      "id": "depositors",
+      "name": "Depositors",
+      "role": "victim",
+      "evidence": [
+        "Seeding `lastETWAPBaseSupply` to zero during market init will cause a denial of service for depositors as the first minter to cross the `noCapLimit` threshold will permanently trip the mint cap until the ETWAP decays.",
+        "New deposits are blocked for roughly an hour each time someone adds just over one token, preventing organic liquidity growth."
+      ]
+    },
+    {
+      "id": "etwap",
+      "name": "lastETWAPBaseSupply exponential TWAP",
+      "role": "asset",
+      "evidence": [
+        "In `src/lex/latentswap/LatentSwapLEX.sol:268` the exchange state seeds `lastETWAPBaseSupply` to `0`, and the first mint does not update the stored exponential TWAP before `_checkMintCap` enforces limits. Combined with `_checkMintCap` in `src/lex/latentswap/libraries/LatentSwapLogic.sol:1054`, the system compares the live supply against a near-zero TWAP, so any follow-up mint after the threshold must fail until the ETWAP catches up.",
+        "*Stored ETWAP starts at `0` even though the next mint will add liquidity.*",
+        "*`marketState.baseTokenSupply` now exceeds `1 << noCapLimit`, but `lastETWAPBaseSupply` is still ≈0, making the condition `marketBaseTokenSupply + mintAmount <= lastETWAPBaseSupply << 1` impossible and reverting with `E_LEX_MintCapExceeded`.*"
+      ]
+    },
+    {
+      "id": "mint_cap",
+      "name": "Mint cap check",
+      "role": "other",
+      "evidence": [
+        "In `src/lex/latentswap/LatentSwapLEX.sol:268` the exchange state seeds `lastETWAPBaseSupply` to `0`, and the first mint does not update the stored exponential TWAP before `_checkMintCap` enforces limits. Combined with `_checkMintCap` in `src/lex/latentswap/libraries/LatentSwapLogic.sol:1054`, the system compares the live supply against a near-zero TWAP, so any follow-up mint after the threshold must fail until the ETWAP catches up.",
+        "*`marketState.baseTokenSupply` now exceeds `1 << noCapLimit`, but `lastETWAPBaseSupply` is still ≈0, making the condition `marketBaseTokenSupply + mintAmount <= lastETWAPBaseSupply << 1` impossible and reverting with `E_LEX_MintCapExceeded`.*"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "etwap_seeded_zero",
+      "kind": "precondition",
+      "text": "During market init, lastETWAPBaseSupply is seeded to 0.",
+      "modality": "asserted",
+      "entity_ids": [
+        "market",
+        "etwap"
+      ],
+      "evidence": [
+        "In `src/lex/latentswap/LatentSwapLEX.sol:268` the exchange state seeds `lastETWAPBaseSupply` to `0`, and the first mint does not update the stored exponential TWAP before `_checkMintCap` enforces limits. Combined with `_checkMintCap` in `src/lex/latentswap/libraries/LatentSwapLogic.sol:1054`, the system compares the live supply against a near-zero TWAP, so any follow-up mint after the threshold must fail until the ETWAP catches up.",
+        "*Stored ETWAP starts at `0` even though the next mint will add liquidity.*"
+      ]
+    },
+    {
+      "id": "first_mint_no_etwap_update",
+      "kind": "precondition",
+      "text": "The first mint does not update the stored exponential TWAP before _checkMintCap enforces limits.",
+      "modality": "asserted",
+      "entity_ids": [
+        "market",
+        "etwap"
+      ],
+      "evidence": [
+        "In `src/lex/latentswap/LatentSwapLEX.sol:268` the exchange state seeds `lastETWAPBaseSupply` to `0`, and the first mint does not update the stored exponential TWAP before `_checkMintCap` enforces limits. Combined with `_checkMintCap` in `src/lex/latentswap/libraries/LatentSwapLogic.sol:1054`, the system compares the live supply against a near-zero TWAP, so any follow-up mint after the threshold must fail until the ETWAP catches up.",
+        "*During `_calculateMarketState`, the TWAP update runs before the mint adds to `baseTokenSupply`, so the exponential moving average remains near zero.*"
+      ]
+    },
+    {
+      "id": "first_large_mint",
+      "kind": "action",
+      "text": "A first large mint adds liquidity and updates live baseTokenSupply while ETWAP stays near zero.",
+      "modality": "asserted",
+      "entity_ids": [
+        "first_minter",
+        "market",
+        "etwap"
+      ],
+      "evidence": [
+        "2. First large mint updates live supply but ETWAP stays ≈0:",
+        "*During `_calculateMarketState`, the TWAP update runs before the mint adds to `baseTokenSupply`, so the exponential moving average remains near zero.*"
+      ]
+    },
+    {
+      "id": "subsequent_mint",
+      "kind": "action",
+      "text": "A subsequent mint is attempted after baseTokenSupply exceeds 1 << noCapLimit.",
+      "modality": "asserted",
+      "entity_ids": [
+        "market",
+        "mint_cap"
+      ],
+      "evidence": [
+        "*`marketState.baseTokenSupply` now exceeds `1 << noCapLimit`, but `lastETWAPBaseSupply` is still ≈0, making the condition `marketBaseTokenSupply + mintAmount <= lastETWAPBaseSupply << 1` impossible and reverting with `E_LEX_MintCapExceeded`.*"
+      ]
+    },
+    {
+      "id": "stale_etwap_cap_check",
+      "kind": "root_cause",
+      "text": "_checkMintCap compares live supply against the near-zero lastETWAPBaseSupply, making marketBaseTokenSupply + mintAmount <= lastETWAPBaseSupply << 1 impossible.",
+      "modality": "asserted",
+      "entity_ids": [
+        "market",
+        "mint_cap",
+        "etwap"
+      ],
+      "evidence": [
+        "In `src/lex/latentswap/LatentSwapLEX.sol:268` the exchange state seeds `lastETWAPBaseSupply` to `0`, and the first mint does not update the stored exponential TWAP before `_checkMintCap` enforces limits. Combined with `_checkMintCap` in `src/lex/latentswap/libraries/LatentSwapLogic.sol:1054`, the system compares the live supply against a near-zero TWAP, so any follow-up mint after the threshold must fail until the ETWAP catches up.",
+        "*`marketState.baseTokenSupply` now exceeds `1 << noCapLimit`, but `lastETWAPBaseSupply` is still ≈0, making the condition `marketBaseTokenSupply + mintAmount <= lastETWAPBaseSupply << 1` impossible and reverting with `E_LEX_MintCapExceeded`.*"
+      ]
+    },
+    {
+      "id": "mint_reverts",
+      "kind": "impact",
+      "text": "The subsequent mint reverts with E_LEX_MintCapExceeded.",
+      "modality": "asserted",
+      "entity_ids": [
+        "market",
+        "mint_cap"
+      ],
+      "evidence": [
+        "*`marketState.baseTokenSupply` now exceeds `1 << noCapLimit`, but `lastETWAPBaseSupply` is still ≈0, making the condition `marketBaseTokenSupply + mintAmount <= lastETWAPBaseSupply << 1` impossible and reverting with `E_LEX_MintCapExceeded`.*"
+      ]
+    },
+    {
+      "id": "deposits_blocked",
+      "kind": "impact",
+      "text": "New deposits are blocked for roughly an hour each time someone adds just over one token, preventing organic liquidity growth.",
+      "modality": "potential",
+      "entity_ids": [
+        "depositors",
+        "market"
+      ],
+      "evidence": [
+        "New deposits are blocked for roughly an hour each time someone adds just over one token, preventing organic liquidity growth."
+      ]
+    },
+    {
+      "id": "intent_mint_cap_allows_valid_mints",
+      "kind": "security_intent",
+      "text": "Mint cap enforcement should permit mints that are within the intended supply bound rather than rejecting them due to a stale near-zero TWAP.",
+      "modality": "inferred",
+      "entity_ids": [
+        "market",
+        "mint_cap",
+        "etwap"
+      ],
+      "evidence": [
+        "In `src/lex/latentswap/LatentSwapLEX.sol:268` the exchange state seeds `lastETWAPBaseSupply` to `0`, and the first mint does not update the stored exponential TWAP before `_checkMintCap` enforces limits. Combined with `_checkMintCap` in `src/lex/latentswap/libraries/LatentSwapLogic.sol:1054`, the system compares the live supply against a near-zero TWAP, so any follow-up mint after the threshold must fail until the ETWAP catches up.",
+        "*`marketState.baseTokenSupply` now exceeds `1 << noCapLimit`, but `lastETWAPBaseSupply` is still ≈0, making the condition `marketBaseTokenSupply + mintAmount <= lastETWAPBaseSupply << 1` impossible and reverting with `E_LEX_MintCapExceeded`.*"
+      ]
+    },
+    {
+      "id": "intent_deposits_not_frozen",
+      "kind": "security_intent",
+      "text": "Deposits should not be blocked for all users by a single over-threshold mint.",
+      "modality": "inferred",
+      "entity_ids": [
+        "depositors",
+        "market"
+      ],
+      "evidence": [
+        "Seeding `lastETWAPBaseSupply` to zero during market init will cause a denial of service for depositors as the first minter to cross the `noCapLimit` threshold will permanently trip the mint cap until the ETWAP decays.",
+        "New deposits are blocked for roughly an hour each time someone adds just over one token, preventing organic liquidity growth."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "first_large_mint",
+    "subsequent_mint"
+  ],
+  "ambiguities": [
+    "Report does not state whether the first large mint is performed by an attacker or an ordinary user.",
+    "Report does not establish that the first minter is unauthorized or permissionless.",
+    "The ~30-minute half-life and ~1 hour freeze are approximate; exact timing not specified.",
+    "Whether the market is permanently frozen or recovers after ETWAP decay is described as until decay, not quantified."
+  ]
+}

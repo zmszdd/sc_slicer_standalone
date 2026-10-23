@@ -1,0 +1,233 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "BuilderWallet initialization and admin takeover leading to fund sweep",
+    "environment": "RiskEngine.sol BuilderWallet / BuilderFactory deployment",
+    "evidence": [
+      "BuilderWallet.init() lacks access control, allowing anyone to become admin and steal all funds",
+      "The `BuilderWallet.init()` function in `RiskEngine.sol` lacks any access control mechanism, enabling any external actor to:",
+      "1. `BuilderFactory.deployBuilder()` deploys a `BuilderWallet` and calls `init(legitimateAdmin)`",
+      "3. Attacker calls `wallet.init(attackerAddress)` - becomes the new admin"
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "external attacker",
+      "role": "attacker",
+      "evidence": [
+        "The `BuilderWallet.init()` function in `RiskEngine.sol` lacks any access control mechanism, enabling any external actor to:",
+        "3. Attacker calls `wallet.init(attackerAddress)` - becomes the new admin"
+      ]
+    },
+    {
+      "id": "legitimate_admin",
+      "name": "legitimate builder admin",
+      "role": "victim",
+      "evidence": [
+        "1. `BuilderFactory.deployBuilder()` deploys a `BuilderWallet` and calls `init(legitimateAdmin)`",
+        "5. Legitimate admin tries to sweep but gets `NotBuilder` error"
+      ]
+    },
+    {
+      "id": "builder_wallet",
+      "name": "BuilderWallet contract",
+      "role": "contract",
+      "evidence": [
+        "BuilderWallet.init() lacks access control, allowing anyone to become admin and steal all funds",
+        "The `BuilderWallet.init()` function in `RiskEngine.sol` lacks any access control mechanism, enabling any external actor to:"
+      ]
+    },
+    {
+      "id": "builder_factory",
+      "name": "BuilderFactory contract",
+      "role": "authority",
+      "evidence": [
+        "1. `BuilderFactory.deployBuilder()` deploys a `BuilderWallet` and calls `init(legitimateAdmin)`"
+      ]
+    },
+    {
+      "id": "wallet_tokens",
+      "name": "tokens accumulated in BuilderWallet",
+      "role": "asset",
+      "evidence": [
+        "This is a **critical vulnerability** that results in **direct theft of funds**. All tokens accumulated in any `BuilderWallet` (builder fees) can be stolen by an attacker with a single transaction.",
+        "2. Builder fees accumulate in the wallet over time (e.g., 100,000 USDC)"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "wallet_deployed_by_factory",
+      "kind": "precondition",
+      "text": "BuilderFactory.deployBuilder() deploys a BuilderWallet and calls init(legitimateAdmin)",
+      "modality": "asserted",
+      "entity_ids": [
+        "builder_factory",
+        "builder_wallet",
+        "legitimate_admin"
+      ],
+      "evidence": [
+        "1. `BuilderFactory.deployBuilder()` deploys a `BuilderWallet` and calls `init(legitimateAdmin)`"
+      ]
+    },
+    {
+      "id": "fees_accumulated",
+      "kind": "precondition",
+      "text": "Builder fees accumulate in the wallet over time",
+      "modality": "asserted",
+      "entity_ids": [
+        "builder_wallet",
+        "wallet_tokens"
+      ],
+      "evidence": [
+        "2. Builder fees accumulate in the wallet over time (e.g., 100,000 USDC)"
+      ]
+    },
+    {
+      "id": "attacker_calls_init",
+      "kind": "action",
+      "text": "Attacker calls wallet.init(attackerAddress)",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "builder_wallet"
+      ],
+      "evidence": [
+        "3. Attacker calls `wallet.init(attackerAddress)` - becomes the new admin"
+      ]
+    },
+    {
+      "id": "attacker_calls_sweep",
+      "kind": "action",
+      "text": "Attacker calls wallet.sweep(USDC, attackerAddress)",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "builder_wallet",
+        "wallet_tokens"
+      ],
+      "evidence": [
+        "4. Attacker calls `wallet.sweep(USDC, attackerAddress)` - steals all funds"
+      ]
+    },
+    {
+      "id": "missing_access_control_init",
+      "kind": "root_cause",
+      "text": "BuilderWallet.init() lacks any access control mechanism, with no onlyFactory modifier, no msg.sender == FACTORY check, no initialized flag, and no check if builderAdmin is already set",
+      "modality": "asserted",
+      "entity_ids": [
+        "builder_wallet",
+        "builder_factory"
+      ],
+      "evidence": [
+        "The `BuilderWallet.init()` function in `RiskEngine.sol` lacks any access control mechanism, enabling any external actor to:",
+        "- No `onlyFactory` modifier",
+        "- No `msg.sender == FACTORY` check",
+        "- No `initialized` flag to prevent re-initialization",
+        "- No check if `builderAdmin` is already set"
+      ]
+    },
+    {
+      "id": "intent_init_restricted",
+      "kind": "security_intent",
+      "text": "BuilderWallet.init() must be restricted so that only the factory (or an authorized initializer) can set the builder admin",
+      "modality": "asserted",
+      "entity_ids": [
+        "builder_wallet",
+        "builder_factory"
+      ],
+      "evidence": [
+        "- No `onlyFactory` modifier",
+        "- No `msg.sender == FACTORY` check",
+        "**Option 1: Add initialization guard and factory-only restriction**"
+      ]
+    },
+    {
+      "id": "intent_no_reinit",
+      "kind": "security_intent",
+      "text": "BuilderWallet.init() must not allow re-initialization once builderAdmin is already set",
+      "modality": "asserted",
+      "entity_ids": [
+        "builder_wallet"
+      ],
+      "evidence": [
+        "- No `initialized` flag to prevent re-initialization",
+        "- No check if `builderAdmin` is already set"
+      ]
+    },
+    {
+      "id": "intent_admin_preserved",
+      "kind": "security_intent",
+      "text": "The legitimate admin set at deployment must retain admin privileges so it can access the funds",
+      "modality": "asserted",
+      "entity_ids": [
+        "legitimate_admin",
+        "builder_wallet"
+      ],
+      "evidence": [
+        "3. **Lock out the legitimate admin** who can no longer access the funds",
+        "5. Legitimate admin tries to sweep but gets `NotBuilder` error"
+      ]
+    },
+    {
+      "id": "take_over_admin_privileges",
+      "kind": "impact",
+      "text": "Take over admin privileges by calling `init()` with their own address",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "1. **Take over admin privileges** by calling `init()` with their own address"
+      ]
+    },
+    {
+      "id": "steal_all_tokens",
+      "kind": "impact",
+      "text": "Steal all tokens in the wallet by calling `sweep()` after becoming admin",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "2. **Steal all tokens** in the wallet by calling `sweep()` after becoming admin"
+      ]
+    },
+    {
+      "id": "lock_out_legitimate_admin",
+      "kind": "impact",
+      "text": "Lock out the legitimate admin who can no longer access the funds",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "3. **Lock out the legitimate admin** who can no longer access the funds"
+      ]
+    },
+    {
+      "id": "direct_theft_of_funds",
+      "kind": "impact",
+      "text": "direct theft of funds",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "This is a **critical vulnerability** that results in **direct theft of funds**. All tokens accumulated in any `BuilderWallet` (builder fees) can be stolen by an attacker with a single transaction."
+      ]
+    },
+    {
+      "id": "builder_fees_stolen",
+      "kind": "impact",
+      "text": "All tokens accumulated in any `BuilderWallet` (builder fees) can be stolen by an attacker with a single transaction.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "This is a **critical vulnerability** that results in **direct theft of funds**. All tokens accumulated in any `BuilderWallet` (builder fees) can be stolen by an attacker with a single transaction."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "attacker_calls_init",
+    "attacker_calls_sweep"
+  ],
+  "ambiguities": [
+    "Report does not state whether init() was already called by the factory before the attacker's call, or whether the attacker's init overwrites an existing admin.",
+    "Report does not specify the exact access-control guard expected (onlyFactory vs constructor-set admin) as a single required property.",
+    "Report does not establish a concrete numeric balance beyond the illustrative 100,000 USDC example."
+  ]
+}

@@ -1,0 +1,195 @@
+{
+  "schema_version": "report-formal-plan/6",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "p_vulnerable_pool_state",
+    "p_owner_tx_pending",
+    "p_attacker_capital"
+  ],
+  "intent_id": "i_twap_validation",
+  "impact_ids": [
+    "gas_costs_to_rebalance"
+  ],
+  "symbols": {
+    "observation_age_minutes": {
+      "sort": "int",
+      "unit": "minutes",
+      "meaning": "age of the most recent pool observation at the time the owner liquidity operation is evaluated",
+      "checkpoint": "before owner liquidity operation executes",
+      "entity_ids": [
+        "uniswap_v3_pool"
+      ],
+      "source_ids": [
+        "p_vulnerable_pool_state"
+      ]
+    },
+    "observation_history_insufficient": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "pool has insufficient observation history for the TWAP query (newly deployed pool)",
+      "checkpoint": "before owner liquidity operation executes",
+      "entity_ids": [
+        "uniswap_v3_pool"
+      ],
+      "source_ids": [
+        "p_vulnerable_pool_state"
+      ]
+    },
+    "owner_liquidity_tx_pending": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "an owner-initiated liquidity operation transaction targeting the pool is pending in the mempool",
+      "checkpoint": "before owner liquidity operation executes",
+      "entity_ids": [
+        "owner",
+        "liquidity_manager_core"
+      ],
+      "source_ids": [
+        "p_owner_tx_pending"
+      ]
+    },
+    "attacker_capital_available": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "attacker has flash loan capital for price manipulation plus gas costs available",
+      "checkpoint": "before owner liquidity operation executes",
+      "entity_ids": [
+        "attacker"
+      ],
+      "source_ids": [
+        "p_attacker_capital"
+      ]
+    },
+    "rebalance_gas_cost_incurred": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "gas costs are required to rebalance the mispositioned liquidity back into productive range",
+      "checkpoint": "after owner liquidity operation executes and position is out-of-range at true price",
+      "entity_ids": [
+        "liquidity_manager_core",
+        "protocol_funds"
+      ],
+      "source_ids": [
+        "gas_costs_to_rebalance"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_vulnerable_pool_state",
+      "predicate": {
+        "kind": "any_of",
+        "terms": [
+          {
+            "kind": "comparison",
+            "left": "observation_age_minutes",
+            "operator": "gt",
+            "right": {
+              "const": 30
+            }
+          },
+          {
+            "kind": "truth",
+            "symbol": "observation_history_insufficient",
+            "value": true
+          }
+        ]
+      }
+    },
+    {
+      "source_id": "p_owner_tx_pending",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "owner_liquidity_tx_pending",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_attacker_capital",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "attacker_capital_available",
+        "value": true
+      }
+    }
+  ],
+  "impact_context_terms": [
+    {
+      "source_id": "gas_costs_to_rebalance",
+      "qualifier_types": [
+        "state",
+        "scope"
+      ],
+      "predicate": {
+        "kind": "truth",
+        "symbol": "rebalance_gas_cost_incurred",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "required_effect",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "owner_liquidity_tx_pending",
+          "value": true
+        },
+        {
+          "kind": "any_of",
+          "terms": [
+            {
+              "kind": "comparison",
+              "left": "observation_age_minutes",
+              "operator": "gt",
+              "right": {
+                "const": 30
+              }
+            },
+            {
+              "kind": "truth",
+              "symbol": "observation_history_insufficient",
+              "value": true
+            }
+          ]
+        }
+      ]
+    },
+    "effect": {
+      "kind": "truth",
+      "symbol": "rebalance_gas_cost_incurred",
+      "value": false
+    }
+  },
+  "assumptions": [
+    "The owner liquidity operation is a mint/rebalance that derives tick ranges from the pool price returned by checkPoolAndGetCenterPrice.",
+    "The attacker front-runs with a large swap and back-runs to restore the true price, so the position is centered on the manipulated price."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "Report does not state whether the owner transaction is a mint, rebalance, or other liquidity operation, nor numeric bounds for the swap size or tick shifts.",
+      "source_ids": [
+        "p_owner_tx_pending",
+        "a_owner_tx_executes"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "unsupported_relation",
+      "description": "The gas cost to rebalance is described only qualitatively; no numeric amount or threshold is given, so it is represented as a Boolean occurrence rather than a numeric bound.",
+      "source_ids": [
+        "gas_costs_to_rebalance"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Formalizes only the gas-cost-to-rebalance impact; other listed impacts are handled in separate passes.",
+    "The scenario is described conditionally/potentially; the plan encodes the report-supported conditional scenario, not an observed transaction.",
+    "The rebalance gas cost is a Boolean occurrence because the report supplies no numeric magnitude."
+  ]
+}

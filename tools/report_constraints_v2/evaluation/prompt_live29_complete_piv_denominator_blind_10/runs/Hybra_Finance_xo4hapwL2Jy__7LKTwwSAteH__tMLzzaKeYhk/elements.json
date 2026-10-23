@@ -1,0 +1,236 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Epoch emission distribution via GaugeManager.notifyRewardAmount/distributeAll when totalWeight is zero",
+    "environment": "Solidity protocol with GaugeManager, minter, HYBR token, gauges and voters",
+    "evidence": [
+      "`GaugeManager.notifyRewardAmount` unconditionally pulls the epoch emission from the minter, but it only updates the distribution index when there is non-zero voting weight:",
+      "When every voter has reset (`totalWeight == 0`), the transfer `HYBR::transferFrom(minter, GaugeManager, amount)` still executes, yet `index` remains unchanged. Later, `_updateForAfterDistribution` calculates each gauge’s share from `index - supplyIndex[gauge]`. Because that delta is zero, `claimable[gauge]` never increases, and the freshly minted HYBR is effectively orphaned inside `GaugeManager`.",
+      "1. Voters call `reset` in the next epoch’s window to reclaim bribes, bringing `totalWeight` to zero.",
+      "2. A keeper (or the minter itself) calls `distributeAll()`, which mints and transfers the weekly emission into `GaugeManager`.",
+      "Before transferring rewards, ensure `totalWeight > 0`. Either:"
+    ]
+  },
+  "entities": [
+    {
+      "id": "gauge_manager",
+      "name": "GaugeManager",
+      "role": "contract",
+      "evidence": [
+        "`GaugeManager.notifyRewardAmount` unconditionally pulls the epoch emission from the minter, but it only updates the distribution index when there is non-zero voting weight:",
+        "When every voter has reset (`totalWeight == 0`), the transfer `HYBR::transferFrom(minter, GaugeManager, amount)` still executes, yet `index` remains unchanged. Later, `_updateForAfterDistribution` calculates each gauge’s share from `index - supplyIndex[gauge]`. Because that delta is zero, `claimable[gauge]` never increases, and the freshly minted HYBR is effectively orphaned inside `GaugeManager`."
+      ]
+    },
+    {
+      "id": "minter",
+      "name": "Minter",
+      "role": "contract",
+      "evidence": [
+        "`GaugeManager.notifyRewardAmount` unconditionally pulls the epoch emission from the minter, but it only updates the distribution index when there is non-zero voting weight:",
+        "2. A keeper (or the minter itself) calls `distributeAll()`, which mints and transfers the weekly emission into `GaugeManager`."
+      ]
+    },
+    {
+      "id": "hybr_token",
+      "name": "HYBR token",
+      "role": "asset",
+      "evidence": [
+        "When every voter has reset (`totalWeight == 0`), the transfer `HYBR::transferFrom(minter, GaugeManager, amount)` still executes, yet `index` remains unchanged. Later, `_updateForAfterDistribution` calculates each gauge’s share from `index - supplyIndex[gauge]`. Because that delta is zero, `claimable[gauge]` never increases, and the freshly minted HYBR is effectively orphaned inside `GaugeManager`.",
+        "The PoC shows that with current parameters the first weekly emission mints ~2.47M HYBR into `GaugeManager`, leaves `claimable[gauge]` at zero, and later distributions do not touch the stranded balance. There is no refund or recovery mechanism, so every occurrence permanently removes an entire emission cycle from the reward flow. This is a protocol-level loss affecting all liquidity providers and voters, so the severity is **High**."
+      ]
+    },
+    {
+      "id": "voters",
+      "name": "Voters",
+      "role": "other",
+      "evidence": [
+        "1. Voters call `reset` in the next epoch’s window to reclaim bribes, bringing `totalWeight` to zero."
+      ]
+    },
+    {
+      "id": "keeper",
+      "name": "Keeper or minter caller",
+      "role": "other",
+      "evidence": [
+        "2. A keeper (or the minter itself) calls `distributeAll()`, which mints and transfers the weekly emission into `GaugeManager`."
+      ]
+    },
+    {
+      "id": "gauges",
+      "name": "Gauges",
+      "role": "contract",
+      "evidence": [
+        "When every voter has reset (`totalWeight == 0`), the transfer `HYBR::transferFrom(minter, GaugeManager, amount)` still executes, yet `index` remains unchanged. Later, `_updateForAfterDistribution` calculates each gauge’s share from `index - supplyIndex[gauge]`. Because that delta is zero, `claimable[gauge]` never increases, and the freshly minted HYBR is effectively orphaned inside `GaugeManager`.",
+        "3. Because `index` is unchanged, all gauges remain at `claimable == 0`, and the HYBR balance becomes unrecoverable."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "voters_reset_total_weight_zero",
+      "kind": "precondition",
+      "text": "In the next epoch's window, voters call reset to reclaim bribes, bringing totalWeight to zero.",
+      "modality": "asserted",
+      "entity_ids": [
+        "voters",
+        "gauge_manager"
+      ],
+      "evidence": [
+        "1. Voters call `reset` in the next epoch’s window to reclaim bribes, bringing `totalWeight` to zero.",
+        "When every voter has reset (`totalWeight == 0`), the transfer `HYBR::transferFrom(minter, GaugeManager, amount)` still executes, yet `index` remains unchanged. Later, `_updateForAfterDistribution` calculates each gauge’s share from `index - supplyIndex[gauge]`. Because that delta is zero, `claimable[gauge]` never increases, and the freshly minted HYBR is effectively orphaned inside `GaugeManager`."
+      ]
+    },
+    {
+      "id": "keeper_calls_distribute_all",
+      "kind": "action",
+      "text": "A keeper (or the minter itself) calls distributeAll(), which mints and transfers the weekly emission into GaugeManager.",
+      "modality": "asserted",
+      "entity_ids": [
+        "keeper",
+        "minter",
+        "gauge_manager"
+      ],
+      "evidence": [
+        "2. A keeper (or the minter itself) calls `distributeAll()`, which mints and transfers the weekly emission into `GaugeManager`."
+      ]
+    },
+    {
+      "id": "notify_pulls_emission_unconditionally",
+      "kind": "root_cause",
+      "text": "notifyRewardAmount unconditionally pulls the epoch emission from the minter via transferFrom but only updates the distribution index when voting weight is non-zero, so with totalWeight == 0 the index remains unchanged.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_manager",
+        "minter",
+        "hybr_token"
+      ],
+      "evidence": [
+        "`GaugeManager.notifyRewardAmount` unconditionally pulls the epoch emission from the minter, but it only updates the distribution index when there is non-zero voting weight:",
+        "When every voter has reset (`totalWeight == 0`), the transfer `HYBR::transferFrom(minter, GaugeManager, amount)` still executes, yet `index` remains unchanged. Later, `_updateForAfterDistribution` calculates each gauge’s share from `index - supplyIndex[gauge]`. Because that delta is zero, `claimable[gauge]` never increases, and the freshly minted HYBR is effectively orphaned inside `GaugeManager`."
+      ]
+    },
+    {
+      "id": "zero_delta_share",
+      "kind": "root_cause",
+      "text": "_updateForAfterDistribution computes each gauge's share from index - supplyIndex[gauge]; with an unchanged index that delta is zero so claimable[gauge] never increases.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_manager",
+        "gauges"
+      ],
+      "evidence": [
+        "When every voter has reset (`totalWeight == 0`), the transfer `HYBR::transferFrom(minter, GaugeManager, amount)` still executes, yet `index` remains unchanged. Later, `_updateForAfterDistribution` calculates each gauge’s share from `index - supplyIndex[gauge]`. Because that delta is zero, `claimable[gauge]` never increases, and the freshly minted HYBR is effectively orphaned inside `GaugeManager`."
+      ]
+    },
+    {
+      "id": "intent_require_positive_weight_before_transfer",
+      "kind": "security_intent",
+      "text": "Before transferring rewards, the emission transfer must only occur when totalWeight > 0 (otherwise skip the transfer, return funds, or roll over the amount).",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_manager",
+        "minter"
+      ],
+      "evidence": [
+        "Before transferring rewards, ensure `totalWeight > 0`. Either:",
+        "- skip the transfer and keep HYBR on the minter until weight is positive, or",
+        "- immediately return the funds to the minter and log the missed emission, or",
+        "- store the amount in a dedicated rollover accumulator that is added to the next positive-weight distribution."
+      ]
+    },
+    {
+      "id": "intent_emission_reaches_reward_flow",
+      "kind": "security_intent",
+      "text": "A minted epoch emission must be accounted to the reward flow (gauges' claimable) rather than left stranded in GaugeManager.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_manager",
+        "gauges",
+        "hybr_token"
+      ],
+      "evidence": [
+        "When every voter has reset (`totalWeight == 0`), the transfer `HYBR::transferFrom(minter, GaugeManager, amount)` still executes, yet `index` remains unchanged. Later, `_updateForAfterDistribution` calculates each gauge’s share from `index - supplyIndex[gauge]`. Because that delta is zero, `claimable[gauge]` never increases, and the freshly minted HYBR is effectively orphaned inside `GaugeManager`.",
+        "The PoC shows that with current parameters the first weekly emission mints ~2.47M HYBR into `GaugeManager`, leaves `claimable[gauge]` at zero, and later distributions do not touch the stranded balance. There is no refund or recovery mechanism, so every occurrence permanently removes an entire emission cycle from the reward flow. This is a protocol-level loss affecting all liquidity providers and voters, so the severity is **High**.",
+        "- store the amount in a dedicated rollover accumulator that is added to the next positive-weight distribution."
+      ]
+    },
+    {
+      "id": "claimable_never_increases",
+      "kind": "impact",
+      "text": "claimable[gauge] never increases",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "When every voter has reset (`totalWeight == 0`), the transfer `HYBR::transferFrom(minter, GaugeManager, amount)` still executes, yet `index` remains unchanged. Later, `_updateForAfterDistribution` calculates each gauge’s share from `index - supplyIndex[gauge]`. Because that delta is zero, `claimable[gauge]` never increases, and the freshly minted HYBR is effectively orphaned inside `GaugeManager`."
+      ]
+    },
+    {
+      "id": "minted_hybr_orphaned_in_gaugemanager",
+      "kind": "impact",
+      "text": "the freshly minted HYBR is effectively orphaned inside `GaugeManager`",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "When every voter has reset (`totalWeight == 0`), the transfer `HYBR::transferFrom(minter, GaugeManager, amount)` still executes, yet `index` remains unchanged. Later, `_updateForAfterDistribution` calculates each gauge’s share from `index - supplyIndex[gauge]`. Because that delta is zero, `claimable[gauge]` never increases, and the freshly minted HYBR is effectively orphaned inside `GaugeManager`."
+      ]
+    },
+    {
+      "id": "gauges_remain_at_claimable_zero",
+      "kind": "impact",
+      "text": "all gauges remain at `claimable == 0`",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "3. Because `index` is unchanged, all gauges remain at `claimable == 0`, and the HYBR balance becomes unrecoverable."
+      ]
+    },
+    {
+      "id": "hybr_balance_unrecoverable",
+      "kind": "impact",
+      "text": "the HYBR balance becomes unrecoverable",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "3. Because `index` is unchanged, all gauges remain at `claimable == 0`, and the HYBR balance becomes unrecoverable."
+      ]
+    },
+    {
+      "id": "stranded_balance_untouched_by_later_distributions",
+      "kind": "impact",
+      "text": "later distributions do not touch the stranded balance",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "The PoC shows that with current parameters the first weekly emission mints ~2.47M HYBR into `GaugeManager`, leaves `claimable[gauge]` at zero, and later distributions do not touch the stranded balance. There is no refund or recovery mechanism, so every occurrence permanently removes an entire emission cycle from the reward flow. This is a protocol-level loss affecting all liquidity providers and voters, so the severity is **High**."
+      ]
+    },
+    {
+      "id": "entire_emission_cycle_removed_from_reward_flow",
+      "kind": "impact",
+      "text": "every occurrence permanently removes an entire emission cycle from the reward flow",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "The PoC shows that with current parameters the first weekly emission mints ~2.47M HYBR into `GaugeManager`, leaves `claimable[gauge]` at zero, and later distributions do not touch the stranded balance. There is no refund or recovery mechanism, so every occurrence permanently removes an entire emission cycle from the reward flow. This is a protocol-level loss affecting all liquidity providers and voters, so the severity is **High**."
+      ]
+    },
+    {
+      "id": "protocol_level_loss_affecting_lps_and_voters",
+      "kind": "impact",
+      "text": "This is a protocol-level loss affecting all liquidity providers and voters",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "The PoC shows that with current parameters the first weekly emission mints ~2.47M HYBR into `GaugeManager`, leaves `claimable[gauge]` at zero, and later distributions do not touch the stranded balance. There is no refund or recovery mechanism, so every occurrence permanently removes an entire emission cycle from the reward flow. This is a protocol-level loss affecting all liquidity providers and voters, so the severity is **High**."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "keeper_calls_distribute_all"
+  ],
+  "ambiguities": [
+    "Report does not state whether notifyRewardAmount is called directly or only via distributeAll; action modeled as distributeAll per step 2.",
+    "Report does not specify exact authorization for the keeper/minter caller beyond 'keeper (or the minter itself)'.",
+    "The stranded-balance outcome and claimable==0 are impact-inventory outcomes, not preconditions."
+  ]
+}

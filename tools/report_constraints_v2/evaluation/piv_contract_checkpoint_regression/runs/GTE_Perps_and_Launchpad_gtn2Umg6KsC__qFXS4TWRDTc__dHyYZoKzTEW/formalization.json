@@ -1,0 +1,375 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "c7c027d93_pool_total_shares": {
+      "sort": "int",
+      "unit": "shares",
+      "meaning": "totalShares of the launch pool before addRewards",
+      "checkpoint": "before addRewards",
+      "entity_ids": [
+        "pool"
+      ],
+      "evidence": "1. Pool exists and has totalShares > 0."
+    },
+    "c7c027d93_fake_token_approved": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "attacker has deployed fakeToken and approved the Distributor to spend it",
+      "checkpoint": "before addRewards",
+      "entity_ids": [
+        "attacker",
+        "fake_token",
+        "distributor"
+      ],
+      "evidence": "2. Attacker deploys fakeToken and approves the Distributor."
+    },
+    "c7c027d93_pending_quote_user_view": {
+      "sort": "int",
+      "unit": "quote token amount",
+      "meaning": "pendingQuote amount users observe as positive for the pool",
+      "checkpoint": "after addRewards",
+      "entity_ids": [
+        "users",
+        "distributor",
+        "real_quote"
+      ],
+      "evidence": "* Funds accounting becomes inconsistent: users see positive pendingQuote but the distributor has pending tracked under a different token key."
+    },
+    "c7c027d93_pending_rewards_real_quote_key": {
+      "sort": "int",
+      "unit": "quote token amount",
+      "meaning": "totalPendingRewards tracked under the real quote token key",
+      "checkpoint": "after addRewards",
+      "entity_ids": [
+        "distributor",
+        "real_quote"
+      ],
+      "evidence": "* Funds accounting becomes inconsistent: users see positive pendingQuote but the distributor has pending tracked under a different token key."
+    },
+    "c7c027d93_pending_rewards_fake_token_key": {
+      "sort": "int",
+      "unit": "fake token amount",
+      "meaning": "totalPendingRewards tracked under the fakeToken key",
+      "checkpoint": "after addRewards",
+      "entity_ids": [
+        "distributor",
+        "fake_token"
+      ],
+      "evidence": "* Funds accounting becomes inconsistent: users see positive pendingQuote but the distributor has pending tracked under a different token key."
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_claim_reverts_dos_12a2ee28",
+      "scope": "Distributor.addRewards token-pair validation and subsequent claimRewards quote payout",
+      "modality": "asserted",
+      "impact_ids": [
+        "claim_reverts_dos"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The pool exists and has totalShares > 0.; The attacker deploys fakeToken and approves the Distributor.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "pool_exists_shares",
+            "attacker_deploys_fake_and_approves"
+          ],
+          "evidence": [
+            "1. Pool exists and has totalShares > 0.",
+            "2. Attacker deploys fakeToken and approves the Distributor."
+          ]
+        },
+        "safety": {
+          "text": "The token pair passed into addRewards should be validated to match the established {launchAsset, rs.quoteAsset} pair so that pending rewards are credited under the real quote token key.; When users have positive pendingQuote, claimRewards(launchAsset) should pay out the real quote token rather than revert.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "intent_pair_match",
+            "intent_claims_succeed"
+          ],
+          "evidence": [
+            "* contracts/launchpad/Distributor.sol — addRewards(...) selects the pool by token0/token1 but never enforces that the “other” token equals rs.quoteAsset; it then credits pending under the attacker-supplied token and transfers that token in.",
+            "* Missing invariant: the token pair passed into addRewards is not validated to match the established {launchAsset, rs.quoteAsset} pair. As a result, external input decides which token key is used for both totalPendingRewards[...] and the incoming transfer.",
+            "Internally, the pool accrues quote pending for users. Later, claimRewards(launchAsset) tries to pay out the real quote token and calls:",
+            "This underflows (totalPendingRewards[realQuote] == 0) → ClaimAmountExceedsTotalPendingRewards() → DoS for all quote claims on that pool.",
+            "* contracts/launchpad/Distributor.sol — _decreaseTotalPending(quote, amount) reverts when user later claims real quote rewards because totalPendingRewards[realQuote] wasn’t credited."
+          ]
+        },
+        "effects": {
+          "text": "Any claimRewards(launchAsset) reverts with ClaimAmountExceedsTotalPendingRewards because totalPendingRewards[realQuote] == 0, causing per-pool permanent DoS of quote reward claims until a migration/upgrade.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "claim_reverts_dos"
+          ],
+          "evidence": [
+            "This underflows (totalPendingRewards[realQuote] == 0) → ClaimAmountExceedsTotalPendingRewards() → DoS for all quote claims on that pool.",
+            "* contracts/launchpad/Distributor.sol — _decreaseTotalPending(quote, amount) reverts when user later claims real quote rewards because totalPendingRewards[realQuote] wasn’t credited.",
+            "* Per-pool permanent DoS of quote reward claims (until a migration/upgrade).",
+            "5. Any claimRewards(launchAsset) reverts with ClaimAmountExceedsTotalPendingRewards."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "claim_reverts_dos",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: local repair changed frozen fields"
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: local repair changed frozen fields"
+      ]
+    },
+    {
+      "id": "impact_claim_inconsistent_accounting_9b7614a6",
+      "scope": "Distributor.addRewards token-pair validation and subsequent claimRewards quote payout",
+      "modality": "asserted",
+      "impact_ids": [
+        "inconsistent_accounting"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The pool exists and has totalShares > 0.; The attacker deploys fakeToken and approves the Distributor.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "c7c027d93_pool_total_shares"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "var": "c7c027d93_fake_token_approved"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "pool_exists_shares",
+            "attacker_deploys_fake_and_approves"
+          ],
+          "evidence": [
+            "1. Pool exists and has totalShares > 0.",
+            "2. Attacker deploys fakeToken and approves the Distributor."
+          ]
+        },
+        "safety": {
+          "text": "The token pair passed into addRewards should be validated to match the established {launchAsset, rs.quoteAsset} pair so that pending rewards are credited under the real quote token key.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "gt",
+                    "args": [
+                      {
+                        "var": "c7c027d93_pool_total_shares"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  },
+                  {
+                    "var": "c7c027d93_fake_token_approved"
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c7c027d93_pending_quote_user_view"
+                      },
+                      {
+                        "var": "c7c027d93_pending_rewards_real_quote_key"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c7c027d93_pending_rewards_fake_token_key"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_pair_match"
+          ],
+          "evidence": [
+            "* contracts/launchpad/Distributor.sol — addRewards(...) selects the pool by token0/token1 but never enforces that the “other” token equals rs.quoteAsset; it then credits pending under the attacker-supplied token and transfers that token in.",
+            "* Missing invariant: the token pair passed into addRewards is not validated to match the established {launchAsset, rs.quoteAsset} pair. As a result, external input decides which token key is used for both totalPendingRewards[...] and the incoming transfer."
+          ]
+        },
+        "effects": {
+          "text": "Funds accounting becomes inconsistent: users see positive pendingQuote but the distributor tracks pending under a different token key.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "gt",
+                    "args": [
+                      {
+                        "var": "c7c027d93_pool_total_shares"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  },
+                  {
+                    "var": "c7c027d93_fake_token_approved"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "eq",
+                        "args": [
+                          {
+                            "var": "c7c027d93_pending_quote_user_view"
+                          },
+                          {
+                            "var": "c7c027d93_pending_rewards_real_quote_key"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "eq",
+                        "args": [
+                          {
+                            "var": "c7c027d93_pending_rewards_fake_token_key"
+                          },
+                          {
+                            "const": 0
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "inconsistent_accounting"
+          ],
+          "evidence": [
+            "* Funds accounting becomes inconsistent: users see positive pendingQuote but the distributor has pending tracked under a different token key.",
+            "4. Users now have pendingQuote > 0 internally, but totalPendingRewards[realQuote] == 0 and totalPendingRewards[fakeToken] == X."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "pool_exists_shares",
+            "attacker_deploys_fake_and_approves"
+          ],
+          "args.0": [
+            "pool_exists_shares",
+            "attacker_deploys_fake_and_approves"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_pair_match"
+          ],
+          "args.0": [
+            "intent_pair_match"
+          ],
+          "args.0.args.0": [
+            "intent_pair_match"
+          ],
+          "args.1": [
+            "intent_pair_match"
+          ],
+          "args.1.args.0": [
+            "intent_pair_match"
+          ],
+          "args.1.args.1": [
+            "intent_pair_match"
+          ]
+        },
+        "effects": {
+          "": [
+            "inconsistent_accounting"
+          ],
+          "args.0": [
+            "inconsistent_accounting"
+          ],
+          "args.0.args.0": [
+            "inconsistent_accounting"
+          ],
+          "args.1": [
+            "inconsistent_accounting"
+          ],
+          "args.1.args.0": [
+            "inconsistent_accounting"
+          ],
+          "args.1.args.0.args.0": [
+            "inconsistent_accounting"
+          ],
+          "args.1.args.0.args.1": [
+            "inconsistent_accounting"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "inconsistent_accounting",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "addRewards is callable by the attacker in the reported scenario.",
+        "The pool's established quote token is rs.quoteAsset (real_quote).",
+        "Users' positive pendingQuote is the post-addRewards observable state described by the report."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Formalizes only the inconsistent_accounting impact; the separate claim-revert DoS impact is not covered by this plan.",
+    "Symbols are report-level observables; concrete token amounts and code binding are deferred.",
+    "claim_reverts_dos: No faithful claim generated after bounded retries: local repair changed frozen fields"
+  ]
+}

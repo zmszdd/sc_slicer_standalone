@@ -1,0 +1,237 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Distributor.addRewards token-pair validation and subsequent claimRewards payout",
+    "environment": "contracts/launchpad/Distributor.sol interacting with launchpad pool (rs) and quote asset",
+    "evidence": [
+      "Token–pair mismatch in Distributor.addRewards lets anyone brick quote payouts (per-pool DoS)",
+      "addRewards finds the pool via launchAsset but never checks that token1 == rs.quoteAsset. It:",
+      "This underflows (totalPendingRewards[realQuote] == 0) → ClaimAmountExceedsTotalPendingRewards() → DoS for all quote claims on that pool.",
+      "* contracts/launchpad/Distributor.sol — addRewards(...) selects the pool by token0/token1 but never enforces that the “other” token equals rs.quoteAsset; it then credits pending under the attacker-supplied token and transfers that token in.",
+      "* Missing invariant: the token pair passed into addRewards is not validated to match the established {launchAsset, rs.quoteAsset} pair. As a result, external input decides which token key is used for both totalPendingRewards[...] and the incoming transfer.",
+      "* Per-pool permanent DoS of quote reward claims (until a migration/upgrade).",
+      "1. Pool exists and has totalShares > 0.",
+      "2. Attacker deploys fakeToken and approves the Distributor.",
+      "3. Calls addRewards(launchAsset, fakeToken, 0, X).",
+      "4. Users now have pendingQuote > 0 internally, but totalPendingRewards[realQuote] == 0 and totalPendingRewards[fakeToken] == X.",
+      "5. Any claimRewards(launchAsset) reverts with ClaimAmountExceedsTotalPendingRewards."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "attacker",
+      "role": "attacker",
+      "evidence": [
+        "An attacker can call:",
+        "2. Attacker deploys fakeToken and approves the Distributor.",
+        "3. Calls addRewards(launchAsset, fakeToken, 0, X)."
+      ]
+    },
+    {
+      "id": "distributor",
+      "name": "Distributor contract",
+      "role": "contract",
+      "evidence": [
+        "addRewards finds the pool via launchAsset but never checks that token1 == rs.quoteAsset. It:",
+        "* contracts/launchpad/Distributor.sol — addRewards(...) selects the pool by token0/token1 but never enforces that the “other” token equals rs.quoteAsset; it then credits pending under the attacker-supplied token and transfers that token in.",
+        "* contracts/launchpad/Distributor.sol — _decreaseTotalPending(quote, amount) reverts when user later claims real quote rewards because totalPendingRewards[realQuote] wasn’t credited."
+      ]
+    },
+    {
+      "id": "pool",
+      "name": "launchpad pool (rs)",
+      "role": "contract",
+      "evidence": [
+        "addRewards finds the pool via launchAsset but never checks that token1 == rs.quoteAsset. It:",
+        "Internally, the pool accrues quote pending for users. Later, claimRewards(launchAsset) tries to pay out the real quote token and calls:",
+        "1. Pool exists and has totalShares > 0."
+      ]
+    },
+    {
+      "id": "fake_token",
+      "name": "attacker-deployed fakeToken",
+      "role": "asset",
+      "evidence": [
+        "* calls rs.addQuoteRewards(launchAsset, fakeToken, X)",
+        "2. Attacker deploys fakeToken and approves the Distributor."
+      ]
+    },
+    {
+      "id": "real_quote",
+      "name": "real quote asset (rs.quoteAsset)",
+      "role": "asset",
+      "evidence": [
+        "addRewards finds the pool via launchAsset but never checks that token1 == rs.quoteAsset. It:",
+        "This underflows (totalPendingRewards[realQuote] == 0) → ClaimAmountExceedsTotalPendingRewards() → DoS for all quote claims on that pool.",
+        "* contracts/launchpad/Distributor.sol — _decreaseTotalPending(quote, amount) reverts when user later claims real quote rewards because totalPendingRewards[realQuote] wasn’t credited."
+      ]
+    },
+    {
+      "id": "users",
+      "name": "pool users with quote pending rewards",
+      "role": "victim",
+      "evidence": [
+        "Internally, the pool accrues quote pending for users. Later, claimRewards(launchAsset) tries to pay out the real quote token and calls:",
+        "* Funds accounting becomes inconsistent: users see positive pendingQuote but the distributor has pending tracked under a different token key.",
+        "4. Users now have pendingQuote > 0 internally, but totalPendingRewards[realQuote] == 0 and totalPendingRewards[fakeToken] == X."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "pool_exists_shares",
+      "kind": "precondition",
+      "text": "The pool exists and has totalShares > 0.",
+      "modality": "asserted",
+      "entity_ids": [
+        "pool"
+      ],
+      "evidence": [
+        "1. Pool exists and has totalShares > 0."
+      ]
+    },
+    {
+      "id": "attacker_deploys_fake",
+      "kind": "precondition",
+      "text": "The attacker deploys fakeToken and approves the Distributor.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "fake_token",
+        "distributor"
+      ],
+      "evidence": [
+        "2. Attacker deploys fakeToken and approves the Distributor."
+      ]
+    },
+    {
+      "id": "call_add_rewards",
+      "kind": "action",
+      "text": "Attacker calls addRewards(launchAsset, fakeToken, 0, X).",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "distributor",
+        "fake_token"
+      ],
+      "evidence": [
+        "3. Calls addRewards(launchAsset, fakeToken, 0, X).",
+        "* calls rs.addQuoteRewards(launchAsset, fakeToken, X)"
+      ]
+    },
+    {
+      "id": "missing_pair_check",
+      "kind": "root_cause",
+      "text": "addRewards selects the pool via launchAsset but never checks that token1 == rs.quoteAsset, so external input decides the token key used for totalPendingRewards[...] and the incoming transfer.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distributor",
+        "fake_token",
+        "real_quote"
+      ],
+      "evidence": [
+        "addRewards finds the pool via launchAsset but never checks that token1 == rs.quoteAsset. It:",
+        "* contracts/launchpad/Distributor.sol — addRewards(...) selects the pool by token0/token1 but never enforces that the “other” token equals rs.quoteAsset; it then credits pending under the attacker-supplied token and transfers that token in.",
+        "* Missing invariant: the token pair passed into addRewards is not validated to match the established {launchAsset, rs.quoteAsset} pair. As a result, external input decides which token key is used for both totalPendingRewards[...] and the incoming transfer."
+      ]
+    },
+    {
+      "id": "credit_fake_pending",
+      "kind": "action",
+      "text": "addRewards credits totalPendingRewards[fakeToken] += X and pulls fakeToken via transferFrom.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distributor",
+        "fake_token"
+      ],
+      "evidence": [
+        "* credits totalPendingRewards[fakeToken] += X",
+        "* pulls fakeToken via transferFrom"
+      ]
+    },
+    {
+      "id": "claim_reverts",
+      "kind": "impact",
+      "text": "Any claimRewards(launchAsset) reverts with ClaimAmountExceedsTotalPendingRewards because totalPendingRewards[realQuote] == 0 underflows.",
+      "modality": "asserted",
+      "entity_ids": [
+        "users",
+        "distributor",
+        "real_quote"
+      ],
+      "evidence": [
+        "This underflows (totalPendingRewards[realQuote] == 0) → ClaimAmountExceedsTotalPendingRewards() → DoS for all quote claims on that pool.",
+        "5. Any claimRewards(launchAsset) reverts with ClaimAmountExceedsTotalPendingRewards."
+      ]
+    },
+    {
+      "id": "per_pool_dos",
+      "kind": "impact",
+      "text": "Per-pool permanent DoS of quote reward claims persists until a migration/upgrade.",
+      "modality": "potential",
+      "entity_ids": [
+        "pool",
+        "users",
+        "real_quote"
+      ],
+      "evidence": [
+        "* Per-pool permanent DoS of quote reward claims (until a migration/upgrade)."
+      ]
+    },
+    {
+      "id": "inconsistent_accounting",
+      "kind": "impact",
+      "text": "Funds accounting becomes inconsistent: users see positive pendingQuote while the distributor tracks pending under a different token key.",
+      "modality": "asserted",
+      "entity_ids": [
+        "users",
+        "distributor",
+        "fake_token",
+        "real_quote"
+      ],
+      "evidence": [
+        "* Funds accounting becomes inconsistent: users see positive pendingQuote but the distributor has pending tracked under a different token key.",
+        "4. Users now have pendingQuote > 0 internally, but totalPendingRewards[realQuote] == 0 and totalPendingRewards[fakeToken] == X."
+      ]
+    },
+    {
+      "id": "intent_pair_match",
+      "kind": "security_intent",
+      "text": "The token pair passed into addRewards should be validated to match the established {launchAsset, rs.quoteAsset} pair so pending rewards are credited under the real quote token key.",
+      "modality": "inferred",
+      "entity_ids": [
+        "distributor",
+        "real_quote"
+      ],
+      "evidence": [
+        "* Missing invariant: the token pair passed into addRewards is not validated to match the established {launchAsset, rs.quoteAsset} pair. As a result, external input decides which token key is used for both totalPendingRewards[...] and the incoming transfer.",
+        "* contracts/launchpad/Distributor.sol — addRewards(...) selects the pool by token0/token1 but never enforces that the “other” token equals rs.quoteAsset; it then credits pending under the attacker-supplied token and transfers that token in."
+      ]
+    },
+    {
+      "id": "intent_claims_succeed",
+      "kind": "security_intent",
+      "text": "claimRewards(launchAsset) should pay out real quote rewards to users without reverting with ClaimAmountExceedsTotalPendingRewards.",
+      "modality": "inferred",
+      "entity_ids": [
+        "users",
+        "distributor",
+        "real_quote"
+      ],
+      "evidence": [
+        "Internally, the pool accrues quote pending for users. Later, claimRewards(launchAsset) tries to pay out the real quote token and calls:",
+        "This underflows (totalPendingRewards[realQuote] == 0) → ClaimAmountExceedsTotalPendingRewards() → DoS for all quote claims on that pool."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "call_add_rewards",
+    "credit_fake_pending"
+  ],
+  "ambiguities": [
+    "Report does not state whether addRewards is permissionless beyond the attacker calling it; 'anyone' appears only in the title.",
+    "Exact value of X and whether fakeToken transferFrom succeeds is not specified beyond attacker approval.",
+    "Whether the DoS is truly permanent versus until migration/upgrade is qualified in the report."
+  ]
+}

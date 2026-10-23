@@ -1,0 +1,21 @@
+Validation of campaign minimum reward amount on gross value allows creation of sub-threshold campaigns
+
+## Finding description and impact
+
+The `DistributionCreator` contract enforces a minimum reward amount (`rewardTokenMinAmounts`) for whitelisted tokens to ensure campaigns meet a specific economic threshold. This validation is intended to prevent spam and ensure that campaigns are viable for the off-chain reward computation engine.
+
+However, the validation logic in `_createCampaign` checks the **gross** amount provided by the user *before* protocol fees are calculated and deducted.
+
+https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L533
+
+Immediately after this check passes, the contract calculates the fees and updates the campaign amount to the **net** value:
+
+https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L535-L538
+
+If a user creates a campaign with an amount exactly equal to (or slightly above) the minimum, the subsequent fee deduction will drop the final distributed amount **below** the mandatory threshold.
+
+**Impact:**
+This discrepancy allows for the creation of "Zombie Campaigns"—campaigns that are valid on-chain but violate the protocol's minimum economic constraints off-chain.
+1.  **Fund Lock:** The campaign is successfully created, and the net funds are transferred to the `Distributor` contract.
+2.  **Service Denial:** The Merkl off-chain engine, which reads chain state to compute rewards, enforces the `rewardTokenMinAmount` logic to filter out spam or dust campaigns. Because the stored campaign amount is now below this threshold, the engine will likely ignore or reject the campaign.
+3.  **Loss of Assets:** Since the engine ignores the campaign, no Merkle root updates will be generated for it. The user's funds remain stuck in the `Distributor` contract indefinitely, indistinguishable from other idle funds, unless manual governance intervention occurs.

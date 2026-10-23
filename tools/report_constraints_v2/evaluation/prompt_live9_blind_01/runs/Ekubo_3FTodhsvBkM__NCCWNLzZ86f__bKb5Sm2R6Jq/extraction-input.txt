@@ -1,0 +1,23 @@
+Malicious input token can manipulate updateDebt to drain pool assets, violating solvency invariants
+
+## Finding description and impact
+
+The `FlashAccountant` contract enforces solvency by ensuring that all debts recorded during a lock are settled to zero before the lock concludes. However, the `updateDebt` function allows any address to modify its own debt record for the current lock without authorization.
+
+[src/base/FlashAccountant.sol#L132-L141](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/base/FlashAccountant.sol#L132-L141)
+
+
+This lack of access control allows a malicious token to bypass payment requirements during a swap. When the Router attempts to collect payment for a swap, it uses `payFrom`, which relies on a "snapshot-and-diff" mechanism:
+
+[src/libraries/FlashAccountantLib.sol#L54-L60](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/libraries/FlashAccountantLib.sol#L54-L60)
+
+
+A token with non-standard behavior, such as a Fee-on-Transfer token, can exploit this. In a legitimate FoT scenario, the pool receives less than the requested amount, which would normally leave a nonzero remainder and revert under the accountant’s solvency check (as the balance increase is less than the recorded debt). However, a malicious token can implement `transferFrom` to re-enter `updateDebt` and erase the debt corresponding to the missing tax amount:
+
+
+The `FlashAccountant` observes a balance increase equal to net (amount - tax). The accountant observes only net paid via balance diff, leaving tax unpaid. Because debts are keyed by token address and updateDebt applies to msg.sender, the token contract can directly mutate its own debt entry for the active lock. The token calls `updateDebt`(-tax) during the same lock to erase the unpaid remainder, so the lock passes despite underpayment.
+
+[src/base/FlashAccountant.sol#L168-L172](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/base/FlashAccountant.sol#L168-L172)
+
+
+This results in the pool paying out the output asset as if fully paid while receiving less than the required input assets (suffering a loss equal to the tax), violating the contest's specific invariant regarding non-standard tokens: "those pools can never become insolvent in the other token due to non-standard behavior in one token."

@@ -1,0 +1,23 @@
+Flawed TWAP deviation check allows liquidity provision at manipulated prices
+
+#### Summary
+
+The `convertToV3` function relies on `checkPoolAndGetCenterPrice` to protect against price manipulation during liquidity migration. However, logic errors in the TWAP validation allow the check to be bypassed if a pool is inactive or newly created, enabling attackers to sandwich the migration and drain value from the protocol.
+
+#### Impact Explanation
+
+The protocol provides liquidity to Uniswap V3 pools at manipulated ratios. An attacker can execute a sandwich attack:
+1.  Manipulate the V3 pool price (e.g., push OLAS price up).
+2.  The `convertToV3` transaction executes, providing liquidity at the skewed price (e.g., depositing too much of the other token and too little OLAS).
+3.  The attacker reverses their trade, profiting from the skewed liquidity distribution.
+This results in a direct loss of protocol-owned funds. Although the function is `owner`-only, it is intended for use by governance/timelocks which typically operate via public mempools, making them susceptible to MEV.
+
+#### Likelihood Explanation
+
+The likelihood is Medium because it requires the `owner` to initiate the transaction. However, the conditions for the bypass are met by default for any new migration (where history is missing) or any pool with low volume (where the last trade was > 30 mins ago). Attackers can easily monitor the mempool for these specific migration calls and execute the manipulation with high profitability.
+
+#### Recommendation
+
+1.  **Fix Logic:** Use the actual oldest observation in the buffer to determine if enough history exists.
+2.  **Enforce TWAP:** If `getTwapFromOracle` fails or the pool is too new, the transaction should revert rather than proceeding with the instant price.
+3.  **Correct Slippage:** Calculate `inputAmounts` and `aMin` using the `twapPrice` returned from the oracle, not the `sqrtPriceX96` from `slot0`.

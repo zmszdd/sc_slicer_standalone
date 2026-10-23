@@ -1,0 +1,17 @@
+Unvoted epoch emissions become permanently stuck
+
+## Finding description and impact
+
+Rewards in `notifyRewardAmount` are transferred even when `IVoter(voter).totalWeight()` is zero. In that case `_ratio` remains `0`, so the global index never moves. The funds stay in `GaugeManager`, but no gauge can ever accrue them.
+
+https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeManager.sol#L268-L288
+
+
+When `_updateForAfterDistribution` runs and a pool’s live weight is zero, it only updates `supplyIndex` to the current index. There’s no attempt to refund those emissions to the minter or redistribute them. Any tokens associated with that index delta simply remain stranded in the manager.
+
+https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeManager.sol#L373-L394
+
+The codebase doesn’t contain a follow‑up mechanism that replays the stuck balance once weights return or that lets governance claw it back. Killed gauges do [refund](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeManager.sol#L389), but the zero-weight path skips that logic.
+
+
+As a result, minted emissions can get wedged inside `GaugeManager` indefinitely (e.g., first epoch before anyone votes, or a pool zeroes its weight before distribution). They never reach gauges, never return to the minter, and can’t be recovered without a manual rescue

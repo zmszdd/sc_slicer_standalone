@@ -1,0 +1,24 @@
+Slippage bypass via frontrun-induced graduation: victim overpays for tiny curve fill; AMM leg underfunded and fails
+
+### Finding description and impact
+- Root cause: Slippage is enforced only on the curve portion in `Launchpad.buy`, not on the combined curve+AMM execution after graduation. An attacker can first push bonding near completion (cheaply when Vb is small), then frontrun to force a tiny curve fill and trigger graduation; the CPMM’s marginal price near end is hyperbolic.
+- Impact: Victim’s `maxAmountInQuote` is largely consumed by an extremely expensive tiny curve fill; remaining quote is insufficient for the AMM exact-out leg, so victim gets only a tiny amount at a terrible effective price. Attacker’s trade is typically unprofitable (griefing), but reliably harms users.
+
+### vulnerability flow (exact numbers as in PoC)
+- Setup (scaled): bonding supply Bs = 8,000,000; virtual base Vb = 1,000; virtual quote Vq = 1,000,000,000. Constant K = Vq·(Bs+Vb) = 8.001e15.
+- Attacker actively pushes curve near end: leaves remaining R = 1,000,000 on curve (can be achieved by buying beforehand; cost is moderate early and rises only near the end).
+- Current reserves: Br = Vb + R = 1,001,000; Qr = K/Br ≈ 7.992e9.
+- Victim targets D = 500,000 base; budget from current curve view:
+  - Q_D ≈ Qr·D/(Br−D) ≈ 7.992e9 · 500,000 / 501,000 ≈ 7.977e9 quote.
+  - Sets `maxAmountInQuote = Q_D × 1.005` ≈ 8.016e9 (0.5% headroom).
+- Attacker frontruns to leave only Z = 1 base on curve for the victim (R−Y = 1):
+  - Br' = Vb + Z = 1,001; Qr' = K/Br' ≈ 7.992e12.
+  - Victim curve cost Q_Z = Qr'·Z/Vb ≈ 7.992e12 / 1,000 ≈ 7.992e9, which is ≤ maxAmountInQuote.
+- Graduation: AMM initialized with base = Bs/4 = 2,000,000; quote = totalQuote = (Vq·Bs)/Vb = 8.0e12.
+- Victim remaining: needs D−Z = 499,999 base; remaining quote = maxAmountInQuote − Q_Z ≈ 8.016e9 − 7.992e9 = 2.4e7.
+- AMM exact-out required quote for 499,999 base:
+  - Using Uniswap formula, requiredQuote ≈ (reserveIn·out·1000)/(997·(reserveOut−out)) ≈ 2.67e12 (orders of magnitude larger than 2.4e7).
+  - Remaining quote ≪ requiredQuote → AMM leg fails; victim ends with only Z = 1 base.
+- Who loses/gains (from PoC):
+  - Victim: pays ≈ 7.993e9 quote for 1 base (effective ≈ 7.993e9/base) instead of 500,000 base → severe loss.
+  - Attacker: buying to force Z=1 near end is costly; selling on AMM yields far less → net loss (grief-only), but user harm is deterministic.

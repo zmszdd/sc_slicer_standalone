@@ -1,0 +1,205 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "multiSplit of a permanent veNFT with floor-division child allocation",
+    "environment": "VotingEscrow contract (ve33)",
+    "evidence": [
+      "Splitting a permanent veNFT via `multiSplit()` allocates child amounts with floor division and does not reconcile `permanentLockBalance`, causing (1) deterministic rounding loss of locked value and (2) global permanent accounting drift.",
+      "`multiSplit()` burns the parent veNFT and mints multiple child veNFTs with proportional amounts calculated by integer division. For a parent with amount `A` and weights `w[i]`, each child receives `floor(A * w[i] / Σw)`. This truncation yields Σ(child) ≤ A and usually Σ(child) < A when `A` is not exactly divisible by `Σw`. The parent is first burned and then children are minted, so the rounding remainder is lost on-chain.",
+      "When the parent is a permanent lock (`originalLocked.isPermanent == true`), `multiSplit()` never adjusts the global `permanentLockBalance` to reflect the (smaller) sum of the new child amounts. As a result, `permanentLockBalance` remains at its pre-split value, while the true sum of permanent child locks is smaller due to rounding. This breaks the invariant that `permanentLockBalance` equals the sum of all permanently locked amounts and contaminates global voting-supply snapshots (via `_checkpoint`, which records `last_point.permanent = permanentLockBalance`).",
+      "- ve33/contracts/VotingEscrow.sol:1162–1189",
+      "- No permanent reconciliation in `multiSplit`."
+    ]
+  },
+  "entities": [
+    {
+      "id": "parent_venft",
+      "name": "parent veNFT",
+      "role": "asset",
+      "evidence": [
+        "`multiSplit()` burns the parent veNFT and mints multiple child veNFTs with proportional amounts calculated by integer division. For a parent with amount `A` and weights `w[i]`, each child receives `floor(A * w[i] / Σw)`. This truncation yields Σ(child) ≤ A and usually Σ(child) < A when `A` is not exactly divisible by `Σw`. The parent is first burned and then children are minted, so the rounding remainder is lost on-chain.",
+        "When the parent is a permanent lock (`originalLocked.isPermanent == true`), `multiSplit()` never adjusts the global `permanentLockBalance` to reflect the (smaller) sum of the new child amounts. As a result, `permanentLockBalance` remains at its pre-split value, while the true sum of permanent child locks is smaller due to rounding. This breaks the invariant that `permanentLockBalance` equals the sum of all permanently locked amounts and contaminates global voting-supply snapshots (via `_checkpoint`, which records `last_point.permanent = permanentLockBalance`)."
+      ]
+    },
+    {
+      "id": "child_venfts",
+      "name": "child veNFTs",
+      "role": "asset",
+      "evidence": [
+        "`multiSplit()` burns the parent veNFT and mints multiple child veNFTs with proportional amounts calculated by integer division. For a parent with amount `A` and weights `w[i]`, each child receives `floor(A * w[i] / Σw)`. This truncation yields Σ(child) ≤ A and usually Σ(child) < A when `A` is not exactly divisible by `Σw`. The parent is first burned and then children are minted, so the rounding remainder is lost on-chain."
+      ]
+    },
+    {
+      "id": "voting_escrow",
+      "name": "VotingEscrow contract",
+      "role": "contract",
+      "evidence": [
+        "- ve33/contracts/VotingEscrow.sol:1162–1189",
+        "- No permanent reconciliation in `multiSplit`."
+      ]
+    },
+    {
+      "id": "permanent_lock_balance",
+      "name": "permanentLockBalance",
+      "role": "other",
+      "evidence": [
+        "When the parent is a permanent lock (`originalLocked.isPermanent == true`), `multiSplit()` never adjusts the global `permanentLockBalance` to reflect the (smaller) sum of the new child amounts. As a result, `permanentLockBalance` remains at its pre-split value, while the true sum of permanent child locks is smaller due to rounding. This breaks the invariant that `permanentLockBalance` equals the sum of all permanently locked amounts and contaminates global voting-supply snapshots (via `_checkpoint`, which records `last_point.permanent = permanentLockBalance`).",
+        "- `permanentLockBalance` becomes larger than the true permanent total, skewing global accounting and analyses that rely on accurate permanent weights (e.g., supply curves, voting snapshots)."
+      ]
+    },
+    {
+      "id": "user",
+      "name": "user splitting veNFT",
+      "role": "victim",
+      "evidence": [
+        "- The behavior is triggered by normal user actions (splitting a permanent veNFT) without special timing or adversarial setup."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "parent_is_permanent",
+      "kind": "precondition",
+      "text": "The parent veNFT being split is a permanent lock (originalLocked.isPermanent == true).",
+      "modality": "potential",
+      "entity_ids": [
+        "parent_venft"
+      ],
+      "evidence": [
+        "When the parent is a permanent lock (`originalLocked.isPermanent == true`), `multiSplit()` never adjusts the global `permanentLockBalance` to reflect the (smaller) sum of the new child amounts. As a result, `permanentLockBalance` remains at its pre-split value, while the true sum of permanent child locks is smaller due to rounding. This breaks the invariant that `permanentLockBalance` equals the sum of all permanently locked amounts and contaminates global voting-supply snapshots (via `_checkpoint`, which records `last_point.permanent = permanentLockBalance`)."
+      ]
+    },
+    {
+      "id": "split_into_multiple_children",
+      "kind": "precondition",
+      "text": "The split is into at least two children with non-divisible allocations.",
+      "modality": "potential",
+      "entity_ids": [
+        "parent_venft",
+        "child_venfts"
+      ],
+      "evidence": [
+        "- Any split into ≥2 children under non-divisible allocations produces rounding loss."
+      ]
+    },
+    {
+      "id": "parent_amount_not_divisible",
+      "kind": "precondition",
+      "text": "The parent amount A is not exactly divisible by the sum of weights Σw.",
+      "modality": "potential",
+      "entity_ids": [
+        "parent_venft"
+      ],
+      "evidence": [
+        "`multiSplit()` burns the parent veNFT and mints multiple child veNFTs with proportional amounts calculated by integer division. For a parent with amount `A` and weights `w[i]`, each child receives `floor(A * w[i] / Σw)`. This truncation yields Σ(child) ≤ A and usually Σ(child) < A when `A` is not exactly divisible by `Σw`. The parent is first burned and then children are minted, so the rounding remainder is lost on-chain."
+      ]
+    },
+    {
+      "id": "invoke_multisplit",
+      "kind": "action",
+      "text": "A user invokes multiSplit() on the permanent parent veNFT.",
+      "modality": "potential",
+      "entity_ids": [
+        "user",
+        "voting_escrow",
+        "parent_venft"
+      ],
+      "evidence": [
+        "Splitting a permanent veNFT via `multiSplit()` allocates child amounts with floor division and does not reconcile `permanentLockBalance`, causing (1) deterministic rounding loss of locked value and (2) global permanent accounting drift.",
+        "- The behavior is triggered by normal user actions (splitting a permanent veNFT) without special timing or adversarial setup."
+      ]
+    },
+    {
+      "id": "burn_parent_mint_children",
+      "kind": "action",
+      "text": "multiSplit() burns the parent veNFT and mints child veNFTs with floor(A * w[i] / Σw).",
+      "modality": "asserted",
+      "entity_ids": [
+        "voting_escrow",
+        "parent_venft",
+        "child_venfts"
+      ],
+      "evidence": [
+        "`multiSplit()` burns the parent veNFT and mints multiple child veNFTs with proportional amounts calculated by integer division. For a parent with amount `A` and weights `w[i]`, each child receives `floor(A * w[i] / Σw)`. This truncation yields Σ(child) ≤ A and usually Σ(child) < A when `A` is not exactly divisible by `Σw`. The parent is first burned and then children are minted, so the rounding remainder is lost on-chain.",
+        "- ve33/contracts/VotingEscrow.sol:1162–1189"
+      ]
+    },
+    {
+      "id": "no_permanent_reconciliation",
+      "kind": "root_cause",
+      "text": "multiSplit() never adjusts permanentLockBalance to reflect the smaller sum of new child amounts.",
+      "modality": "asserted",
+      "entity_ids": [
+        "voting_escrow",
+        "permanent_lock_balance"
+      ],
+      "evidence": [
+        "When the parent is a permanent lock (`originalLocked.isPermanent == true`), `multiSplit()` never adjusts the global `permanentLockBalance` to reflect the (smaller) sum of the new child amounts. As a result, `permanentLockBalance` remains at its pre-split value, while the true sum of permanent child locks is smaller due to rounding. This breaks the invariant that `permanentLockBalance` equals the sum of all permanently locked amounts and contaminates global voting-supply snapshots (via `_checkpoint`, which records `last_point.permanent = permanentLockBalance`).",
+        "- No permanent reconciliation in `multiSplit`."
+      ]
+    },
+    {
+      "id": "rounding_loss",
+      "kind": "impact",
+      "text": "Σ(child amounts) is less than the parent amount A, so the rounding remainder is lost on-chain and unrecoverable.",
+      "modality": "asserted",
+      "entity_ids": [
+        "parent_venft",
+        "child_venfts"
+      ],
+      "evidence": [
+        "`multiSplit()` burns the parent veNFT and mints multiple child veNFTs with proportional amounts calculated by integer division. For a parent with amount `A` and weights `w[i]`, each child receives `floor(A * w[i] / Σw)`. This truncation yields Σ(child) ≤ A and usually Σ(child) < A when `A` is not exactly divisible by `Σw`. The parent is first burned and then children are minted, so the rounding remainder is lost on-chain.",
+        "- On-chain locked value is lost deterministically (rounding “dust”) upon splitting; users cannot recover it."
+      ]
+    },
+    {
+      "id": "balance_exceeds_true_total",
+      "kind": "impact",
+      "text": "permanentLockBalance remains at its pre-split value and becomes larger than the true sum of permanent child locks.",
+      "modality": "asserted",
+      "entity_ids": [
+        "permanent_lock_balance",
+        "child_venfts"
+      ],
+      "evidence": [
+        "When the parent is a permanent lock (`originalLocked.isPermanent == true`), `multiSplit()` never adjusts the global `permanentLockBalance` to reflect the (smaller) sum of the new child amounts. As a result, `permanentLockBalance` remains at its pre-split value, while the true sum of permanent child locks is smaller due to rounding. This breaks the invariant that `permanentLockBalance` equals the sum of all permanently locked amounts and contaminates global voting-supply snapshots (via `_checkpoint`, which records `last_point.permanent = permanentLockBalance`).",
+        "- `permanentLockBalance` becomes larger than the true permanent total, skewing global accounting and analyses that rely on accurate permanent weights (e.g., supply curves, voting snapshots)."
+      ]
+    },
+    {
+      "id": "conservation_intent",
+      "kind": "security_intent",
+      "text": "Splitting a veNFT should conserve locked value so that Σ(child amounts) equals the parent amount, and permanentLockBalance should track the real sum of permanent locks.",
+      "modality": "inferred",
+      "entity_ids": [
+        "voting_escrow",
+        "permanent_lock_balance"
+      ],
+      "evidence": [
+        "- Conservation of locked value in splits: Σ(child amounts) must equal the parent’s amount.",
+        "- Accuracy of global permanent accounting: `permanentLockBalance` must track the real sum of permanent locks to ensure correct supply snapshots and downstream weighting."
+      ]
+    },
+    {
+      "id": "no_special_setup",
+      "kind": "assumption",
+      "text": "The behavior is triggered by normal user actions without special timing or adversarial setup.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user"
+      ],
+      "evidence": [
+        "- The behavior is triggered by normal user actions (splitting a permanent veNFT) without special timing or adversarial setup."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "invoke_multisplit",
+    "burn_parent_mint_children"
+  ],
+  "ambiguities": [
+    "Report does not state a concrete parent amount A or weight vector, so the exact rounding loss is unspecified.",
+    "Whether permanentLockBalance is updated elsewhere in the burn/checkpoint path is not fully shown; report asserts no reconciliation in multiSplit.",
+    "No explicit actor authorization detail given; splitting is described as a normal user action."
+  ]
+}

@@ -1,0 +1,110 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Intuition_2VUsxVJwReb",
+    "audit_uid": "2VUsxVJwReb",
+    "requested_submission_uid": "bA66P6A7iaV",
+    "requested_finding_uid": "vtU4cDUiiDR",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Intuition_2VUsxVJwReb/20260618_132553/findings.json",
+    "source_submission_uid": "bA66P6A7iaV",
+    "source_finding_uid": "vtU4cDUiiDR",
+    "original_report_path": "Intuition_2VUsxVJwReb\\low_valid_bA66P6A7iaV.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "bA66P6A7iaV",
+  "finding_uid": "vtU4cDUiiDR",
+  "finding_number": "18",
+  "title": "previewwithdraw reverts on max-asset withdrawals due to share truncation",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "aestheticbhai",
+  "body": "## Finding description and impact\nconvertToShares truncates the shares returned to depositors. This means after any realistic deposit, totalAssets is strictly greater than `HALF_SLOPE * totalShares²` by 1-2 wei. When anyone calls `previewWithdraw(totalAssets, totalAssets, totalShares)`, the internal PRBMath subtraction underflows and reverts\nWhen depositing assets, _convertToShares computes the corresponding shares by taking a floor square root\n```solidity\nUD60x18 inner = add(PCMath.square(s), div(wrap(assets), HALF_SLOPE));\nUD60x18 sharesUD = sub(sqrt(inner), s); \nshares = unwrap(sharesUD);\n```\nBecause the sqrt operation floors the result, the vault retains slightly more assets than the  curve requires\nSince minDeposit = 1e16, virtually every real deposit produces non-round shares and creates this gap instantly.(Note this is submitted assuming it will be used like a helper)\n## Impact\n- Triggers after the first realistic deposit\n- Any function using(inherting) totalAssets to previewWithdraw always reverts\n- Funds are not lost —redeem(totalShares) continues to work  but the entire withdraw path is broken from first use\n\n\n## Recommended mitigation steps\n\nAdd a boundary guard in previewWithdraw in both contracts before the subtraction:",
+  "proof_of_concept": "Paste this test in the given test suite file `BondingCurveRegistry.t.sol` and run it with \n`forge test --mt test_previewWithdrawReverts -vvv`\n```solidity \nfunction test_previewWithdrawreverts() public {\n    // Step 1: Simulate a real deposit - get shares from depositing 3e18 assets into empty vault\n    uint256 depositAssets = 3e18;\n    uint256 sharesOut = progressiveCurve.previewDeposit(depositAssets, 0, 0);\n\n    // Step 2: Vault state after deposit\n    uint256 totalShares = sharesOut;\n    uint256 totalAssets = depositAssets;\n\n    // Step 3: Confirm dust gap exists\n    // _convertToShares floors sqrt → HALF_SLOPE * totalShares² < totalAssets\n    uint256 redeemable = progressiveCurve.previewRedeem(totalShares, totalShares, totalAssets);\n    assertLt(redeemable, totalAssets, \"no dust gap\");\n\n    // Step 4: previewWithdraw(totalAssets) reverts\n    // divUp(totalAssets, HALF_SLOPE) > square(totalShares) → PRBMath underflow\n    vm.expectRevert();\n    progressiveCurve.previewWithdraw(totalAssets, totalAssets, totalShares);\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/ProgressiveCurve.sol#L204",
+    "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/OffsetProgressiveCurve.sol#L211"
+  ],
+  "source_record": {
+    "project_id": "2VUsxVJwReb",
+    "submission_index": "816",
+    "api_submission_id": "",
+    "uid": "bA66P6A7iaV",
+    "number": "816",
+    "title": "previewwithdraw reverts on max-asset withdrawals due to share truncation",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "",
+    "handle": "aestheticbhai",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/ProgressiveCurve.sol#L204",
+      "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/OffsetProgressiveCurve.sol#L211"
+    ],
+    "body": "## Finding description and impact\nconvertToShares truncates the shares returned to depositors. This means after any realistic deposit, totalAssets is strictly greater than `HALF_SLOPE * totalShares²` by 1-2 wei. When anyone calls `previewWithdraw(totalAssets, totalAssets, totalShares)`, the internal PRBMath subtraction underflows and reverts\nWhen depositing assets, _convertToShares computes the corresponding shares by taking a floor square root\n```solidity\nUD60x18 inner = add(PCMath.square(s), div(wrap(assets), HALF_SLOPE));\nUD60x18 sharesUD = sub(sqrt(inner), s); \nshares = unwrap(sharesUD);\n```\nBecause the sqrt operation floors the result, the vault retains slightly more assets than the  curve requires\nSince minDeposit = 1e16, virtually every real deposit produces non-round shares and creates this gap instantly.(Note this is submitted assuming it will be used like a helper)\n## Impact\n- Triggers after the first realistic deposit\n- Any function using(inherting) totalAssets to previewWithdraw always reverts\n- Funds are not lost —redeem(totalShares) continues to work  but the entire withdraw path is broken from first use\n\n\n## Recommended mitigation steps\n\nAdd a boundary guard in previewWithdraw in both contracts before the subtraction:",
+    "proof_of_concept": "Paste this test in the given test suite file `BondingCurveRegistry.t.sol` and run it with \n`forge test --mt test_previewWithdrawReverts -vvv`\n```solidity \nfunction test_previewWithdrawreverts() public {\n    // Step 1: Simulate a real deposit - get shares from depositing 3e18 assets into empty vault\n    uint256 depositAssets = 3e18;\n    uint256 sharesOut = progressiveCurve.previewDeposit(depositAssets, 0, 0);\n\n    // Step 2: Vault state after deposit\n    uint256 totalShares = sharesOut;\n    uint256 totalAssets = depositAssets;\n\n    // Step 3: Confirm dust gap exists\n    // _convertToShares floors sqrt → HALF_SLOPE * totalShares² < totalAssets\n    uint256 redeemable = progressiveCurve.previewRedeem(totalShares, totalShares, totalAssets);\n    assertLt(redeemable, totalAssets, \"no dust gap\");\n\n    // Step 4: previewWithdraw(totalAssets) reverts\n    // divUp(totalAssets, HALF_SLOPE) > square(totalShares) → PRBMath underflow\n    vm.expectRevert();\n    progressiveCurve.previewWithdraw(totalAssets, totalAssets, totalShares);\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/2VUsxVJwReb/submissions/816",
+    "raw": {
+      "auditUid": "2VUsxVJwReb",
+      "createdAt": "2026-03-09T19:23:44.182Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "4vhwpZJ68HS",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-21T21:25:00.382Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "vtU4cDUiiDR"
+        },
+        {
+          "uid": "aauKqCsFTNp",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-21T21:25:01.372Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "vtU4cDUiiDR"
+        }
+      ],
+      "finding": {
+        "uid": "vtU4cDUiiDR",
+        "number": 18,
+        "duplicates": 40
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2026-04-28T14:24:44.015Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "previewwithdraw reverts on max-asset withdrawals due to share truncation",
+      "uid": "bA66P6A7iaV",
+      "updatedAt": "2026-03-09T19:23:44.182Z",
+      "user": {
+        "uid": "iiuqsecmG2p",
+        "handle": "aestheticbhai"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\nconvertToShares truncates the shares returned to depositors. This means after any realistic deposit, totalAssets is strictly greater than `HALF_SLOPE * totalShares²` by 1-2 wei. When anyone calls `previewWithdraw(totalAssets, totalAssets, totalShares)`, the internal PRBMath subtraction underflows and reverts\nWhen depositing assets, _convertToShares computes the corresponding shares by taking a floor square root\n```solidity\nUD60x18 inner = add(PCMath.square(s), div(wrap(assets), HALF_SLOPE));\nUD60x18 sharesUD = sub(sqrt(inner), s); \nshares = unwrap(sharesUD);\n```\nBecause the sqrt operation floors the result, the vault retains slightly more assets than the  curve requires\nSince minDeposit = 1e16, virtually every real deposit produces non-round shares and creates this gap instantly.(Note this is submitted assuming it will be used like a helper)\n## Impact\n- Triggers after the first realistic deposit\n- Any function using(inherting) totalAssets to previewWithdraw always reverts\n- Funds are not lost —redeem(totalShares) continues to work  but the entire withdraw path is broken from first use\n\n\n## Recommended mitigation steps\n\nAdd a boundary guard in previewWithdraw in both contracts before the subtraction:",
+      "proofOfConcept": "Paste this test in the given test suite file `BondingCurveRegistry.t.sol` and run it with \n`forge test --mt test_previewWithdrawReverts -vvv`\n```solidity \nfunction test_previewWithdrawreverts() public {\n    // Step 1: Simulate a real deposit - get shares from depositing 3e18 assets into empty vault\n    uint256 depositAssets = 3e18;\n    uint256 sharesOut = progressiveCurve.previewDeposit(depositAssets, 0, 0);\n\n    // Step 2: Vault state after deposit\n    uint256 totalShares = sharesOut;\n    uint256 totalAssets = depositAssets;\n\n    // Step 3: Confirm dust gap exists\n    // _convertToShares floors sqrt → HALF_SLOPE * totalShares² < totalAssets\n    uint256 redeemable = progressiveCurve.previewRedeem(totalShares, totalShares, totalAssets);\n    assertLt(redeemable, totalAssets, \"no dust gap\");\n\n    // Step 4: previewWithdraw(totalAssets) reverts\n    // divUp(totalAssets, HALF_SLOPE) > square(totalShares) → PRBMath underflow\n    vm.expectRevert();\n    progressiveCurve.previewWithdraw(totalAssets, totalAssets, totalShares);\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/ProgressiveCurve.sol#L204 https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/OffsetProgressiveCurve.sol#L211",
+      "number": 816,
+      "aiExplanation": null,
+      "_index": 816
+    }
+  }
+}

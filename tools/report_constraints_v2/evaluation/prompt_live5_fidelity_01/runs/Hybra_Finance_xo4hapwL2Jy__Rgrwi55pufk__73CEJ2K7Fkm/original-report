@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Hybra Finance_xo4hapwL2Jy",
+    "audit_uid": "xo4hapwL2Jy",
+    "requested_submission_uid": "73CEJ2K7Fkm",
+    "requested_finding_uid": "Rgrwi55pufk",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Hybra_Finance_xo4hapwL2Jy/20260618_145600/findings.json",
+    "source_submission_uid": "73CEJ2K7Fkm",
+    "source_finding_uid": "Rgrwi55pufk",
+    "original_report_path": "Hybra Finance_xo4hapwL2Jy\\low_valid_73CEJ2K7Fkm.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "73CEJ2K7Fkm",
+  "finding_uid": "Rgrwi55pufk",
+  "finding_number": "200",
+  "title": "multiSplit Causes Permanent Accounting Drift for Permanent Locks",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "freescore",
+  "body": "## Summary\nSplitting a permanent veNFT via `multiSplit()` allocates child amounts with floor division and does not reconcile `permanentLockBalance`, causing (1) deterministic rounding loss of locked value and (2) global permanent accounting drift.\n\n## Finding Description\n`multiSplit()` burns the parent veNFT and mints multiple child veNFTs with proportional amounts calculated by integer division. For a parent with amount `A` and weights `w[i]`, each child receives `floor(A * w[i] / Σw)`. This truncation yields Σ(child) ≤ A and usually Σ(child) < A when `A` is not exactly divisible by `Σw`. The parent is first burned and then children are minted, so the rounding remainder is lost on-chain.\n\nWhen the parent is a permanent lock (`originalLocked.isPermanent == true`), `multiSplit()` never adjusts the global `permanentLockBalance` to reflect the (smaller) sum of the new child amounts. As a result, `permanentLockBalance` remains at its pre-split value, while the true sum of permanent child locks is smaller due to rounding. This breaks the invariant that `permanentLockBalance` equals the sum of all permanently locked amounts and contaminates global voting-supply snapshots (via `_checkpoint`, which records `last_point.permanent = permanentLockBalance`).\n\nSecurity guarantees broken:\n- Conservation of locked value in splits: Σ(child amounts) must equal the parent’s amount.\n- Accuracy of global permanent accounting: `permanentLockBalance` must track the real sum of permanent locks to ensure correct supply snapshots and downstream weighting.\n\nRelevant code:\n- Burn parent, checkpoint, and mint children with floor division:\n  - ve33/contracts/VotingEscrow.sol:1162–1189\n- Global permanent included in checkpoints:\n  - ve33/contracts/VotingEscrow.sol:733\n- No permanent reconciliation in `multiSplit`.\n\n## Impact Explanation\nMedium impact:\n- On-chain locked value is lost deterministically (rounding “dust”) upon splitting; users cannot recover it.\n- `permanentLockBalance` becomes larger than the true permanent total, skewing global accounting and analyses that rely on accurate permanent weights (e.g., supply curves, voting snapshots).\n- The drift accumulates each time permanent locks are split, affecting protocol-wide accounting.\n\n## Likelihood Explanation\nHigh likelihood:\n- The behavior is triggered by normal user actions (splitting a permanent veNFT) without special timing or adversarial setup.\n- Any split into ≥2 children under non-divisible allocations produces rounding loss.\n- No safeguards currently adjust `permanentLockBalance` in `multiSplit`.\n\n\n## Recommendation\n- Preserve the parent total exactly:\n  - Compute child amounts for indices 0..N−2 using floor division; set the last child to `parent_amount − Σ(previous_children)` to guarantee Σ(children) == parent.\n- Reconcile `permanentLockBalance` for permanent splits:\n  - If `originalLocked.isPermanent`, first subtract the parent’s amount from `permanentLockBalance`, then add the exact sum of child amounts (with the remainder fix, net change should be zero).\n- Add invariants and events:\n  - After split, assert Σ(child.amount) == original amount (for permanent splits) and emit an event detailing the split distribution to aid verification.\n\nImplementing these changes prevents both rounding loss and permanent accounting drift, keeping per-NFT and global permanent state consistent.",
+  "proof_of_concept": "```solidity\n  /// @notice Validates that multiSplit on a permanent veNFT causes rounding loss\n    /// across children and does not reconcile permanentLockBalance, creating\n    /// permanent accounting drift.\n    function test_multisplit_causes_permanent_accounting_drift() external {\n        // Allow splitting by toggling permission (team is this test contract)\n        votingEscrow.toggleSplit(address(this), true);\n\n        // Create a lock with an amount that will induce rounding with weights [1,1,1]\n        uint256 amount = 100; // deliberately small to highlight rounding: 100/3 = 33 each, sum = 99\n        hybr.approve(address(votingEscrow), amount);\n        // lock for at least one epoch (HybraTimeLibrary.WEEK == 1800 in tests). Use 3600 seconds.\n        uint256 tokenId = votingEscrow.create_lock_for(amount, 3600, address(this));\n\n        // Convert to permanent; permanentLockBalance should increase by `amount`\n        votingEscrow.lockPermanent(tokenId);\n        (int128 aBefore,, bool isPerm) = votingEscrow.locked(tokenId);\n        assertTrue(isPerm, \"expected permanent lock\");\n        uint256 originalAmount = uint256(int256(aBefore));\n        assertEq(originalAmount, amount, \"unexpected original amount\");\n        uint256 permBefore = votingEscrow.permanentLockBalance();\n        assertEq(permBefore, amount, \"permanentLockBalance should equal original amount before split\");\n\n        // Perform multisplit with 3 children and weights [1,1,1]\n        uint[] memory weights = new uint[](3);\n        weights[0] = 1; weights[1] = 1; weights[2] = 1;\n        uint256[] memory childIds = votingEscrow.multiSplit(tokenId, weights);\n        assertEq(childIds.length, 3, \"expected 3 child nfts\");\n\n        // Sum children amounts\n        uint256 sumChildren = 0;\n        for (uint i = 0; i < childIds.length; i++) {\n            (int128 childAmt,, bool childPerm) = votingEscrow.locked(childIds[i]);\n            assertTrue(childPerm, \"children should inherit permanent flag\");\n            sumChildren += uint256(int256(childAmt));\n        }\n\n        // Rounding slack must exist: 100 split equally into 3 => 33,33,33 (sum=99)\n        assertLt(sumChildren, originalAmount, \"expected rounding loss across children\");\n\n        // permanentLockBalance was not reconciled in multiSplit; it remains as before\n        uint256 permAfter = votingEscrow.permanentLockBalance();\n        assertEq(permAfter, permBefore, \"permanentLockBalance changed unexpectedly\");\n\n        // Therefore, global permanent accounting now exceeds the true sum across children\n        // (permAfter == originalAmount, sumChildren == originalAmount - 1)\n        assertGt(permAfter, sumChildren, \"expected permanentLockBalance to exceed actual child sum\");\n    }\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/VotingEscrow.sol#L1153-L1201"
+  ],
+  "source_record": {
+    "project_id": "xo4hapwL2Jy",
+    "submission_index": "385",
+    "api_submission_id": "",
+    "uid": "73CEJ2K7Fkm",
+    "number": "385",
+    "title": "multiSplit Causes Permanent Accounting Drift for Permanent Locks",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "freescore",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/VotingEscrow.sol#L1153-L1201"
+    ],
+    "body": "## Summary\nSplitting a permanent veNFT via `multiSplit()` allocates child amounts with floor division and does not reconcile `permanentLockBalance`, causing (1) deterministic rounding loss of locked value and (2) global permanent accounting drift.\n\n## Finding Description\n`multiSplit()` burns the parent veNFT and mints multiple child veNFTs with proportional amounts calculated by integer division. For a parent with amount `A` and weights `w[i]`, each child receives `floor(A * w[i] / Σw)`. This truncation yields Σ(child) ≤ A and usually Σ(child) < A when `A` is not exactly divisible by `Σw`. The parent is first burned and then children are minted, so the rounding remainder is lost on-chain.\n\nWhen the parent is a permanent lock (`originalLocked.isPermanent == true`), `multiSplit()` never adjusts the global `permanentLockBalance` to reflect the (smaller) sum of the new child amounts. As a result, `permanentLockBalance` remains at its pre-split value, while the true sum of permanent child locks is smaller due to rounding. This breaks the invariant that `permanentLockBalance` equals the sum of all permanently locked amounts and contaminates global voting-supply snapshots (via `_checkpoint`, which records `last_point.permanent = permanentLockBalance`).\n\nSecurity guarantees broken:\n- Conservation of locked value in splits: Σ(child amounts) must equal the parent’s amount.\n- Accuracy of global permanent accounting: `permanentLockBalance` must track the real sum of permanent locks to ensure correct supply snapshots and downstream weighting.\n\nRelevant code:\n- Burn parent, checkpoint, and mint children with floor division:\n  - ve33/contracts/VotingEscrow.sol:1162–1189\n- Global permanent included in checkpoints:\n  - ve33/contracts/VotingEscrow.sol:733\n- No permanent reconciliation in `multiSplit`.\n\n## Impact Explanation\nMedium impact:\n- On-chain locked value is lost deterministically (rounding “dust”) upon splitting; users cannot recover it.\n- `permanentLockBalance` becomes larger than the true permanent total, skewing global accounting and analyses that rely on accurate permanent weights (e.g., supply curves, voting snapshots).\n- The drift accumulates each time permanent locks are split, affecting protocol-wide accounting.\n\n## Likelihood Explanation\nHigh likelihood:\n- The behavior is triggered by normal user actions (splitting a permanent veNFT) without special timing or adversarial setup.\n- Any split into ≥2 children under non-divisible allocations produces rounding loss.\n- No safeguards currently adjust `permanentLockBalance` in `multiSplit`.\n\n\n## Recommendation\n- Preserve the parent total exactly:\n  - Compute child amounts for indices 0..N−2 using floor division; set the last child to `parent_amount − Σ(previous_children)` to guarantee Σ(children) == parent.\n- Reconcile `permanentLockBalance` for permanent splits:\n  - If `originalLocked.isPermanent`, first subtract the parent’s amount from `permanentLockBalance`, then add the exact sum of child amounts (with the remainder fix, net change should be zero).\n- Add invariants and events:\n  - After split, assert Σ(child.amount) == original amount (for permanent splits) and emit an event detailing the split distribution to aid verification.\n\nImplementing these changes prevents both rounding loss and permanent accounting drift, keeping per-NFT and global permanent state consistent.",
+    "proof_of_concept": "```solidity\n  /// @notice Validates that multiSplit on a permanent veNFT causes rounding loss\n    /// across children and does not reconcile permanentLockBalance, creating\n    /// permanent accounting drift.\n    function test_multisplit_causes_permanent_accounting_drift() external {\n        // Allow splitting by toggling permission (team is this test contract)\n        votingEscrow.toggleSplit(address(this), true);\n\n        // Create a lock with an amount that will induce rounding with weights [1,1,1]\n        uint256 amount = 100; // deliberately small to highlight rounding: 100/3 = 33 each, sum = 99\n        hybr.approve(address(votingEscrow), amount);\n        // lock for at least one epoch (HybraTimeLibrary.WEEK == 1800 in tests). Use 3600 seconds.\n        uint256 tokenId = votingEscrow.create_lock_for(amount, 3600, address(this));\n\n        // Convert to permanent; permanentLockBalance should increase by `amount`\n        votingEscrow.lockPermanent(tokenId);\n        (int128 aBefore,, bool isPerm) = votingEscrow.locked(tokenId);\n        assertTrue(isPerm, \"expected permanent lock\");\n        uint256 originalAmount = uint256(int256(aBefore));\n        assertEq(originalAmount, amount, \"unexpected original amount\");\n        uint256 permBefore = votingEscrow.permanentLockBalance();\n        assertEq(permBefore, amount, \"permanentLockBalance should equal original amount before split\");\n\n        // Perform multisplit with 3 children and weights [1,1,1]\n        uint[] memory weights = new uint[](3);\n        weights[0] = 1; weights[1] = 1; weights[2] = 1;\n        uint256[] memory childIds = votingEscrow.multiSplit(tokenId, weights);\n        assertEq(childIds.length, 3, \"expected 3 child nfts\");\n\n        // Sum children amounts\n        uint256 sumChildren = 0;\n        for (uint i = 0; i < childIds.length; i++) {\n            (int128 childAmt,, bool childPerm) = votingEscrow.locked(childIds[i]);\n            assertTrue(childPerm, \"children should inherit permanent flag\");\n            sumChildren += uint256(int256(childAmt));\n        }\n\n        // Rounding slack must exist: 100 split equally into 3 => 33,33,33 (sum=99)\n        assertLt(sumChildren, originalAmount, \"expected rounding loss across children\");\n\n        // permanentLockBalance was not reconciled in multiSplit; it remains as before\n        uint256 permAfter = votingEscrow.permanentLockBalance();\n        assertEq(permAfter, permBefore, \"permanentLockBalance changed unexpectedly\");\n\n        // Therefore, global permanent accounting now exceeds the true sum across children\n        // (permAfter == originalAmount, sumChildren == originalAmount - 1)\n        assertGt(permAfter, sumChildren, \"expected permanentLockBalance to exceed actual child sum\");\n    }\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/xo4hapwL2Jy/submissions/385",
+    "raw": {
+      "auditUid": "xo4hapwL2Jy",
+      "createdAt": "2025-10-12T20:22:18.084Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "riadG88BgF2",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-20T05:35:57.786Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "73CEJ2K7Fkm",
+          "findingUid": null
+        },
+        {
+          "uid": "THz9Aq9e6Rs",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-24T22:22:49.418Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "Rgrwi55pufk"
+        },
+        {
+          "uid": "dzs6x5LmCxc",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-24T22:22:52.056Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "Rgrwi55pufk"
+        }
+      ],
+      "finding": {
+        "uid": "Rgrwi55pufk",
+        "number": 200,
+        "duplicates": 12
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-10-31T11:43:07.218Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "multiSplit Causes Permanent Accounting Drift for Permanent Locks",
+      "uid": "73CEJ2K7Fkm",
+      "updatedAt": "2025-10-12T20:22:18.084Z",
+      "user": {
+        "uid": "yj2N2wTFFX3",
+        "handle": "freescore"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Summary\nSplitting a permanent veNFT via `multiSplit()` allocates child amounts with floor division and does not reconcile `permanentLockBalance`, causing (1) deterministic rounding loss of locked value and (2) global permanent accounting drift.\n\n## Finding Description\n`multiSplit()` burns the parent veNFT and mints multiple child veNFTs with proportional amounts calculated by integer division. For a parent with amount `A` and weights `w[i]`, each child receives `floor(A * w[i] / Σw)`. This truncation yields Σ(child) ≤ A and usually Σ(child) < A when `A` is not exactly divisible by `Σw`. The parent is first burned and then children are minted, so the rounding remainder is lost on-chain.\n\nWhen the parent is a permanent lock (`originalLocked.isPermanent == true`), `multiSplit()` never adjusts the global `permanentLockBalance` to reflect the (smaller) sum of the new child amounts. As a result, `permanentLockBalance` remains at its pre-split value, while the true sum of permanent child locks is smaller due to rounding. This breaks the invariant that `permanentLockBalance` equals the sum of all permanently locked amounts and contaminates global voting-supply snapshots (via `_checkpoint`, which records `last_point.permanent = permanentLockBalance`).\n\nSecurity guarantees broken:\n- Conservation of locked value in splits: Σ(child amounts) must equal the parent’s amount.\n- Accuracy of global permanent accounting: `permanentLockBalance` must track the real sum of permanent locks to ensure correct supply snapshots and downstream weighting.\n\nRelevant code:\n- Burn parent, checkpoint, and mint children with floor division:\n  - ve33/contracts/VotingEscrow.sol:1162–1189\n- Global permanent included in checkpoints:\n  - ve33/contracts/VotingEscrow.sol:733\n- No permanent reconciliation in `multiSplit`.\n\n## Impact Explanation\nMedium impact:\n- On-chain locked value is lost deterministically (rounding “dust”) upon splitting; users cannot recover it.\n- `permanentLockBalance` becomes larger than the true permanent total, skewing global accounting and analyses that rely on accurate permanent weights (e.g., supply curves, voting snapshots).\n- The drift accumulates each time permanent locks are split, affecting protocol-wide accounting.\n\n## Likelihood Explanation\nHigh likelihood:\n- The behavior is triggered by normal user actions (splitting a permanent veNFT) without special timing or adversarial setup.\n- Any split into ≥2 children under non-divisible allocations produces rounding loss.\n- No safeguards currently adjust `permanentLockBalance` in `multiSplit`.\n\n\n## Recommendation\n- Preserve the parent total exactly:\n  - Compute child amounts for indices 0..N−2 using floor division; set the last child to `parent_amount − Σ(previous_children)` to guarantee Σ(children) == parent.\n- Reconcile `permanentLockBalance` for permanent splits:\n  - If `originalLocked.isPermanent`, first subtract the parent’s amount from `permanentLockBalance`, then add the exact sum of child amounts (with the remainder fix, net change should be zero).\n- Add invariants and events:\n  - After split, assert Σ(child.amount) == original amount (for permanent splits) and emit an event detailing the split distribution to aid verification.\n\nImplementing these changes prevents both rounding loss and permanent accounting drift, keeping per-NFT and global permanent state consistent.",
+      "proofOfConcept": "```solidity\n  /// @notice Validates that multiSplit on a permanent veNFT causes rounding loss\n    /// across children and does not reconcile permanentLockBalance, creating\n    /// permanent accounting drift.\n    function test_multisplit_causes_permanent_accounting_drift() external {\n        // Allow splitting by toggling permission (team is this test contract)\n        votingEscrow.toggleSplit(address(this), true);\n\n        // Create a lock with an amount that will induce rounding with weights [1,1,1]\n        uint256 amount = 100; // deliberately small to highlight rounding: 100/3 = 33 each, sum = 99\n        hybr.approve(address(votingEscrow), amount);\n        // lock for at least one epoch (HybraTimeLibrary.WEEK == 1800 in tests). Use 3600 seconds.\n        uint256 tokenId = votingEscrow.create_lock_for(amount, 3600, address(this));\n\n        // Convert to permanent; permanentLockBalance should increase by `amount`\n        votingEscrow.lockPermanent(tokenId);\n        (int128 aBefore,, bool isPerm) = votingEscrow.locked(tokenId);\n        assertTrue(isPerm, \"expected permanent lock\");\n        uint256 originalAmount = uint256(int256(aBefore));\n        assertEq(originalAmount, amount, \"unexpected original amount\");\n        uint256 permBefore = votingEscrow.permanentLockBalance();\n        assertEq(permBefore, amount, \"permanentLockBalance should equal original amount before split\");\n\n        // Perform multisplit with 3 children and weights [1,1,1]\n        uint[] memory weights = new uint[](3);\n        weights[0] = 1; weights[1] = 1; weights[2] = 1;\n        uint256[] memory childIds = votingEscrow.multiSplit(tokenId, weights);\n        assertEq(childIds.length, 3, \"expected 3 child nfts\");\n\n        // Sum children amounts\n        uint256 sumChildren = 0;\n        for (uint i = 0; i < childIds.length; i++) {\n            (int128 childAmt,, bool childPerm) = votingEscrow.locked(childIds[i]);\n            assertTrue(childPerm, \"children should inherit permanent flag\");\n            sumChildren += uint256(int256(childAmt));\n        }\n\n        // Rounding slack must exist: 100 split equally into 3 => 33,33,33 (sum=99)\n        assertLt(sumChildren, originalAmount, \"expected rounding loss across children\");\n\n        // permanentLockBalance was not reconciled in multiSplit; it remains as before\n        uint256 permAfter = votingEscrow.permanentLockBalance();\n        assertEq(permAfter, permBefore, \"permanentLockBalance changed unexpectedly\");\n\n        // Therefore, global permanent accounting now exceeds the true sum across children\n        // (permAfter == originalAmount, sumChildren == originalAmount - 1)\n        assertGt(permAfter, sumChildren, \"expected permanentLockBalance to exceed actual child sum\");\n    }\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/VotingEscrow.sol#L1153-L1201",
+      "number": 385,
+      "aiExplanation": null,
+      "_index": 385
+    }
+  }
+}

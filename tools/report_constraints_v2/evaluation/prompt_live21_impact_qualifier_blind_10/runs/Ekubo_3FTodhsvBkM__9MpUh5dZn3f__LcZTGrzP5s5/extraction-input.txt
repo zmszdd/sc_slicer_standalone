@@ -1,0 +1,39 @@
+TokenWrapper transferFrom Emits Incorrect From Address in Transfer Event
+
+## Summary
+
+The `transferFrom()` function in TokenWrapper emits a `Transfer` event with `msg.sender` (the spender) as the `from` address instead of the actual token owner whose balance is being debited. This violates the ERC20 standard and causes incorrect event data to be emitted.
+
+## Vulnerability Details
+
+In [TokenWrapper.sol:127-155](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/TokenWrapper.sol#L127-L155), the `transferFrom` function correctly updates balances but emits an incorrect Transfer event:
+
+
+The issue is on line 153: `emit Transfer(msg.sender, to, amount)` emits the spender's address instead of the token owner's address (`from`).
+
+### Root Cause
+
+Copy-paste error or oversight - the Transfer event parameter should be `from` (the token owner) not `msg.sender` (the spender).
+
+
+## Impact
+
+This bug violates the ERC20 standard (EIP-20) which specifies that Transfer events MUST emit the actual token owner as the `from` address. The impact includes:
+
+1. Off-chain indexer corruption: Services tracking token balances via Transfer events (The Graph, Dune Analytics, custom indexers) will have completely incorrect balance data. As demonstrated in the POC, an indexer would show:
+   - Token owners appearing to never lose tokens (balance never decreases)
+   - Spenders appearing to have negative balances (impossible state)
+
+2. Block explorer incorrect data: Etherscan, Blockscout, and other explorers will display incorrect transfer history showing the wrong sender
+
+3. DeFi integration failures: Protocols relying on Transfer events for:
+   - Balance reconciliation
+   - Transaction history
+   - Accounting and auditing
+   - Tax reporting tools
+
+4. Wallet tracking issues: Wallets that use event logs to track token movements will show incorrect transaction history
+
+- It does not result in direct loss of funds (balances are correctly updated on-chain)
+- However, it causes significant integration issues and data corruption for any system relying on ERC20 Transfer events
+- The TokenWrapper is designed to be used as a standard ERC20 token, so correct event emission is critical for ecosystem compatibility

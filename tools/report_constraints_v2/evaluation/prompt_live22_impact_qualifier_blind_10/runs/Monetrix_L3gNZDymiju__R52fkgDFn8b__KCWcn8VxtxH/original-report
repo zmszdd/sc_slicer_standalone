@@ -1,0 +1,126 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Monetrix_L3gNZDymiju",
+    "audit_uid": "L3gNZDymiju",
+    "requested_submission_uid": "KCWcn8VxtxH",
+    "requested_finding_uid": "R52fkgDFn8b",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Monetrix_L3gNZDymiju/20260618_131702/findings.json",
+    "source_submission_uid": "KCWcn8VxtxH",
+    "source_finding_uid": "R52fkgDFn8b",
+    "original_report_path": "Monetrix_L3gNZDymiju\\low_valid_KCWcn8VxtxH.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "KCWcn8VxtxH",
+  "finding_uid": "R52fkgDFn8b",
+  "finding_number": "137",
+  "title": "Premature 0x811 supplied-slot registration can brick Accountant backing reads",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "Bale",
+  "body": "### Summary\n\n`MonetrixVault.executeHedge()` and `MonetrixVault.supplyToBlp()` optimistically register supplied-balance slots in `MonetrixAccountant` immediately after sending CoreWriter actions. The registration is not confirmed against HyperCore. If the CoreWriter action is accepted locally but the corresponding 0x811 supplied slot does not exist or is not yet active, the Accountant records a slot that cannot be read.\n\n`MonetrixAccountant.totalBackingSigned()` fail-closes on every registered 0x811 slot. One premature or inactive supplied-slot entry therefore makes aggregate backing reads revert. The revert propagates to `surplus()`, `distributableSurplus()`, settlement, and yield/bridge accounting flows that depend on those reads.\n\n### Root cause\n\n\n\n- `executeHedge()` sends the hedge actions and then immediately calls `notifyVaultSupply()` when `pmEnabled` is true.\n- `supplyToBlp()` sends the supply action and then immediately calls `notifyVaultSupply()`.\n- `notifyVaultSupply()` only appends the slot to the Accountant registry; it does not confirm that 0x811 can read that slot successfully.\n- Later, `totalBackingSigned()` iterates the registered supplied slots and calls strict 0x811 readers. A failed 0x811 read reverts the entire backing calculation.\n\nRelevant code:\n\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L273\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L332-L344\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L156\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L250-L255\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L84-L91\n\n### Impact\n\nThis is a protocol availability/accounting failure, not direct fund theft. Once a bad supplied slot is registered, core accounting reads revert until the registry is manually cleaned up. Affected paths include:\n\n- `totalBackingSigned()`\n- `surplus()`\n- `distributableSurplus()`\n- `settleDailyPnL()`\n- Vault reads that depend on Accountant surplus, including yield shortfall calculations\n\nThe issue is Medium severity because protocol accounting and settlement availability can be impacted through a plausible normal Operator/CoreWriter flow, but assets are not directly stolen by the demonstrated path.\n\n### Recommended mitigation\n\nDo not register supplied slots until the slot has been confirmed readable. Possible fixes:\n\n1. Split action submission and supplied-slot registration into separate phases.\n2. Add a confirmation function that probes 0x811 and only registers after a successful read.\n3. Make the Accountant skip and flag unreadable supplied slots instead of reverting the entire backing calculation.\n4. Add an operator/governor cleanup path with clear monitoring for unreadable registry entries, while preserving fail-closed behavior for actual settlement.",
+  "proof_of_concept": "Apply this patch to `test/c4/C4Submission.t.sol` in the audit repository:\n\n```diff\ndiff --git a/test/c4/C4Submission.t.sol b/test/c4/C4Submission.t.sol\nindex ebccee2..01758ba 100644\n--- a/test/c4/C4Submission.t.sol\n+++ b/test/c4/C4Submission.t.sol\n@@ -11,6 +11,7 @@ import {sUSDMEscrow} from \"../../src/tokens/sUSDMEscrow.sol\";\n \n // In-scope core\n import {MonetrixVault} from \"../../src/core/MonetrixVault.sol\";\n+import {ActionEncoder} from \"../../src/core/ActionEncoder.sol\";\n import {MonetrixAccountant} from \"../../src/core/MonetrixAccountant.sol\";\n import {MonetrixConfig} from \"../../src/core/MonetrixConfig.sol\";\n import {RedeemEscrow} from \"../../src/core/RedeemEscrow.sol\";\n@@ -316,9 +317,58 @@ contract C4Submission is Test {\n     // ═══════════════════════════════════════════════════════════\n \n     function test_submissionValidity() public {\n-        // ─── Placeholder — replace with your PoC ───\n-        // _deposit(user1, 10_000e6);\n-        // assertEq(usdm.balanceOf(user1), 10_000e6);\n-        // assertEq(usdc.balanceOf(address(vault)), 10_000e6);\n+        // Control: the empty supplied registry is readable with the default\n+        // zero-value HyperCore mocks installed by setUp().\n+        assertEq(accountant.vaultSuppliedLength(), 0);\n+        accountant.totalBackingSigned();\n+\n+        // Make executeHedge eligible and enable Portfolio Margin registration.\n+        vm.startPrank(admin);\n+        config.addTradeableAsset(\n+            MonetrixConfig.TradeableAsset({perpIndex: 4, spotIndex: 1105, spotPairAssetId: 11105})\n+        );\n+        vault.setPmEnabled(true);\n+        vm.stopPrank();\n+\n+        ActionEncoder.HedgeParams memory params = ActionEncoder.HedgeParams({\n+            spotAsset: 11105,\n+            perpAsset: 4,\n+            size: 1e8,\n+            spotPrice: 100e8,\n+            perpPrice: 100e8,\n+            cloid: 0,\n+            tif: uint8(3),\n+            spotReduceOnly: false,\n+            perpReduceOnly: false\n+        });\n+\n+        // executeHedge emits CoreWriter actions and then immediately registers\n+        // the expected 0x811 supplied slot. The registration is optimistic: no\n+        // on-chain read confirms the supplied slot exists or is active.\n+        vm.prank(operator);\n+        vault.executeHedge(1, params);\n+        assertEq(accountant.vaultSuppliedLength(), 1, \"inactive slot was registered\");\n+\n+        // Simulate HyperCore behavior for an inactive/nonexistent supplied slot.\n+        // Once the strict 0x811 read fails, every aggregate backing read that\n+        // touches the registry reverts.\n+        vm.mockCallRevert(\n+            HyperCoreConstants.PRECOMPILE_SUPPLIED_BALANCE,\n+            abi.encode(address(vault), uint64(1105)),\n+            bytes(\"slot missing\")\n+        );\n+\n+        vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n+        accountant.totalBackingSigned();\n+\n+        vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n+        accountant.surplus();\n+\n+        // Manual registry cleanup restores accounting readability, proving the\n+        // optimistic entry itself was what bricked the accounting path.\n+        vm.prank(operator);\n+        accountant.removeSuppliedEntry(false, 0);\n+        assertEq(accountant.vaultSuppliedLength(), 0);\n+        accountant.totalBackingSigned();\n     }\n }\n```\n\nRun:\n\n```bash\nforge test --match-path \"test/c4/C4Submission.t.sol\" -vvv\n```\n\nObserved result:\n\n```text\nRan 1 test for test/c4/C4Submission.t.sol:C4Submission\n[PASS] test_submissionValidity() (gas: 413624)\nSuite result: ok. 1 passed; 0 failed; 0 skipped\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L273",
+    "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L332-L344",
+    "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L156",
+    "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L250-L255",
+    "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L84-L91"
+  ],
+  "source_record": {
+    "project_id": "L3gNZDymiju",
+    "submission_index": "1714",
+    "api_submission_id": "",
+    "uid": "KCWcn8VxtxH",
+    "number": "1714",
+    "title": "Premature 0x811 supplied-slot registration can brick Accountant backing reads",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "",
+    "handle": "Bale",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L273",
+      "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L332-L344",
+      "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L156",
+      "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L250-L255",
+      "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L84-L91"
+    ],
+    "body": "### Summary\n\n`MonetrixVault.executeHedge()` and `MonetrixVault.supplyToBlp()` optimistically register supplied-balance slots in `MonetrixAccountant` immediately after sending CoreWriter actions. The registration is not confirmed against HyperCore. If the CoreWriter action is accepted locally but the corresponding 0x811 supplied slot does not exist or is not yet active, the Accountant records a slot that cannot be read.\n\n`MonetrixAccountant.totalBackingSigned()` fail-closes on every registered 0x811 slot. One premature or inactive supplied-slot entry therefore makes aggregate backing reads revert. The revert propagates to `surplus()`, `distributableSurplus()`, settlement, and yield/bridge accounting flows that depend on those reads.\n\n### Root cause\n\n\n\n- `executeHedge()` sends the hedge actions and then immediately calls `notifyVaultSupply()` when `pmEnabled` is true.\n- `supplyToBlp()` sends the supply action and then immediately calls `notifyVaultSupply()`.\n- `notifyVaultSupply()` only appends the slot to the Accountant registry; it does not confirm that 0x811 can read that slot successfully.\n- Later, `totalBackingSigned()` iterates the registered supplied slots and calls strict 0x811 readers. A failed 0x811 read reverts the entire backing calculation.\n\nRelevant code:\n\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L273\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L332-L344\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L156\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L250-L255\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L84-L91\n\n### Impact\n\nThis is a protocol availability/accounting failure, not direct fund theft. Once a bad supplied slot is registered, core accounting reads revert until the registry is manually cleaned up. Affected paths include:\n\n- `totalBackingSigned()`\n- `surplus()`\n- `distributableSurplus()`\n- `settleDailyPnL()`\n- Vault reads that depend on Accountant surplus, including yield shortfall calculations\n\nThe issue is Medium severity because protocol accounting and settlement availability can be impacted through a plausible normal Operator/CoreWriter flow, but assets are not directly stolen by the demonstrated path.\n\n### Recommended mitigation\n\nDo not register supplied slots until the slot has been confirmed readable. Possible fixes:\n\n1. Split action submission and supplied-slot registration into separate phases.\n2. Add a confirmation function that probes 0x811 and only registers after a successful read.\n3. Make the Accountant skip and flag unreadable supplied slots instead of reverting the entire backing calculation.\n4. Add an operator/governor cleanup path with clear monitoring for unreadable registry entries, while preserving fail-closed behavior for actual settlement.",
+    "proof_of_concept": "Apply this patch to `test/c4/C4Submission.t.sol` in the audit repository:\n\n```diff\ndiff --git a/test/c4/C4Submission.t.sol b/test/c4/C4Submission.t.sol\nindex ebccee2..01758ba 100644\n--- a/test/c4/C4Submission.t.sol\n+++ b/test/c4/C4Submission.t.sol\n@@ -11,6 +11,7 @@ import {sUSDMEscrow} from \"../../src/tokens/sUSDMEscrow.sol\";\n \n // In-scope core\n import {MonetrixVault} from \"../../src/core/MonetrixVault.sol\";\n+import {ActionEncoder} from \"../../src/core/ActionEncoder.sol\";\n import {MonetrixAccountant} from \"../../src/core/MonetrixAccountant.sol\";\n import {MonetrixConfig} from \"../../src/core/MonetrixConfig.sol\";\n import {RedeemEscrow} from \"../../src/core/RedeemEscrow.sol\";\n@@ -316,9 +317,58 @@ contract C4Submission is Test {\n     // ═══════════════════════════════════════════════════════════\n \n     function test_submissionValidity() public {\n-        // ─── Placeholder — replace with your PoC ───\n-        // _deposit(user1, 10_000e6);\n-        // assertEq(usdm.balanceOf(user1), 10_000e6);\n-        // assertEq(usdc.balanceOf(address(vault)), 10_000e6);\n+        // Control: the empty supplied registry is readable with the default\n+        // zero-value HyperCore mocks installed by setUp().\n+        assertEq(accountant.vaultSuppliedLength(), 0);\n+        accountant.totalBackingSigned();\n+\n+        // Make executeHedge eligible and enable Portfolio Margin registration.\n+        vm.startPrank(admin);\n+        config.addTradeableAsset(\n+            MonetrixConfig.TradeableAsset({perpIndex: 4, spotIndex: 1105, spotPairAssetId: 11105})\n+        );\n+        vault.setPmEnabled(true);\n+        vm.stopPrank();\n+\n+        ActionEncoder.HedgeParams memory params = ActionEncoder.HedgeParams({\n+            spotAsset: 11105,\n+            perpAsset: 4,\n+            size: 1e8,\n+            spotPrice: 100e8,\n+            perpPrice: 100e8,\n+            cloid: 0,\n+            tif: uint8(3),\n+            spotReduceOnly: false,\n+            perpReduceOnly: false\n+        });\n+\n+        // executeHedge emits CoreWriter actions and then immediately registers\n+        // the expected 0x811 supplied slot. The registration is optimistic: no\n+        // on-chain read confirms the supplied slot exists or is active.\n+        vm.prank(operator);\n+        vault.executeHedge(1, params);\n+        assertEq(accountant.vaultSuppliedLength(), 1, \"inactive slot was registered\");\n+\n+        // Simulate HyperCore behavior for an inactive/nonexistent supplied slot.\n+        // Once the strict 0x811 read fails, every aggregate backing read that\n+        // touches the registry reverts.\n+        vm.mockCallRevert(\n+            HyperCoreConstants.PRECOMPILE_SUPPLIED_BALANCE,\n+            abi.encode(address(vault), uint64(1105)),\n+            bytes(\"slot missing\")\n+        );\n+\n+        vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n+        accountant.totalBackingSigned();\n+\n+        vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n+        accountant.surplus();\n+\n+        // Manual registry cleanup restores accounting readability, proving the\n+        // optimistic entry itself was what bricked the accounting path.\n+        vm.prank(operator);\n+        accountant.removeSuppliedEntry(false, 0);\n+        assertEq(accountant.vaultSuppliedLength(), 0);\n+        accountant.totalBackingSigned();\n     }\n }\n```\n\nRun:\n\n```bash\nforge test --match-path \"test/c4/C4Submission.t.sol\" -vvv\n```\n\nObserved result:\n\n```text\nRan 1 test for test/c4/C4Submission.t.sol:C4Submission\n[PASS] test_submissionValidity() (gas: 413624)\nSuite result: ok. 1 passed; 0 failed; 0 skipped\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/L3gNZDymiju/submissions/1714",
+    "raw": {
+      "auditUid": "L3gNZDymiju",
+      "createdAt": "2026-05-04T17:53:28.292Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "dhZMspLpG2x",
+          "userUid": "LBbWumddX2j",
+          "userAuditRole": "judge",
+          "createdAt": "2026-05-07T20:36:34.258Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "R52fkgDFn8b"
+        },
+        {
+          "uid": "cK8ZHaj55nV",
+          "userUid": "LBbWumddX2j",
+          "userAuditRole": "judge",
+          "createdAt": "2026-05-08T18:26:53.877Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "R52fkgDFn8b"
+        },
+        {
+          "uid": "4kvfVAN5ERF",
+          "userUid": "YLWDmmwfFr3",
+          "userAuditRole": "sponsor",
+          "createdAt": "2026-05-26T09:19:41.246Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "R52fkgDFn8b"
+        }
+      ],
+      "finding": {
+        "uid": "R52fkgDFn8b",
+        "number": 137,
+        "duplicates": 43
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2026-05-26T09:19:41.246Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Premature 0x811 supplied-slot registration can brick Accountant backing reads",
+      "uid": "KCWcn8VxtxH",
+      "updatedAt": "2026-05-04T17:53:28.292Z",
+      "user": {
+        "uid": "Y426V6Kbj2b",
+        "handle": "Bale"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Summary\n\n`MonetrixVault.executeHedge()` and `MonetrixVault.supplyToBlp()` optimistically register supplied-balance slots in `MonetrixAccountant` immediately after sending CoreWriter actions. The registration is not confirmed against HyperCore. If the CoreWriter action is accepted locally but the corresponding 0x811 supplied slot does not exist or is not yet active, the Accountant records a slot that cannot be read.\n\n`MonetrixAccountant.totalBackingSigned()` fail-closes on every registered 0x811 slot. One premature or inactive supplied-slot entry therefore makes aggregate backing reads revert. The revert propagates to `surplus()`, `distributableSurplus()`, settlement, and yield/bridge accounting flows that depend on those reads.\n\n### Root cause\n\n\n\n- `executeHedge()` sends the hedge actions and then immediately calls `notifyVaultSupply()` when `pmEnabled` is true.\n- `supplyToBlp()` sends the supply action and then immediately calls `notifyVaultSupply()`.\n- `notifyVaultSupply()` only appends the slot to the Accountant registry; it does not confirm that 0x811 can read that slot successfully.\n- Later, `totalBackingSigned()` iterates the registered supplied slots and calls strict 0x811 readers. A failed 0x811 read reverts the entire backing calculation.\n\nRelevant code:\n\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L273\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L332-L344\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L156\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L250-L255\n- https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L84-L91\n\n### Impact\n\nThis is a protocol availability/accounting failure, not direct fund theft. Once a bad supplied slot is registered, core accounting reads revert until the registry is manually cleaned up. Affected paths include:\n\n- `totalBackingSigned()`\n- `surplus()`\n- `distributableSurplus()`\n- `settleDailyPnL()`\n- Vault reads that depend on Accountant surplus, including yield shortfall calculations\n\nThe issue is Medium severity because protocol accounting and settlement availability can be impacted through a plausible normal Operator/CoreWriter flow, but assets are not directly stolen by the demonstrated path.\n\n### Recommended mitigation\n\nDo not register supplied slots until the slot has been confirmed readable. Possible fixes:\n\n1. Split action submission and supplied-slot registration into separate phases.\n2. Add a confirmation function that probes 0x811 and only registers after a successful read.\n3. Make the Accountant skip and flag unreadable supplied slots instead of reverting the entire backing calculation.\n4. Add an operator/governor cleanup path with clear monitoring for unreadable registry entries, while preserving fail-closed behavior for actual settlement.",
+      "proofOfConcept": "Apply this patch to `test/c4/C4Submission.t.sol` in the audit repository:\n\n```diff\ndiff --git a/test/c4/C4Submission.t.sol b/test/c4/C4Submission.t.sol\nindex ebccee2..01758ba 100644\n--- a/test/c4/C4Submission.t.sol\n+++ b/test/c4/C4Submission.t.sol\n@@ -11,6 +11,7 @@ import {sUSDMEscrow} from \"../../src/tokens/sUSDMEscrow.sol\";\n \n // In-scope core\n import {MonetrixVault} from \"../../src/core/MonetrixVault.sol\";\n+import {ActionEncoder} from \"../../src/core/ActionEncoder.sol\";\n import {MonetrixAccountant} from \"../../src/core/MonetrixAccountant.sol\";\n import {MonetrixConfig} from \"../../src/core/MonetrixConfig.sol\";\n import {RedeemEscrow} from \"../../src/core/RedeemEscrow.sol\";\n@@ -316,9 +317,58 @@ contract C4Submission is Test {\n     // ═══════════════════════════════════════════════════════════\n \n     function test_submissionValidity() public {\n-        // ─── Placeholder — replace with your PoC ───\n-        // _deposit(user1, 10_000e6);\n-        // assertEq(usdm.balanceOf(user1), 10_000e6);\n-        // assertEq(usdc.balanceOf(address(vault)), 10_000e6);\n+        // Control: the empty supplied registry is readable with the default\n+        // zero-value HyperCore mocks installed by setUp().\n+        assertEq(accountant.vaultSuppliedLength(), 0);\n+        accountant.totalBackingSigned();\n+\n+        // Make executeHedge eligible and enable Portfolio Margin registration.\n+        vm.startPrank(admin);\n+        config.addTradeableAsset(\n+            MonetrixConfig.TradeableAsset({perpIndex: 4, spotIndex: 1105, spotPairAssetId: 11105})\n+        );\n+        vault.setPmEnabled(true);\n+        vm.stopPrank();\n+\n+        ActionEncoder.HedgeParams memory params = ActionEncoder.HedgeParams({\n+            spotAsset: 11105,\n+            perpAsset: 4,\n+            size: 1e8,\n+            spotPrice: 100e8,\n+            perpPrice: 100e8,\n+            cloid: 0,\n+            tif: uint8(3),\n+            spotReduceOnly: false,\n+            perpReduceOnly: false\n+        });\n+\n+        // executeHedge emits CoreWriter actions and then immediately registers\n+        // the expected 0x811 supplied slot. The registration is optimistic: no\n+        // on-chain read confirms the supplied slot exists or is active.\n+        vm.prank(operator);\n+        vault.executeHedge(1, params);\n+        assertEq(accountant.vaultSuppliedLength(), 1, \"inactive slot was registered\");\n+\n+        // Simulate HyperCore behavior for an inactive/nonexistent supplied slot.\n+        // Once the strict 0x811 read fails, every aggregate backing read that\n+        // touches the registry reverts.\n+        vm.mockCallRevert(\n+            HyperCoreConstants.PRECOMPILE_SUPPLIED_BALANCE,\n+            abi.encode(address(vault), uint64(1105)),\n+            bytes(\"slot missing\")\n+        );\n+\n+        vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n+        accountant.totalBackingSigned();\n+\n+        vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n+        accountant.surplus();\n+\n+        // Manual registry cleanup restores accounting readability, proving the\n+        // optimistic entry itself was what bricked the accounting path.\n+        vm.prank(operator);\n+        accountant.removeSuppliedEntry(false, 0);\n+        assertEq(accountant.vaultSuppliedLength(), 0);\n+        accountant.totalBackingSigned();\n     }\n }\n```\n\nRun:\n\n```bash\nforge test --match-path \"test/c4/C4Submission.t.sol\" -vvv\n```\n\nObserved result:\n\n```text\nRan 1 test for test/c4/C4Submission.t.sol:C4Submission\n[PASS] test_submissionValidity() (gas: 413624)\nSuite result: ok. 1 passed; 0 failed; 0 skipped\n```",
+      "linesOfCode": "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L273,https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L332-L344,https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L156,https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L250-L255,https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L84-L91",
+      "number": 1714,
+      "aiExplanation": null,
+      "_index": 1714
+    }
+  }
+}

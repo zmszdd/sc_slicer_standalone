@@ -1,0 +1,32 @@
+Logical AND Bug in Small Market Mint Cap
+
+## Finding description and impact
+## Summary
+
+The incorrect use of logical AND (&&) instead of OR (||) in the `_checkMintCap` function will cause unlimited minting for users in small markets as an attacker will bypass the supply-based mint cap when attempting excessive mints below the Q96 threshold.
+
+## Root Cause
+
+In `src/lex/latentswap/libraries/LatentSwapLogic.sol` (line 1067, in `_checkMintCap` function), the small market mint cap check uses `&&` instead of `||` between the Q96 overflow check and the supply cap check, causing the supply cap to be ignored for all realistic mint amounts.
+
+## Internal Pre-conditions
+
+1. A market must exist with `marketBaseTokenSupply` <= (1 << `noCapLimit`), where `noCapLimit` is typically 20 (threshold: 1,048,576 base units).
+2. The `eTWAPBaseTokenSupply` must be in a steady state relative to `marketBaseTokenSupply` (no rapid growth triggering large market checks).
+3. Attacker must hold sufficient base tokens (e.g., ERC20 like USDC) to approve and mint an amount exceeding `marketBaseTokenSupply` but below FixedPoint.Q96 (~7.9e28).
+
+## External Pre-conditions
+
+None - vulnerability is purely internal to the protocol's mint logic, independent of external oracles or price feeds.
+
+## Attack Path
+
+1. Deploy or identify an existing small market (base supply < 1M units, e.g., 100,000 USDC).
+2. Attacker approves excessive base tokens (e.g., 10M USDC) to the Covenant contract.
+3. Attacker calls `covenant.mint(MintParams {marketId, baseAmountIn: excessiveAmount, ...})`.
+4. Internally, `_checkMintCap` evaluates: `(mintAmount > Q96) && (mintAmount > marketBaseTokenSupply)`  FALSE && TRUE = FALSE, bypassing revert.
+5. Mint proceeds, inflating supply by 100x+ and granting attacker dominant position (aTokens + zTokens >90% of total).
+
+## Impact
+
+The protocol and subsequent users suffer market dominance and value extraction losses as the attacker gains ~99% control of the small market's liquidity, enabling arbitrary price manipulation and collateral extraction from victims who enter post-exploit.[1]

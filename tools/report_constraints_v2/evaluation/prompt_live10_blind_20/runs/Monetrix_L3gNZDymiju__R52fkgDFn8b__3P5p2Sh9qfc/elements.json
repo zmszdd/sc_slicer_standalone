@@ -1,0 +1,200 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "PM hedge registration adds a vaultSupplied entry before the HyperCore 0x811 supplied slot exists, causing strict suppliedBalance reads to revert and brick accounting/settlement",
+    "environment": "MonetrixAccountant with PM enabled, HyperCore precompile 0x811, vault settlement",
+    "evidence": [
+      "PM hedge registration can brick totalBacking() and settle() by adding a vaultSupplied entry before the HyperCore 0x811 supplied slot exists",
+      "When PM is enabled, `executeHedge()` calls `notifyVaultSupply(spotToken, params.perpAsset)`. This immediately adds a `vaultSupplied` entry to `MonetrixAccountant`.",
+      "After that, every `totalBackingSigned()` call iterates `vaultSupplied` and performs a strict `PrecompileReader.suppliedBalance()` read against HyperCore precompile 0x811. If the hedge order was submitted but the L1 fill or PM auto-supply never happens, the corresponding 0x811 slot may not exist. The strict read then reverts with:",
+      "```PrecompileReader: supplied balance read failed```",
+      "That revert bricks:",
+      "- `accountant.totalBacking()`",
+      "- `accountant.distributableSurplus()`",
+      "- `accountant.settleDailyPnL()`",
+      "- `vault.settle()`",
+      "The only recovery path shown in the PoC is privileged manual cleanup through `removeSuppliedEntry(false, index)`.",
+      "Broken invariant: a submitted hedge order must not be enough to make protocol accounting and settlement unavailable. Accounting should reflect confirmed retrievable backing, not assume an external PM supplied slot exists."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "hedge registrant",
+      "role": "attacker",
+      "evidence": [
+        "PM hedge registration can brick totalBacking() and settle() by adding a vaultSupplied entry before the HyperCore 0x811 supplied slot exists",
+        "When PM is enabled, `executeHedge()` calls `notifyVaultSupply(spotToken, params.perpAsset)`. This immediately adds a `vaultSupplied` entry to `MonetrixAccountant`."
+      ]
+    },
+    {
+      "id": "accountant",
+      "name": "MonetrixAccountant",
+      "role": "contract",
+      "evidence": [
+        "When PM is enabled, `executeHedge()` calls `notifyVaultSupply(spotToken, params.perpAsset)`. This immediately adds a `vaultSupplied` entry to `MonetrixAccountant`.",
+        "After that, every `totalBackingSigned()` call iterates `vaultSupplied` and performs a strict `PrecompileReader.suppliedBalance()` read against HyperCore precompile 0x811. If the hedge order was submitted but the L1 fill or PM auto-supply never happens, the corresponding 0x811 slot may not exist. The strict read then reverts with:",
+        "- `accountant.totalBacking()`",
+        "- `accountant.distributableSurplus()`",
+        "- `accountant.settleDailyPnL()`"
+      ]
+    },
+    {
+      "id": "vault",
+      "name": "vault",
+      "role": "contract",
+      "evidence": [
+        "- `vault.settle()`"
+      ]
+    },
+    {
+      "id": "precompile_0x811",
+      "name": "HyperCore precompile 0x811",
+      "role": "contract",
+      "evidence": [
+        "After that, every `totalBackingSigned()` call iterates `vaultSupplied` and performs a strict `PrecompileReader.suppliedBalance()` read against HyperCore precompile 0x811. If the hedge order was submitted but the L1 fill or PM auto-supply never happens, the corresponding 0x811 slot may not exist. The strict read then reverts with:",
+        "```PrecompileReader: supplied balance read failed```"
+      ]
+    },
+    {
+      "id": "vault_supplied",
+      "name": "vaultSupplied entry",
+      "role": "asset",
+      "evidence": [
+        "When PM is enabled, `executeHedge()` calls `notifyVaultSupply(spotToken, params.perpAsset)`. This immediately adds a `vaultSupplied` entry to `MonetrixAccountant`.",
+        "After that, every `totalBackingSigned()` call iterates `vaultSupplied` and performs a strict `PrecompileReader.suppliedBalance()` read against HyperCore precompile 0x811. If the hedge order was submitted but the L1 fill or PM auto-supply never happens, the corresponding 0x811 slot may not exist. The strict read then reverts with:"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "pm_enabled",
+      "kind": "precondition",
+      "text": "PM is enabled so executeHedge() calls notifyVaultSupply(spotToken, params.perpAsset).",
+      "modality": "asserted",
+      "entity_ids": [
+        "accountant",
+        "attacker"
+      ],
+      "evidence": [
+        "When PM is enabled, `executeHedge()` calls `notifyVaultSupply(spotToken, params.perpAsset)`. This immediately adds a `vaultSupplied` entry to `MonetrixAccountant`."
+      ]
+    },
+    {
+      "id": "hedge_order_submitted",
+      "kind": "precondition",
+      "text": "A hedge order is submitted but the L1 fill or PM auto-supply does not happen.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker"
+      ],
+      "evidence": [
+        "After that, every `totalBackingSigned()` call iterates `vaultSupplied` and performs a strict `PrecompileReader.suppliedBalance()` read against HyperCore precompile 0x811. If the hedge order was submitted but the L1 fill or PM auto-supply never happens, the corresponding 0x811 slot may not exist. The strict read then reverts with:"
+      ]
+    },
+    {
+      "id": "slot_absent",
+      "kind": "precondition",
+      "text": "The corresponding 0x811 supplied slot does not exist.",
+      "modality": "potential",
+      "entity_ids": [
+        "precompile_0x811",
+        "vault_supplied"
+      ],
+      "evidence": [
+        "After that, every `totalBackingSigned()` call iterates `vaultSupplied` and performs a strict `PrecompileReader.suppliedBalance()` read against HyperCore precompile 0x811. If the hedge order was submitted but the L1 fill or PM auto-supply never happens, the corresponding 0x811 slot may not exist. The strict read then reverts with:"
+      ]
+    },
+    {
+      "id": "notify_adds_entry",
+      "kind": "action",
+      "text": "executeHedge() calls notifyVaultSupply, immediately adding a vaultSupplied entry to MonetrixAccountant.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "accountant",
+        "vault_supplied"
+      ],
+      "evidence": [
+        "When PM is enabled, `executeHedge()` calls `notifyVaultSupply(spotToken, params.perpAsset)`. This immediately adds a `vaultSupplied` entry to `MonetrixAccountant`."
+      ]
+    },
+    {
+      "id": "strict_read",
+      "kind": "action",
+      "text": "totalBackingSigned() iterates vaultSupplied and performs a strict PrecompileReader.suppliedBalance() read against precompile 0x811.",
+      "modality": "asserted",
+      "entity_ids": [
+        "accountant",
+        "precompile_0x811",
+        "vault_supplied"
+      ],
+      "evidence": [
+        "After that, every `totalBackingSigned()` call iterates `vaultSupplied` and performs a strict `PrecompileReader.suppliedBalance()` read against HyperCore precompile 0x811. If the hedge order was submitted but the L1 fill or PM auto-supply never happens, the corresponding 0x811 slot may not exist. The strict read then reverts with:"
+      ]
+    },
+    {
+      "id": "read_reverts",
+      "kind": "root_cause",
+      "text": "The strict suppliedBalance read reverts with 'PrecompileReader: supplied balance read failed' when the 0x811 slot does not exist.",
+      "modality": "asserted",
+      "entity_ids": [
+        "precompile_0x811",
+        "accountant"
+      ],
+      "evidence": [
+        "After that, every `totalBackingSigned()` call iterates `vaultSupplied` and performs a strict `PrecompileReader.suppliedBalance()` read against HyperCore precompile 0x811. If the hedge order was submitted but the L1 fill or PM auto-supply never happens, the corresponding 0x811 slot may not exist. The strict read then reverts with:",
+        "```PrecompileReader: supplied balance read failed```"
+      ]
+    },
+    {
+      "id": "accounting_bricked",
+      "kind": "impact",
+      "text": "totalBacking(), distributableSurplus() and settleDailyPnL() are bricked by the revert.",
+      "modality": "asserted",
+      "entity_ids": [
+        "accountant"
+      ],
+      "evidence": [
+        "That revert bricks:",
+        "- `accountant.totalBacking()`",
+        "- `accountant.distributableSurplus()`",
+        "- `accountant.settleDailyPnL()`"
+      ]
+    },
+    {
+      "id": "settle_bricked",
+      "kind": "impact",
+      "text": "vault.settle() is bricked by the revert.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault"
+      ],
+      "evidence": [
+        "- `vault.settle()`"
+      ]
+    },
+    {
+      "id": "intent_backing_confirmed",
+      "kind": "security_intent",
+      "text": "A submitted hedge order must not be enough to make protocol accounting and settlement unavailable; accounting should reflect confirmed retrievable backing rather than assume an external PM supplied slot exists.",
+      "modality": "inferred",
+      "entity_ids": [
+        "accountant",
+        "vault"
+      ],
+      "evidence": [
+        "Broken invariant: a submitted hedge order must not be enough to make protocol accounting and settlement unavailable. Accounting should reflect confirmed retrievable backing, not assume an external PM supplied slot exists."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "notify_adds_entry",
+    "strict_read"
+  ],
+  "ambiguities": [
+    "Report does not state who may call executeHedge() or whether the registrant is unauthorized.",
+    "Whether the hedge order submission and missing 0x811 slot were actually observed or only conditional is not established.",
+    "Recovery requires privileged removeSuppliedEntry(false, index); caller authorization not specified."
+  ]
+}

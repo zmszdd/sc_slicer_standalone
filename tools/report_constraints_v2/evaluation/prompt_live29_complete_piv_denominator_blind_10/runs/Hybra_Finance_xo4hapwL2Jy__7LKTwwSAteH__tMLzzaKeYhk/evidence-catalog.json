@@ -1,0 +1,111 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "01a5ec228a467c40fea3f5a33a6f7e4ab00511e26d04e0d33acce081ce9a3f8d",
+  "fragments": [
+    {
+      "id": "e_01a5ec228a46_0001",
+      "text": "Emissions lost when `notifyRewardAmount` runs with zero total weight",
+      "start": 0,
+      "end": 68,
+      "line": 1
+    },
+    {
+      "id": "e_01a5ec228a46_0002",
+      "text": "## Finding description and impact",
+      "start": 70,
+      "end": 103,
+      "line": 3
+    },
+    {
+      "id": "e_01a5ec228a46_0003",
+      "text": "`GaugeManager.notifyRewardAmount` unconditionally pulls the epoch emission from the minter, but it only updates the distribution index when there is non-zero voting weight:",
+      "start": 104,
+      "end": 276,
+      "line": 4
+    },
+    {
+      "id": "e_01a5ec228a46_0004",
+      "text": "When every voter has reset (`totalWeight == 0`), the transfer `HYBR::transferFrom(minter, GaugeManager, amount)` still executes, yet `index` remains unchanged. Later, `_updateForAfterDistribution` calculates each gauge’s share from `index - supplyIndex[gauge]`. Because that delta is zero, `claimable[gauge]` never increases, and the freshly minted HYBR is effectively orphaned inside `GaugeManager`.",
+      "start": 279,
+      "end": 679,
+      "line": 7
+    },
+    {
+      "id": "e_01a5ec228a46_0005",
+      "text": "The failure follows the normal epoch maintenance playbook:",
+      "start": 681,
+      "end": 739,
+      "line": 9
+    },
+    {
+      "id": "e_01a5ec228a46_0006",
+      "text": "1. Voters call `reset` in the next epoch’s window to reclaim bribes, bringing `totalWeight` to zero.",
+      "start": 740,
+      "end": 840,
+      "line": 10
+    },
+    {
+      "id": "e_01a5ec228a46_0007",
+      "text": "2. A keeper (or the minter itself) calls `distributeAll()`, which mints and transfers the weekly emission into `GaugeManager`.",
+      "start": 841,
+      "end": 967,
+      "line": 11
+    },
+    {
+      "id": "e_01a5ec228a46_0008",
+      "text": "3. Because `index` is unchanged, all gauges remain at `claimable == 0`, and the HYBR balance becomes unrecoverable.",
+      "start": 968,
+      "end": 1083,
+      "line": 12
+    },
+    {
+      "id": "e_01a5ec228a46_0009",
+      "text": "The PoC shows that with current parameters the first weekly emission mints ~2.47M HYBR into `GaugeManager`, leaves `claimable[gauge]` at zero, and later distributions do not touch the stranded balance. There is no refund or recovery mechanism, so every occurrence permanently removes an entire emission cycle from the reward flow. This is a protocol-level loss affecting all liquidity providers and voters, so the severity is **High**.",
+      "start": 1085,
+      "end": 1520,
+      "line": 14
+    },
+    {
+      "id": "e_01a5ec228a46_0010",
+      "text": "## Recommended mitigation steps",
+      "start": 1523,
+      "end": 1554,
+      "line": 17
+    },
+    {
+      "id": "e_01a5ec228a46_0011",
+      "text": "Before transferring rewards, ensure `totalWeight > 0`. Either:",
+      "start": 1555,
+      "end": 1617,
+      "line": 18
+    },
+    {
+      "id": "e_01a5ec228a46_0012",
+      "text": "- skip the transfer and keep HYBR on the minter until weight is positive, or",
+      "start": 1618,
+      "end": 1694,
+      "line": 19
+    },
+    {
+      "id": "e_01a5ec228a46_0013",
+      "text": "- immediately return the funds to the minter and log the missed emission, or",
+      "start": 1697,
+      "end": 1773,
+      "line": 20
+    },
+    {
+      "id": "e_01a5ec228a46_0014",
+      "text": "- store the amount in a dedicated rollover accumulator that is added to the next positive-weight distribution.",
+      "start": 1776,
+      "end": 1886,
+      "line": 21
+    },
+    {
+      "id": "e_01a5ec228a46_0015",
+      "text": "- Add operator tooling/alerts so that if an emission is skipped (zero weight), governance can decide whether to re-run once voting power returns.",
+      "start": 1887,
+      "end": 2032,
+      "line": 22
+    }
+  ]
+}

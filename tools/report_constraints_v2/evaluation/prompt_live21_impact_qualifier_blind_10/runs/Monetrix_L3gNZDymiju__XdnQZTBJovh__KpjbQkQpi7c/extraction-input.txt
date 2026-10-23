@@ -1,0 +1,43 @@
+sUSDM.sol::decimals() incorrectly returns 6 decimals, instead of 12
+
+USDM uses 6 decimals because it is minted 1:1 against USDC. sUSDM is an ERC4626 vault over USDM and sets `_decimalsOffset()` to 6.
+
+ERC4626 uses this offset in share conversion:
+
+
+Therefore, with a 6-decimal asset and a 6-decimal offset, sUSDM shares are 12-decimal shares. For example, depositing `1e6` USDM mints `1e12` sUSDM.
+
+This also matches the [docs](https://doc.monetrix.xyz/guide/faq):
+
+> USDM: 6 decimals (matches USDC). sUSDM: 12 decimals.
+
+However, the current sUSDM implementation overrides `decimals()` to return 6:
+
+
+As a result, sUSDM share math uses 12 decimals, while the ERC20 metadata reports 6 decimals. External integrations and protocols relying on `decimals()` may value sUSDM balances incorrectly by a factor of `1e6`.
+
+## Impact
+
+For example, an external protocol interacting with sUSDM may want to convert an sUSDM balance to USDC. The calculation may look like this:
+
+`sUSDM amount * price * 10 ** usdc.decimals() / (10 ** susdm.decimals() * price offset)`
+
+For simplicity, assume:
+
+- sUSDM amount = `1e12`
+- price = `1e18`
+- price offset = `1e18`
+- USDC decimals = `6`
+- sUSDM decimals = `6`
+
+Then the result is:
+
+`1e12 * 1e18 * 1e6 / (1e6 * 1e18) = 1e12 USDC`
+
+`1e12` USDC units is `1,000,000 USDC`.
+
+However, `1e12` sUSDM should represent 1 sUSDM, because sUSDM shares are 12 decimals. If `sUSDM.decimals()` returned 12, the result would be:
+
+`1e12 * 1e18 * 1e6 / (1e12 * 1e18) = 1e6 USDC`
+
+`1e6` USDC units is `1 USDC`.

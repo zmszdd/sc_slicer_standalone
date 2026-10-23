@@ -1,0 +1,189 @@
+{
+  "schema_version": "report-formal-plan/7",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "pool_initialized_with_liquidity",
+    "victim_sets_sqrt_ratio_limit_near_price"
+  ],
+  "intent_id": "noop_swap_with_value_should_not_silently_accept_eth",
+  "impact_ids": [
+    "automatic_trigger_by_legitimate_swaps"
+  ],
+  "symbols": {
+    "pool_initialized_at_tick_zero": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "pool is initialized at tick 0 with liquidity",
+      "checkpoint": "before victim swap",
+      "entity_ids": [
+        "core_contract"
+      ],
+      "source_ids": [
+        "pool_initialized_with_liquidity"
+      ]
+    },
+    "victim_swap_msg_value_wei": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "native ETH carried as msg.value by the victim swap (report states 10 ether)",
+      "checkpoint": "before victim swap execution",
+      "entity_ids": [
+        "victim",
+        "router",
+        "native_eth"
+      ],
+      "source_ids": [
+        "victim_sets_sqrt_ratio_limit_near_price"
+      ]
+    },
+    "victim_sqrt_ratio_limit_near_price": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "victim swap sets sqrtRatioLimit near the current price for slippage protection",
+      "checkpoint": "before victim swap execution",
+      "entity_ids": [
+        "victim",
+        "router"
+      ],
+      "source_ids": [
+        "victim_sets_sqrt_ratio_limit_near_price"
+      ]
+    },
+    "swap_is_noop": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the swap would be a no-op (sqrtRatio equals sqrtRatioLimit so no price movement occurs)",
+      "checkpoint": "during victim swap execution",
+      "entity_ids": [
+        "core_contract"
+      ],
+      "source_ids": [
+        "noop_swap_with_value_should_not_silently_accept_eth"
+      ]
+    },
+    "eth_silently_accepted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the no-op swap silently accepts the msg.value ETH without reverting or handling debt accounting",
+      "checkpoint": "after victim swap execution",
+      "entity_ids": [
+        "core_contract",
+        "native_eth"
+      ],
+      "source_ids": [
+        "noop_swap_with_value_should_not_silently_accept_eth",
+        "automatic_trigger_by_legitimate_swaps"
+      ]
+    },
+    "triggered_by_legitimate_swap": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the vulnerability is triggered by a price movement originating from a legitimate (non-attacker) swap",
+      "checkpoint": "at trigger time",
+      "entity_ids": [],
+      "source_ids": [
+        "automatic_trigger_by_legitimate_swaps"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "pool_initialized_with_liquidity",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "pool_initialized_at_tick_zero",
+        "value": true
+      }
+    },
+    {
+      "source_id": "victim_sets_sqrt_ratio_limit_near_price",
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "truth",
+            "symbol": "victim_sqrt_ratio_limit_near_price",
+            "value": true
+          },
+          {
+            "kind": "comparison",
+            "left": "victim_swap_msg_value_wei",
+            "operator": "gt",
+            "right": {
+              "const": 0
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "impact_context_terms": [
+    {
+      "source_id": "automatic_trigger_by_legitimate_swaps",
+      "qualifier_types": [
+        "trigger",
+        "scope"
+      ],
+      "predicate": {
+        "kind": "truth",
+        "symbol": "triggered_by_legitimate_swap",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "required_effect",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "swap_is_noop",
+          "value": true
+        },
+        {
+          "kind": "comparison",
+          "left": "victim_swap_msg_value_wei",
+          "operator": "gt",
+          "right": {
+            "const": 0
+          }
+        }
+      ]
+    },
+    "effect": {
+      "kind": "truth",
+      "symbol": "eth_silently_accepted",
+      "value": false
+    }
+  },
+  "assumptions": [
+    "The no-op condition is characterized by sqrtRatio equaling sqrtRatioLimit, as stated in the flow description.",
+    "The victim swap carries msg.value of 10 ether as stated in the precondition."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "Report does not state a general numeric bound relating sqrtRatioLimit to current sqrtRatio at execution time; the no-op equality is described only via the PoC example.",
+      "source_ids": [
+        "victim_sets_sqrt_ratio_limit_near_price",
+        "noop_swap_with_value_should_not_silently_accept_eth"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "unsupported_relation",
+      "description": "The impact's 'potential' modality and its trigger-by-legitimate-swaps scope cannot be fully expressed as a deterministic required_effect; the trigger is represented as a grounded bool qualifier only.",
+      "source_ids": [
+        "automatic_trigger_by_legitimate_swaps"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The impact is potential; the required_effect encodes the conditional no-op-with-value scenario rather than an inevitable outcome.",
+    "The legitimate-swap trigger is captured as a grounded Boolean qualifier, not a full causal model of price movement.",
+    "Numeric relationship between sqrtRatioLimit and current sqrtRatio is not generally bounded in the report."
+  ]
+}

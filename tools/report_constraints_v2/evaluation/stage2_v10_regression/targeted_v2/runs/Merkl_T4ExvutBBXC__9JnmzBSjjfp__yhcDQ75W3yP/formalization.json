@@ -1,0 +1,551 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "c7ffa83a8_is_fee_on_transfer_token": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the deposited token deducts a percentage fee on each transfer",
+      "checkpoint": "before deposit",
+      "entity_ids": [
+        "fot_token"
+      ],
+      "evidence": "The issue is that `_updateBalance` credits the full `amount` without measuring how many tokens were actually received. For FoT tokens that deduct a percentage on each transfer, the contract receives fewer tokens than `amount` but credits the full value."
+    },
+    "c7ffa83a8_deposit_amount": {
+      "sort": "int",
+      "unit": "tokens",
+      "meaning": "amount parameter passed to increaseTokenBalance() by the depositing user",
+      "checkpoint": "before deposit",
+      "entity_ids": [
+        "attacker",
+        "distribution_creator"
+      ],
+      "evidence": "- User deposits 10,000 tokens"
+    },
+    "c7ffa83a8_received_amount": {
+      "sort": "int",
+      "unit": "tokens",
+      "meaning": "tokens actually received by the contract after the FoT fee (9,900 for a 10,000 deposit at 1%)",
+      "checkpoint": "after transfer, before credit",
+      "entity_ids": [
+        "distribution_creator",
+        "fot_token"
+      ],
+      "evidence": "- Contract receives 9,900 tokens (after 1% fee)"
+    },
+    "c7ffa83a8_credited_amount": {
+      "sort": "int",
+      "unit": "tokens",
+      "meaning": "balance amount recorded for the user by _updateBalance",
+      "checkpoint": "after credit",
+      "entity_ids": [
+        "distribution_creator",
+        "attacker"
+      ],
+      "evidence": "- User's `creatorBalance` is credited 10,000 tokens"
+    },
+    "c7ffa83a8_recorded_balance_exceeds_holdings": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "recorded balances permanently exceed actual contract holdings (phantom balance, 100 token deficit per 10,000 token deposit)",
+      "checkpoint": "after credit",
+      "entity_ids": [
+        "distribution_creator",
+        "attacker"
+      ],
+      "evidence": "- User's `creatorBalance` is credited 10,000 tokens"
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_balance_inflation_35055a1a",
+      "scope": "increaseTokenBalance() credits full amount for fee-on-transfer tokens in DistributionCreator.sol",
+      "modality": "asserted",
+      "impact_ids": [
+        "balance_inflation"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The token deposited is a fee-on-transfer token that deducts a percentage on each transfer.; A user deposits 10,000 tokens via increaseTokenBalance().; For a 1% FoT token, the contract receives 9,900 tokens after the 1% fee on a 10,000 token deposit.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c7ffa83a8_is_fee_on_transfer_token"
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "c7ffa83a8_deposit_amount"
+                  },
+                  {
+                    "const": 10000
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "c7ffa83a8_received_amount"
+                  },
+                  {
+                    "const": 9900
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "fot_token_used",
+            "user_deposits_amount",
+            "contract_receives_less"
+          ],
+          "evidence": [
+            "The issue is that `_updateBalance` credits the full `amount` without measuring how many tokens were actually received. For FoT tokens that deduct a percentage on each transfer, the contract receives fewer tokens than `amount` but credits the full value.",
+            "Example with 1% FoT token:",
+            "- User deposits 10,000 tokens",
+            "The `increaseTokenBalance()` function transfers tokens from the caller and credits the user's balance:",
+            "- Contract receives 9,900 tokens (after 1% fee)"
+          ]
+        },
+        "safety": {
+          "text": "increaseTokenBalance() should credit the user's balance by the amount of tokens actually received by the contract, not the full amount parameter.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c7ffa83a8_is_fee_on_transfer_token"
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c7ffa83a8_deposit_amount"
+                      },
+                      {
+                        "const": 10000
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c7ffa83a8_received_amount"
+                      },
+                      {
+                        "const": 9900
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c7ffa83a8_credited_amount"
+                      },
+                      {
+                        "var": "c7ffa83a8_received_amount"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c7ffa83a8_recorded_balance_exceeds_holdings"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "credit_actual_received"
+          ],
+          "evidence": [
+            "The `increaseTokenBalance()` function in `DistributionCreator.sol` credits users with the full `amount` parameter without verifying the actual tokens received. For fee-on-transfer (FoT) tokens, this creates a permanent accounting mismatch where recorded balances exceed actual contract holdings, leading to protocol insolvency.",
+            "The issue is that `_updateBalance` credits the full `amount` without measuring how many tokens were actually received. For FoT tokens that deduct a percentage on each transfer, the contract receives fewer tokens than `amount` but credits the full value."
+          ]
+        },
+        "effects": {
+          "text": "Recorded balances permanently exceed actual contract holdings, creating phantom balances; a 100 token deficit per 10,000 token deposit.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c7ffa83a8_is_fee_on_transfer_token"
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c7ffa83a8_deposit_amount"
+                      },
+                      {
+                        "const": 10000
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c7ffa83a8_received_amount"
+                      },
+                      {
+                        "const": 9900
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "eq",
+                        "args": [
+                          {
+                            "var": "c7ffa83a8_credited_amount"
+                          },
+                          {
+                            "var": "c7ffa83a8_received_amount"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "not",
+                        "args": [
+                          {
+                            "var": "c7ffa83a8_recorded_balance_exceeds_holdings"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "balance_inflation"
+          ],
+          "evidence": [
+            "- User's `creatorBalance` is credited 10,000 tokens",
+            "- 100 token deficit per deposit",
+            "1. Balance Inflation: Recorded balances permanently exceed actual holdings, creating phantom balances."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "fot_token_used",
+            "user_deposits_amount",
+            "contract_receives_less"
+          ],
+          "args.1": [
+            "fot_token_used",
+            "user_deposits_amount",
+            "contract_receives_less"
+          ],
+          "args.2": [
+            "fot_token_used",
+            "user_deposits_amount",
+            "contract_receives_less"
+          ]
+        },
+        "safety": {
+          "": [
+            "credit_actual_received"
+          ],
+          "args.0": [
+            "credit_actual_received"
+          ],
+          "args.0.args.1": [
+            "credit_actual_received"
+          ],
+          "args.0.args.2": [
+            "credit_actual_received"
+          ],
+          "args.1": [
+            "credit_actual_received"
+          ],
+          "args.1.args.0": [
+            "credit_actual_received"
+          ],
+          "args.1.args.1": [
+            "credit_actual_received"
+          ]
+        },
+        "effects": {
+          "": [
+            "balance_inflation"
+          ],
+          "args.0": [
+            "balance_inflation"
+          ],
+          "args.0.args.1": [
+            "balance_inflation"
+          ],
+          "args.0.args.2": [
+            "balance_inflation"
+          ],
+          "args.1": [
+            "balance_inflation"
+          ],
+          "args.1.args.0": [
+            "balance_inflation"
+          ],
+          "args.1.args.0.args.0": [
+            "balance_inflation"
+          ],
+          "args.1.args.0.args.1": [
+            "balance_inflation"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "balance_inflation",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "increaseTokenBalance() is callable by the depositing user for the described deposit.",
+        "The 1% FoT fee is applied to the 10,000 token transfer, yielding 9,900 received tokens."
+      ],
+      "unresolved": []
+    },
+    {
+      "id": "impact_claim_campaign_funding_failures_a32d73fd",
+      "scope": "increaseTokenBalance() credits full amount for fee-on-transfer tokens in DistributionCreator.sol",
+      "modality": "potential",
+      "impact_ids": [
+        "campaign_funding_failures"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The token deposited is a fee-on-transfer token that deducts a percentage on each transfer.; A user deposits 10,000 tokens via increaseTokenBalance().; For a 1% FoT token, the contract receives 9,900 tokens after the 1% fee on a 10,000 token deposit.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "fot_token_used",
+            "user_deposits_amount",
+            "contract_receives_less"
+          ],
+          "evidence": [
+            "The issue is that `_updateBalance` credits the full `amount` without measuring how many tokens were actually received. For FoT tokens that deduct a percentage on each transfer, the contract receives fewer tokens than `amount` but credits the full value.",
+            "Example with 1% FoT token:",
+            "- User deposits 10,000 tokens",
+            "The `increaseTokenBalance()` function transfers tokens from the caller and credits the user's balance:",
+            "- Contract receives 9,900 tokens (after 1% fee)"
+          ]
+        },
+        "safety": {
+          "text": "increaseTokenBalance() should credit the user's balance by the amount of tokens actually received by the contract, not the full amount parameter.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "credit_actual_received"
+          ],
+          "evidence": [
+            "The `increaseTokenBalance()` function in `DistributionCreator.sol` credits users with the full `amount` parameter without verifying the actual tokens received. For fee-on-transfer (FoT) tokens, this creates a permanent accounting mismatch where recorded balances exceed actual contract holdings, leading to protocol insolvency.",
+            "The issue is that `_updateBalance` credits the full `amount` without measuring how many tokens were actually received. For FoT tokens that deduct a percentage on each transfer, the contract receives fewer tokens than `amount` but credits the full value."
+          ]
+        },
+        "effects": {
+          "text": "Campaigns created using inflated balances will fail or underfund the Distributor contract.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "campaign_funding_failures"
+          ],
+          "evidence": [
+            "4. Campaign Funding Failures: Campaigns created using inflated balances will fail or underfund the Distributor contract."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "campaign_funding_failures",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: credit_actual_received other_mismatch: The statement requires crediting actual received amount, but the predicate only asserts the campaign does not fail, encoding a different fact.; P/I/V relation other_mismatch: I does not encode crediting actual received tokens, so V (campaign failure) does not contradict I's stated requirement."
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: credit_actual_received other_mismatch: The statement requires crediting actual received amount, but the predicate only asserts the campaign does not fail, encoding a different fact.; P/I/V relation other_mismatch: I does not encode crediting actual received tokens, so V (campaign failure) does not contradict I's stated requirement."
+      ]
+    },
+    {
+      "id": "impact_claim_last_depositor_loss_fcd9cedb",
+      "scope": "increaseTokenBalance() credits full amount for fee-on-transfer tokens in DistributionCreator.sol",
+      "modality": "potential",
+      "impact_ids": [
+        "last_depositor_loss"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The token deposited is a fee-on-transfer token that deducts a percentage on each transfer.; A user deposits 10,000 tokens via increaseTokenBalance().; For a 1% FoT token, the contract receives 9,900 tokens after the 1% fee on a 10,000 token deposit.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "fot_token_used",
+            "user_deposits_amount",
+            "contract_receives_less"
+          ],
+          "evidence": [
+            "The issue is that `_updateBalance` credits the full `amount` without measuring how many tokens were actually received. For FoT tokens that deduct a percentage on each transfer, the contract receives fewer tokens than `amount` but credits the full value.",
+            "Example with 1% FoT token:",
+            "- User deposits 10,000 tokens",
+            "The `increaseTokenBalance()` function transfers tokens from the caller and credits the user's balance:",
+            "- Contract receives 9,900 tokens (after 1% fee)"
+          ]
+        },
+        "safety": {
+          "text": "increaseTokenBalance() should credit the user's balance by the amount of tokens actually received by the contract, not the full amount parameter.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "credit_actual_received"
+          ],
+          "evidence": [
+            "The `increaseTokenBalance()` function in `DistributionCreator.sol` credits users with the full `amount` parameter without verifying the actual tokens received. For fee-on-transfer (FoT) tokens, this creates a permanent accounting mismatch where recorded balances exceed actual contract holdings, leading to protocol insolvency.",
+            "The issue is that `_updateBalance` credits the full `amount` without measuring how many tokens were actually received. For FoT tokens that deduct a percentage on each transfer, the contract receives fewer tokens than `amount` but credits the full value."
+          ]
+        },
+        "effects": {
+          "text": "Users who withdraw later cannot receive their full balance; the last ~1% of withdrawers will be unable to withdraw anything.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "last_depositor_loss"
+          ],
+          "evidence": [
+            "As more users deposit, the deficit accumulates. When users attempt to withdraw via `decreaseTokenBalance()`, the last users will be unable to withdraw their full recorded balance because the contract lacks sufficient tokens.",
+            "3. Last Depositor Loss: Users who withdraw later cannot receive their full balance. The deficit is socialized to the last withdrawers.",
+            "- The last ~1% of withdrawers will be unable to withdraw anything"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "last_depositor_loss",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: invalid quantity binding"
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: invalid quantity binding"
+      ]
+    },
+    {
+      "id": "impact_claim_protocol_insolvency_4d4eda11",
+      "scope": "increaseTokenBalance() credits full amount for fee-on-transfer tokens in DistributionCreator.sol",
+      "modality": "asserted",
+      "impact_ids": [
+        "protocol_insolvency"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The token deposited is a fee-on-transfer token that deducts a percentage on each transfer.; A user deposits 10,000 tokens via increaseTokenBalance().; For a 1% FoT token, the contract receives 9,900 tokens after the 1% fee on a 10,000 token deposit.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "fot_token_used",
+            "user_deposits_amount",
+            "contract_receives_less"
+          ],
+          "evidence": [
+            "The issue is that `_updateBalance` credits the full `amount` without measuring how many tokens were actually received. For FoT tokens that deduct a percentage on each transfer, the contract receives fewer tokens than `amount` but credits the full value.",
+            "Example with 1% FoT token:",
+            "- User deposits 10,000 tokens",
+            "The `increaseTokenBalance()` function transfers tokens from the caller and credits the user's balance:",
+            "- Contract receives 9,900 tokens (after 1% fee)"
+          ]
+        },
+        "safety": {
+          "text": "increaseTokenBalance() should credit the user's balance by the amount of tokens actually received by the contract, not the full amount parameter.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "credit_actual_received"
+          ],
+          "evidence": [
+            "The `increaseTokenBalance()` function in `DistributionCreator.sol` credits users with the full `amount` parameter without verifying the actual tokens received. For fee-on-transfer (FoT) tokens, this creates a permanent accounting mismatch where recorded balances exceed actual contract holdings, leading to protocol insolvency.",
+            "The issue is that `_updateBalance` credits the full `amount` without measuring how many tokens were actually received. For FoT tokens that deduct a percentage on each transfer, the contract receives fewer tokens than `amount` but credits the full value."
+          ]
+        },
+        "effects": {
+          "text": "The contract becomes insolvent, owing more than it holds; with 1,000,000 tokens deposited across users at 1% FoT, the protocol has a 10,000 token deficit.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "protocol_insolvency"
+          ],
+          "evidence": [
+            "2. Protocol Insolvency: The contract becomes insolvent - it owes more than it holds.",
+            "- With a 1% FoT token and 1,000,000 tokens deposited across users, the protocol has a 10,000 token deficit"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "protocol_insolvency",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: invalid quantity binding"
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: invalid quantity binding"
+      ]
+    }
+  ],
+  "limitations": [
+    "Formalizes only the balance_inflation impact; protocol insolvency, last-depositor loss and campaign funding failures are out of scope for this claim.",
+    "credited_amount is bound symbolically; the report states the credit equals the full amount parameter but the plan does not assert that as a precondition.",
+    "protocol_insolvency: No faithful claim generated after bounded retries: invalid quantity binding",
+    "last_depositor_loss: No faithful claim generated after bounded retries: invalid quantity binding",
+    "campaign_funding_failures: No faithful claim generated after bounded retries: semantic faithfulness mismatch: credit_actual_received other_mismatch: The statement requires crediting actual received amount, but the predicate only asserts the campaign does not fail, encoding a different fact.; P/I/V relation other_mismatch: I does not encode crediting actual received tokens, so V (campaign failure) does not contradict I's stated requirement."
+  ]
+}

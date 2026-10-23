@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import hashlib
 
 from .definitions import ELEMENT_CONTRACT_MARKERS, FORMAL_CONTRACT_MARKERS
-from .registry import (DEFAULT_VERSION, EXPERIMENTAL_VERSION, LIVE_VERSION,
+from .registry import (DEFAULT_VERSION, EXPERIMENTAL_VERSION, LIVE_VERSION_NAMES,
                        RECOMMENDED_VERSION, module_for)
 
 
@@ -34,7 +34,10 @@ class ResolvedPromptSet:
 
 def _assert_piv_contract(prompts: ResolvedPromptSet) -> None:
     """Fail early if an active prompt loses the canonical P/I/V distinctions."""
-    if prompts.version not in {RECOMMENDED_VERSION, EXPERIMENTAL_VERSION, LIVE_VERSION}:
+    # These markers describe the current live contract. Frozen prompt versions
+    # are replayed as historical artifacts and must remain resolvable even when
+    # they predate a marker added to the live prompt.
+    if prompts.version not in LIVE_VERSION_NAMES:
         return
     missing = [marker for marker in ELEMENT_CONTRACT_MARKERS
                if marker not in prompts.element_prompt]

@@ -1,0 +1,37 @@
+Zero‑Supply Week Strands Emissions: Unclaimable Rewards in RewardsDistributor
+
+### Summary
+Rewards for weeks with zero veHYBR supply become permanently unclaimable. If the distributor is funded and checkpointed before any ve holders exist, that week’s allocation is fixed to a week where all users had zero balance, so no one can ever claim it later. The tokens remain stranded in `RewardsDistributor`.
+
+
+### Finding Description
+
+Intended:
+- Minter funds `RewardsDistributor` and calls `checkpoint_token()`, which apportions tokens across weekly buckets.
+- Later, users with veHYBR can claim by summing their weekly pro‑rata share: `balanceOfNFTAt(...) / totalSupplyAtT(...)`.
+
+Actual:
+- `_checkpoint_token()` credits the current week’s bucket even if there are no ve holders for that week.
+- The claim loop uses historical balance snapshots at that week’s end. If no locks existed for that week, every user’s `balanceOfNFTAt(...)` is zero, so the entire allocation is forever unclaimable.
+
+Why it happens
+
+
+- If no ve existed at `week_cursor + WEEK - 1`, `balance_of` is 0 for every tokenId, and the week’s `tokens_per_week` allocation is never claimed.
+
+### Impact
+- A portion of matured weekly rewards becomes permanently stuck in `RewardsDistributor` whenever funding/checkpointing happens before any ve holders exist for that week (including the first/funding week).
+- Long‑term value leakage; misalignment between notified and claimable rewards.
+
+### Likelihood
+- Moderate. Deployments and initial funding often occur before any user lock exists. Also possible in any week with zero supply (e.g., migration/maintenance windows).
+
+### Affected Components (concise)
+- `ve33/contracts/RewardsDistributor.sol`
+  - `_checkpoint_token()`: allocates to weeks regardless of current supply state
+  - `_claim/_claimable`: strictly reads end‑of‑week snapshots; zero‑supply weeks produce zero claimable
+
+### Recommendation
+- Roll forward zero‑supply allocations: if `totalSupplyAtT(week_end) == 0`, carry `tokens_per_week[week]` into the next week with nonzero supply.
+- Alternatively, defer allocation until at least one ve holder exists (gate the first checkpoint).
+- Telemetry: assert per epoch that sum(distributed) + undistributed_rollover equals notified.

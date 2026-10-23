@@ -1,0 +1,27 @@
+Fill-Or-Kill (FOK) Orders Unfairly Revert Due to Lot Size Rounding and Price Improvement
+
+## Finding description and impact
+
+**Description (Root Cause)**
+
+The protocol's documentation states, "FOK fill orders *should* not revert if only the amount rounded off is left unfilled." However, the current implementation contradicts this, causing FOK orders to revert even when there is sufficient liquidity on the books. This occurs in two primary scenarios when `amountIsBase` is `true`:
+
+1.  **Input Amount Not a Multiple of Lot Size:** If a user submits an FOK order with an `amount` that is not a multiple of the market's `lotSizeInBase`, the order will always fail. The matching engine calculates the fillable amount (`baseDelta`) by rounding the user's input down to the nearest lot size. This leaves non-zero dust in `newOrder.amount` (equal to `args.amount % lotSizeInBase`). The final check in `_processFillBidOrder` and `_processFillAskOrder` incorrectly interprets this dust as an unfilled portion of the order and reverts the transaction.
+
+2.  **Partial Unfill Due to Price Improvement:** When a user submits an FOK order, they must specify a `priceLimit`. The matching engine will fill their order against any resting orders that have a price better than or equal to this limit. If the engine finds resting orders at a price significantly better than the user's `priceLimit`, the user receives a more favorable execution. However, this price improvement means they spend less of their input token to acquire the same amount of the output token (or acquire more output for the same input). This paradoxically causes a portion of their original order `amount` to remain unused. The final FOK check misinterprets this leftover amount—which represents a saving for the user—as an "unfilled" portion of the order and unfairly reverts the transaction.
+
+**Impact**
+
+This flaw severely impairs the core functionality of FOK orders. Trades that should succeed will unexpectedly fail, leading to a poor user experience, potential loss of trading opportunities, and a significant discrepancy between documented behavior and actual contract logic.
+
+---
+
+## Recommended mitigation steps
+
+To align the contract's behavior with the documented intent, the check for FOK orders should account for dust created by rounding or price improvement. Instead of simply checking `newOrder.amount > 0`, the logic should verify if the user's requested *fillable* amount was met.
+
+In `_processFillBidOrder` and `_processFillAskOrder`, when `amountIsBase` is true, modify the FOK check to compare the `totalBaseReceived` against the user's input amount rounded down to the nearest lot size.
+
+A similar change should be applied to `_processFillAskOrder`. This ensures that base-denominated FOK orders only fail if the available liquidity is less than the user's requested amount (adjusted for the market's lot size), correctly handling rounding dust and savings from price improvement as intended.
+
+---

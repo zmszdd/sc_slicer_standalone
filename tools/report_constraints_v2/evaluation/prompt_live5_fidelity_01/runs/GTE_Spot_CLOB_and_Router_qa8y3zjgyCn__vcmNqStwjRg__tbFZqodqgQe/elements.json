@@ -1,0 +1,180 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "limit order append to existing price level, then cancellation/full fill/expiry removal",
+    "environment": "on-chain order book contract with doubly-linked per-price-level order list",
+    "evidence": [
+      "Every time a limit order is appended to an existing price-level, the contract fails to persist the new order’s `prevOrderId` field. Subsequent cancellation, full fill, or expiry of that appended order causes the removal routine to mis-handle the doubly-linked list, detaching all earlier orders at that price.",
+      "Order stored without links. `_updateBookPostOrder()` writes the freshly created `Order` struct to `storage`; `prevOrderId` is still `0`.",
+      "Because `order` is a memory copy, the storage slot at `self.orders[order.id]` never receives the new `prevOrderId`.",
+      "Here, `if (!prev.isNull()) … else limit.headOrder = next;` treats the order as a head (since `prev == 0`). It rewires `limit.headOrder` to `next`, effectively dropping the true head segment from the list. Those older orders become unreachable."
+    ]
+  },
+  "entities": [
+    {
+      "id": "contract",
+      "name": "order book contract",
+      "role": "contract",
+      "evidence": [
+        "Every time a limit order is appended to an existing price-level, the contract fails to persist the new order’s `prevOrderId` field. Subsequent cancellation, full fill, or expiry of that appended order causes the removal routine to mis-handle the doubly-linked list, detaching all earlier orders at that price.",
+        "Order stored without links. `_updateBookPostOrder()` writes the freshly created `Order` struct to `storage`; `prevOrderId` is still `0`."
+      ]
+    },
+    {
+      "id": "maker",
+      "name": "maker placing limit orders",
+      "role": "victim",
+      "evidence": [
+        "Makers cannot withdraw or reuse tokens committed to ghost orders."
+      ]
+    },
+    {
+      "id": "appended_order",
+      "name": "appended limit order",
+      "role": "asset",
+      "evidence": [
+        "Every time a limit order is appended to an existing price-level, the contract fails to persist the new order’s `prevOrderId` field. Subsequent cancellation, full fill, or expiry of that appended order causes the removal routine to mis-handle the doubly-linked list, detaching all earlier orders at that price.",
+        "Order stored without links. `_updateBookPostOrder()` writes the freshly created `Order` struct to `storage`; `prevOrderId` is still `0`."
+      ]
+    },
+    {
+      "id": "earlier_orders",
+      "name": "earlier orders at same price level",
+      "role": "asset",
+      "evidence": [
+        "Every time a limit order is appended to an existing price-level, the contract fails to persist the new order’s `prevOrderId` field. Subsequent cancellation, full fill, or expiry of that appended order causes the removal routine to mis-handle the doubly-linked list, detaching all earlier orders at that price.",
+        "Here, `if (!prev.isNull()) … else limit.headOrder = next;` treats the order as a head (since `prev == 0`). It rewires `limit.headOrder` to `next`, effectively dropping the true head segment from the list. Those older orders become unreachable."
+      ]
+    },
+    {
+      "id": "collateral",
+      "name": "maker collateral",
+      "role": "asset",
+      "evidence": [
+        "(a) hold user collateral hostage",
+        "Makers cannot withdraw or reuse tokens committed to ghost orders."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "existing_price_level",
+      "kind": "precondition",
+      "text": "A price level already exists with earlier orders when a new limit order is appended to it.",
+      "modality": "asserted",
+      "entity_ids": [
+        "contract",
+        "earlier_orders",
+        "appended_order"
+      ],
+      "evidence": [
+        "Every time a limit order is appended to an existing price-level, the contract fails to persist the new order’s `prevOrderId` field. Subsequent cancellation, full fill, or expiry of that appended order causes the removal routine to mis-handle the doubly-linked list, detaching all earlier orders at that price."
+      ]
+    },
+    {
+      "id": "order_stored_prev_zero",
+      "kind": "root_cause",
+      "text": "_updateBookPostOrder() writes the new Order to storage with prevOrderId still 0.",
+      "modality": "asserted",
+      "entity_ids": [
+        "contract",
+        "appended_order"
+      ],
+      "evidence": [
+        "Order stored without links. `_updateBookPostOrder()` writes the freshly created `Order` struct to `storage`; `prevOrderId` is still `0`."
+      ]
+    },
+    {
+      "id": "link_only_in_memory",
+      "kind": "root_cause",
+      "text": "_updateLimitPostOrder() sets prevOrderId only on a memory copy, so the storage slot never receives the new prevOrderId.",
+      "modality": "asserted",
+      "entity_ids": [
+        "contract",
+        "appended_order"
+      ],
+      "evidence": [
+        "Link update only in memory. In `_updateLimitPostOrder()` the library sets",
+        "Because `order` is a memory copy, the storage slot at `self.orders[order.id]` never receives the new `prevOrderId`."
+      ]
+    },
+    {
+      "id": "removal_misclassifies_head",
+      "kind": "root_cause",
+      "text": "_updateLimitRemoveOrder() treats the appended order as head because prev == 0 and rewires limit.headOrder to next, dropping the true head segment.",
+      "modality": "asserted",
+      "entity_ids": [
+        "contract",
+        "appended_order",
+        "earlier_orders"
+      ],
+      "evidence": [
+        "Removal mis-classifies node. When any later path calls `_updateLimitRemoveOrder()` on this order, the branch",
+        "Here, `if (!prev.isNull()) … else limit.headOrder = next;` treats the order as a head (since `prev == 0`). It rewires `limit.headOrder` to `next`, effectively dropping the true head segment from the list. Those older orders become unreachable."
+      ]
+    },
+    {
+      "id": "trigger_removal",
+      "kind": "action",
+      "text": "Cancellation, full fill, or expiry of the appended order invokes the removal routine.",
+      "modality": "asserted",
+      "entity_ids": [
+        "contract",
+        "appended_order"
+      ],
+      "evidence": [
+        "Every time a limit order is appended to an existing price-level, the contract fails to persist the new order’s `prevOrderId` field. Subsequent cancellation, full fill, or expiry of that appended order causes the removal routine to mis-handle the doubly-linked list, detaching all earlier orders at that price."
+      ]
+    },
+    {
+      "id": "earlier_orders_orphaned",
+      "kind": "impact",
+      "text": "Earlier orders at that price become unreachable by matching, amending, or cancelling logic.",
+      "modality": "asserted",
+      "entity_ids": [
+        "earlier_orders",
+        "contract"
+      ],
+      "evidence": [
+        "These ghost orders are no longer reachable by matching, amending, or cancelling logic, yet they continue to:",
+        "Here, `if (!prev.isNull()) … else limit.headOrder = next;` treats the order as a head (since `prev == 0`). It rewires `limit.headOrder` to `next`, effectively dropping the true head segment from the list. Those older orders become unreachable."
+      ]
+    },
+    {
+      "id": "collateral_locked",
+      "kind": "impact",
+      "text": "Makers cannot withdraw or reuse tokens committed to ghost orders.",
+      "modality": "asserted",
+      "entity_ids": [
+        "maker",
+        "collateral"
+      ],
+      "evidence": [
+        "(a) hold user collateral hostage",
+        "Makers cannot withdraw or reuse tokens committed to ghost orders."
+      ]
+    },
+    {
+      "id": "intent_list_integrity",
+      "kind": "security_intent",
+      "text": "Removing an appended order should preserve the linked-list links to earlier orders at the same price level so they remain reachable and their collateral releasable.",
+      "modality": "inferred",
+      "entity_ids": [
+        "contract",
+        "earlier_orders"
+      ],
+      "evidence": [
+        "Every time a limit order is appended to an existing price-level, the contract fails to persist the new order’s `prevOrderId` field. Subsequent cancellation, full fill, or expiry of that appended order causes the removal routine to mis-handle the doubly-linked list, detaching all earlier orders at that price.",
+        "Here, `if (!prev.isNull()) … else limit.headOrder = next;` treats the order as a head (since `prev == 0`). It rewires `limit.headOrder` to `next`, effectively dropping the true head segment from the list. Those older orders become unreachable."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "trigger_removal"
+  ],
+  "ambiguities": [
+    "Report does not state who triggers removal or whether it is permissionless.",
+    "No explicit numeric bound or expected-versus-actual quantity is given.",
+    "Whether ghost orders were actually observed versus only possible is not established."
+  ]
+}

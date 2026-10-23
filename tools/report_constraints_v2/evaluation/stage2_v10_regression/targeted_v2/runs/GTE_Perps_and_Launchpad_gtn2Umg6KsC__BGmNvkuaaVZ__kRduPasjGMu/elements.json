@@ -1,0 +1,195 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "GTELaunchpadV2Pair._update() fee accounting when timeElapsed == 0, affecting mint/swap amountIn = balance.sub(reserve)",
+    "environment": "GTELaunchpadV2Pair launchpad AMM pair contract",
+    "evidence": [
+      "`GTELaunchpadV2Pair` can be drained due to `totalLaunchpadFees` being subtracted from reserve calculation",
+      "Within `GTELaunchpadV2Pair._update()`, if `timeElapsed == 0`, totalLaunchpadFees will be subtracted from reserves but the tokens will not actually be removed from the contract.",
+      "As you can see above, `_distributeLaunchpadFees()` is only called if `timeElapsed > 0`. This results in a state where `balance0 > reserve0` and/or `balance1 > reserve1`.",
+      "This results in a critical vulnerability in both the mint and swap functions where `amountIn` is calculated as `balance.sub(reserve)`.",
+      "After accruing some launchpad fees, a malicious user could repeatedly call mint or swap and be credited with an amount that they did not send to the contract. This is most easily seen via swap in the POC below."
+    ]
+  },
+  "entities": [
+    {
+      "id": "pair",
+      "name": "GTELaunchpadV2Pair",
+      "role": "contract",
+      "evidence": [
+        "`GTELaunchpadV2Pair` can be drained due to `totalLaunchpadFees` being subtracted from reserve calculation",
+        "Within `GTELaunchpadV2Pair._update()`, if `timeElapsed == 0`, totalLaunchpadFees will be subtracted from reserves but the tokens will not actually be removed from the contract."
+      ]
+    },
+    {
+      "id": "attacker",
+      "name": "malicious user",
+      "role": "attacker",
+      "evidence": [
+        "After accruing some launchpad fees, a malicious user could repeatedly call mint or swap and be credited with an amount that they did not send to the contract. This is most easily seen via swap in the POC below."
+      ]
+    },
+    {
+      "id": "launchpad_fees",
+      "name": "totalLaunchpadFees",
+      "role": "asset",
+      "evidence": [
+        "Within `GTELaunchpadV2Pair._update()`, if `timeElapsed == 0`, totalLaunchpadFees will be subtracted from reserves but the tokens will not actually be removed from the contract.",
+        "After accruing some launchpad fees, a malicious user could repeatedly call mint or swap and be credited with an amount that they did not send to the contract. This is most easily seen via swap in the POC below."
+      ]
+    },
+    {
+      "id": "reserves",
+      "name": "pair reserves (reserve0/reserve1)",
+      "role": "asset",
+      "evidence": [
+        "As you can see above, `_distributeLaunchpadFees()` is only called if `timeElapsed > 0`. This results in a state where `balance0 > reserve0` and/or `balance1 > reserve1`.",
+        "This results in a critical vulnerability in both the mint and swap functions where `amountIn` is calculated as `balance.sub(reserve)`."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "fees_accrued",
+      "kind": "precondition",
+      "text": "Launchpad fees have accrued in the pair (totalLaunchpadFees nonzero).",
+      "modality": "asserted",
+      "entity_ids": [
+        "pair",
+        "launchpad_fees"
+      ],
+      "evidence": [
+        "After accruing some launchpad fees, a malicious user could repeatedly call mint or swap and be credited with an amount that they did not send to the contract. This is most easily seen via swap in the POC below."
+      ]
+    },
+    {
+      "id": "time_elapsed_zero",
+      "kind": "precondition",
+      "text": "In _update(), timeElapsed == 0.",
+      "modality": "asserted",
+      "entity_ids": [
+        "pair"
+      ],
+      "evidence": [
+        "Within `GTELaunchpadV2Pair._update()`, if `timeElapsed == 0`, totalLaunchpadFees will be subtracted from reserves but the tokens will not actually be removed from the contract."
+      ]
+    },
+    {
+      "id": "distribute_skipped",
+      "kind": "root_cause",
+      "text": "_distributeLaunchpadFees() is only called if timeElapsed > 0, so when timeElapsed == 0 totalLaunchpadFees is subtracted from reserves without the tokens being removed from the contract.",
+      "modality": "asserted",
+      "entity_ids": [
+        "pair",
+        "launchpad_fees",
+        "reserves"
+      ],
+      "evidence": [
+        "Within `GTELaunchpadV2Pair._update()`, if `timeElapsed == 0`, totalLaunchpadFees will be subtracted from reserves but the tokens will not actually be removed from the contract.",
+        "As you can see above, `_distributeLaunchpadFees()` is only called if `timeElapsed > 0`. This results in a state where `balance0 > reserve0` and/or `balance1 > reserve1`."
+      ]
+    },
+    {
+      "id": "balance_exceeds_reserve",
+      "kind": "impact",
+      "text": "State results where balance0 > reserve0 and/or balance1 > reserve1.",
+      "modality": "asserted",
+      "entity_ids": [
+        "pair",
+        "reserves"
+      ],
+      "evidence": [
+        "As you can see above, `_distributeLaunchpadFees()` is only called if `timeElapsed > 0`. This results in a state where `balance0 > reserve0` and/or `balance1 > reserve1`."
+      ]
+    },
+    {
+      "id": "amountin_from_gap",
+      "kind": "root_cause",
+      "text": "In mint and swap, amountIn is calculated as balance.sub(reserve), so the balance-reserve gap is credited as input.",
+      "modality": "asserted",
+      "entity_ids": [
+        "pair",
+        "reserves"
+      ],
+      "evidence": [
+        "This results in a critical vulnerability in both the mint and swap functions where `amountIn` is calculated as `balance.sub(reserve)`."
+      ]
+    },
+    {
+      "id": "repeat_credit",
+      "kind": "action",
+      "text": "A malicious user repeatedly calls mint or swap.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "pair"
+      ],
+      "evidence": [
+        "After accruing some launchpad fees, a malicious user could repeatedly call mint or swap and be credited with an amount that they did not send to the contract. This is most easily seen via swap in the POC below."
+      ]
+    },
+    {
+      "id": "credited_unspent",
+      "kind": "impact",
+      "text": "The malicious user is credited with an amount they did not send to the contract.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "pair"
+      ],
+      "evidence": [
+        "After accruing some launchpad fees, a malicious user could repeatedly call mint or swap and be credited with an amount that they did not send to the contract. This is most easily seen via swap in the POC below."
+      ]
+    },
+    {
+      "id": "drain",
+      "kind": "impact",
+      "text": "GTELaunchpadV2Pair can be drained.",
+      "modality": "potential",
+      "entity_ids": [
+        "pair",
+        "reserves"
+      ],
+      "evidence": [
+        "`GTELaunchpadV2Pair` can be drained due to `totalLaunchpadFees` being subtracted from reserve calculation"
+      ]
+    },
+    {
+      "id": "intent_fee_consistency",
+      "kind": "security_intent",
+      "text": "When launchpad fees are subtracted from reserves, the corresponding tokens must actually be removed from the contract so balance and reserve stay consistent.",
+      "modality": "inferred",
+      "entity_ids": [
+        "pair",
+        "launchpad_fees",
+        "reserves"
+      ],
+      "evidence": [
+        "Within `GTELaunchpadV2Pair._update()`, if `timeElapsed == 0`, totalLaunchpadFees will be subtracted from reserves but the tokens will not actually be removed from the contract.",
+        "As you can see above, `_distributeLaunchpadFees()` is only called if `timeElapsed > 0`. This results in a state where `balance0 > reserve0` and/or `balance1 > reserve1`."
+      ]
+    },
+    {
+      "id": "intent_amountin_actual",
+      "kind": "security_intent",
+      "text": "amountIn credited in mint/swap must reflect tokens actually sent by the caller, not a balance-reserve gap.",
+      "modality": "inferred",
+      "entity_ids": [
+        "pair",
+        "attacker"
+      ],
+      "evidence": [
+        "This results in a critical vulnerability in both the mint and swap functions where `amountIn` is calculated as `balance.sub(reserve)`.",
+        "After accruing some launchpad fees, a malicious user could repeatedly call mint or swap and be credited with an amount that they did not send to the contract. This is most easily seen via swap in the POC below."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "repeat_credit"
+  ],
+  "ambiguities": [
+    "Report does not state whether the attacker is authorized or permissionless; 'malicious user' only.",
+    "No concrete drained amount or numeric loss is given.",
+    "Whether timeElapsed == 0 occurs in a real transaction is not established beyond the conditional description."
+  ]
+}

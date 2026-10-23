@@ -1,0 +1,236 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "value_relation",
+  "precondition_ids": [
+    "getemas_return_order",
+    "twap_consumed_by_pool"
+  ],
+  "intent_id": "intent_twap_matches_intended",
+  "impact_ids": [
+    "staleness_false_results"
+  ],
+  "symbols": {
+    "spot_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "spotEMA returned at index 0 of OraclePack.getEMAs()",
+      "checkpoint": "before twapEMA computation",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "getemas_return_order"
+      ]
+    },
+    "fast_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "fastEMA returned at index 1 of OraclePack.getEMAs()",
+      "checkpoint": "before twapEMA computation",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "getemas_return_order"
+      ]
+    },
+    "slow_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "slowEMA returned at index 2 of OraclePack.getEMAs()",
+      "checkpoint": "before twapEMA computation",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "getemas_return_order"
+      ]
+    },
+    "eons_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "eonsEMA returned at index 3 of OraclePack.getEMAs()",
+      "checkpoint": "before twapEMA computation",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "getemas_return_order"
+      ]
+    },
+    "twap_tick_used": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "TWAP tick value consumed by PanopticPool.getTWAP()/dispatchFrom() for staleness checks",
+      "checkpoint": "after twapEMA computation, at staleness check",
+      "entity_ids": [
+        "risk_engine",
+        "panoptic_pool",
+        "twap_tick",
+        "dispatch_logic"
+      ],
+      "source_ids": [
+        "twap_consumed_by_pool",
+        "intent_twap_matches_intended",
+        "staleness_false_results"
+      ]
+    },
+    "intended_twap_tick": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "intended TWAP tick 0.6*fast + 0.3*slow + 0.1*eons (derived)",
+      "checkpoint": "derived from getEMAs tuple",
+      "entity_ids": [
+        "risk_engine",
+        "twap_tick"
+      ],
+      "source_ids": [
+        "intent_twap_matches_intended"
+      ]
+    },
+    "staleness_check_misclassified": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "StaleOracle() check yields a false positive or false negative because the consumed TWAP differs from the intended TWAP",
+      "checkpoint": "at staleness check in dispatchFrom()",
+      "entity_ids": [
+        "twap_tick",
+        "dispatch_logic"
+      ],
+      "source_ids": [
+        "staleness_false_results",
+        "intent_twap_matches_intended"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "getemas_return_order",
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "comparison",
+            "left": "spot_ema",
+            "operator": "ne",
+            "right": {
+              "symbol": "fast_ema"
+            }
+          },
+          {
+            "kind": "comparison",
+            "left": "fast_ema",
+            "operator": "ne",
+            "right": {
+              "symbol": "slow_ema"
+            }
+          },
+          {
+            "kind": "comparison",
+            "left": "slow_ema",
+            "operator": "ne",
+            "right": {
+              "symbol": "eons_ema"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "source_id": "twap_consumed_by_pool",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "staleness_check_misclassified",
+        "value": false
+      }
+    }
+  ],
+  "derived_definitions": [
+    {
+      "symbol": "intended_twap_tick",
+      "expression": {
+        "op": "add",
+        "args": [
+          {
+            "op": "add",
+            "args": [
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "symbol": "fast_ema"
+                  },
+                  {
+                    "const": 6
+                  }
+                ]
+              },
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "symbol": "slow_ema"
+                  },
+                  {
+                    "const": 3
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "symbol": "eons_ema"
+          }
+        ]
+      },
+      "source_ids": [
+        "intent_twap_matches_intended"
+      ]
+    }
+  ],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "truth",
+      "symbol": "staleness_check_misclassified",
+      "value": false
+    },
+    "relation": {
+      "kind": "comparison",
+      "left": "twap_tick_used",
+      "operator": "eq",
+      "right": {
+        "symbol": "intended_twap_tick"
+      }
+    }
+  },
+  "assumptions": [
+    "The staleness check consumes the TWAP tick produced by RiskEngine.twapEMA() via PanopticPool.getTWAP().",
+    "The intended TWAP is the weighted combination 0.6*fast + 0.3*slow + 0.1*eons as stated in the security intent.",
+    "No caller/authorization qualifier applies; the flaw is in internal computation."
+  ],
+  "unresolved": [
+    {
+      "category": "missing_report_definition",
+      "description": "Report gives intended weights as decimals (0.6, 0.3, 0.1) but no exact integer scaling for the intended formula; derived_definitions uses 6/3/1 over 10 to match the stated weights, which is an interpretation not explicitly stated as the intended integer form.",
+      "source_ids": [
+        "intent_twap_matches_intended",
+        "twap_ema_compute"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "Report describes staleness impact as potential false positives/negatives without a concrete triggering transaction or observed values.",
+      "source_ids": [
+        "staleness_false_results"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Impact is described as potential; no concrete on-chain incident or numeric TWAP values are supplied.",
+    "Only the staleness_false_results impact is formalized; solvency and liquidation pricing impacts are out of scope for this plan.",
+    "The staleness_check_misclassified Boolean abstracts the StaleOracle() outcome because the report gives no numeric staleness threshold."
+  ]
+}

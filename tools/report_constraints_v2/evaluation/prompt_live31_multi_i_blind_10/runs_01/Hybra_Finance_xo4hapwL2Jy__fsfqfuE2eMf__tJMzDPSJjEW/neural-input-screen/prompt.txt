@@ -1,0 +1,39 @@
+You are a conservative REPORT-NARRATIVE-SUFFICIENCY gate for vulnerability reports.
+Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
+whether the supplied numbered report fragments explain the affected subject, trigger,
+direct effect, and safety-relation basis well enough to attempt P/I/V formalization.
+"ready" means only that the narrative is sufficient to try. It does not mean the
+current rule grammar can express the relation, that numeric variables and units are
+available, or that a model will successfully generate complete formulas. Those are
+judged separately from the subsequent per-impact formalization results.
+
+Required dimensions:
+1. affected_subject: identifiable affected component, function, state, asset, or actor.
+2. trigger_or_action: a concrete triggering condition, operation, call, or state transition.
+3. direct_effect: an immediate unauthorized behavior, state/value change, failed guarantee,
+   or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
+4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
+   numeric, temporal, conservation, or state-transition safety relationship can be derived.
+   The report need not explicitly say "invariant". A NatSpec rule, quoted standard
+   requirement, or mitigation that directly states expected behavior can support this
+   dimension; implementation steps alone cannot. The relation must not be invented.
+
+Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
+Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
+dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
+list every dimension whose status is missing OR uncertain, in the required dimension
+order. decision is ready only when all four dimensions are present; otherwise decision
+is insufficient. A proposed fix may support only the safety-relation dimension when its
+text directly states the expected property; it cannot replace evidence of the affected
+subject, trigger, or direct effect. Do not treat PoC availability, code availability,
+or severity labels as substitutes.
+Return JSON only with exactly:
+{"schema_version":"report-readiness/1","decision":"ready|insufficient",
+ "dimensions":{
+  "affected_subject":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "trigger_or_action":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "direct_effect":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "safety_relation_basis":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"}},
+ "missing_dimensions":[],"summary":"short explanation"}
+REPORT FRAGMENTS:
+{"schema_version":"report-evidence/1","source_sha256":"d329a4acb22b1eb30b3dc2b9ec47f1a4f295c05a826a40bf2d0f146137adbc4d","fragments":[{"id":"e_d329a4acb22b_0001","text":"CL gauge authenticity gap enables a fake pool to siphon emissions via `claimFees` balance sweep"},{"id":"e_d329a4acb22b_0002","text":"> A fake CL pool can be onboarded without proof it is real, then the gauge treats its whole HYBR balance as “fees” and forwards everything to the bribe contract when fees are claimed."},{"id":"e_d329a4acb22b_0003","text":"## Summary"},{"id":"e_d329a4acb22b_0004","text":"The CL gauge creation path does not authenticate that the supplied pool address was created by the canonical CL factory. The code sets `isPair = true` for `gaugeType == 1`, so any contract with code passes the pool check. Only token whitelist and connector checks remain. Once created, the CL gauge exposes `claimFees()` publicly. The fee claim logic calls the pool’s `collectFees()`, then ignores the actual returned amounts and instead reads the gauge’s ERC-20 balances for `token0` and `token1`, and forwards those entire balances to the internal bribe contract. HYBR emissions live temporarily on the gauge each epoch. If a fake pool lies that `token0 == HYBR`, a routine `claimFees()` call forwa"},{"id":"e_d329a4acb22b_0005","text":"rds the gauge’s full HYBR emissions to bribes. This breaks core incentives and bleeds protocol rewards to whoever votes for the malicious gauge. The pathway is permissionless, requires no exotic timing, and aligns exactly with the code paths below."},{"id":"e_d329a4acb22b_0006","text":"## Vulnerability Details"},{"id":"e_d329a4acb22b_0007","text":"### Detailed explanation"},{"id":"e_d329a4acb22b_0008","text":"Gauge creation trusts arbitrary CL pools. In `_createGauge`, when `gaugeType == 1`, the factory authenticity check is removed and `isPair` is set to `true`. Only token whitelist and connector checks remain. The external `createGauge` entry is permissionless. After the gauge is created, the manager calls into the provided pool to “set” the gauge and NFPM without any verification that this is a canonical pool."},{"id":"e_d329a4acb22b_0009","text":"Fee claiming sweeps balances rather than deltas. The CL gauge `claimFees()` is public and calls `_claimFees`. The function calls `clPool.collectFees()` and then reads `IERC20(_token0).balanceOf(address(this))` and `IERC20(_token1).balanceOf(address(this))`. It forwards those balances to the internal bribe using `notifyRewardAmount`. The comment suggests epoch fee accounting, but the implementation uses raw balances on the gauge, not the amounts attributable to fees."},{"id":"e_d329a4acb22b_0010","text":"HYBR emissions are held by the gauge. Each epoch, the distributor transfers HYBR into the gauge before distribution. This means the gauge can hold non-zero HYBR at claim time, which the balance sweep will forward to bribes if the pool reports HYBR as `token0`."},{"id":"e_d329a4acb22b_0011","text":"Design mismatch highlights the bug. The volatile gauge path claims exact amounts returned by the underlying pair, then forwards those amounts to bribes. The CL path should mirror this behavior, but it does not."},{"id":"e_d329a4acb22b_0012","text":"Bribes are initialized to accept exactly `tokenA` and `tokenB` derived from the pool’s `token0` and `token1`. If a fake pool reports `token0 = HYBR`, the internal bribe accepts HYBR as a valid reward token."},{"id":"e_d329a4acb22b_0013","text":"## Impact"},{"id":"e_d329a4acb22b_0014","text":"Protocol emissions are rerouted into bribes on a malicious CL gauge. With minimal votes directed to the fake gauge, HYBR meant for LPs or stakers is swept during fee claims and redirected to the bribe contract that pays whoever votes for that gauge. This drains rewards from honest participants, distorts governance incentives, and can be scaled by concentrating votes. The path requires no privileged roles. It relies only on permissionless CL gauge creation that lacks a factory authenticity check and on the balance sweep in the CL fee claim."},{"id":"e_d329a4acb22b_0015","text":"## Tools Used"},{"id":"e_d329a4acb22b_0016","text":"Manual Review and foundry."},{"id":"e_d329a4acb22b_0017","text":"## Recommendation"},{"id":"e_d329a4acb22b_0018","text":"Authenticate CL pools at gauge creation. Replace the `isPair = true` shortcut with a hard verification against the canonical CL factory, for example `require(ICLFactory(_factory).isPool(_pool), \"POOL\")`, or derive the pool address from factory parameters instead of trusting user input."},{"id":"e_d329a4acb22b_0019","text":"Fix CL fee accounting to use the actual fee deltas. After `collectFees()`, read fee amounts from the pool or track deltas, and never sweep `balanceOf(this)`. Explicitly reject `rewardToken` as a fee token for internal bribes on CL gauges, or add a guard that blocks forwarding of the protocol reward token. Mirror the volatile gauge approach that forwards exact returned fee amounts."}]}

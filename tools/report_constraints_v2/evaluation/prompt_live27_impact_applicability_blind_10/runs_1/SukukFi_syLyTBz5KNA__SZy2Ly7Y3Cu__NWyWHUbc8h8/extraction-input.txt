@@ -1,0 +1,41 @@
+`WERC7575Vault` allows any third party to withdraw funds from a user's account if the user has set a self-allowance on the ShareToken.
+
+## Finding description and impact
+
+ Since the `WERC7575ShareToken` forces users to set a self-allowance to perform basic transfers, this creates a vulnerability where enabling standard functionality inadvertently exposes all user funds to theft by any attacker, regardless of KYC status.
+The `WERC7575ShareToken` implements a non-standard transfer mechanism where `transfer` and `transferFrom` both require the sender to have a self-allowance (allowance from `owner` to `owner`).
+
+
+To use the token, users must sign a `permit` granting themselves an allowance.
+
+However, the `WERC7575Vault.withdraw` function uses this same self-allowance as the *sole* authorization check for withdrawals, without verifying if the caller is the owner or an authorized operator.
+
+
+Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob.
+
+Crucially, Bob **does not need to be KYC verified** to receive the underlying assets, as the vault transfers the asset directly without checking the ShareToken's KYC registry.
+
+## Impact 
+### 1. User Fund Theft
+Any user who enables transfers (a core token functionality) immediately exposes their entire vault balance to theft by **any attacker**.
+
+**Attack Vectors:**
+- **Passive Monitoring:** Attackers can monitor the blockchain for users with self-allowances and steal their funds at any time.
+- **Mempool Front-Running (Most Severe):** When a user submits a `permit` transaction to set their self-allowance (required before any transfer), attackers monitoring the mempool can:
+  1. See the pending `permit` transaction that will set `allowance[user][user] = amount`
+  2. Submit a `withdraw()` transaction with higher gas to front-run
+  3. The attacker's `withdraw()` gets mined first, but **reverts** because the self-allowance isn't set yet
+  4. The user's `permit` transaction then executes, setting the self-allowance
+  5. The attacker **immediately submits another** `withdraw()` transaction (or includes it in the same block)
+  6. User's funds are stolen **before they can even execute their intended transfer**
+
+**Why This is Devastating:**
+- Users **cannot safely use the token** even with proper understanding of the system
+- The window of vulnerability is **permanent** once self-allowance is set
+- Users must set self-allowance for **every transfer**, creating repeated attack opportunities
+- Even sophisticated users cannot defend against mempool monitoring
+
+### 2. Protocol Treasury Theft (Investment Layer)
+If the `WERC7575Vault` is used as an "Investment Vault" (where the `ShareToken` contract itself holds shares), the `ShareToken` must maintain a self-allowance to manage these investments. This vulnerability allows **any attacker to drain the entire investment portfolio** of the protocol by calling `redeem` on the Investment Vault with `owner = ShareToken`. This bypasses all investment manager controls.
+
+**Attack Scenario:**

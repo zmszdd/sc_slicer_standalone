@@ -1,0 +1,27 @@
+`UnstakeMessenger` reverts when using recommended `quoteUnstakeWithBuffer` due to strict fee equality check
+
+## Summary
+The `UnstakeMessenger` contract provides a `quoteUnstakeWithBuffer` function that advises users to include an ETH buffer (default 10%) to protect against gas price fluctuations. However, the contract inherits from `OAppSender`, which enforces a strict equality check (`msg.value == nativeFee`). 
+
+As a result, any user following the protocol's recommended workflow—sending the buffered amount—will experience a guaranteed transaction revert. This renders the buffer mechanism useless and forces users to risk underpayment.
+
+## Vulnerability Description
+
+The protocol includes a `feeBufferBPS` configuration and a helper function `quoteUnstakeWithBuffer` to calculate a safe msg.value for cross-chain transactions.
+
+
+
+
+1. Recommended Flow: User calls `quoteUnstakeWithBuffer`, which returns `1.1 ETH` (assuming a `1.0 ETH` fee and 10% buffer).
+2. Execution: User calls `unstake{value: 1.1 ETH}`.
+3. Fee Calculation: `unstake` calls `_quote()`, which returns the exact fee of `1.0 ETH`.
+4. The Revert: `unstake` calls `_lzSend` -> `_payNative`.
+
+
+The `UnstakeMessenger` inherits from `OAppSender`. The `_payNative` function in `OAppSender` contains the following check:
+
+
+Because `1.1 ETH != 1.0 ETH`, the transaction reverts with `NotEnoughNative`. The intent of the buffer (to prevent reverts) ironically causes a guaranteed revert.
+
+## Impact
+The `quoteUnstakeWithBuffer` function and the `feeBufferBPS` variable are actively harmful. Using them guarantees failure. Users cannot protect themselves against gas price spikes between the time they quote and the time the transaction is included in a block. They are forced to send the exact fee, which increases the likelihood of accidental reverts due to market volatility.

@@ -1,0 +1,564 @@
+{
+  "schema_version": "stage2-generated-rule-candidate/1",
+  "formal_plan": {
+    "schema_version": "report-formal-plan/7",
+    "relation_class": "progress_or_liveness",
+    "precondition_ids": [
+      "pool_initialized_with_liquidity",
+      "victim_sets_sqrt_ratio_limit_near_price",
+      "attacker_moves_price_to_limit"
+    ],
+    "intent_id": "noop_swap_with_value_should_not_silently_accept_eth",
+    "impact_ids": [
+      "no_recovery_stuck_eth"
+    ],
+    "symbols": {
+      "pool_initialized_tick": {
+        "sort": "int",
+        "unit": "tick",
+        "meaning": "pool initialization tick",
+        "checkpoint": "before victim swap",
+        "entity_ids": [
+          "core_contract"
+        ],
+        "source_ids": [
+          "pool_initialized_with_liquidity"
+        ]
+      },
+      "pool_has_liquidity": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "pool holds liquidity after initialization",
+        "checkpoint": "before victim swap",
+        "entity_ids": [
+          "core_contract"
+        ],
+        "source_ids": [
+          "pool_initialized_with_liquidity"
+        ]
+      },
+      "victim_msg_value": {
+        "sort": "int",
+        "unit": "wei",
+        "meaning": "native ETH carried as msg.value by the victim swap",
+        "checkpoint": "victim swap submission",
+        "entity_ids": [
+          "victim",
+          "router",
+          "native_eth"
+        ],
+        "source_ids": [
+          "victim_sets_sqrt_ratio_limit_near_price"
+        ]
+      },
+      "victim_sqrt_ratio_limit_set": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "victim swap specifies a sqrtRatioLimit near the current price for slippage protection",
+        "checkpoint": "victim swap submission",
+        "entity_ids": [
+          "victim",
+          "router"
+        ],
+        "source_ids": [
+          "victim_sets_sqrt_ratio_limit_near_price"
+        ]
+      },
+      "price_moved_to_limit": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "attacker front-run moved pool price down to exactly the victim's sqrtRatioLimit",
+        "checkpoint": "after attacker front-run, before victim swap executes",
+        "entity_ids": [
+          "attacker",
+          "core_contract"
+        ],
+        "source_ids": [
+          "attacker_moves_price_to_limit"
+        ]
+      },
+      "eth_stuck_no_recovery": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the ETH sent with the no-op swap is stuck with no way to extract it",
+        "checkpoint": "after victim swap executes",
+        "entity_ids": [
+          "core_contract",
+          "native_eth"
+        ],
+        "source_ids": [
+          "no_recovery_stuck_eth"
+        ]
+      }
+    },
+    "precondition_terms": [
+      {
+        "source_id": "pool_initialized_with_liquidity",
+        "predicate": {
+          "kind": "all_of",
+          "terms": [
+            {
+              "kind": "comparison",
+              "left": "pool_initialized_tick",
+              "operator": "eq",
+              "right": {
+                "const": 0
+              }
+            },
+            {
+              "kind": "truth",
+              "symbol": "pool_has_liquidity",
+              "value": true
+            }
+          ]
+        }
+      },
+      {
+        "source_id": "victim_sets_sqrt_ratio_limit_near_price",
+        "predicate": {
+          "kind": "all_of",
+          "terms": [
+            {
+              "kind": "truth",
+              "symbol": "victim_sqrt_ratio_limit_set",
+              "value": true
+            },
+            {
+              "kind": "comparison",
+              "left": "victim_msg_value",
+              "operator": "eq",
+              "right": {
+                "const": 10
+              }
+            }
+          ]
+        }
+      },
+      {
+        "source_id": "attacker_moves_price_to_limit",
+        "predicate": {
+          "kind": "truth",
+          "symbol": "price_moved_to_limit",
+          "value": true
+        }
+      }
+    ],
+    "impact_context_terms": [
+      {
+        "source_id": "no_recovery_stuck_eth",
+        "qualifier_types": [
+          "state"
+        ],
+        "predicate": {
+          "kind": "truth",
+          "symbol": "eth_stuck_no_recovery",
+          "value": true
+        }
+      }
+    ],
+    "derived_definitions": [],
+    "pattern": {
+      "kind": "required_effect",
+      "condition": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "comparison",
+            "left": "victim_msg_value",
+            "operator": "gt",
+            "right": {
+              "const": 0
+            }
+          },
+          {
+            "kind": "truth",
+            "symbol": "victim_sqrt_ratio_limit_set",
+            "value": true
+          }
+        ]
+      },
+      "effect": {
+        "kind": "truth",
+        "symbol": "eth_stuck_no_recovery",
+        "value": false
+      }
+    },
+    "assumptions": [
+      "The victim swap is the no-op swap path where sqrtRatio equals sqrtRatioLimit at execution.",
+      "The 10 ether msg.value is denominated in wei as 10 * 10^18; the literal 10 is bound in ether units per the report."
+    ],
+    "unresolved": [
+      {
+        "category": "unsupported_relation",
+        "description": "Report does not state a general numeric relation between sqrtRatioLimit and current sqrtRatio at execution; the no-op equality is only shown via the PoC example, so the no-op trigger cannot be encoded as a general bound.",
+        "source_ids": [
+          "victim_sets_sqrt_ratio_limit_near_price",
+          "attacker_moves_price_to_limit"
+        ],
+        "blocks_formalization": false
+      },
+      {
+        "category": "ambiguous_condition",
+        "description": "Report does not state whether the attacker front-run is a required precondition or only one possible trigger; legitimate swaps may also reach the no-op state.",
+        "source_ids": [
+          "attacker_moves_price_to_limit"
+        ],
+        "blocks_formalization": false
+      }
+    ],
+    "limitations": [
+      "The no-op swap trigger (sqrtRatio == sqrtRatioLimit) is not encoded as a numeric predicate; only the msg.value > 0 and sqrtRatioLimit-set qualifiers are formalized.",
+      "The stuck-ETH impact is represented as a Boolean outcome symbol; the report gives no numeric magnitude for the stuck amount beyond the 10 ether msg.value.",
+      "The attacker front-run is treated as a potential precondition per the report's modality."
+    ]
+  },
+  "formalization": {
+    "schema_version": "report-formalization/2",
+    "symbols": {
+      "pool_initialized_tick": {
+        "sort": "int",
+        "unit": "tick",
+        "meaning": "pool initialization tick",
+        "checkpoint": "before victim swap",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0021"
+        ],
+        "entity_ids": [
+          "core_contract"
+        ]
+      },
+      "pool_has_liquidity": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "pool holds liquidity after initialization",
+        "checkpoint": "before victim swap",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0021"
+        ],
+        "entity_ids": [
+          "core_contract"
+        ]
+      },
+      "victim_msg_value": {
+        "sort": "int",
+        "unit": "wei",
+        "meaning": "native ETH carried as msg.value by the victim swap",
+        "checkpoint": "victim swap submission",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0022",
+          "e_be7fd2bc7865_0015"
+        ],
+        "entity_ids": [
+          "victim",
+          "router",
+          "native_eth"
+        ]
+      },
+      "victim_sqrt_ratio_limit_set": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "victim swap specifies a sqrtRatioLimit near the current price for slippage protection",
+        "checkpoint": "victim swap submission",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0022",
+          "e_be7fd2bc7865_0015"
+        ],
+        "entity_ids": [
+          "victim",
+          "router"
+        ]
+      },
+      "price_moved_to_limit": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "attacker front-run moved pool price down to exactly the victim's sqrtRatioLimit",
+        "checkpoint": "after attacker front-run, before victim swap executes",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0023",
+          "e_be7fd2bc7865_0009"
+        ],
+        "entity_ids": [
+          "attacker",
+          "core_contract"
+        ]
+      },
+      "eth_stuck_no_recovery": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the ETH sent with the no-op swap is stuck with no way to extract it",
+        "checkpoint": "after victim swap executes",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0008"
+        ],
+        "entity_ids": [
+          "core_contract",
+          "native_eth"
+        ]
+      }
+    },
+    "claims": [
+      {
+        "id": "impact_claim_no_recovery_stuck_eth_50ab35d4_a9fef3c3",
+        "scope": "There is no way to extract the stuck ETH.",
+        "modality": "asserted",
+        "impact_ids": [
+          "no_recovery_stuck_eth"
+        ],
+        "properties": {
+          "preconditions": {
+            "text": "The pool is initialized at tick 0 with liquidity.; The victim submits a swap with a sqrtRatioLimit set near the current price for slippage protection, and the swap carries msg.value of 10 ether.; An attacker front-runs the victim's transaction and moves the pool price down to exactly the victim's sqrtRatioLimit.",
+            "expression": {
+              "op": "and",
+              "args": [
+                {
+                  "op": "and",
+                  "args": [
+                    {
+                      "op": "eq",
+                      "args": [
+                        {
+                          "var": "pool_initialized_tick"
+                        },
+                        {
+                          "const": 0
+                        }
+                      ]
+                    },
+                    {
+                      "var": "pool_has_liquidity"
+                    }
+                  ]
+                },
+                {
+                  "op": "and",
+                  "args": [
+                    {
+                      "var": "victim_sqrt_ratio_limit_set"
+                    },
+                    {
+                      "op": "eq",
+                      "args": [
+                        {
+                          "var": "victim_msg_value"
+                        },
+                        {
+                          "const": 10
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "var": "price_moved_to_limit"
+                }
+              ]
+            },
+            "evidence_ids": [
+              "e_be7fd2bc7865_0021",
+              "e_be7fd2bc7865_0022",
+              "e_be7fd2bc7865_0015",
+              "e_be7fd2bc7865_0023",
+              "e_be7fd2bc7865_0009"
+            ],
+            "derivation": "Program conjunction of selected report preconditions.",
+            "source_ids": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price",
+              "attacker_moves_price_to_limit"
+            ]
+          },
+          "safety": {
+            "text": "A swap that would be a no-op while msg.value > 0 must not silently accept the ETH; it should revert or otherwise handle the debt accounting.",
+            "expression": {
+              "op": "implies",
+              "args": [
+                {
+                  "var": "eth_stuck_no_recovery"
+                },
+                {
+                  "op": "implies",
+                  "args": [
+                    {
+                      "op": "and",
+                      "args": [
+                        {
+                          "op": "gt",
+                          "args": [
+                            {
+                              "var": "victim_msg_value"
+                            },
+                            {
+                              "const": 0
+                            }
+                          ]
+                        },
+                        {
+                          "var": "victim_sqrt_ratio_limit_set"
+                        }
+                      ]
+                    },
+                    {
+                      "op": "not",
+                      "args": [
+                        {
+                          "var": "eth_stuck_no_recovery"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "evidence_ids": [
+              "e_be7fd2bc7865_0035",
+              "e_be7fd2bc7865_0036",
+              "e_be7fd2bc7865_0038"
+            ],
+            "derivation": "Program synthesis from the selected intent and logical pattern.",
+            "source_ids": [
+              "noop_swap_with_value_should_not_silently_accept_eth"
+            ]
+          },
+          "effects": {
+            "text": "There is no way to extract the stuck ETH.",
+            "expression": {
+              "op": "and",
+              "args": [
+                {
+                  "var": "eth_stuck_no_recovery"
+                },
+                {
+                  "op": "and",
+                  "args": [
+                    {
+                      "op": "and",
+                      "args": [
+                        {
+                          "op": "gt",
+                          "args": [
+                            {
+                              "var": "victim_msg_value"
+                            },
+                            {
+                              "const": 0
+                            }
+                          ]
+                        },
+                        {
+                          "var": "victim_sqrt_ratio_limit_set"
+                        }
+                      ]
+                    },
+                    {
+                      "op": "not",
+                      "args": [
+                        {
+                          "op": "not",
+                          "args": [
+                            {
+                              "var": "eth_stuck_no_recovery"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "evidence_ids": [
+              "e_be7fd2bc7865_0008"
+            ],
+            "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+            "source_ids": [
+              "no_recovery_stuck_eth"
+            ]
+          }
+        },
+        "formula_sources": {
+          "preconditions": {
+            "": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price",
+              "attacker_moves_price_to_limit"
+            ],
+            "args.0": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price",
+              "attacker_moves_price_to_limit"
+            ],
+            "args.0.args.0": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price",
+              "attacker_moves_price_to_limit"
+            ],
+            "args.1": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price",
+              "attacker_moves_price_to_limit"
+            ],
+            "args.1.args.1": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price",
+              "attacker_moves_price_to_limit"
+            ]
+          },
+          "safety": {
+            "": [
+              "noop_swap_with_value_should_not_silently_accept_eth"
+            ],
+            "args.1": [
+              "noop_swap_with_value_should_not_silently_accept_eth"
+            ],
+            "args.1.args.0": [
+              "noop_swap_with_value_should_not_silently_accept_eth"
+            ],
+            "args.1.args.0.args.0": [
+              "noop_swap_with_value_should_not_silently_accept_eth"
+            ],
+            "args.1.args.1": [
+              "noop_swap_with_value_should_not_silently_accept_eth"
+            ]
+          },
+          "effects": {
+            "": [
+              "no_recovery_stuck_eth"
+            ],
+            "args.1": [
+              "no_recovery_stuck_eth"
+            ],
+            "args.1.args.0": [
+              "no_recovery_stuck_eth"
+            ],
+            "args.1.args.0.args.0": [
+              "no_recovery_stuck_eth"
+            ],
+            "args.1.args.1": [
+              "no_recovery_stuck_eth"
+            ],
+            "args.1.args.1.args.0": [
+              "no_recovery_stuck_eth"
+            ]
+          }
+        },
+        "effect_coverage": [
+          {
+            "statement_id": "no_recovery_stuck_eth",
+            "status": "formalized",
+            "reason": "Program-generated exact coverage for selected direct impact."
+          }
+        ],
+        "assumptions": [
+          "The victim swap is the no-op swap path where sqrtRatio equals sqrtRatioLimit at execution.",
+          "The 10 ether msg.value is denominated in wei as 10 * 10^18; the literal 10 is bound in ether units per the report."
+        ],
+        "unresolved": []
+      }
+    ],
+    "limitations": [
+      "The no-op swap trigger (sqrtRatio == sqrtRatioLimit) is not encoded as a numeric predicate; only the msg.value > 0 and sqrtRatioLimit-set qualifiers are formalized.",
+      "The stuck-ETH impact is represented as a Boolean outcome symbol; the report gives no numeric magnitude for the stuck amount beyond the 10 ether msg.value.",
+      "The attacker front-run is treated as a potential precondition per the report's modality."
+    ]
+  }
+}

@@ -1,0 +1,153 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "d82b2546243ea779b664a0590e1dc173161b664eb735a8b3603fb81b89062c04",
+  "fragments": [
+    {
+      "id": "e_d82b2546243e_0001",
+      "text": "`AtomWallet.owner()` Makes an External Call During ERC-4337 Validation Phase, Violating ERC-7562 and Breaking UserOp Submission for All Unclaimed Wallets",
+      "start": 0,
+      "end": 153,
+      "line": 1
+    },
+    {
+      "id": "e_d82b2546243e_0002",
+      "text": "## Finding Description and Impact",
+      "start": 155,
+      "end": 188,
+      "line": 3
+    },
+    {
+      "id": "e_d82b2546243e_0003",
+      "text": "### Root Cause",
+      "start": 190,
+      "end": 204,
+      "line": 5
+    },
+    {
+      "id": "e_d82b2546243e_0004",
+      "text": "`AtomWallet.owner()` has two branches depending on whether the wallet has been claimed:",
+      "start": 206,
+      "end": 293,
+      "line": 7
+    },
+    {
+      "id": "e_d82b2546243e_0005",
+      "text": "When `isClaimed == false`, ownership is delegated to `multiVault.getAtomWarden()` — an external call to the `MultiVault` contract. `owner()` is invoked from `_validateSignature` at the point where the recovered signer is compared against the expected owner:",
+      "start": 296,
+      "end": 553,
+      "line": 10
+    },
+    {
+      "id": "e_d82b2546243e_0006",
+      "text": "`_validateSignature` is the implementation of the ERC-4337 validation hook and is called by `validateUserOp` during the **validation phase**.",
+      "start": 556,
+      "end": 697,
+      "line": 13
+    },
+    {
+      "id": "e_d82b2546243e_0007",
+      "text": "### ERC-7562 Violation — Rules STO-021 / STO-022",
+      "start": 699,
+      "end": 747,
+      "line": 15
+    },
+    {
+      "id": "e_d82b2546243e_0008",
+      "text": "Reference: https://eips.ethereum.org/EIPS/eip-7562",
+      "start": 749,
+      "end": 799,
+      "line": 17
+    },
+    {
+      "id": "e_d82b2546243e_0009",
+      "text": "ERC-7562 governs what storage an account's validation phase may access. Rules **[STO-021]** and **[STO-022]** permit reading storage in an external contract only when the accessed slot is **associated** with the account. A storage slot in contract X is associated with account A if and only if:",
+      "start": 801,
+      "end": 1095,
+      "line": 19
+    },
+    {
+      "id": "e_d82b2546243e_0010",
+      "text": "1. The slot's **value equals A** (e.g. a mapping keyed by the wallet address), or",
+      "start": 1097,
+      "end": 1178,
+      "line": 21
+    },
+    {
+      "id": "e_d82b2546243e_0011",
+      "text": "2. The slot was **derived as** `keccak(A || x) + n` (standard Solidity mapping/array at a key of A).",
+      "start": 1179,
+      "end": 1279,
+      "line": 22
+    },
+    {
+      "id": "e_d82b2546243e_0012",
+      "text": "`multiVault.getAtomWarden()` reads `walletConfig.atomWarden` from `MultiVault`'s storage. That slot:",
+      "start": 1281,
+      "end": 1381,
+      "line": 24
+    },
+    {
+      "id": "e_d82b2546243e_0013",
+      "text": "- Holds the warden address, **not** the `AtomWallet`'s address",
+      "start": 1382,
+      "end": 1444,
+      "line": 25
+    },
+    {
+      "id": "e_d82b2546243e_0014",
+      "text": "- Was **not** derived from `keccak(atomWalletAddress || ...)` — it is a plain struct field",
+      "start": 1445,
+      "end": 1535,
+      "line": 26
+    },
+    {
+      "id": "e_d82b2546243e_0015",
+      "text": "It therefore does not meet either condition: the accessed storage is **not associated** with the calling `AtomWallet`. Accessing it from within `validateUserOp` violates `STO-021`/`STO-022`. A compliant bundler simulating the UserOp detects the non-associated external storage read and **rejects the UserOp**. This is not a configuration issue — it is a fundamental incompatibility between the `owner()` implementation and the ERC-7562 storage access rules.",
+      "start": 1537,
+      "end": 1994,
+      "line": 28
+    },
+    {
+      "id": "e_d82b2546243e_0016",
+      "text": "### Scope of Impact",
+      "start": 1996,
+      "end": 2015,
+      "line": 30
+    },
+    {
+      "id": "e_d82b2546243e_0017",
+      "text": "Every `AtomWallet` begins life unclaimed (`isClaimed == false`), with `ATOM_WARDEN` as its effective owner via the dynamic `owner()` lookup. The wallet can only be claimed once the user calls `acceptOwnership()` after a two-step transfer. Until that happens:",
+      "start": 2017,
+      "end": 2275,
+      "line": 32
+    },
+    {
+      "id": "e_d82b2546243e_0018",
+      "text": "- Every UserOp submitted for the wallet will be **rejected at simulation** by any ERC-7562-compliant bundler (e.g., Pimlico, Alchemy, Biconomy, Stackup, the canonical eth-infinitism bundler).",
+      "start": 2277,
+      "end": 2468,
+      "line": 34
+    },
+    {
+      "id": "e_d82b2546243e_0019",
+      "text": "- The wallet cannot be used as an ERC-4337 smart account until claimed.",
+      "start": 2469,
+      "end": 2540,
+      "line": 35
+    },
+    {
+      "id": "e_d82b2546243e_0020",
+      "text": "- The `ATOM_WARDEN` — the party responsible for acting on behalf of unclaimed atoms — is also blocked from submitting UserOps on those atoms via standard bundling infrastructure.",
+      "start": 2541,
+      "end": 2719,
+      "line": 36
+    },
+    {
+      "id": "e_d82b2546243e_0021",
+      "text": "Given that unclaimed wallets are the initial state for **all** atoms created in the system, this effectively disables ERC-4337 functionality for every newly created atom.",
+      "start": 2721,
+      "end": 2891,
+      "line": 38
+    }
+  ]
+}

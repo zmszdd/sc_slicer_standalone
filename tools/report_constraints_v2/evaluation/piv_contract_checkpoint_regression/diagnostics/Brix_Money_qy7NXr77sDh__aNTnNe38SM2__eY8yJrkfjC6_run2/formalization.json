@@ -1,0 +1,580 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "ce573e56b_shared_decimals": {
+      "sort": "int",
+      "unit": "decimals",
+      "meaning": "iTryTokenOFT default sharedDecimals value",
+      "checkpoint": "before fast redeem or unstake transfer",
+      "entity_ids": [
+        "itry_oft"
+      ],
+      "evidence": "Since iTryTokenOFT inherits the default sharedDecimals of 6, any transfer amount not perfectly divisible by 10^12 will fail with SlippageExceeded. This results in a Denial of Service (DoS) for users attempting to redeem or unstake uneven amounts (which is extremely common due to yield accrual)."
+    },
+    "ce573e56b_local_decimals": {
+      "sort": "int",
+      "unit": "decimals",
+      "meaning": "iTryTokenOFT local decimals value",
+      "checkpoint": "before fast redeem or unstake transfer",
+      "entity_ids": [
+        "itry_oft"
+      ],
+      "evidence": "Since iTryTokenOFT inherits the default sharedDecimals of 6, any transfer amount not perfectly divisible by 10^12 will fail with SlippageExceeded. This results in a Denial of Service (DoS) for users attempting to redeem or unstake uneven amounts (which is extremely common due to yield accrual)."
+    },
+    "ce573e56b_transfer_amount": {
+      "sort": "int",
+      "unit": "token base units (18 decimals)",
+      "meaning": "amount sent by the user in the redeem or unstake transfer",
+      "checkpoint": "before fast redeem or unstake transfer",
+      "entity_ids": [
+        "user",
+        "assets"
+      ],
+      "evidence": "Since iTryTokenOFT inherits the default sharedDecimals of 6, any transfer amount not perfectly divisible by 10^12 will fail with SlippageExceeded. This results in a Denial of Service (DoS) for users attempting to redeem or unstake uneven amounts (which is extremely common due to yield accrual)."
+    },
+    "ce573e56b_min_amount_ld": {
+      "sort": "int",
+      "unit": "token base units (18 decimals)",
+      "meaning": "minAmountLD passed to the OFT send, set equal to assets",
+      "checkpoint": "before fast redeem or unstake transfer",
+      "entity_ids": [
+        "composer"
+      ],
+      "evidence": "I found that wiTryVaultComposer sets minAmountLD equal to assets (amount sent) in both _fastRedeem() and _handleUnstake() functions. This configuration fails to account for LayerZero's mandatory dust removal mechanism, which truncates amounts to fit cross-chain decimal precision."
+    },
+    "ce573e56b_amount_received_ld": {
+      "sort": "int",
+      "unit": "token base units (18 decimals)",
+      "meaning": "amountReceivedLD after LayerZero dust truncation, compared against minAmountLD",
+      "checkpoint": "after dust removal, at slippage check",
+      "entity_ids": [
+        "layerzero_oftcore"
+      ],
+      "evidence": "if (amountReceivedLD < _minAmountLD) {"
+    },
+    "ce573e56b_slippage_exceeded_revert": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "transaction reverts with SlippageExceeded because amountReceivedLD < minAmountLD",
+      "checkpoint": "at slippage check during transfer",
+      "entity_ids": [
+        "user",
+        "layerzero_oftcore"
+      ],
+      "evidence": "if (amountReceivedLD < _minAmountLD) {"
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_v_dos_redeem_unstake_cb54a6f2",
+      "scope": "wiTryVaultComposer fast redeem and unstake cross-chain transfers via LayerZero OFT",
+      "modality": "potential",
+      "impact_ids": [
+        "v_dos_redeem_unstake"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "iTryTokenOFT uses default sharedDecimals of 6 and local decimals of 18, giving a conversion rate of 10^12.; The transfer amount is not perfectly divisible by 10^12, e.g. a redeem of 100.000000000000000001 tokens with 1 wei of dust.; In _fastRedeem and _handleUnstake, minAmountLD is set equal to assets (the amount sent).",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "p_shared_decimals_6",
+            "p_amount_not_divisible",
+            "p_min_equals_assets"
+          ],
+          "evidence": [
+            "Since iTryTokenOFT inherits the default sharedDecimals of 6, any transfer amount not perfectly divisible by 10^12 will fail with SlippageExceeded. This results in a Denial of Service (DoS) for users attempting to redeem or unstake uneven amounts (which is extremely common due to yield accrual).",
+            "Since iTryTokenOFT.sol uses the default shared decimals of 6 and local decimals of 18, the conversion rate is 10^12.",
+            "Example: A user redeems 100.000000000000000001 tokens (1 wei of dust from yield).",
+            "I found that wiTryVaultComposer sets minAmountLD equal to assets (amount sent) in both _fastRedeem() and _handleUnstake() functions. This configuration fails to account for LayerZero's mandatory dust removal mechanism, which truncates amounts to fit cross-chain decimal precision.",
+            "_sendParam.minAmountLD = assets; // <--- Vulnerability: 0% slippage",
+            "minAmountLD: assets, // <--- Vulnerability: 0% slippage"
+          ]
+        },
+        "safety": {
+          "text": "A redeem or unstake transfer should succeed when the user's amount is valid, with the slippage check tolerating LayerZero dust truncation rather than requiring minAmountLD equal to the untruncated amount.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "i_slippage_bound"
+          ],
+          "evidence": [
+            "I found that wiTryVaultComposer sets minAmountLD equal to assets (amount sent) in both _fastRedeem() and _handleUnstake() functions. This configuration fails to account for LayerZero's mandatory dust removal mechanism, which truncates amounts to fit cross-chain decimal precision.",
+            "Since iTryTokenOFT inherits the default sharedDecimals of 6, any transfer amount not perfectly divisible by 10^12 will fail with SlippageExceeded. This results in a Denial of Service (DoS) for users attempting to redeem or unstake uneven amounts (which is extremely common due to yield accrual).",
+            "Denial of Service: Users cannot use Fast Redeem or Unstake features if their balance includes any dust (which is almost guaranteed due to yield calculations)."
+          ]
+        },
+        "effects": {
+          "text": "Users cannot use Fast Redeem or Unstake features if their balance includes any dust, which is almost guaranteed due to yield calculations.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "v_dos_redeem_unstake"
+          ],
+          "evidence": [
+            "Denial of Service: Users cannot use Fast Redeem or Unstake features if their balance includes any dust (which is almost guaranteed due to yield calculations)."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "v_dos_redeem_unstake",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: local repair made no change"
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: local repair made no change"
+      ]
+    },
+    {
+      "id": "impact_claim_v_no_workaround_908cf1c3",
+      "scope": "wiTryVaultComposer fast redeem and unstake cross-chain transfers via LayerZero OFT",
+      "modality": "asserted",
+      "impact_ids": [
+        "v_no_workaround"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "iTryTokenOFT uses default sharedDecimals of 6 and local decimals of 18, giving a conversion rate of 10^12.; The transfer amount is not perfectly divisible by 10^12, e.g. a redeem of 100.000000000000000001 tokens with 1 wei of dust.; In _fastRedeem and _handleUnstake, minAmountLD is set equal to assets (the amount sent).",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "p_shared_decimals_6",
+            "p_amount_not_divisible",
+            "p_min_equals_assets"
+          ],
+          "evidence": [
+            "Since iTryTokenOFT inherits the default sharedDecimals of 6, any transfer amount not perfectly divisible by 10^12 will fail with SlippageExceeded. This results in a Denial of Service (DoS) for users attempting to redeem or unstake uneven amounts (which is extremely common due to yield accrual).",
+            "Since iTryTokenOFT.sol uses the default shared decimals of 6 and local decimals of 18, the conversion rate is 10^12.",
+            "Example: A user redeems 100.000000000000000001 tokens (1 wei of dust from yield).",
+            "I found that wiTryVaultComposer sets minAmountLD equal to assets (amount sent) in both _fastRedeem() and _handleUnstake() functions. This configuration fails to account for LayerZero's mandatory dust removal mechanism, which truncates amounts to fit cross-chain decimal precision.",
+            "_sendParam.minAmountLD = assets; // <--- Vulnerability: 0% slippage",
+            "minAmountLD: assets, // <--- Vulnerability: 0% slippage"
+          ]
+        },
+        "safety": {
+          "text": "A redeem or unstake transfer should succeed when the user's amount is valid, with the slippage check tolerating LayerZero dust truncation rather than requiring minAmountLD equal to the untruncated amount.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "i_slippage_bound"
+          ],
+          "evidence": [
+            "I found that wiTryVaultComposer sets minAmountLD equal to assets (amount sent) in both _fastRedeem() and _handleUnstake() functions. This configuration fails to account for LayerZero's mandatory dust removal mechanism, which truncates amounts to fit cross-chain decimal precision.",
+            "Since iTryTokenOFT inherits the default sharedDecimals of 6, any transfer amount not perfectly divisible by 10^12 will fail with SlippageExceeded. This results in a Denial of Service (DoS) for users attempting to redeem or unstake uneven amounts (which is extremely common due to yield accrual).",
+            "Denial of Service: Users cannot use Fast Redeem or Unstake features if their balance includes any dust (which is almost guaranteed due to yield calculations)."
+          ]
+        },
+        "effects": {
+          "text": "Since slippage is hardcoded in the contract, users cannot manually adjust it to make their transactions succeed.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "v_no_workaround"
+          ],
+          "evidence": [
+            "No Workaround: Since the slippage is hardcoded in the contract, users cannot manually adjust it to make their transactions succeed."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "v_no_workaround",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: i_slippage_bound other_mismatch: Statement says the transfer should succeed tolerating dust, but predicate allows success only via transfer_completed or manual slippage adjustment, not dust tol; P/I/V relation other_mismatch: V negates the disjunction I requires under P, so V contradicts I rather than being a distinguishable violation of the slippage-tolerance intent."
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: i_slippage_bound other_mismatch: Statement says the transfer should succeed tolerating dust, but predicate allows success only via transfer_completed or manual slippage adjustment, not dust tol; P/I/V relation other_mismatch: V negates the disjunction I requires under P, so V contradicts I rather than being a distinguishable violation of the slippage-tolerance intent."
+      ]
+    },
+    {
+      "id": "impact_claim_v_slippage_revert_14f2caf7",
+      "scope": "wiTryVaultComposer fast redeem and unstake cross-chain transfers via LayerZero OFT",
+      "modality": "asserted",
+      "impact_ids": [
+        "v_slippage_revert"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "iTryTokenOFT uses default sharedDecimals of 6 and local decimals of 18, giving a conversion rate of 10^12.; The transfer amount is not perfectly divisible by 10^12, e.g. a redeem of 100.000000000000000001 tokens with 1 wei of dust.; In _fastRedeem and _handleUnstake, minAmountLD is set equal to assets (the amount sent).",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "ce573e56b_shared_decimals"
+                  },
+                  {
+                    "const": 6
+                  }
+                ]
+              },
+              {
+                "op": "ne",
+                "args": [
+                  {
+                    "op": "mod",
+                    "args": [
+                      {
+                        "var": "ce573e56b_transfer_amount"
+                      },
+                      {
+                        "const": 1000000000000
+                      }
+                    ]
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "ce573e56b_min_amount_ld"
+                  },
+                  {
+                    "var": "ce573e56b_transfer_amount"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_shared_decimals_6",
+            "p_amount_not_divisible",
+            "p_min_equals_assets"
+          ],
+          "evidence": [
+            "Since iTryTokenOFT inherits the default sharedDecimals of 6, any transfer amount not perfectly divisible by 10^12 will fail with SlippageExceeded. This results in a Denial of Service (DoS) for users attempting to redeem or unstake uneven amounts (which is extremely common due to yield accrual).",
+            "Since iTryTokenOFT.sol uses the default shared decimals of 6 and local decimals of 18, the conversion rate is 10^12.",
+            "Example: A user redeems 100.000000000000000001 tokens (1 wei of dust from yield).",
+            "I found that wiTryVaultComposer sets minAmountLD equal to assets (amount sent) in both _fastRedeem() and _handleUnstake() functions. This configuration fails to account for LayerZero's mandatory dust removal mechanism, which truncates amounts to fit cross-chain decimal precision.",
+            "_sendParam.minAmountLD = assets; // <--- Vulnerability: 0% slippage",
+            "minAmountLD: assets, // <--- Vulnerability: 0% slippage"
+          ]
+        },
+        "safety": {
+          "text": "A redeem or unstake transfer should succeed when the user's amount is valid, with the slippage check tolerating LayerZero dust truncation rather than requiring minAmountLD equal to the untruncated amount.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "ce573e56b_shared_decimals"
+                      },
+                      {
+                        "const": 6
+                      }
+                    ]
+                  },
+                  {
+                    "op": "ne",
+                    "args": [
+                      {
+                        "op": "mod",
+                        "args": [
+                          {
+                            "var": "ce573e56b_transfer_amount"
+                          },
+                          {
+                            "const": 1000000000000
+                          }
+                        ]
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "ce573e56b_min_amount_ld"
+                      },
+                      {
+                        "var": "ce573e56b_transfer_amount"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "ce573e56b_slippage_exceeded_revert"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "i_slippage_bound"
+          ],
+          "evidence": [
+            "I found that wiTryVaultComposer sets minAmountLD equal to assets (amount sent) in both _fastRedeem() and _handleUnstake() functions. This configuration fails to account for LayerZero's mandatory dust removal mechanism, which truncates amounts to fit cross-chain decimal precision.",
+            "Since iTryTokenOFT inherits the default sharedDecimals of 6, any transfer amount not perfectly divisible by 10^12 will fail with SlippageExceeded. This results in a Denial of Service (DoS) for users attempting to redeem or unstake uneven amounts (which is extremely common due to yield accrual).",
+            "Denial of Service: Users cannot use Fast Redeem or Unstake features if their balance includes any dust (which is almost guaranteed due to yield calculations)."
+          ]
+        },
+        "effects": {
+          "text": "The transaction reverts with SlippageExceeded because amountReceivedLD (dust-removed) is less than minAmountLD.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "ce573e56b_shared_decimals"
+                      },
+                      {
+                        "const": 6
+                      }
+                    ]
+                  },
+                  {
+                    "op": "ne",
+                    "args": [
+                      {
+                        "op": "mod",
+                        "args": [
+                          {
+                            "var": "ce573e56b_transfer_amount"
+                          },
+                          {
+                            "const": 1000000000000
+                          }
+                        ]
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "ce573e56b_min_amount_ld"
+                      },
+                      {
+                        "var": "ce573e56b_transfer_amount"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "ce573e56b_slippage_exceeded_revert"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "v_slippage_revert"
+          ],
+          "evidence": [
+            "if (amountReceivedLD < _minAmountLD) {",
+            "revert SlippageExceeded(amountReceivedLD, _minAmountLD); // <--- Reverts here",
+            "Check: 100.0...00 (received) < 100.0...01 (minAmount).",
+            "Result: Transaction Reverts."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_shared_decimals_6",
+            "p_amount_not_divisible",
+            "p_min_equals_assets"
+          ],
+          "args.0": [
+            "p_shared_decimals_6",
+            "p_amount_not_divisible",
+            "p_min_equals_assets"
+          ],
+          "args.1": [
+            "p_shared_decimals_6",
+            "p_amount_not_divisible",
+            "p_min_equals_assets"
+          ],
+          "args.2": [
+            "p_shared_decimals_6",
+            "p_amount_not_divisible",
+            "p_min_equals_assets"
+          ]
+        },
+        "safety": {
+          "": [
+            "i_slippage_bound"
+          ],
+          "args.0": [
+            "i_slippage_bound"
+          ],
+          "args.0.args.0": [
+            "i_slippage_bound"
+          ],
+          "args.0.args.1": [
+            "i_slippage_bound"
+          ],
+          "args.0.args.2": [
+            "i_slippage_bound"
+          ],
+          "args.1": [
+            "i_slippage_bound"
+          ]
+        },
+        "effects": {
+          "": [
+            "v_slippage_revert"
+          ],
+          "args.0": [
+            "v_slippage_revert"
+          ],
+          "args.0.args.0": [
+            "v_slippage_revert"
+          ],
+          "args.0.args.1": [
+            "v_slippage_revert"
+          ],
+          "args.0.args.2": [
+            "v_slippage_revert"
+          ],
+          "args.1": [
+            "v_slippage_revert"
+          ],
+          "args.1.args.0": [
+            "v_slippage_revert"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "v_slippage_revert",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The redeem or unstake transfer is a valid user operation whose amount is otherwise acceptable.",
+        "Dust truncation by LayerZero OFTCore _debitView is the only cause of amountReceivedLD differing from the sent amount."
+      ],
+      "unresolved": []
+    },
+    {
+      "id": "impact_claim_v_wasted_fees_df41ac9f",
+      "scope": "wiTryVaultComposer fast redeem and unstake cross-chain transfers via LayerZero OFT",
+      "modality": "potential",
+      "impact_ids": [
+        "v_wasted_fees"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "iTryTokenOFT uses default sharedDecimals of 6 and local decimals of 18, giving a conversion rate of 10^12.; The transfer amount is not perfectly divisible by 10^12, e.g. a redeem of 100.000000000000000001 tokens with 1 wei of dust.; In _fastRedeem and _handleUnstake, minAmountLD is set equal to assets (the amount sent).",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "p_shared_decimals_6",
+            "p_amount_not_divisible",
+            "p_min_equals_assets"
+          ],
+          "evidence": [
+            "Since iTryTokenOFT inherits the default sharedDecimals of 6, any transfer amount not perfectly divisible by 10^12 will fail with SlippageExceeded. This results in a Denial of Service (DoS) for users attempting to redeem or unstake uneven amounts (which is extremely common due to yield accrual).",
+            "Since iTryTokenOFT.sol uses the default shared decimals of 6 and local decimals of 18, the conversion rate is 10^12.",
+            "Example: A user redeems 100.000000000000000001 tokens (1 wei of dust from yield).",
+            "I found that wiTryVaultComposer sets minAmountLD equal to assets (amount sent) in both _fastRedeem() and _handleUnstake() functions. This configuration fails to account for LayerZero's mandatory dust removal mechanism, which truncates amounts to fit cross-chain decimal precision.",
+            "_sendParam.minAmountLD = assets; // <--- Vulnerability: 0% slippage",
+            "minAmountLD: assets, // <--- Vulnerability: 0% slippage"
+          ]
+        },
+        "safety": {
+          "text": "A redeem or unstake transfer should succeed when the user's amount is valid, with the slippage check tolerating LayerZero dust truncation rather than requiring minAmountLD equal to the untruncated amount.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "i_slippage_bound"
+          ],
+          "evidence": [
+            "I found that wiTryVaultComposer sets minAmountLD equal to assets (amount sent) in both _fastRedeem() and _handleUnstake() functions. This configuration fails to account for LayerZero's mandatory dust removal mechanism, which truncates amounts to fit cross-chain decimal precision.",
+            "Since iTryTokenOFT inherits the default sharedDecimals of 6, any transfer amount not perfectly divisible by 10^12 will fail with SlippageExceeded. This results in a Denial of Service (DoS) for users attempting to redeem or unstake uneven amounts (which is extremely common due to yield accrual).",
+            "Denial of Service: Users cannot use Fast Redeem or Unstake features if their balance includes any dust (which is almost guaranteed due to yield calculations)."
+          ]
+        },
+        "effects": {
+          "text": "Users pay source chain execution and LayerZero messaging fees only for the transaction to revert on the destination chain.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "v_wasted_fees"
+          ],
+          "evidence": [
+            "Wasted Assets: Users pay for source chain execution and LayerZero messaging fees, only for the transaction to revert on the destination chain."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "v_wasted_fees",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: i_slippage_bound other_mismatch: The statement is about tolerating dust truncation so the transfer succeeds, but the predicate's consequent asserts success and no fee loss rather than the slipp; P/I/V relation other_mismatch: V negates I's consequent while asserting I's antecedent, so V contradicts I, but I's consequent encodes success/no-fee-loss rather than the slippage-tolerance c"
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: i_slippage_bound other_mismatch: The statement is about tolerating dust truncation so the transfer succeeds, but the predicate's consequent asserts success and no fee loss rather than the slipp; P/I/V relation other_mismatch: V negates I's consequent while asserting I's antecedent, so V contradicts I, but I's consequent encodes success/no-fee-loss rather than the slippage-tolerance c"
+      ]
+    }
+  ],
+  "limitations": [
+    "Formalizes only the SlippageExceeded revert impact; DoS, wasted fees and no-workaround impacts are out of scope for this plan.",
+    "The exact truncation formula of amountReceivedLD is not bound numerically; only the reported inequality against minAmountLD is captured via the revert observable.",
+    "v_dos_redeem_unstake: No faithful claim generated after bounded retries: local repair made no change",
+    "v_wasted_fees: No faithful claim generated after bounded retries: semantic faithfulness mismatch: i_slippage_bound other_mismatch: The statement is about tolerating dust truncation so the transfer succeeds, but the predicate's consequent asserts success and no fee loss rather than the slipp; P/I/V relation other_mismatch: V negates I's consequent while asserting I's antecedent, so V contradicts I, but I's consequent encodes success/no-fee-loss rather than the slippage-tolerance c",
+    "v_no_workaround: No faithful claim generated after bounded retries: semantic faithfulness mismatch: i_slippage_bound other_mismatch: Statement says the transfer should succeed tolerating dust, but predicate allows success only via transfer_completed or manual slippage adjustment, not dust tol; P/I/V relation other_mismatch: V negates the disjunction I requires under P, so V contradicts I rather than being a distinguishable violation of the slippage-tolerance intent."
+  ]
+}

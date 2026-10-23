@@ -1,0 +1,138 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "QqASD4kTz4R",
+    "requested_finding_uid": "LPhijqJeGx2",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "QqASD4kTz4R",
+    "source_finding_uid": "LPhijqJeGx2",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\medium_valid_QqASD4kTz4R.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "QqASD4kTz4R",
+  "finding_uid": "LPhijqJeGx2",
+  "finding_number": "130",
+  "title": "Margin Removal Allowed in Inactive Markets",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "BenRai",
+  "body": "### Summary  \nThe `removeMargin()` function lacks proper market status validation, allowing users to withdraw margin from subaccounts containing positions in INACTIVE markets. This bypasses the intended security mechanism where INACTIVE markets should prevent margin operations due to potential security incidents.\n\n### Finding Description  \nThe perpetual trading system implements a market status mechanism with states: `INACTIVE`, `ACTIVE`, and `DELISTED`. When markets are set to `INACTIVE` status, it typically indicates a security incident or emergency situation requiring immediate action to protect user funds and system integrity.\n\nThe system enforces market status checks through the `onlyActiveMarket` modifier and `assertActive()` function in `MarketLib`. These checks are properly implemented for critical functions like `placeOrder()` and `amendLimitOrder()` to prevent trading activities in inactive markets.\n\nHowever, the `removeMargin()` function in `PerpManager.sol` lacks this crucial validation. The function performs the following operations:\n\n1. Loads account positions and assets from the clearing house\n2. Realizes funding payments across all positions\n3. Settles margin updates through the collateral manager\n4. Validates post-withdrawal margin requirements\n5. Updates position states\n\nWhile the function validates margin requirements and prevents liquidation, it does not verify that all markets associated with the subaccount's positions are in `ACTIVE` status. This creates a critical security gap where users can extract margin from compromised or emergency-locked markets.\n\nThe issue becomes particularly severe in cross-margin scenarios where a single subaccount may contain positions across multiple markets. If any market becomes `INACTIVE` due to a security incident, users can still withdraw margin from the entire subaccount, potentially extracting funds that should be locked for investigation or recovery.\n### Recommendation  \nAdd market status validation to the `removeMargin()` function to ensure all markets associated with the subaccount's positions are active before allowing margin withdrawal:",
+  "proof_of_concept": "### Proof of Concept\n\nThe following coded POC demonstrates that margin removal is possible even when markets are set to INACTIVE status, bypassing the intended security mechanism.\n\nTo run the POC, replace the code in the file `test/c4-poc/PoCPerps.t.sol` with the following code and run it with:\n\n```bash\nforge test -vv --mt test_Margin_Removal_In_Inactive_Markets\n```\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PerpManagerTestBase} from \"../perps/PerpManagerTestBase.sol\";\nimport {console} from \"forge-std/console.sol\";\nimport {Side} from \"../../contracts/perps/types/Enums.sol\";\nimport {PlaceOrderArgs, Account as PerpAccount, MarketParams, DeleveragePair} from \"../../contracts/perps/types/Structs.sol\";\nimport {TiF} from \"../../contracts/perps/types/Enums.sol\";\nimport {FixedPointMathLib} from \"../../lib/solady/src/utils/FixedPointMathLib.sol\";\nimport {AdminPanel} from \"../../contracts/perps/modules/AdminPanel.sol\";\nimport {Position} from \"../../contracts/perps/types/Position.sol\";\nimport {ClearingHouseLib} from \"../../contracts/perps/types/ClearingHouse.sol\";\n\ncontract PoCPerps is PerpManagerTestBase {\n\n    // margin removal is still possible in INACTIVE markets\n    function test_Margin_Removal_In_Inactive_Markets() public {\n        //open an order for rite\n        _placeTrade({\n            subaccount: 1,\n            asset: ETH,\n            taker: rite,\n            maker: jb,\n            price: 4000 * 1e18,\n            amount: 10 * 1e18,\n            side: Side.SELL\n        });\n\n        //add additional margin to the account\n        vm.prank(rite);\n        perpManager.addMargin(rite, 1, 100_000 * 1e18);\n\n        //set the market to INACTIVE\n        vm.prank(admin);\n        perpManager.deactivateMarket(ETH);\n\n        //check margin of rite\n        int256 marginBefore = perpManager.getMarginBalance(rite, 1);\n        console.log(\"Margin: %18e\", marginBefore);\n        \n        //try to remove margin\n        vm.prank(rite);\n        perpManager.removeMargin(rite, 1, 99_000 * 1e18);\n\n        //check margin of rite\n        int256 marginAfter = perpManager.getMarginBalance(rite, 1);\n        console.log(\"Margin: %18e\", marginAfter);\n        assertLt(marginAfter, marginBefore, \"Margin is not decreased\");\n    }\n}",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/PerpManager.sol#L176-L220"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "636",
+    "api_submission_id": "",
+    "uid": "QqASD4kTz4R",
+    "number": "636",
+    "title": "Margin Removal Allowed in Inactive Markets",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "BenRai",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/PerpManager.sol#L176-L220"
+    ],
+    "body": "### Summary  \nThe `removeMargin()` function lacks proper market status validation, allowing users to withdraw margin from subaccounts containing positions in INACTIVE markets. This bypasses the intended security mechanism where INACTIVE markets should prevent margin operations due to potential security incidents.\n\n### Finding Description  \nThe perpetual trading system implements a market status mechanism with states: `INACTIVE`, `ACTIVE`, and `DELISTED`. When markets are set to `INACTIVE` status, it typically indicates a security incident or emergency situation requiring immediate action to protect user funds and system integrity.\n\nThe system enforces market status checks through the `onlyActiveMarket` modifier and `assertActive()` function in `MarketLib`. These checks are properly implemented for critical functions like `placeOrder()` and `amendLimitOrder()` to prevent trading activities in inactive markets.\n\nHowever, the `removeMargin()` function in `PerpManager.sol` lacks this crucial validation. The function performs the following operations:\n\n1. Loads account positions and assets from the clearing house\n2. Realizes funding payments across all positions\n3. Settles margin updates through the collateral manager\n4. Validates post-withdrawal margin requirements\n5. Updates position states\n\nWhile the function validates margin requirements and prevents liquidation, it does not verify that all markets associated with the subaccount's positions are in `ACTIVE` status. This creates a critical security gap where users can extract margin from compromised or emergency-locked markets.\n\nThe issue becomes particularly severe in cross-margin scenarios where a single subaccount may contain positions across multiple markets. If any market becomes `INACTIVE` due to a security incident, users can still withdraw margin from the entire subaccount, potentially extracting funds that should be locked for investigation or recovery.\n### Recommendation  \nAdd market status validation to the `removeMargin()` function to ensure all markets associated with the subaccount's positions are active before allowing margin withdrawal:",
+    "proof_of_concept": "### Proof of Concept\n\nThe following coded POC demonstrates that margin removal is possible even when markets are set to INACTIVE status, bypassing the intended security mechanism.\n\nTo run the POC, replace the code in the file `test/c4-poc/PoCPerps.t.sol` with the following code and run it with:\n\n```bash\nforge test -vv --mt test_Margin_Removal_In_Inactive_Markets\n```\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PerpManagerTestBase} from \"../perps/PerpManagerTestBase.sol\";\nimport {console} from \"forge-std/console.sol\";\nimport {Side} from \"../../contracts/perps/types/Enums.sol\";\nimport {PlaceOrderArgs, Account as PerpAccount, MarketParams, DeleveragePair} from \"../../contracts/perps/types/Structs.sol\";\nimport {TiF} from \"../../contracts/perps/types/Enums.sol\";\nimport {FixedPointMathLib} from \"../../lib/solady/src/utils/FixedPointMathLib.sol\";\nimport {AdminPanel} from \"../../contracts/perps/modules/AdminPanel.sol\";\nimport {Position} from \"../../contracts/perps/types/Position.sol\";\nimport {ClearingHouseLib} from \"../../contracts/perps/types/ClearingHouse.sol\";\n\ncontract PoCPerps is PerpManagerTestBase {\n\n    // margin removal is still possible in INACTIVE markets\n    function test_Margin_Removal_In_Inactive_Markets() public {\n        //open an order for rite\n        _placeTrade({\n            subaccount: 1,\n            asset: ETH,\n            taker: rite,\n            maker: jb,\n            price: 4000 * 1e18,\n            amount: 10 * 1e18,\n            side: Side.SELL\n        });\n\n        //add additional margin to the account\n        vm.prank(rite);\n        perpManager.addMargin(rite, 1, 100_000 * 1e18);\n\n        //set the market to INACTIVE\n        vm.prank(admin);\n        perpManager.deactivateMarket(ETH);\n\n        //check margin of rite\n        int256 marginBefore = perpManager.getMarginBalance(rite, 1);\n        console.log(\"Margin: %18e\", marginBefore);\n        \n        //try to remove margin\n        vm.prank(rite);\n        perpManager.removeMargin(rite, 1, 99_000 * 1e18);\n\n        //check margin of rite\n        int256 marginAfter = perpManager.getMarginBalance(rite, 1);\n        console.log(\"Margin: %18e\", marginAfter);\n        assertLt(marginAfter, marginBefore, \"Margin is not decreased\");\n    }\n}",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/636",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-19T15:50:17.949Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "xCyVAZ8uDvA",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-21T13:33:47.491Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "QqASD4kTz4R",
+          "findingUid": null
+        },
+        {
+          "uid": "BQXr6zRzhmK",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-22T11:14:25.258Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "LPhijqJeGx2"
+        },
+        {
+          "uid": "Mf6uPqxun5p",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-22T11:14:26.502Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "LPhijqJeGx2"
+        },
+        {
+          "uid": "kK4nFYbXQxG",
+          "userUid": "nR9vNzVqk2o",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-21T02:46:51.707Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "LPhijqJeGx2"
+        },
+        {
+          "uid": "ZqtDyZiLbQi",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-10T12:23:02.495Z",
+          "type": "credit",
+          "value": "75%",
+          "submissionUid": "QqASD4kTz4R",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "LPhijqJeGx2",
+        "number": 130,
+        "duplicates": 4
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": "75%",
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-11-10T12:23:02.495Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Margin Removal Allowed in Inactive Markets",
+      "uid": "QqASD4kTz4R",
+      "updatedAt": "2025-09-19T15:50:17.949Z",
+      "user": {
+        "uid": "nGZC4naTGi8",
+        "handle": "BenRai"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Summary  \nThe `removeMargin()` function lacks proper market status validation, allowing users to withdraw margin from subaccounts containing positions in INACTIVE markets. This bypasses the intended security mechanism where INACTIVE markets should prevent margin operations due to potential security incidents.\n\n### Finding Description  \nThe perpetual trading system implements a market status mechanism with states: `INACTIVE`, `ACTIVE`, and `DELISTED`. When markets are set to `INACTIVE` status, it typically indicates a security incident or emergency situation requiring immediate action to protect user funds and system integrity.\n\nThe system enforces market status checks through the `onlyActiveMarket` modifier and `assertActive()` function in `MarketLib`. These checks are properly implemented for critical functions like `placeOrder()` and `amendLimitOrder()` to prevent trading activities in inactive markets.\n\nHowever, the `removeMargin()` function in `PerpManager.sol` lacks this crucial validation. The function performs the following operations:\n\n1. Loads account positions and assets from the clearing house\n2. Realizes funding payments across all positions\n3. Settles margin updates through the collateral manager\n4. Validates post-withdrawal margin requirements\n5. Updates position states\n\nWhile the function validates margin requirements and prevents liquidation, it does not verify that all markets associated with the subaccount's positions are in `ACTIVE` status. This creates a critical security gap where users can extract margin from compromised or emergency-locked markets.\n\nThe issue becomes particularly severe in cross-margin scenarios where a single subaccount may contain positions across multiple markets. If any market becomes `INACTIVE` due to a security incident, users can still withdraw margin from the entire subaccount, potentially extracting funds that should be locked for investigation or recovery.\n### Recommendation  \nAdd market status validation to the `removeMargin()` function to ensure all markets associated with the subaccount's positions are active before allowing margin withdrawal:",
+      "proofOfConcept": "### Proof of Concept\n\nThe following coded POC demonstrates that margin removal is possible even when markets are set to INACTIVE status, bypassing the intended security mechanism.\n\nTo run the POC, replace the code in the file `test/c4-poc/PoCPerps.t.sol` with the following code and run it with:\n\n```bash\nforge test -vv --mt test_Margin_Removal_In_Inactive_Markets\n```\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PerpManagerTestBase} from \"../perps/PerpManagerTestBase.sol\";\nimport {console} from \"forge-std/console.sol\";\nimport {Side} from \"../../contracts/perps/types/Enums.sol\";\nimport {PlaceOrderArgs, Account as PerpAccount, MarketParams, DeleveragePair} from \"../../contracts/perps/types/Structs.sol\";\nimport {TiF} from \"../../contracts/perps/types/Enums.sol\";\nimport {FixedPointMathLib} from \"../../lib/solady/src/utils/FixedPointMathLib.sol\";\nimport {AdminPanel} from \"../../contracts/perps/modules/AdminPanel.sol\";\nimport {Position} from \"../../contracts/perps/types/Position.sol\";\nimport {ClearingHouseLib} from \"../../contracts/perps/types/ClearingHouse.sol\";\n\ncontract PoCPerps is PerpManagerTestBase {\n\n    // margin removal is still possible in INACTIVE markets\n    function test_Margin_Removal_In_Inactive_Markets() public {\n        //open an order for rite\n        _placeTrade({\n            subaccount: 1,\n            asset: ETH,\n            taker: rite,\n            maker: jb,\n            price: 4000 * 1e18,\n            amount: 10 * 1e18,\n            side: Side.SELL\n        });\n\n        //add additional margin to the account\n        vm.prank(rite);\n        perpManager.addMargin(rite, 1, 100_000 * 1e18);\n\n        //set the market to INACTIVE\n        vm.prank(admin);\n        perpManager.deactivateMarket(ETH);\n\n        //check margin of rite\n        int256 marginBefore = perpManager.getMarginBalance(rite, 1);\n        console.log(\"Margin: %18e\", marginBefore);\n        \n        //try to remove margin\n        vm.prank(rite);\n        perpManager.removeMargin(rite, 1, 99_000 * 1e18);\n\n        //check margin of rite\n        int256 marginAfter = perpManager.getMarginBalance(rite, 1);\n        console.log(\"Margin: %18e\", marginAfter);\n        assertLt(marginAfter, marginBefore, \"Margin is not decreased\");\n    }\n}",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/PerpManager.sol#L176-L220",
+      "number": 636,
+      "aiExplanation": null,
+      "_index": 636
+    }
+  }
+}

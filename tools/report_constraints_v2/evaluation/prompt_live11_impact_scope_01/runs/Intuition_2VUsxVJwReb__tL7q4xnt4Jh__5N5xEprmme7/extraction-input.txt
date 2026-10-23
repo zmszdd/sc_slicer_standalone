@@ -1,0 +1,30 @@
+### Unclaimed AtomWallet Violates ERC-4337 Storage rules by reading MultiVault storage during validation
+
+**Description:** During ERC-4337 validation, `_validateSignature` calls `owner()` to check the signer. If the wallet has not been claimed yet (`isClaimed == false`), `owner()` makes an external call to `multiVault.getAtomWarden()`:
+
+
+This happens on the validation path:
+
+`EntryPoint.handleOps` → `validateUserOp` → `_validateSignature` → `owner()` → `multiVault.getAtomWarden()`
+
+ERC-4337 bundlers are expected to enforce validation rules from ERC-7562. Those rules allow reads to the account's own storage and storage tied to that account. But `multiVault.getAtomWarden()` returns `walletConfig.atomWarden`, which not storage tied to this wallet.
+
+So an unclaimed wallet depends on shared external state during validation. Bundlers that follow ERC-7562 may reject these `UserOperation`s.
+
+There is also direct support for this in code natspec:
+
+- `lib/account-abstraction/contracts/interfaces/IEntryPointSimulations.sol::simulateValidation` documents that during `simulateValidation`, "The node must also verify it doesn't use banned opcodes, and that it doesn't reference storage outside the account's data."
+
+More details rules are here: https://eips.ethereum.org/EIPS/eip-7562
+
+**Impact:** This affects wallets before they are claimed.
+
+- Unclaimed wallets may not work with ERC-7562-enforcing bundlers.
+- Claimed wallets are not affected, because after claim the wallet reads the owner from its own storage.
+- Any flow that expects ERC-4337 support before claim may fail.
+
+
+**Recommended Mitigation:** Cache `atomWarden` in the wallet during initialization so `owner()` does not need to read `MultiVault` during validation:
+
+
+If `atomWarden` needs to change later, add a permissioned function so `MultiVault` or an admin can update the cached value in each wallet.

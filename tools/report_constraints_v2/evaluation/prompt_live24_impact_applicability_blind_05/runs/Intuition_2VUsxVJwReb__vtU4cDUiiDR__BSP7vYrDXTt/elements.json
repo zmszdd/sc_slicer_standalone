@@ -1,0 +1,159 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "previewWithdraw share calculation in ProgressiveCurve and OffsetProgressiveCurve used by MultiVault withdrawal flow",
+    "environment": "Solidity vault curve math library (ProgressiveCurve / OffsetProgressiveCurve)",
+    "evidence": [
+      "`ProgressiveCurve` / `OffsetProgressiveCurve` — `previewWithdraw` reverts due to mixed rounding causing underflow",
+      "The `previewWithdraw` function in both `ProgressiveCurve` and `OffsetProgressiveCurve` uses mixed rounding directions that can cause an arithmetic underflow revert. Specifically:",
+      "When a user attempts to withdraw an amount close to `totalAssets`, the rounded-up `deduct` value can exceed the rounded-down `square(s)`, causing `sub(PCMath.square(s), deduct)` to underflow and revert.",
+      "- This affects the MultiVault's withdrawal flow since it calls `previewWithdraw` to determine how many shares to burn for a given asset withdrawal"
+    ]
+  },
+  "entities": [
+    {
+      "id": "progressive_curve",
+      "name": "ProgressiveCurve / OffsetProgressiveCurve",
+      "role": "contract",
+      "evidence": [
+        "`ProgressiveCurve` / `OffsetProgressiveCurve` — `previewWithdraw` reverts due to mixed rounding causing underflow",
+        "The `previewWithdraw` function in both `ProgressiveCurve` and `OffsetProgressiveCurve` uses mixed rounding directions that can cause an arithmetic underflow revert. Specifically:"
+      ]
+    },
+    {
+      "id": "multivault",
+      "name": "MultiVault",
+      "role": "contract",
+      "evidence": [
+        "- This affects the MultiVault's withdrawal flow since it calls `previewWithdraw` to determine how many shares to burn for a given asset withdrawal"
+      ]
+    },
+    {
+      "id": "user",
+      "name": "Withdrawing user",
+      "role": "victim",
+      "evidence": [
+        "When a user attempts to withdraw an amount close to `totalAssets`, the rounded-up `deduct` value can exceed the rounded-down `square(s)`, causing `sub(PCMath.square(s), deduct)` to underflow and revert.",
+        "- Users who attempt to withdraw all or nearly all assets from a vault using `previewWithdraw` can experience unexpected reverts"
+      ]
+    },
+    {
+      "id": "assets",
+      "name": "Withdrawal assets amount",
+      "role": "asset",
+      "evidence": [
+        "- `deduct = PCMath.divUp(wrap(assets), HALF_SLOPE)` rounds **up**",
+        "When a user attempts to withdraw an amount close to `totalAssets`, the rounded-up `deduct` value can exceed the rounded-down `square(s)`, causing `sub(PCMath.square(s), deduct)` to underflow and revert."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "withdraw_amount_near_total_assets",
+      "kind": "precondition",
+      "text": "A user attempts to withdraw an amount close to totalAssets.",
+      "modality": "potential",
+      "entity_ids": [
+        "user",
+        "assets"
+      ],
+      "evidence": [
+        "When a user attempts to withdraw an amount close to `totalAssets`, the rounded-up `deduct` value can exceed the rounded-down `square(s)`, causing `sub(PCMath.square(s), deduct)` to underflow and revert.",
+        "- Users who attempt to withdraw all or nearly all assets from a vault using `previewWithdraw` can experience unexpected reverts"
+      ]
+    },
+    {
+      "id": "deduct_rounds_up",
+      "kind": "root_cause",
+      "text": "deduct = PCMath.divUp(wrap(assets), HALF_SLOPE) rounds up.",
+      "modality": "asserted",
+      "entity_ids": [
+        "progressive_curve"
+      ],
+      "evidence": [
+        "- `deduct = PCMath.divUp(wrap(assets), HALF_SLOPE)` rounds **up**"
+      ]
+    },
+    {
+      "id": "square_rounds_down",
+      "kind": "root_cause",
+      "text": "PCMath.square(s) rounds down via standard mul.",
+      "modality": "asserted",
+      "entity_ids": [
+        "progressive_curve"
+      ],
+      "evidence": [
+        "- `PCMath.square(s)` rounds **down** (via standard `mul`)"
+      ]
+    },
+    {
+      "id": "mixed_rounding_underflow",
+      "kind": "root_cause",
+      "text": "previewWithdraw mixes divUp (round up) with square (round down), so the rounded-up deduct can exceed the rounded-down square(s), making sub(PCMath.square(s), deduct) underflow.",
+      "modality": "asserted",
+      "entity_ids": [
+        "progressive_curve"
+      ],
+      "evidence": [
+        "The `previewWithdraw` function in both `ProgressiveCurve` and `OffsetProgressiveCurve` uses mixed rounding directions that can cause an arithmetic underflow revert. Specifically:",
+        "When a user attempts to withdraw an amount close to `totalAssets`, the rounded-up `deduct` value can exceed the rounded-down `square(s)`, causing `sub(PCMath.square(s), deduct)` to underflow and revert.",
+        "The `_convertToAssets` function was correctly fixed (the PR #136 differential change) to use consistent round-down via `PCMath.square` on both terms. But `previewWithdraw` still mixes `divUp` (round up) with `square` (round down), creating a potential for the subtraction to underflow."
+      ]
+    },
+    {
+      "id": "intent_consistent_rounding",
+      "kind": "security_intent",
+      "text": "previewWithdraw should use consistent rounding directions so that the subtraction of deduct from square(s) does not underflow for withdrawals up to totalAssets.",
+      "modality": "inferred",
+      "entity_ids": [
+        "progressive_curve"
+      ],
+      "evidence": [
+        "The `previewWithdraw` function in both `ProgressiveCurve` and `OffsetProgressiveCurve` uses mixed rounding directions that can cause an arithmetic underflow revert. Specifically:",
+        "This is notable because the differential change area (README focus: lines 240/247) fixed `_convertToAssets` (the redeem path) to use consistent round-down arithmetic via `PCMath.square` on both terms. However, `previewWithdraw` was **not** updated with the same consistency and still mixes `divUp` with `square` (round-down).",
+        "The `_convertToAssets` function was correctly fixed (the PR #136 differential change) to use consistent round-down via `PCMath.square` on both terms. But `previewWithdraw` still mixes `divUp` (round up) with `square` (round down), creating a potential for the subtraction to underflow."
+      ]
+    },
+    {
+      "id": "intent_no_revert_near_total",
+      "kind": "security_intent",
+      "text": "A withdrawal of all or nearly all assets via previewWithdraw should not revert due to arithmetic underflow.",
+      "modality": "inferred",
+      "entity_ids": [
+        "progressive_curve",
+        "user"
+      ],
+      "evidence": [
+        "When a user attempts to withdraw an amount close to `totalAssets`, the rounded-up `deduct` value can exceed the rounded-down `square(s)`, causing `sub(PCMath.square(s), deduct)` to underflow and revert.",
+        "- Users who attempt to withdraw all or nearly all assets from a vault using `previewWithdraw` can experience unexpected reverts"
+      ]
+    },
+    {
+      "id": "withdraw_near_total_assets_revert",
+      "kind": "impact",
+      "text": "When a user attempts to withdraw an amount close to `totalAssets`, the rounded-up `deduct` value can exceed the rounded-down `square(s)`, causing `sub(PCMath.square(s), deduct)` to underflow and revert.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "When a user attempts to withdraw an amount close to `totalAssets`, the rounded-up `deduct` value can exceed the rounded-down `square(s)`, causing `sub(PCMath.square(s), deduct)` to underflow and revert."
+      ]
+    },
+    {
+      "id": "unexpected_reverts_withdraw_all_or_nearly_all",
+      "kind": "impact",
+      "text": "Users who attempt to withdraw all or nearly all assets from a vault using `previewWithdraw` can experience unexpected reverts",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "- Users who attempt to withdraw all or nearly all assets from a vault using `previewWithdraw` can experience unexpected reverts"
+      ]
+    }
+  ],
+  "attack_steps": [],
+  "ambiguities": [
+    "No explicit attacker or unauthorized-caller condition is stated; the scenario is a user withdrawing near totalAssets.",
+    "The report does not give a concrete numeric amount or slope value; the trigger is qualitative (close to totalAssets, small slopes).",
+    "Whether the revert is observed in a real transaction or only potential is not established; treated as potential.",
+    "MultiVault withdrawal flow being affected is explanatory context, not a distinct stated harm"
+  ]
+}

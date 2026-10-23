@@ -1,0 +1,29 @@
+Using Bitwise AND in `CLOB::_processLimitBidOrder` and `CLOB::_processLimitAskOrder` Causes False Reverts
+
+## Finding description and impact
+### Root Cause
+
+In `CLOB.sol` lines 503-504 and 544-545, the code uses a bitwise AND operator (`&`) instead of logical OR (`||`):
+
+
+The intent is to prevent zero-cost trades where one side receives tokens without sending any. However, the bitwise `&` operator causes false positives when legitimate trade amounts have no overlapping bits (e.g., 256 & 255 = 0).
+
+### Impact
+
+The condition treats any two matched amounts with disjoint 1-bits as zero-cost trades. This affects ALL limit order matching (both partial and full matches), while fill orders remain unaffected as they use different validation logic.
+
+The bug is deterministically reproducible. When matched base amount is a power-of-two (2^k) and matched quote is any value < 2^k, the bitwise AND equals zero by construction, triggering a false `ZeroCostTrade()` revert. Examples include:
+- base = 256, quote ∈ {1..255} → all revert
+- base = 512, quote ∈ {1..511} → all revert
+- base = 1024, quote ∈ {1..1023} → all revert
+
+Beyond power-of-two cases, any amounts with no overlapping bits trigger the bug (e.g., 40 & 21 = 0b101000 & 0b010101 = 0).
+
+This causes legitimate trades to fail with a misleading error, damaging user experience and market efficiency. Traders, especially algorithmic ones using round numbers, will encounter unexplained failures.
+
+## Recommended mitigation steps
+
+Replace the faulty condition with proper OR logic:
+
+
+Remove the `!=` comparison as it's meaningless between different token units.

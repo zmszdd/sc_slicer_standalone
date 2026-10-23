@@ -1,0 +1,52 @@
+Pre-start amountSold accrues due to uint32-before-subtraction in duration clamp
+
+## Finding description and impact
+
+The TWAMM.sol contract allows attackers to accumulate phantom `amountSold` values before an order's designated start time. This occurs due to an arithmetic underflow in an `unchecked` block, combined with a validation check that executes after state has already been corrupted. The vulnerability enables direct theft of user funds through over-refunds and can permanently freeze funds through accounting inconsistencies. The vulnerability exists in the `handleForwardData` function within the TWAMM contract. The entire function operates inside an `unchecked` block,
+
+which disables Solidity's automatic overflow/underflow protection.
+
+**Vulnerable Code Location**: `src/extensions/TWAMM.sol:248-271`
+
+
+### How the bug works
+
+**Step 1: Arithmetic Underflow**
+When `block.timestamp < startTime`, the expression on line 259 underflows:
+
+
+Example with real values:
+- `block.timestamp = 1536`
+- `startTime = 2048`
+- `uint64(1536) - uint64(2048) = underflow`
+- Result: `18446744073709551104` (wrapped value)
+- `uint32(...)` truncates to: `4294966784` (still huge!)
+
+**Step 2: Incorrect Duration Selection**
+The `min()` function then selects the smaller of two values:
+
+
+**Expected behavior**: Duration should be `0` since the order hasn't started
+**Actual behavior**: Duration is `512` (time elapsed since last update)
+
+**Step 3: Phantom AmountSold Accumulation**
+The incorrect duration is used to calculate `amountSold`:
+
+
+This phantom amount is stored to state (line 248-266) **before** the check on line 271 that determines if the order has started.
+
+**Step 4: Late Validation Check**
+By the time the code reaches line 271:
+
+The corrupted state has already been written, making this check ineffective.
+
+### impact
+
+- Direct Fund Theft as Inflated `amountSold` values lead to over-refunds, Attackers can claim tokens never actually sold, Losses scale with `saleRate` and time before start.
+- Permanent Fund Freezing - Inconsistent accounting state can cause update/settlement functions to revert, Orders may become "bricked" with funds locked
+- Accounting Corruption as amountSold` no longer reflects reality, Fee calculations become incorrect, Debt settlement logic produces wrong results, Systems relying on order state receive invalid data
+
+
+## Recommended mitigation steps
+
+Move the start time check BEFORE the duration calculation:

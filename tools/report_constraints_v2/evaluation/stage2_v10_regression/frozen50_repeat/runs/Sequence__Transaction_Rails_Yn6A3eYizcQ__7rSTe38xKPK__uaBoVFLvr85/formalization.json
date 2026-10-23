@@ -1,0 +1,363 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "c909ecf7d_executes_in_delegatecall_context": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "injectSweepAndCall executes via delegatecall so address(this) is the user's wallet/shim rather than the router",
+      "checkpoint": "before execution",
+      "entity_ids": [
+        "trails_router",
+        "user"
+      ],
+      "evidence": "The injectSweepAndCall function in TrailsRouter is designed to “sweep” a caller’s full balance in a given token (or ETH), inject that amount into a call’s calldata, and execute the call against a target contract. It is clearly written under the assumption that the router’s code runs in the context of a user wallet via delegatecall, where address(this) refers to the wallet, not the router itself."
+    },
+    "c909ecf7d_router_holds_user_funds": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the router contract holds and controls user funds as a stateful custodian",
+      "checkpoint": "after execution",
+      "entity_ids": [
+        "trails_router",
+        "funds"
+      ],
+      "evidence": "This mismatch between intended execution context (delegatecall into a wallet/shim) and actual allowed execution context (direct external call on the router) causes the router to accumulate and control user funds. The core faulty assumption is that “this function will only ever execute in a context where address(this) is a wallet (or shim) owned by the user”; in reality, it is fully callable on the router implementation itself, turning a stateless routing component into a stateful asset custodian and significantly increasing blast radius for any other bug."
+    },
+    "c909ecf7d_users_send_funds_to_router": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "users send funds to the router expecting stateless routing behavior",
+      "checkpoint": "before execution",
+      "entity_ids": [
+        "user",
+        "trails_router",
+        "funds"
+      ],
+      "evidence": "Users may unknowingly send funds to ROUTER expecting a stateless routing behavior."
+    },
+    "c909ecf7d_target_misconfigured_or_fails": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the target is misconfigured, malicious, or fails",
+      "checkpoint": "during execution",
+      "entity_ids": [
+        "target"
+      ],
+      "evidence": "If TARGET is misconfigured, malicious, or fails:"
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_impact_attacker_drains_d05e788d",
+      "scope": "injectSweepAndCall direct external call on TrailsRouter",
+      "modality": "potential",
+      "impact_ids": [
+        "impact_attacker_drains"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The function is intended to run only via delegatecall from a smart wallet or shim, where address(this) and _getSelfBalance refer to the user's wallet, not the router.; Users may send funds to the router expecting stateless routing behavior.; The target is misconfigured, malicious, or fails.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "intended_delegatecall_context",
+            "users_send_funds_to_router",
+            "target_misconfigured_or_fails"
+          ],
+          "evidence": [
+            "The injectSweepAndCall function in TrailsRouter is designed to “sweep” a caller’s full balance in a given token (or ETH), inject that amount into a call’s calldata, and execute the call against a target contract. It is clearly written under the assumption that the router’s code runs in the context of a user wallet via delegatecall, where address(this) refers to the wallet, not the router itself.",
+            "The router is meant to be used via delegatecall from a smart wallet or a shim contract.",
+            "address(this) inside the router code resolves to the wallet/shim address, not the router contract.",
+            "Token and ETH balances tracked by _getSelfBalance(token) are the wallet’s balances.",
+            "The router is effectively “pure logic” with no long-term funds; all balances belong to the calling wallet.",
+            "Users may unknowingly send funds to ROUTER expecting a stateless routing behavior.",
+            "If TARGET is misconfigured, malicious, or fails:"
+          ]
+        },
+        "safety": {
+          "text": "injectSweepAndCall should only execute in a delegatecall context where address(this) is the user's wallet/shim, not directly on the router.; The router should remain stateless with no long-term funds; user balances should belong to the calling wallet.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "intent_delegatecall_only",
+            "intent_no_router_custody"
+          ],
+          "evidence": [
+            "The injectSweepAndCall function in TrailsRouter is designed to “sweep” a caller’s full balance in a given token (or ETH), inject that amount into a call’s calldata, and execute the call against a target contract. It is clearly written under the assumption that the router’s code runs in the context of a user wallet via delegatecall, where address(this) refers to the wallet, not the router itself.",
+            "However, the function is declared as a normal external function without any onlyDelegatecall or equivalent restriction. When called directly on the router contract, it transfers tokens from msg.sender into address(this) (the router), and subsequent internal logic uses the router’s own balance via _getSelfBalance / address(this).",
+            "This mismatch between intended execution context (delegatecall into a wallet/shim) and actual allowed execution context (direct external call on the router) causes the router to accumulate and control user funds. The core faulty assumption is that “this function will only ever execute in a context where address(this) is a wallet (or shim) owned by the user”; in reality, it is fully callable on the router implementation itself, turning a stateless routing component into a stateful asset custodian and significantly increasing blast radius for any other bug.",
+            "The router is effectively “pure logic” with no long-term funds; all balances belong to the calling wallet."
+          ]
+        },
+        "effects": {
+          "text": "Due to the previously reported missing delegatecall guard, an attacker can withdraw tokens from the router and drain these accumulated balances.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "impact_attacker_drains"
+          ],
+          "evidence": [
+            "Also the previous bug(injectAndCall Lets Anyone Spend Router-Held Funds due to missing  Delegatecall Guard) reported gets strong anyone can  withdraw tokens from ROUTER, the attacker can drain these accumulated balances."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_attacker_drains",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_delegatecall_only other_mismatch: The statement is a restriction that execution should only occur in delegatecall context, but the predicate encodes a conditional about attacker withdrawal rathe; P/I/V relation other_mismatch: I does not encode the delegatecall-only restriction, so V's direct-execution-with-drain does not contradict I as formalized."
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_delegatecall_only other_mismatch: The statement is a restriction that execution should only occur in delegatecall context, but the predicate encodes a conditional about attacker withdrawal rathe; P/I/V relation other_mismatch: I does not encode the delegatecall-only restriction, so V's direct-execution-with-drain does not contradict I as formalized."
+      ]
+    },
+    {
+      "id": "impact_claim_impact_funds_stuck_38cc2df1",
+      "scope": "injectSweepAndCall direct external call on TrailsRouter",
+      "modality": "potential",
+      "impact_ids": [
+        "impact_funds_stuck"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The function is intended to run only via delegatecall from a smart wallet or shim, where address(this) and _getSelfBalance refer to the user's wallet, not the router.; Users may send funds to the router expecting stateless routing behavior.; The target is misconfigured, malicious, or fails.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "intended_delegatecall_context",
+            "users_send_funds_to_router",
+            "target_misconfigured_or_fails"
+          ],
+          "evidence": [
+            "The injectSweepAndCall function in TrailsRouter is designed to “sweep” a caller’s full balance in a given token (or ETH), inject that amount into a call’s calldata, and execute the call against a target contract. It is clearly written under the assumption that the router’s code runs in the context of a user wallet via delegatecall, where address(this) refers to the wallet, not the router itself.",
+            "The router is meant to be used via delegatecall from a smart wallet or a shim contract.",
+            "address(this) inside the router code resolves to the wallet/shim address, not the router contract.",
+            "Token and ETH balances tracked by _getSelfBalance(token) are the wallet’s balances.",
+            "The router is effectively “pure logic” with no long-term funds; all balances belong to the calling wallet.",
+            "Users may unknowingly send funds to ROUTER expecting a stateless routing behavior.",
+            "If TARGET is misconfigured, malicious, or fails:"
+          ]
+        },
+        "safety": {
+          "text": "injectSweepAndCall should only execute in a delegatecall context where address(this) is the user's wallet/shim, not directly on the router.; The router should remain stateless with no long-term funds; user balances should belong to the calling wallet.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "intent_delegatecall_only",
+            "intent_no_router_custody"
+          ],
+          "evidence": [
+            "The injectSweepAndCall function in TrailsRouter is designed to “sweep” a caller’s full balance in a given token (or ETH), inject that amount into a call’s calldata, and execute the call against a target contract. It is clearly written under the assumption that the router’s code runs in the context of a user wallet via delegatecall, where address(this) refers to the wallet, not the router itself.",
+            "However, the function is declared as a normal external function without any onlyDelegatecall or equivalent restriction. When called directly on the router contract, it transfers tokens from msg.sender into address(this) (the router), and subsequent internal logic uses the router’s own balance via _getSelfBalance / address(this).",
+            "This mismatch between intended execution context (delegatecall into a wallet/shim) and actual allowed execution context (direct external call on the router) causes the router to accumulate and control user funds. The core faulty assumption is that “this function will only ever execute in a context where address(this) is a wallet (or shim) owned by the user”; in reality, it is fully callable on the router implementation itself, turning a stateless routing component into a stateful asset custodian and significantly increasing blast radius for any other bug.",
+            "The router is effectively “pure logic” with no long-term funds; all balances belong to the calling wallet."
+          ]
+        },
+        "effects": {
+          "text": "If the target is misconfigured, malicious, or fails, funds remain in the router without a clear path to recovery.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "impact_funds_stuck"
+          ],
+          "evidence": [
+            "If TARGET is misconfigured, malicious, or fails:",
+            "Funds remain in ROUTER without a clear path to recovery."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_funds_stuck",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_no_router_custody other_mismatch: The statement requires the router to remain stateless with no long-term funds, but the predicate only asserts recoverability under a conjunction of conditions."
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_no_router_custody other_mismatch: The statement requires the router to remain stateless with no long-term funds, but the predicate only asserts recoverability under a conjunction of conditions."
+      ]
+    },
+    {
+      "id": "impact_claim_impact_router_accumulates_funds_e1709655",
+      "scope": "injectSweepAndCall direct external call on TrailsRouter",
+      "modality": "asserted",
+      "impact_ids": [
+        "impact_router_accumulates_funds"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The function is intended to run only via delegatecall from a smart wallet or shim, where address(this) and _getSelfBalance refer to the user's wallet, not the router.; Users may send funds to the router expecting stateless routing behavior.; The target is misconfigured, malicious, or fails.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c909ecf7d_executes_in_delegatecall_context"
+              },
+              {
+                "var": "c909ecf7d_users_send_funds_to_router"
+              },
+              {
+                "var": "c909ecf7d_target_misconfigured_or_fails"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "intended_delegatecall_context",
+            "users_send_funds_to_router",
+            "target_misconfigured_or_fails"
+          ],
+          "evidence": [
+            "The injectSweepAndCall function in TrailsRouter is designed to “sweep” a caller’s full balance in a given token (or ETH), inject that amount into a call’s calldata, and execute the call against a target contract. It is clearly written under the assumption that the router’s code runs in the context of a user wallet via delegatecall, where address(this) refers to the wallet, not the router itself.",
+            "The router is meant to be used via delegatecall from a smart wallet or a shim contract.",
+            "address(this) inside the router code resolves to the wallet/shim address, not the router contract.",
+            "Token and ETH balances tracked by _getSelfBalance(token) are the wallet’s balances.",
+            "The router is effectively “pure logic” with no long-term funds; all balances belong to the calling wallet.",
+            "Users may unknowingly send funds to ROUTER expecting a stateless routing behavior.",
+            "If TARGET is misconfigured, malicious, or fails:"
+          ]
+        },
+        "safety": {
+          "text": "The router should remain stateless with no long-term funds; user balances should belong to the calling wallet.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c909ecf7d_executes_in_delegatecall_context"
+                  },
+                  {
+                    "var": "c909ecf7d_users_send_funds_to_router"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "c909ecf7d_router_holds_user_funds"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_no_router_custody"
+          ],
+          "evidence": [
+            "The router is effectively “pure logic” with no long-term funds; all balances belong to the calling wallet.",
+            "This mismatch between intended execution context (delegatecall into a wallet/shim) and actual allowed execution context (direct external call on the router) causes the router to accumulate and control user funds. The core faulty assumption is that “this function will only ever execute in a context where address(this) is a wallet (or shim) owned by the user”; in reality, it is fully callable on the router implementation itself, turning a stateless routing component into a stateful asset custodian and significantly increasing blast radius for any other bug."
+          ]
+        },
+        "effects": {
+          "text": "The router accumulates and controls user funds, turning a stateless routing component into a stateful asset custodian.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c909ecf7d_executes_in_delegatecall_context"
+                  },
+                  {
+                    "var": "c909ecf7d_users_send_funds_to_router"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c909ecf7d_router_holds_user_funds"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "impact_router_accumulates_funds"
+          ],
+          "evidence": [
+            "This mismatch between intended execution context (delegatecall into a wallet/shim) and actual allowed execution context (direct external call on the router) causes the router to accumulate and control user funds. The core faulty assumption is that “this function will only ever execute in a context where address(this) is a wallet (or shim) owned by the user”; in reality, it is fully callable on the router implementation itself, turning a stateless routing component into a stateful asset custodian and significantly increasing blast radius for any other bug."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "intended_delegatecall_context",
+            "users_send_funds_to_router",
+            "target_misconfigured_or_fails"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_no_router_custody"
+          ],
+          "args.0": [
+            "intent_no_router_custody"
+          ],
+          "args.1": [
+            "intent_no_router_custody"
+          ]
+        },
+        "effects": {
+          "": [
+            "impact_router_accumulates_funds"
+          ],
+          "args.0": [
+            "impact_router_accumulates_funds"
+          ],
+          "args.1": [
+            "impact_router_accumulates_funds"
+          ],
+          "args.1.args.0": [
+            "impact_router_accumulates_funds"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "impact_router_accumulates_funds",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The router is intended to be stateless with no long-term funds; user balances belong to the calling wallet.",
+        "The direct-call scenario is described conditionally; no concrete transaction or actor is shown executing it."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "The custody impact is represented as a grounded Boolean because the report gives no numeric amounts or token identities.",
+    "The target-failure precondition is included in P but does not appear in the condition of I, since the custody requirement applies regardless of target behavior.",
+    "Other impacts (funds stuck, attacker drains) are handled in separate claim-generation passes and are not covered here.",
+    "impact_funds_stuck: No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_no_router_custody other_mismatch: The statement requires the router to remain stateless with no long-term funds, but the predicate only asserts recoverability under a conjunction of conditions.",
+    "impact_attacker_drains: No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_delegatecall_only other_mismatch: The statement is a restriction that execution should only occur in delegatecall context, but the predicate encodes a conditional about attacker withdrawal rathe; P/I/V relation other_mismatch: I does not encode the delegatecall-only restriction, so V's direct-execution-with-drain does not contradict I as formalized."
+  ]
+}

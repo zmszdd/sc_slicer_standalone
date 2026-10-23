@@ -1,0 +1,21 @@
+Nested multicall desyncs _isMulticall, breaking payment checks mid-batch
+
+## Finding Description and Impact
+
+`Covenant.multicall` sets a contract-wide `_isMulticall` guard to `true` before delegating into `MulticallLib.multicall` and unconditionally clears it to `false` once the delegatecall returns ([`src/Covenant.sol:516-519`](https://github.com/code-423n4/2025-10-covenant/blob/main/src/Covenant.sol#L516-L519)). The library processes each payload item via `Address.functionDelegateCall(address(this), data)` ([`src/libraries/MultiCall.sol:21-24`](https://github.com/code-423n4/2025-10-covenant/blob/main/src/libraries/MultiCall.sol#L21-L24)), which means an inner payload can invoke `Covenant.multicall` again. The nested invocation flips `_isMulticall` back to `true`, but when the nested batch unwinds it resets the flag to `false` while the outer batch is still iterating. Subsequent outer calls therefore execute with `_isMulticall == false` even though they are still part of the original multicall.
+
+Payment-sensitive entrypoints like `updateState`, `mint`, `redeem`, and `swap` rely on `_checkPayment(msgValue)` to skip `msg.value == msgValue` enforcement during batched execution ([`src/Covenant.sol:556-559`](https://github.com/code-423n4/2025-10-covenant/blob/main/src/Covenant.sol#L556-L559)). Once the flag desynchronizes, the remaining batch items begin enforcing the equality check mid-flight and deterministically revert with `Errors.E_IncorrectPayment`. Any batch that nests `multicall`—even indirectly through helper calls—breaks for the remainder of the outer sequence. This is a reliable denial-of-service condition affecting multicall composability rather than a funds-draining bug.
+
+### Affected code
+- [`src/Covenant.sol:516-559`](https://github.com/code-423n4/2025-10-covenant/blob/main/src/Covenant.sol#L516-L559)
+- [`src/libraries/MultiCall.sol:17-25`](https://github.com/code-423n4/2025-10-covenant/blob/main/src/libraries/MultiCall.sol#L17-L25)
+
+
+---
+## Impact
+
+- Nested multicalls cause outer batch items that follow the nested invocation to revert with `Errors.E_IncorrectPayment`, halting execution and wasting gas.
+- Integrations that rely on delegated batching (e.g., routers that compose protocol actions) can be griefed by inserting a nested `multicall`, turning otherwise valid sequences into guaranteed reverts.
+- Because the final balance check only triggers after the outer batch finishes, the DoS effect persists for the remainder of the transaction without any post-hoc recovery.
+
+---

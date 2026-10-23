@@ -1,0 +1,108 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Brix Money_qy7NXr77sDh",
+    "audit_uid": "qy7NXr77sDh",
+    "requested_submission_uid": "wsQo6qFtVdZ",
+    "requested_finding_uid": "9zdYSJrejx4",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Brix_Money_qy7NXr77sDh/20260618_144946/findings.json",
+    "source_submission_uid": "wsQo6qFtVdZ",
+    "source_finding_uid": "9zdYSJrejx4",
+    "original_report_path": "Brix Money_qy7NXr77sDh\\low_valid_wsQo6qFtVdZ.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "wsQo6qFtVdZ",
+  "finding_uid": "9zdYSJrejx4",
+  "finding_number": "234",
+  "title": "Blacklisted User can Permanently Block Cross-Chain Bridge",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "dlzk",
+  "body": "## Vulnerability Details\nThe `iTryTokenOFT` contract on the Spoke chain (MegaETH) implements a `_beforeTokenTransfer` hook that reverts if the `to` address is blacklisted, even during minting operations triggered by the bridge.\n\nWhen a cross-chain message arrives via LayerZero to mint tokens to a user:\n1.  The LayerZero Endpoint calls `lzReceive` on the `iTryTokenOFT` (which inherits `OFT`).\n2.  `OFT` calls `_credit`.\n3.  `_credit` calls `_mint`.\n4.  `_mint` calls `_beforeTokenTransfer`.\n5.  If the recipient is blacklisted, `_beforeTokenTransfer` reverts with `OperationNotAllowed`.\n6.  The `lzReceive` transaction reverts.\n\nIn LayerZero v2, if the execution of a message reverts, the message is considered \"failed\" but the nonce is still strictly ordered. Subsequent messages with higher nonces cannot be processed until the failed message is successfully executed. Since the user is blacklisted, the message will *never* succeed (unless the admin un-blacklists the user). This effectively permanently blocks the cross-chain channel.\n\n## Impact\n*   **Denial of Service:** The entire Hub-to-Spoke cross-chain bridge is blocked. No other users can bridge tokens or receive unstaked funds.\n*   **Griefing:** A user who knows they are about to be blacklisted (or is already blacklisted) can intentionally bridge tokens to themselves to sabotage the protocol.\n\n## Recommendations\nModify `_beforeTokenTransfer` in `iTryTokenOFT.sol` to allow minting to blacklisted addresses. The blacklist is typically intended to prevent *transfers* (exit/entry), but blocking *incoming bridged funds* (which are effectively the user's own funds returning) creates a system-wide DoS risk.\n\n**Recommended Fix:**\n```diff\n        if (transferState == TransferState.FULLY_ENABLED) {\n            if (msg.sender == minter && !blacklisted[from] && to == address(0)) {\n                // redeeming\n-           } else if (msg.sender == minter && from == address(0) && !blacklisted[to]) {\n+           } else if (msg.sender == minter && from == address(0)) {\n                // minting - Allow minting even if 'to' is blacklisted to prevent bridge blocking\n            }",
+  "proof_of_concept": "### **Proof of Concept (PoC)**\nCopie e cole o código do teste abaixo:\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.20;\n\nimport \"forge-std/Test.sol\";\nimport \"../src/token/iTRY/crosschain/iTryTokenOFT.sol\";\nimport \"./mocks/MockLayerZeroEndpoint.sol\";\n\ncontract iTryTokenOFTHarness is iTryTokenOFT {\n    constructor(address _lzEndpoint, address _owner) iTryTokenOFT(_lzEndpoint, _owner) {}\n\n    function exposed_mint(address to, uint256 amount) external {\n        // Simulate what OFT does when receiving a message\n        // The real OFT calls _credit which calls _mint\n        // We simulate the call from the endpoint (minter)\n        if (msg.sender != minter) revert(\"Only minter\");\n        _mint(to, amount);\n    }\n}\n\ncontract BlacklistDoSTest is Test {\n    iTryTokenOFTHarness public oft;\n    MockLayerZeroEndpoint public endpointMock;\n    address public owner = address(0x1);\n    address public user = address(0x3);\n\n    function setUp() public {\n        endpointMock = new MockLayerZeroEndpoint();\n        \n        vm.startPrank(owner);\n        oft = new iTryTokenOFTHarness(address(endpointMock), owner);\n        vm.stopPrank();\n    }\n\n    function testBlacklistBlocksMinting() public {\n        // 1. Blacklist the user\n        address[] memory users = new address[](1);\n        users[0] = user;\n        \n        vm.prank(owner);\n        oft.addBlacklistAddress(users);\n\n        assertTrue(oft.blacklisted(user));\n\n        // 2. Simulate LayerZero Endpoint trying to mint to the user\n        // This represents an incoming cross-chain transfer to the blacklisted user\n        vm.prank(address(endpointMock));\n        \n        // Expect revert with OperationNotAllowed selector\n        vm.expectRevert(IiTryDefinitions.OperationNotAllowed.selector);\n        oft.exposed_mint(user, 100 ether);\n    }\n}",
+  "lines_of_code": [
+    "https://github.com/InverterNetwork/brix-money/blob/main/src/token/iTRY/crosschain/iTryTokenOFT.sol#L154"
+  ],
+  "source_record": {
+    "project_id": "qy7NXr77sDh",
+    "submission_index": "84",
+    "api_submission_id": "",
+    "uid": "wsQo6qFtVdZ",
+    "number": "84",
+    "title": "Blacklisted User can Permanently Block Cross-Chain Bridge",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "",
+    "handle": "dlzk",
+    "lines_of_code": [
+      "https://github.com/InverterNetwork/brix-money/blob/main/src/token/iTRY/crosschain/iTryTokenOFT.sol#L154"
+    ],
+    "body": "## Vulnerability Details\nThe `iTryTokenOFT` contract on the Spoke chain (MegaETH) implements a `_beforeTokenTransfer` hook that reverts if the `to` address is blacklisted, even during minting operations triggered by the bridge.\n\nWhen a cross-chain message arrives via LayerZero to mint tokens to a user:\n1.  The LayerZero Endpoint calls `lzReceive` on the `iTryTokenOFT` (which inherits `OFT`).\n2.  `OFT` calls `_credit`.\n3.  `_credit` calls `_mint`.\n4.  `_mint` calls `_beforeTokenTransfer`.\n5.  If the recipient is blacklisted, `_beforeTokenTransfer` reverts with `OperationNotAllowed`.\n6.  The `lzReceive` transaction reverts.\n\nIn LayerZero v2, if the execution of a message reverts, the message is considered \"failed\" but the nonce is still strictly ordered. Subsequent messages with higher nonces cannot be processed until the failed message is successfully executed. Since the user is blacklisted, the message will *never* succeed (unless the admin un-blacklists the user). This effectively permanently blocks the cross-chain channel.\n\n## Impact\n*   **Denial of Service:** The entire Hub-to-Spoke cross-chain bridge is blocked. No other users can bridge tokens or receive unstaked funds.\n*   **Griefing:** A user who knows they are about to be blacklisted (or is already blacklisted) can intentionally bridge tokens to themselves to sabotage the protocol.\n\n## Recommendations\nModify `_beforeTokenTransfer` in `iTryTokenOFT.sol` to allow minting to blacklisted addresses. The blacklist is typically intended to prevent *transfers* (exit/entry), but blocking *incoming bridged funds* (which are effectively the user's own funds returning) creates a system-wide DoS risk.\n\n**Recommended Fix:**\n```diff\n        if (transferState == TransferState.FULLY_ENABLED) {\n            if (msg.sender == minter && !blacklisted[from] && to == address(0)) {\n                // redeeming\n-           } else if (msg.sender == minter && from == address(0) && !blacklisted[to]) {\n+           } else if (msg.sender == minter && from == address(0)) {\n                // minting - Allow minting even if 'to' is blacklisted to prevent bridge blocking\n            }",
+    "proof_of_concept": "### **Proof of Concept (PoC)**\nCopie e cole o código do teste abaixo:\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.20;\n\nimport \"forge-std/Test.sol\";\nimport \"../src/token/iTRY/crosschain/iTryTokenOFT.sol\";\nimport \"./mocks/MockLayerZeroEndpoint.sol\";\n\ncontract iTryTokenOFTHarness is iTryTokenOFT {\n    constructor(address _lzEndpoint, address _owner) iTryTokenOFT(_lzEndpoint, _owner) {}\n\n    function exposed_mint(address to, uint256 amount) external {\n        // Simulate what OFT does when receiving a message\n        // The real OFT calls _credit which calls _mint\n        // We simulate the call from the endpoint (minter)\n        if (msg.sender != minter) revert(\"Only minter\");\n        _mint(to, amount);\n    }\n}\n\ncontract BlacklistDoSTest is Test {\n    iTryTokenOFTHarness public oft;\n    MockLayerZeroEndpoint public endpointMock;\n    address public owner = address(0x1);\n    address public user = address(0x3);\n\n    function setUp() public {\n        endpointMock = new MockLayerZeroEndpoint();\n        \n        vm.startPrank(owner);\n        oft = new iTryTokenOFTHarness(address(endpointMock), owner);\n        vm.stopPrank();\n    }\n\n    function testBlacklistBlocksMinting() public {\n        // 1. Blacklist the user\n        address[] memory users = new address[](1);\n        users[0] = user;\n        \n        vm.prank(owner);\n        oft.addBlacklistAddress(users);\n\n        assertTrue(oft.blacklisted(user));\n\n        // 2. Simulate LayerZero Endpoint trying to mint to the user\n        // This represents an incoming cross-chain transfer to the blacklisted user\n        vm.prank(address(endpointMock));\n        \n        // Expect revert with OperationNotAllowed selector\n        vm.expectRevert(IiTryDefinitions.OperationNotAllowed.selector);\n        oft.exposed_mint(user, 100 ether);\n    }\n}",
+    "detail_url": "https://code4rena.com/api/v1/audits/qy7NXr77sDh/submissions/84",
+    "raw": {
+      "auditUid": "qy7NXr77sDh",
+      "createdAt": "2025-11-28T04:25:00.616Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "iiy9keEf3Mf",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-12T15:44:14.048Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "9zdYSJrejx4"
+        },
+        {
+          "uid": "6AHRW57XjgU",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-12T15:44:16.425Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "9zdYSJrejx4"
+        }
+      ],
+      "finding": {
+        "uid": "9zdYSJrejx4",
+        "number": 234,
+        "duplicates": 10
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-12-12T16:52:42.891Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Blacklisted User can Permanently Block Cross-Chain Bridge",
+      "uid": "wsQo6qFtVdZ",
+      "updatedAt": "2025-11-28T04:25:00.616Z",
+      "user": {
+        "uid": "iZrWypia5zj",
+        "handle": "dlzk"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Vulnerability Details\nThe `iTryTokenOFT` contract on the Spoke chain (MegaETH) implements a `_beforeTokenTransfer` hook that reverts if the `to` address is blacklisted, even during minting operations triggered by the bridge.\n\nWhen a cross-chain message arrives via LayerZero to mint tokens to a user:\n1.  The LayerZero Endpoint calls `lzReceive` on the `iTryTokenOFT` (which inherits `OFT`).\n2.  `OFT` calls `_credit`.\n3.  `_credit` calls `_mint`.\n4.  `_mint` calls `_beforeTokenTransfer`.\n5.  If the recipient is blacklisted, `_beforeTokenTransfer` reverts with `OperationNotAllowed`.\n6.  The `lzReceive` transaction reverts.\n\nIn LayerZero v2, if the execution of a message reverts, the message is considered \"failed\" but the nonce is still strictly ordered. Subsequent messages with higher nonces cannot be processed until the failed message is successfully executed. Since the user is blacklisted, the message will *never* succeed (unless the admin un-blacklists the user). This effectively permanently blocks the cross-chain channel.\n\n## Impact\n*   **Denial of Service:** The entire Hub-to-Spoke cross-chain bridge is blocked. No other users can bridge tokens or receive unstaked funds.\n*   **Griefing:** A user who knows they are about to be blacklisted (or is already blacklisted) can intentionally bridge tokens to themselves to sabotage the protocol.\n\n## Recommendations\nModify `_beforeTokenTransfer` in `iTryTokenOFT.sol` to allow minting to blacklisted addresses. The blacklist is typically intended to prevent *transfers* (exit/entry), but blocking *incoming bridged funds* (which are effectively the user's own funds returning) creates a system-wide DoS risk.\n\n**Recommended Fix:**\n```diff\n        if (transferState == TransferState.FULLY_ENABLED) {\n            if (msg.sender == minter && !blacklisted[from] && to == address(0)) {\n                // redeeming\n-           } else if (msg.sender == minter && from == address(0) && !blacklisted[to]) {\n+           } else if (msg.sender == minter && from == address(0)) {\n                // minting - Allow minting even if 'to' is blacklisted to prevent bridge blocking\n            }",
+      "proofOfConcept": "### **Proof of Concept (PoC)**\nCopie e cole o código do teste abaixo:\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.20;\n\nimport \"forge-std/Test.sol\";\nimport \"../src/token/iTRY/crosschain/iTryTokenOFT.sol\";\nimport \"./mocks/MockLayerZeroEndpoint.sol\";\n\ncontract iTryTokenOFTHarness is iTryTokenOFT {\n    constructor(address _lzEndpoint, address _owner) iTryTokenOFT(_lzEndpoint, _owner) {}\n\n    function exposed_mint(address to, uint256 amount) external {\n        // Simulate what OFT does when receiving a message\n        // The real OFT calls _credit which calls _mint\n        // We simulate the call from the endpoint (minter)\n        if (msg.sender != minter) revert(\"Only minter\");\n        _mint(to, amount);\n    }\n}\n\ncontract BlacklistDoSTest is Test {\n    iTryTokenOFTHarness public oft;\n    MockLayerZeroEndpoint public endpointMock;\n    address public owner = address(0x1);\n    address public user = address(0x3);\n\n    function setUp() public {\n        endpointMock = new MockLayerZeroEndpoint();\n        \n        vm.startPrank(owner);\n        oft = new iTryTokenOFTHarness(address(endpointMock), owner);\n        vm.stopPrank();\n    }\n\n    function testBlacklistBlocksMinting() public {\n        // 1. Blacklist the user\n        address[] memory users = new address[](1);\n        users[0] = user;\n        \n        vm.prank(owner);\n        oft.addBlacklistAddress(users);\n\n        assertTrue(oft.blacklisted(user));\n\n        // 2. Simulate LayerZero Endpoint trying to mint to the user\n        // This represents an incoming cross-chain transfer to the blacklisted user\n        vm.prank(address(endpointMock));\n        \n        // Expect revert with OperationNotAllowed selector\n        vm.expectRevert(IiTryDefinitions.OperationNotAllowed.selector);\n        oft.exposed_mint(user, 100 ether);\n    }\n}",
+      "linesOfCode": "https://github.com/InverterNetwork/brix-money/blob/main/src/token/iTRY/crosschain/iTryTokenOFT.sol#L154",
+      "number": 84,
+      "aiExplanation": null,
+      "_index": 84
+    }
+  }
+}

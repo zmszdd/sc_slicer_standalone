@@ -1,0 +1,35 @@
+You are a conservative REPORT-NARRATIVE-SUFFICIENCY gate for vulnerability reports.
+Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
+whether the supplied numbered report fragments explain the affected subject, trigger,
+direct effect, and safety-relation basis well enough to attempt P/I/V formalization.
+"ready" means only that the narrative is sufficient to try. It does not mean the
+current rule grammar can express the relation, that numeric variables and units are
+available, or that a model will successfully generate complete formulas. Those are
+judged separately from the subsequent per-impact formalization results.
+
+Required dimensions:
+1. affected_subject: identifiable affected component, function, state, asset, or actor.
+2. trigger_or_action: a concrete triggering condition, operation, call, or state transition.
+3. direct_effect: an immediate unauthorized behavior, state/value change, failed guarantee,
+   or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
+4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
+   numeric, temporal, conservation, or state-transition safety relationship can be derived.
+   The report need not explicitly say "invariant", but the relation must not be invented.
+
+Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
+Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
+dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
+list every dimension whose status is missing OR uncertain, in the required dimension
+order. decision is ready only when all four dimensions are present; otherwise decision
+is insufficient. Do not treat
+PoC availability, code availability, severity labels, or a proposed fix as substitutes.
+Return JSON only with exactly:
+{"schema_version":"report-readiness/1","decision":"ready|insufficient",
+ "dimensions":{
+  "affected_subject":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "trigger_or_action":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "direct_effect":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "safety_relation_basis":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"}},
+ "missing_dimensions":[],"summary":"short explanation"}
+REPORT FRAGMENTS:
+{"schema_version":"report-evidence/1","source_sha256":"d82b2546243ea779b664a0590e1dc173161b664eb735a8b3603fb81b89062c04","fragments":[{"id":"e_d82b2546243e_0001","text":"`AtomWallet.owner()` Makes an External Call During ERC-4337 Validation Phase, Violating ERC-7562 and Breaking UserOp Submission for All Unclaimed Wallets"},{"id":"e_d82b2546243e_0002","text":"## Finding Description and Impact"},{"id":"e_d82b2546243e_0003","text":"### Root Cause"},{"id":"e_d82b2546243e_0004","text":"`AtomWallet.owner()` has two branches depending on whether the wallet has been claimed:"},{"id":"e_d82b2546243e_0005","text":"When `isClaimed == false`, ownership is delegated to `multiVault.getAtomWarden()` — an external call to the `MultiVault` contract. `owner()` is invoked from `_validateSignature` at the point where the recovered signer is compared against the expected owner:"},{"id":"e_d82b2546243e_0006","text":"`_validateSignature` is the implementation of the ERC-4337 validation hook and is called by `validateUserOp` during the **validation phase**."},{"id":"e_d82b2546243e_0007","text":"### ERC-7562 Violation — Rules STO-021 / STO-022"},{"id":"e_d82b2546243e_0008","text":"Reference: https://eips.ethereum.org/EIPS/eip-7562"},{"id":"e_d82b2546243e_0009","text":"ERC-7562 governs what storage an account's validation phase may access. Rules **[STO-021]** and **[STO-022]** permit reading storage in an external contract only when the accessed slot is **associated** with the account. A storage slot in contract X is associated with account A if and only if:"},{"id":"e_d82b2546243e_0010","text":"1. The slot's **value equals A** (e.g. a mapping keyed by the wallet address), or"},{"id":"e_d82b2546243e_0011","text":"2. The slot was **derived as** `keccak(A || x) + n` (standard Solidity mapping/array at a key of A)."},{"id":"e_d82b2546243e_0012","text":"`multiVault.getAtomWarden()` reads `walletConfig.atomWarden` from `MultiVault`'s storage. That slot:"},{"id":"e_d82b2546243e_0013","text":"- Holds the warden address, **not** the `AtomWallet`'s address"},{"id":"e_d82b2546243e_0014","text":"- Was **not** derived from `keccak(atomWalletAddress || ...)` — it is a plain struct field"},{"id":"e_d82b2546243e_0015","text":"It therefore does not meet either condition: the accessed storage is **not associated** with the calling `AtomWallet`. Accessing it from within `validateUserOp` violates `STO-021`/`STO-022`. A compliant bundler simulating the UserOp detects the non-associated external storage read and **rejects the UserOp**. This is not a configuration issue — it is a fundamental incompatibility between the `owner()` implementation and the ERC-7562 storage access rules."},{"id":"e_d82b2546243e_0016","text":"### Scope of Impact"},{"id":"e_d82b2546243e_0017","text":"Every `AtomWallet` begins life unclaimed (`isClaimed == false`), with `ATOM_WARDEN` as its effective owner via the dynamic `owner()` lookup. The wallet can only be claimed once the user calls `acceptOwnership()` after a two-step transfer. Until that happens:"},{"id":"e_d82b2546243e_0018","text":"- Every UserOp submitted for the wallet will be **rejected at simulation** by any ERC-7562-compliant bundler (e.g., Pimlico, Alchemy, Biconomy, Stackup, the canonical eth-infinitism bundler)."},{"id":"e_d82b2546243e_0019","text":"- The wallet cannot be used as an ERC-4337 smart account until claimed."},{"id":"e_d82b2546243e_0020","text":"- The `ATOM_WARDEN` — the party responsible for acting on behalf of unclaimed atoms — is also blocked from submitting UserOps on those atoms via standard bundling infrastructure."},{"id":"e_d82b2546243e_0021","text":"Given that unclaimed wallets are the initial state for **all** atoms created in the system, this effectively disables ERC-4337 functionality for every newly created atom."}]}

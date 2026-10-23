@@ -1,0 +1,61 @@
+Missing debt accounting when swap is no-op causes permanent ETH loss in Core contract
+
+## Summary
+
+In `Core::swap_6269342730()`, when the current `sqrtRatio` equals the `sqrtRatioLimit`, the swap is treated as a no-op, and the entire swap block is skipped. This includes the critical `_updatePairDebtWithNative()` call, which means ETH sent via `msg.value` is never accounted for in the debt system. The ETH becomes permanently stuck in the Core contract with no recovery mechanism.
+
+## Finding Impact
+
+**Impact: High**
+
+The impact is high because:
+
+1. **Permanent Loss**: ETH sent to Core is stuck forever. The Core contract has no `refundNativeToken()` function or admin rescue mechanism.
+2. **No Recovery**: The `withdraw()` function requires proper debt accounting, which was skipped. There is no way to extract the stuck ETH.
+3. **Exploitable by Attackers**: Attackers can front-run victim transactions to manipulate the pool price to exactly match the victim's `sqrtRatioLimit`, guaranteeing the exploit succeeds.
+4. **Automatic Trigger**: The vulnerability can be triggered even by price movements from legitimate swaps (not just by attackers).
+
+## Finding Likelihood
+
+**Likelihood: High**
+
+The likelihood is high because:
+
+1. **Griefing/MEV Opportunity**: Attackers (e.g., the protocol's competitors wanting to harm the protocol's reputation, or malicious actors who benefit from chaos) monitoring the mempool can easily front-run transactions by observing the victim's `sqrtRatioLimit` parameter.
+2. **Common Scenario**: Users legitimately set `sqrtRatioLimit` near the current price for price impact/slippage protection.
+3. **No Special Conditions**: The attack only requires the attacker to move the price to the victim's limit, which is standard Griefing/MEV behavior.
+4. **Automatic Trigger**: The vulnerability can be triggered even by price movements from legitimate swaps (not just by attackers).
+
+## Finding Description
+
+The vulnerability exists in `Core::swap_6269342730()` where the `_updatePairDebtWithNative()` function is placed inside a conditional block that gets skipped when `sqrtRatio == sqrtRatioLimit`.
+
+
+**Written Proof of Concept**:
+
+1. The pool is initialized at tick 0 with liquidity.
+2. Victim submits a swap transaction: `router.swap{value: 10 ether}(poolKey, false, 10 ether, tickToSqrtRatio(0-500), ...)` where `sqrtRatioLimit` equals the current `sqrtRatio` - 500 (legitimate price impact/slippage protection).
+3. Attacker front-runs the victim's transaction and moves the price down to exactly the victim's `sqrtRatioLimit`.
+4. Victim's transaction executes:
+   - Router calculates `value = 10 ether` and calls `CoreLib::swap()`.
+   - `CoreLib::swap()` sends 10 ETH to Core via `call(gas(), core, value, ...)`.
+   - In `Core::swap_6269342730()`, the condition `stateAfter.sqrtRatio() != sqrtRatioLimit` is FALSE.
+   - The entire swap block (lines 542-843) is skipped, including `_updatePairDebtWithNative()`.
+   - `balanceUpdate` remains at default (delta0 = 0, delta1 = 0).
+5. Back in Router, since `delta0 == 0`, the refund logic is skipped.
+6. The lock completes successfully because the debt was never updated (stays at 0).
+7. Result: Victim spent 10 ETH, received 0 token1, and 10 ETH is permanently stuck in Core.
+
+## Recommended Mitigation Steps
+
+**Approach 1: Move debt accounting outside the conditional block**
+
+
+**Approach 2: Revert when swap would be a no-op, but msg.value > 0**
+
+Add a check at the beginning of the swap function to revert if `sqrtRatio == sqrtRatioLimit` and `msg.value > 0`:
+
+
+**Approach 3: Handle debt accounting separately for the no-op case**
+
+Add explicit handling for the edge case where the swap is a no-op, but ETH was sent:

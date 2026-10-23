@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Hybra Finance_xo4hapwL2Jy",
+    "audit_uid": "xo4hapwL2Jy",
+    "requested_submission_uid": "nVjdnogBPTM",
+    "requested_finding_uid": "7LKTwwSAteH",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Hybra_Finance_xo4hapwL2Jy/20260618_145600/findings.json",
+    "source_submission_uid": "nVjdnogBPTM",
+    "source_finding_uid": "7LKTwwSAteH",
+    "original_report_path": "Hybra Finance_xo4hapwL2Jy\\low_valid_nVjdnogBPTM.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "nVjdnogBPTM",
+  "finding_uid": "7LKTwwSAteH",
+  "finding_number": "106",
+  "title": "Zero‑Supply Week Strands Emissions: Unclaimable Rewards in RewardsDistributor",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "zzebra83",
+  "body": "### Summary\nRewards for weeks with zero veHYBR supply become permanently unclaimable. If the distributor is funded and checkpointed before any ve holders exist, that week’s allocation is fixed to a week where all users had zero balance, so no one can ever claim it later. The tokens remain stranded in `RewardsDistributor`.\n\n\n### Finding Description\n\nIntended:\n- Minter funds `RewardsDistributor` and calls `checkpoint_token()`, which apportions tokens across weekly buckets.\n- Later, users with veHYBR can claim by summing their weekly pro‑rata share: `balanceOfNFTAt(...) / totalSupplyAtT(...)`.\n\nActual:\n- `_checkpoint_token()` credits the current week’s bucket even if there are no ve holders for that week.\n- The claim loop uses historical balance snapshots at that week’s end. If no locks existed for that week, every user’s `balanceOfNFTAt(...)` is zero, so the entire allocation is forever unclaimable.\n\nWhy it happens\n```\nfunction _checkpoint_token() internal {\n    uint token_balance = IERC20(token).balanceOf(address(this));\n    uint to_distribute = token_balance - token_last_balance;\n    token_last_balance = token_balance;\n\n    uint t = last_token_time;\n    uint since_last = block.timestamp - t;\n    last_token_time = block.timestamp;\n    uint this_week = t / WEEK * WEEK;\n\n    for (uint i = 0; i < 20; i++) {\n        uint next_week = this_week + WEEK;\n        if (block.timestamp < next_week) {\n            if (since_last == 0 && block.timestamp == t) {\n                tokens_per_week[this_week] += to_distribute;\n            } else {\n                tokens_per_week[this_week] += to_distribute * (block.timestamp - t) / since_last;\n            }\n            break;\n        } else {\n            // ... proportional fill for prior weeks ...\n            tokens_per_week[this_week] += to_distribute * (next_week - t) / since_last;\n        }\n        t = next_week;\n        this_week = next_week;\n    }\n}\n```\n\n```\nfor (uint i = 0; i < 50; i++) {\n    if (week_cursor >= _last_token_time) break;\n    uint balance_of = IVotingEscrow(ve).balanceOfNFTAt(_tokenId, week_cursor + WEEK - 1);\n    uint supply = IVotingEscrow(ve).totalSupplyAtT(week_cursor + WEEK - 1);\n    supply = supply == 0 ? 1 : supply; // prevents div-by-zero, but balance_of remains 0 if no locks\n    to_distribute += balance_of * tokens_per_week[week_cursor] / supply;\n    week_cursor += WEEK;\n}\n```\n\n- If no ve existed at `week_cursor + WEEK - 1`, `balance_of` is 0 for every tokenId, and the week’s `tokens_per_week` allocation is never claimed.\n\n### Impact\n- A portion of matured weekly rewards becomes permanently stuck in `RewardsDistributor` whenever funding/checkpointing happens before any ve holders exist for that week (including the first/funding week).\n- Long‑term value leakage; misalignment between notified and claimable rewards.\n\n### Likelihood\n- Moderate. Deployments and initial funding often occur before any user lock exists. Also possible in any week with zero supply (e.g., migration/maintenance windows).\n\n### Affected Components (concise)\n- `ve33/contracts/RewardsDistributor.sol`\n  - `_checkpoint_token()`: allocates to weeks regardless of current supply state\n  - `_claim/_claimable`: strictly reads end‑of‑week snapshots; zero‑supply weeks produce zero claimable\n\n### Recommendation\n- Roll forward zero‑supply allocations: if `totalSupplyAtT(week_end) == 0`, carry `tokens_per_week[week]` into the next week with nonzero supply.\n- Alternatively, defer allocation until at least one ve holder exists (gate the first checkpoint).\n- Telemetry: assert per epoch that sum(distributed) + undistributed_rollover equals notified.\n\n### Proof of Concept\nTest file: `ve33/test/RewardsDistributorZeroSupplyPoC.t.sol`\n\n- Funds `RewardsDistributor` and calls `checkpoint_token()` while no ve exists.\n- Advances into the next week, creates the first ve lock, and checks claimable:\n  - `claimable(tokenId) == 0` for the prior funded week.\n  - Distributor retains the prior balance, evidencing stranded rewards.",
+  "proof_of_concept": "```\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.13;\n\nimport \"forge-std/Test.sol\";\nimport {HYBR} from \"../contracts/HYBR.sol\";\nimport {VotingEscrow} from \"../contracts/VotingEscrow.sol\";\nimport {RewardsDistributor} from \"../contracts/RewardsDistributor.sol\";\nimport {HybraTimeLibrary} from \"../contracts/libraries/HybraTimeLibrary.sol\";\n\ncontract RewardsDistributorZeroSupplyPoC is Test {\n    HYBR internal token;\n    VotingEscrow internal ve;\n    RewardsDistributor internal distributor;\n\n    address internal admin = address(this);\n\n    uint256 internal constant AMOUNT = 1_000_000 ether;\n    uint256 internal constant LOCK = 1_000 ether;\n\n    function setUp() public {\n        token = new HYBR();\n        ve = new VotingEscrow(address(token), address(0xdead));\n        distributor = new RewardsDistributor(address(ve));\n\n        // Mint HYBR to admin and fund the distributor\n        token.initialMint(admin);\n        token.transfer(address(distributor), AMOUNT);\n\n        // First checkpoint: allocate entire AMOUNT to the current week with zero ve holders\n        distributor.checkpoint_token();\n    }\n\n    function test_FirstWeekUnclaimableWhenNoHolders() public {\n        // Sanity: distributor holds HYBR after checkpoint\n        uint256 bal0 = token.balanceOf(address(distributor));\n        assertGt(bal0, 0);\n\n        // Advance into the next week, then create first ve lock\n        uint256 nextWeek = (block.timestamp / HybraTimeLibrary.WEEK + 1) * HybraTimeLibrary.WEEK;\n        vm.warp(nextWeek + HybraTimeLibrary.WEEK / 2);\n\n        token.approve(address(ve), LOCK);\n        uint256 tokenId = ve.create_lock(LOCK, HybraTimeLibrary.MAX_LOCK_DURATION);\n\n        // Compute claimable for tokenId: should be 0 since first allocation was in prior week with no holders\n        uint256 claimable = distributor.claimable(tokenId);\n        assertEq(claimable, 0, \"no claimable for prior zero-supply week\");\n\n        // Distributor balance remains > 0, indicating rewards from the first week are stranded\n        uint256 bal1 = token.balanceOf(address(distributor));\n        assertGt(bal1, 0);\n        // And greater than or equal to original (no claims yet)\n        assertGe(bal1, bal0);\n    }\n}\n\n\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/RewardsDistributor.sol#L148"
+  ],
+  "source_record": {
+    "project_id": "xo4hapwL2Jy",
+    "submission_index": "766",
+    "api_submission_id": "",
+    "uid": "nVjdnogBPTM",
+    "number": "766",
+    "title": "Zero‑Supply Week Strands Emissions: Unclaimable Rewards in RewardsDistributor",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "zzebra83",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/RewardsDistributor.sol#L148"
+    ],
+    "body": "### Summary\nRewards for weeks with zero veHYBR supply become permanently unclaimable. If the distributor is funded and checkpointed before any ve holders exist, that week’s allocation is fixed to a week where all users had zero balance, so no one can ever claim it later. The tokens remain stranded in `RewardsDistributor`.\n\n\n### Finding Description\n\nIntended:\n- Minter funds `RewardsDistributor` and calls `checkpoint_token()`, which apportions tokens across weekly buckets.\n- Later, users with veHYBR can claim by summing their weekly pro‑rata share: `balanceOfNFTAt(...) / totalSupplyAtT(...)`.\n\nActual:\n- `_checkpoint_token()` credits the current week’s bucket even if there are no ve holders for that week.\n- The claim loop uses historical balance snapshots at that week’s end. If no locks existed for that week, every user’s `balanceOfNFTAt(...)` is zero, so the entire allocation is forever unclaimable.\n\nWhy it happens\n```\nfunction _checkpoint_token() internal {\n    uint token_balance = IERC20(token).balanceOf(address(this));\n    uint to_distribute = token_balance - token_last_balance;\n    token_last_balance = token_balance;\n\n    uint t = last_token_time;\n    uint since_last = block.timestamp - t;\n    last_token_time = block.timestamp;\n    uint this_week = t / WEEK * WEEK;\n\n    for (uint i = 0; i < 20; i++) {\n        uint next_week = this_week + WEEK;\n        if (block.timestamp < next_week) {\n            if (since_last == 0 && block.timestamp == t) {\n                tokens_per_week[this_week] += to_distribute;\n            } else {\n                tokens_per_week[this_week] += to_distribute * (block.timestamp - t) / since_last;\n            }\n            break;\n        } else {\n            // ... proportional fill for prior weeks ...\n            tokens_per_week[this_week] += to_distribute * (next_week - t) / since_last;\n        }\n        t = next_week;\n        this_week = next_week;\n    }\n}\n```\n\n```\nfor (uint i = 0; i < 50; i++) {\n    if (week_cursor >= _last_token_time) break;\n    uint balance_of = IVotingEscrow(ve).balanceOfNFTAt(_tokenId, week_cursor + WEEK - 1);\n    uint supply = IVotingEscrow(ve).totalSupplyAtT(week_cursor + WEEK - 1);\n    supply = supply == 0 ? 1 : supply; // prevents div-by-zero, but balance_of remains 0 if no locks\n    to_distribute += balance_of * tokens_per_week[week_cursor] / supply;\n    week_cursor += WEEK;\n}\n```\n\n- If no ve existed at `week_cursor + WEEK - 1`, `balance_of` is 0 for every tokenId, and the week’s `tokens_per_week` allocation is never claimed.\n\n### Impact\n- A portion of matured weekly rewards becomes permanently stuck in `RewardsDistributor` whenever funding/checkpointing happens before any ve holders exist for that week (including the first/funding week).\n- Long‑term value leakage; misalignment between notified and claimable rewards.\n\n### Likelihood\n- Moderate. Deployments and initial funding often occur before any user lock exists. Also possible in any week with zero supply (e.g., migration/maintenance windows).\n\n### Affected Components (concise)\n- `ve33/contracts/RewardsDistributor.sol`\n  - `_checkpoint_token()`: allocates to weeks regardless of current supply state\n  - `_claim/_claimable`: strictly reads end‑of‑week snapshots; zero‑supply weeks produce zero claimable\n\n### Recommendation\n- Roll forward zero‑supply allocations: if `totalSupplyAtT(week_end) == 0`, carry `tokens_per_week[week]` into the next week with nonzero supply.\n- Alternatively, defer allocation until at least one ve holder exists (gate the first checkpoint).\n- Telemetry: assert per epoch that sum(distributed) + undistributed_rollover equals notified.\n\n### Proof of Concept\nTest file: `ve33/test/RewardsDistributorZeroSupplyPoC.t.sol`\n\n- Funds `RewardsDistributor` and calls `checkpoint_token()` while no ve exists.\n- Advances into the next week, creates the first ve lock, and checks claimable:\n  - `claimable(tokenId) == 0` for the prior funded week.\n  - Distributor retains the prior balance, evidencing stranded rewards.",
+    "proof_of_concept": "```\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.13;\n\nimport \"forge-std/Test.sol\";\nimport {HYBR} from \"../contracts/HYBR.sol\";\nimport {VotingEscrow} from \"../contracts/VotingEscrow.sol\";\nimport {RewardsDistributor} from \"../contracts/RewardsDistributor.sol\";\nimport {HybraTimeLibrary} from \"../contracts/libraries/HybraTimeLibrary.sol\";\n\ncontract RewardsDistributorZeroSupplyPoC is Test {\n    HYBR internal token;\n    VotingEscrow internal ve;\n    RewardsDistributor internal distributor;\n\n    address internal admin = address(this);\n\n    uint256 internal constant AMOUNT = 1_000_000 ether;\n    uint256 internal constant LOCK = 1_000 ether;\n\n    function setUp() public {\n        token = new HYBR();\n        ve = new VotingEscrow(address(token), address(0xdead));\n        distributor = new RewardsDistributor(address(ve));\n\n        // Mint HYBR to admin and fund the distributor\n        token.initialMint(admin);\n        token.transfer(address(distributor), AMOUNT);\n\n        // First checkpoint: allocate entire AMOUNT to the current week with zero ve holders\n        distributor.checkpoint_token();\n    }\n\n    function test_FirstWeekUnclaimableWhenNoHolders() public {\n        // Sanity: distributor holds HYBR after checkpoint\n        uint256 bal0 = token.balanceOf(address(distributor));\n        assertGt(bal0, 0);\n\n        // Advance into the next week, then create first ve lock\n        uint256 nextWeek = (block.timestamp / HybraTimeLibrary.WEEK + 1) * HybraTimeLibrary.WEEK;\n        vm.warp(nextWeek + HybraTimeLibrary.WEEK / 2);\n\n        token.approve(address(ve), LOCK);\n        uint256 tokenId = ve.create_lock(LOCK, HybraTimeLibrary.MAX_LOCK_DURATION);\n\n        // Compute claimable for tokenId: should be 0 since first allocation was in prior week with no holders\n        uint256 claimable = distributor.claimable(tokenId);\n        assertEq(claimable, 0, \"no claimable for prior zero-supply week\");\n\n        // Distributor balance remains > 0, indicating rewards from the first week are stranded\n        uint256 bal1 = token.balanceOf(address(distributor));\n        assertGt(bal1, 0);\n        // And greater than or equal to original (no claims yet)\n        assertGe(bal1, bal0);\n    }\n}\n\n\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/xo4hapwL2Jy/submissions/766",
+    "raw": {
+      "auditUid": "xo4hapwL2Jy",
+      "createdAt": "2025-10-16T13:12:19.315Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "DmN659kFrAu",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-18T10:25:24.843Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "7LKTwwSAteH"
+        },
+        {
+          "uid": "6fDFQw8WpBP",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-18T10:25:29.777Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "7LKTwwSAteH"
+        },
+        {
+          "uid": "LG59cLbNvyZ",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-18T10:28:33.445Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "nVjdnogBPTM",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "7LKTwwSAteH",
+        "number": 106,
+        "duplicates": 28
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-10-28T17:34:13.988Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Zero‑Supply Week Strands Emissions: Unclaimable Rewards in RewardsDistributor",
+      "uid": "nVjdnogBPTM",
+      "updatedAt": "2025-10-16T13:12:19.315Z",
+      "user": {
+        "uid": "9xM9DDnWfkU",
+        "handle": "zzebra83"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Summary\nRewards for weeks with zero veHYBR supply become permanently unclaimable. If the distributor is funded and checkpointed before any ve holders exist, that week’s allocation is fixed to a week where all users had zero balance, so no one can ever claim it later. The tokens remain stranded in `RewardsDistributor`.\n\n\n### Finding Description\n\nIntended:\n- Minter funds `RewardsDistributor` and calls `checkpoint_token()`, which apportions tokens across weekly buckets.\n- Later, users with veHYBR can claim by summing their weekly pro‑rata share: `balanceOfNFTAt(...) / totalSupplyAtT(...)`.\n\nActual:\n- `_checkpoint_token()` credits the current week’s bucket even if there are no ve holders for that week.\n- The claim loop uses historical balance snapshots at that week’s end. If no locks existed for that week, every user’s `balanceOfNFTAt(...)` is zero, so the entire allocation is forever unclaimable.\n\nWhy it happens\n```\nfunction _checkpoint_token() internal {\n    uint token_balance = IERC20(token).balanceOf(address(this));\n    uint to_distribute = token_balance - token_last_balance;\n    token_last_balance = token_balance;\n\n    uint t = last_token_time;\n    uint since_last = block.timestamp - t;\n    last_token_time = block.timestamp;\n    uint this_week = t / WEEK * WEEK;\n\n    for (uint i = 0; i < 20; i++) {\n        uint next_week = this_week + WEEK;\n        if (block.timestamp < next_week) {\n            if (since_last == 0 && block.timestamp == t) {\n                tokens_per_week[this_week] += to_distribute;\n            } else {\n                tokens_per_week[this_week] += to_distribute * (block.timestamp - t) / since_last;\n            }\n            break;\n        } else {\n            // ... proportional fill for prior weeks ...\n            tokens_per_week[this_week] += to_distribute * (next_week - t) / since_last;\n        }\n        t = next_week;\n        this_week = next_week;\n    }\n}\n```\n\n```\nfor (uint i = 0; i < 50; i++) {\n    if (week_cursor >= _last_token_time) break;\n    uint balance_of = IVotingEscrow(ve).balanceOfNFTAt(_tokenId, week_cursor + WEEK - 1);\n    uint supply = IVotingEscrow(ve).totalSupplyAtT(week_cursor + WEEK - 1);\n    supply = supply == 0 ? 1 : supply; // prevents div-by-zero, but balance_of remains 0 if no locks\n    to_distribute += balance_of * tokens_per_week[week_cursor] / supply;\n    week_cursor += WEEK;\n}\n```\n\n- If no ve existed at `week_cursor + WEEK - 1`, `balance_of` is 0 for every tokenId, and the week’s `tokens_per_week` allocation is never claimed.\n\n### Impact\n- A portion of matured weekly rewards becomes permanently stuck in `RewardsDistributor` whenever funding/checkpointing happens before any ve holders exist for that week (including the first/funding week).\n- Long‑term value leakage; misalignment between notified and claimable rewards.\n\n### Likelihood\n- Moderate. Deployments and initial funding often occur before any user lock exists. Also possible in any week with zero supply (e.g., migration/maintenance windows).\n\n### Affected Components (concise)\n- `ve33/contracts/RewardsDistributor.sol`\n  - `_checkpoint_token()`: allocates to weeks regardless of current supply state\n  - `_claim/_claimable`: strictly reads end‑of‑week snapshots; zero‑supply weeks produce zero claimable\n\n### Recommendation\n- Roll forward zero‑supply allocations: if `totalSupplyAtT(week_end) == 0`, carry `tokens_per_week[week]` into the next week with nonzero supply.\n- Alternatively, defer allocation until at least one ve holder exists (gate the first checkpoint).\n- Telemetry: assert per epoch that sum(distributed) + undistributed_rollover equals notified.\n\n### Proof of Concept\nTest file: `ve33/test/RewardsDistributorZeroSupplyPoC.t.sol`\n\n- Funds `RewardsDistributor` and calls `checkpoint_token()` while no ve exists.\n- Advances into the next week, creates the first ve lock, and checks claimable:\n  - `claimable(tokenId) == 0` for the prior funded week.\n  - Distributor retains the prior balance, evidencing stranded rewards.",
+      "proofOfConcept": "```\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.13;\n\nimport \"forge-std/Test.sol\";\nimport {HYBR} from \"../contracts/HYBR.sol\";\nimport {VotingEscrow} from \"../contracts/VotingEscrow.sol\";\nimport {RewardsDistributor} from \"../contracts/RewardsDistributor.sol\";\nimport {HybraTimeLibrary} from \"../contracts/libraries/HybraTimeLibrary.sol\";\n\ncontract RewardsDistributorZeroSupplyPoC is Test {\n    HYBR internal token;\n    VotingEscrow internal ve;\n    RewardsDistributor internal distributor;\n\n    address internal admin = address(this);\n\n    uint256 internal constant AMOUNT = 1_000_000 ether;\n    uint256 internal constant LOCK = 1_000 ether;\n\n    function setUp() public {\n        token = new HYBR();\n        ve = new VotingEscrow(address(token), address(0xdead));\n        distributor = new RewardsDistributor(address(ve));\n\n        // Mint HYBR to admin and fund the distributor\n        token.initialMint(admin);\n        token.transfer(address(distributor), AMOUNT);\n\n        // First checkpoint: allocate entire AMOUNT to the current week with zero ve holders\n        distributor.checkpoint_token();\n    }\n\n    function test_FirstWeekUnclaimableWhenNoHolders() public {\n        // Sanity: distributor holds HYBR after checkpoint\n        uint256 bal0 = token.balanceOf(address(distributor));\n        assertGt(bal0, 0);\n\n        // Advance into the next week, then create first ve lock\n        uint256 nextWeek = (block.timestamp / HybraTimeLibrary.WEEK + 1) * HybraTimeLibrary.WEEK;\n        vm.warp(nextWeek + HybraTimeLibrary.WEEK / 2);\n\n        token.approve(address(ve), LOCK);\n        uint256 tokenId = ve.create_lock(LOCK, HybraTimeLibrary.MAX_LOCK_DURATION);\n\n        // Compute claimable for tokenId: should be 0 since first allocation was in prior week with no holders\n        uint256 claimable = distributor.claimable(tokenId);\n        assertEq(claimable, 0, \"no claimable for prior zero-supply week\");\n\n        // Distributor balance remains > 0, indicating rewards from the first week are stranded\n        uint256 bal1 = token.balanceOf(address(distributor));\n        assertGt(bal1, 0);\n        // And greater than or equal to original (no claims yet)\n        assertGe(bal1, bal0);\n    }\n}\n\n\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/RewardsDistributor.sol#L148",
+      "number": 766,
+      "aiExplanation": null,
+      "_index": 766
+    }
+  }
+}

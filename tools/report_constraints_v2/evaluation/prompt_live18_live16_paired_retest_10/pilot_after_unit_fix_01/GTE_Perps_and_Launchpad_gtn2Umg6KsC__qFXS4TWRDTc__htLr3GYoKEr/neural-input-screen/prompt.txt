@@ -1,0 +1,39 @@
+You are a conservative REPORT-NARRATIVE-SUFFICIENCY gate for vulnerability reports.
+Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
+whether the supplied numbered report fragments explain the affected subject, trigger,
+direct effect, and safety-relation basis well enough to attempt P/I/V formalization.
+"ready" means only that the narrative is sufficient to try. It does not mean the
+current rule grammar can express the relation, that numeric variables and units are
+available, or that a model will successfully generate complete formulas. Those are
+judged separately from the subsequent per-impact formalization results.
+
+Required dimensions:
+1. affected_subject: identifiable affected component, function, state, asset, or actor.
+2. trigger_or_action: a concrete triggering condition, operation, call, or state transition.
+3. direct_effect: an immediate unauthorized behavior, state/value change, failed guarantee,
+   or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
+4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
+   numeric, temporal, conservation, or state-transition safety relationship can be derived.
+   The report need not explicitly say "invariant". A NatSpec rule, quoted standard
+   requirement, or mitigation that directly states expected behavior can support this
+   dimension; implementation steps alone cannot. The relation must not be invented.
+
+Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
+Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
+dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
+list every dimension whose status is missing OR uncertain, in the required dimension
+order. decision is ready only when all four dimensions are present; otherwise decision
+is insufficient. A proposed fix may support only the safety-relation dimension when its
+text directly states the expected property; it cannot replace evidence of the affected
+subject, trigger, or direct effect. Do not treat PoC availability, code availability,
+or severity labels as substitutes.
+Return JSON only with exactly:
+{"schema_version":"report-readiness/1","decision":"ready|insufficient",
+ "dimensions":{
+  "affected_subject":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "trigger_or_action":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "direct_effect":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "safety_relation_basis":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"}},
+ "missing_dimensions":[],"summary":"short explanation"}
+REPORT FRAGMENTS:
+{"schema_version":"report-evidence/1","source_sha256":"3d4f02f16ebda90dd6184da6902827e5fb825fe0cf124a9b2cd655a21eb2fda2","fragments":[{"id":"e_3d4f02f16ebd_0001","text":"Reentrancy / accounting before transfer in Distributor.addRewards — attacker can re-enter and observe/act on updated accounting"},{"id":"e_3d4f02f16ebd_0002","text":"## Finding description and impact"},{"id":"e_3d4f02f16ebd_0003","text":"Distributor.addRewards updates internal pending-reward accounting before performing the external transferFrom call. A malicious token can re-enter during transferFrom and call claimRewards (or other entrypoints) while accounting has already been increased, producing a clear reentrancy window that can be used for griefing and, in some scenarios, monetary extraction."},{"id":"e_3d4f02f16ebd_0004","text":"Attackers can force the code path to re-enter claimRewards during addRewards, demonstrating an exploitable reentrancy window. This enables griefing and may be combined with other weaknesses to steal tokens."},{"id":"e_3d4f02f16ebd_0005","text":"If auth checks in claimRewards change or are relaxed in upgrades, the addRewards entrypoint becomes a        direct path for unauthorized forced liquidations/withdrawals or reward theft."},{"id":"e_3d4f02f16ebd_0006","text":"Direct ability to manipulate reward accounting and to re-enter core flows is High."},{"id":"e_3d4f02f16ebd_0007","text":"## Recommended mitigation steps"},{"id":"e_3d4f02f16ebd_0008","text":"1) Use OpenZeppelin ReentrancyGuard (or similar) At top of Distributor.sol"},{"id":"e_3d4f02f16ebd_0009","text":"Add nonReentrant modifier to external functions that perform transfers and state changes:"},{"id":"e_3d4f02f16ebd_0010","text":"function addRewards(...) external nonReentrant {"},{"id":"e_3d4f02f16ebd_0011","text":"..."},{"id":"e_3d4f02f16ebd_0012","text":"}"},{"id":"e_3d4f02f16ebd_0013","text":"function claimRewards(...) external nonReentrant {"},{"id":"e_3d4f02f16ebd_0014","text":"..."},{"id":"e_3d4f02f16ebd_0015","text":"}"},{"id":"e_3d4f02f16ebd_0016","text":"2) Move transferFrom before bookkeeping (preferred order)"},{"id":"e_3d4f02f16ebd_0017","text":"// remove this:"},{"id":"e_3d4f02f16ebd_0018","text":"-    function addRewards(address token0, address token1, uint128 amount0, uint128 amount1) external {"},{"id":"e_3d4f02f16ebd_0019","text":"-        if (launchAssetAmount > 0) {"},{"id":"e_3d4f02f16ebd_0020","text":"-            rs.addBaseRewards(launchAsset, launchAssetAmount);"},{"id":"e_3d4f02f16ebd_0021","text":"-            _increaseTotalPending(launchAsset, launchAssetAmount);"},{"id":"e_3d4f02f16ebd_0022","text":"-            launchAsset.safeTransferFrom(msg.sender, address(this), uint256(launchAssetAmount));"},{"id":"e_3d4f02f16ebd_0023","text":"-        }"},{"id":"e_3d4f02f16ebd_0024","text":"+    // addRewards: pull tokens first, then update accounting to avoid reentrancy"},{"id":"e_3d4f02f16ebd_0025","text":"+    function addRewards(address token0, address token1, uint128 amount0, uint128 amount1) external nonReentrant {"},{"id":"e_3d4f02f16ebd_0026","text":"+        if (launchAssetAmount > 0) {"},{"id":"e_3d4f02f16ebd_0027","text":"+            // external interaction first (ensure tokens arrive)"},{"id":"e_3d4f02f16ebd_0028","text":"+            launchAsset.safeTransferFrom(msg.sender, address(this), uint256(launchAssetAmount));"},{"id":"e_3d4f02f16ebd_0029","text":"+            // now record the accounting"},{"id":"e_3d4f02f16ebd_0030","text":"+            rs.addBaseRewards(launchAsset, launchAssetAmount);"},{"id":"e_3d4f02f16ebd_0031","text":"+            _increaseTotalPending(launchAsset, launchAssetAmount);"},{"id":"e_3d4f02f16ebd_0032","text":"+        }"}]}

@@ -1,0 +1,104 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "70834b5f4e287436c389613f399b6af4262b55c645b5c8fc4ce487837f09103f",
+  "fragments": [
+    {
+      "id": "e_70834b5f4e28_0001",
+      "text": "FOK orders incorrectly revert due to lot size rounding, contradicting specification",
+      "start": 0,
+      "end": 83,
+      "line": 1
+    },
+    {
+      "id": "e_70834b5f4e28_0002",
+      "text": "## Finding description and impact",
+      "start": 85,
+      "end": 118,
+      "line": 3
+    },
+    {
+      "id": "e_70834b5f4e28_0003",
+      "text": "The vulnerability stems from how the contract handles the remaining \"dust\" from an order after it's been rounded down to the nearest lotSize. Here is the step-by-step flow that leads to the incorrect revert:",
+      "start": 119,
+      "end": 326,
+      "line": 4
+    },
+    {
+      "id": "e_70834b5f4e28_0004",
+      "text": "* User Action: A user calls `postFillOrder` to submit a Fill-or-Kill (FOK) order. Let's assume the market `lotSize` is 100 and the user wants to buy 199 units.",
+      "start": 328,
+      "end": 487,
+      "line": 6
+    },
+    {
+      "id": "e_70834b5f4e28_0005",
+      "text": "* Order Creation: The `_processFillBidOrder` function creates a temporary order in memory, `newOrder`, where `newOrder.amount` is 199.",
+      "start": 489,
+      "end": 623,
+      "line": 8
+    },
+    {
+      "id": "e_70834b5f4e28_0006",
+      "text": "* Matching Logic: This function then calls the internal matching logic (`_matchIncomingBid`), passing newOrder as an argument. Crucially, because [`newOrder`](https://github.com/code-423n4/2025-07-gte-clob/blob/main/contracts/clob/CLOB.sol#L347) is a memory struct, it's passed by reference, not as a copy. Any change to the order inside the matching logic will affect the original `newOrder`.",
+      "start": 625,
+      "end": 1018,
+      "line": 10
+    },
+    {
+      "id": "e_70834b5f4e28_0007",
+      "text": "* Rounding: Inside the `_matchIncomingOrder` function, the code calculates the fillable amount, which is rounded down to the nearest `lotSize`.",
+      "start": 1020,
+      "end": 1163,
+      "line": 12
+    },
+    {
+      "id": "e_70834b5f4e28_0008",
+      "text": "fillableAmount = (199 / 100) * 100 which results in 100.",
+      "start": 1169,
+      "end": 1225,
+      "line": 14
+    },
+    {
+      "id": "e_70834b5f4e28_0009",
+      "text": "* State Update: The matching logic then updates the amount of the user's order that is still left to be filled:",
+      "start": 1227,
+      "end": 1338,
+      "line": 16
+    },
+    {
+      "id": "e_70834b5f4e28_0010",
+      "text": "- incomingOrder.amount -= fillableAmount; (which is 199 - 100).",
+      "start": 1344,
+      "end": 1407,
+      "line": 18
+    },
+    {
+      "id": "e_70834b5f4e28_0011",
+      "text": "- Because `incomingOrder` is a reference to `newOrder`, the value of newOrder.amount is now updated to 99.",
+      "start": 1412,
+      "end": 1518,
+      "line": 19
+    },
+    {
+      "id": "e_70834b5f4e28_0012",
+      "text": "* Incorrect Revert: The matching logic finishes, and control returns to the `_processFillBidOrder` function. The code now performs the FOK check: [`if (... && newOrder.amount > 0)`](https://github.com/code-423n4/2025-07-gte-clob/blob/main/contracts/clob/CLOB.sol#L440).",
+      "start": 1520,
+      "end": 1789,
+      "line": 21
+    },
+    {
+      "id": "e_70834b5f4e28_0013",
+      "text": "- Since `newOrder.amount` is now 99, the condition is true.",
+      "start": 1795,
+      "end": 1854,
+      "line": 23
+    },
+    {
+      "id": "e_70834b5f4e28_0014",
+      "text": "- The transaction incorrectly reverts with `FOKOrderNotFilled()`, even though the only amount left unfilled was the dust from rounding, which the specification says should be ignored.",
+      "start": 1859,
+      "end": 2042,
+      "line": 24
+    }
+  ]
+}

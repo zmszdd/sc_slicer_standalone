@@ -1,0 +1,282 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "rebalanceFunds access control and buffer rebalancing in FastAccessVault",
+    "environment": "FastAccessVault on-chain DLF buffer contract with off-chain custodian",
+    "evidence": [
+      "rebalanceFunds missing ownership restriction allows arbitrary users to drain buffer to custodian",
+      "The `FastAccessVault` contract is the on‑chain DLF buffer used to provide instant redemptions for iTRY holders. It is designed to maintain a configurable buffer of DLF on‑chain while the remainder is held by an off‑chain custodian. The `rebalanceFunds` function is responsible for keeping this buffer at a target level by either:",
+      "The interface and docstring for `rebalanceFunds` explicitly state that it is “Only callable by owner”:",
+      "However, the implementation in `FastAccessVault` does not enforce this. The function is exposed as:",
+      "There is no `onlyOwner` modifier or any other restriction on the caller. This means **any address** can call `rebalanceFunds`.",
+      "When `currentBalance > targetBalance`, `rebalanceFunds` transfers `excess = currentBalance - targetBalance` to the custodian address. By calling this function at the right time, an unprivileged attacker can:",
+      "1. Detect that the vault currently holds more than its target (e.g., after a custodian top‑up or a period of low redemptions).",
+      "2. Call `rebalanceFunds` from their own address (`attacker`), which will:",
+      "- Push all excess DLF from the vault to the custodian.",
+      "- Reduce `getAvailableBalance()` to exactly `targetBalance`.",
+      "3. Immediately after, large user redemptions that would have been served entirely from the buffer may now see `bufferBalance < grossDlfAmount` and be forced down the `_redeemFromCustodian` path instead of the fast on‑chain path.",
+      "Any user with no special permissions can repeatedly call `rebalanceFunds` to keep the buffer close to its target, reducing the likelihood that large redemptions can be served from the vault. Those redemptions are instead routed to the custodian path, which is inherently slower and dependent on off‑chain actions, contradicting the design goal of a “Fast Access Vault”.",
+      "An attacker can monitor the mempool and call `rebalanceFunds` just before large redemptions are included in a block, systematically forcing them into the custodian path despite ample on‑chain liquidity being available at the time users submitted their transactions. This is a clean griefing vector: the attacker pays only gas and does not need to hold any DLF or iTRY.",
+      "Because the interface states `rebalanceFunds` is owner‑only, custodian infrastructure and monitoring systems are likely to treat `TopUpRequestedFromCustodian` and `ExcessFundsTransferredToCustodian` events as authoritative signals from the protocol operator. In reality, these events can be triggered by any address. This can lead to miscalibrated off‑chain behavior (e.g., sending funds in response to an event triggered by an attacker, or misinterpreting vault state).",
+      "While this bug does not allow an attacker to steal funds—the DLF always goes from the vault to the protocol‑defined `custodian` address—it materially weakens the protocol’s liquidity guarantees and gives an unprivileged party a lever to sabotage user redemptions.",
+      "This is a **Medium‑severity** issue: it is permissionless, impacts core user‑visible functionality (instant redemption), and contradicts the documented access‑control assumptions."
+    ]
+  },
+  "entities": [
+    {
+      "id": "fast_access_vault",
+      "name": "FastAccessVault",
+      "role": "contract",
+      "evidence": [
+        "The `FastAccessVault` contract is the on‑chain DLF buffer used to provide instant redemptions for iTRY holders. It is designed to maintain a configurable buffer of DLF on‑chain while the remainder is held by an off‑chain custodian. The `rebalanceFunds` function is responsible for keeping this buffer at a target level by either:",
+        "However, the implementation in `FastAccessVault` does not enforce this. The function is exposed as:"
+      ]
+    },
+    {
+      "id": "rebalance_funds",
+      "name": "rebalanceFunds",
+      "role": "contract",
+      "evidence": [
+        "The `FastAccessVault` contract is the on‑chain DLF buffer used to provide instant redemptions for iTRY holders. It is designed to maintain a configurable buffer of DLF on‑chain while the remainder is held by an off‑chain custodian. The `rebalanceFunds` function is responsible for keeping this buffer at a target level by either:",
+        "However, the implementation in `FastAccessVault` does not enforce this. The function is exposed as:",
+        "There is no `onlyOwner` modifier or any other restriction on the caller. This means **any address** can call `rebalanceFunds`."
+      ]
+    },
+    {
+      "id": "attacker",
+      "name": "unprivileged attacker",
+      "role": "attacker",
+      "evidence": [
+        "There is no `onlyOwner` modifier or any other restriction on the caller. This means **any address** can call `rebalanceFunds`.",
+        "When `currentBalance > targetBalance`, `rebalanceFunds` transfers `excess = currentBalance - targetBalance` to the custodian address. By calling this function at the right time, an unprivileged attacker can:",
+        "2. Call `rebalanceFunds` from their own address (`attacker`), which will:",
+        "Any user with no special permissions can repeatedly call `rebalanceFunds` to keep the buffer close to its target, reducing the likelihood that large redemptions can be served from the vault. Those redemptions are instead routed to the custodian path, which is inherently slower and dependent on off‑chain actions, contradicting the design goal of a “Fast Access Vault”.",
+        "An attacker can monitor the mempool and call `rebalanceFunds` just before large redemptions are included in a block, systematically forcing them into the custodian path despite ample on‑chain liquidity being available at the time users submitted their transactions. This is a clean griefing vector: the attacker pays only gas and does not need to hold any DLF or iTRY."
+      ]
+    },
+    {
+      "id": "owner",
+      "name": "owner",
+      "role": "authority",
+      "evidence": [
+        "The interface and docstring for `rebalanceFunds` explicitly state that it is “Only callable by owner”:"
+      ]
+    },
+    {
+      "id": "custodian",
+      "name": "custodian address",
+      "role": "other",
+      "evidence": [
+        "- Transferring excess DLF from the vault to the `custodian` address if the buffer is above target.",
+        "When `currentBalance > targetBalance`, `rebalanceFunds` transfers `excess = currentBalance - targetBalance` to the custodian address. By calling this function at the right time, an unprivileged attacker can:",
+        "- Push all excess DLF from the vault to the custodian.",
+        "While this bug does not allow an attacker to steal funds—the DLF always goes from the vault to the protocol‑defined `custodian` address—it materially weakens the protocol’s liquidity guarantees and gives an unprivileged party a lever to sabotage user redemptions."
+      ]
+    },
+    {
+      "id": "dlf_buffer",
+      "name": "on-chain DLF buffer",
+      "role": "asset",
+      "evidence": [
+        "The `FastAccessVault` contract is the on‑chain DLF buffer used to provide instant redemptions for iTRY holders. It is designed to maintain a configurable buffer of DLF on‑chain while the remainder is held by an off‑chain custodian. The `rebalanceFunds` function is responsible for keeping this buffer at a target level by either:",
+        "- Push all excess DLF from the vault to the custodian.",
+        "- Reduce `getAvailableBalance()` to exactly `targetBalance`."
+      ]
+    },
+    {
+      "id": "redemption_users",
+      "name": "iTRY holders redeeming",
+      "role": "victim",
+      "evidence": [
+        "The `FastAccessVault` contract is the on‑chain DLF buffer used to provide instant redemptions for iTRY holders. It is designed to maintain a configurable buffer of DLF on‑chain while the remainder is held by an off‑chain custodian. The `rebalanceFunds` function is responsible for keeping this buffer at a target level by either:",
+        "3. Immediately after, large user redemptions that would have been served entirely from the buffer may now see `bufferBalance < grossDlfAmount` and be forced down the `_redeemFromCustodian` path instead of the fast on‑chain path.",
+        "Any user with no special permissions can repeatedly call `rebalanceFunds` to keep the buffer close to its target, reducing the likelihood that large redemptions can be served from the vault. Those redemptions are instead routed to the custodian path, which is inherently slower and dependent on off‑chain actions, contradicting the design goal of a “Fast Access Vault”."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "rebalance_documented_owner_only",
+      "kind": "precondition",
+      "text": "The interface and docstring for rebalanceFunds explicitly state it is only callable by owner.",
+      "modality": "asserted",
+      "entity_ids": [
+        "rebalance_funds",
+        "owner"
+      ],
+      "evidence": [
+        "The interface and docstring for `rebalanceFunds` explicitly state that it is “Only callable by owner”:"
+      ]
+    },
+    {
+      "id": "vault_balance_above_target",
+      "kind": "precondition",
+      "text": "The vault currently holds more than its target balance (currentBalance > targetBalance).",
+      "modality": "potential",
+      "entity_ids": [
+        "fast_access_vault",
+        "dlf_buffer"
+      ],
+      "evidence": [
+        "When `currentBalance > targetBalance`, `rebalanceFunds` transfers `excess = currentBalance - targetBalance` to the custodian address. By calling this function at the right time, an unprivileged attacker can:",
+        "1. Detect that the vault currently holds more than its target (e.g., after a custodian top‑up or a period of low redemptions)."
+      ]
+    },
+    {
+      "id": "attacker_calls_rebalance",
+      "kind": "action",
+      "text": "An unprivileged attacker calls rebalanceFunds from their own address.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "rebalance_funds"
+      ],
+      "evidence": [
+        "There is no `onlyOwner` modifier or any other restriction on the caller. This means **any address** can call `rebalanceFunds`.",
+        "2. Call `rebalanceFunds` from their own address (`attacker`), which will:"
+      ]
+    },
+    {
+      "id": "excess_transferred_to_custodian",
+      "kind": "action",
+      "text": "rebalanceFunds transfers excess = currentBalance - targetBalance DLF from the vault to the custodian address.",
+      "modality": "potential",
+      "entity_ids": [
+        "rebalance_funds",
+        "dlf_buffer",
+        "custodian"
+      ],
+      "evidence": [
+        "- Transferring excess DLF from the vault to the `custodian` address if the buffer is above target.",
+        "When `currentBalance > targetBalance`, `rebalanceFunds` transfers `excess = currentBalance - targetBalance` to the custodian address. By calling this function at the right time, an unprivileged attacker can:",
+        "- Push all excess DLF from the vault to the custodian."
+      ]
+    },
+    {
+      "id": "no_caller_restriction",
+      "kind": "root_cause",
+      "text": "The rebalanceFunds implementation has no onlyOwner modifier or any other restriction on the caller.",
+      "modality": "asserted",
+      "entity_ids": [
+        "rebalance_funds",
+        "fast_access_vault"
+      ],
+      "evidence": [
+        "However, the implementation in `FastAccessVault` does not enforce this. The function is exposed as:",
+        "There is no `onlyOwner` modifier or any other restriction on the caller. This means **any address** can call `rebalanceFunds`."
+      ]
+    },
+    {
+      "id": "intent_owner_only_rebalance",
+      "kind": "security_intent",
+      "text": "rebalanceFunds should be callable only by the owner, as stated in its interface and docstring.",
+      "modality": "asserted",
+      "entity_ids": [
+        "rebalance_funds",
+        "owner"
+      ],
+      "evidence": [
+        "The interface and docstring for `rebalanceFunds` explicitly state that it is “Only callable by owner”:"
+      ]
+    },
+    {
+      "id": "intent_buffer_preserved_for_fast_redemption",
+      "kind": "security_intent",
+      "text": "The on-chain buffer should retain DLF above target so that large redemptions can be served from the fast on-chain path rather than being forced to the custodian path.",
+      "modality": "inferred",
+      "entity_ids": [
+        "dlf_buffer",
+        "redemption_users",
+        "custodian"
+      ],
+      "evidence": [
+        "The `FastAccessVault` contract is the on‑chain DLF buffer used to provide instant redemptions for iTRY holders. It is designed to maintain a configurable buffer of DLF on‑chain while the remainder is held by an off‑chain custodian. The `rebalanceFunds` function is responsible for keeping this buffer at a target level by either:",
+        "3. Immediately after, large user redemptions that would have been served entirely from the buffer may now see `bufferBalance < grossDlfAmount` and be forced down the `_redeemFromCustodian` path instead of the fast on‑chain path.",
+        "Any user with no special permissions can repeatedly call `rebalanceFunds` to keep the buffer close to its target, reducing the likelihood that large redemptions can be served from the vault. Those redemptions are instead routed to the custodian path, which is inherently slower and dependent on off‑chain actions, contradicting the design goal of a “Fast Access Vault”."
+      ]
+    },
+    {
+      "id": "intent_events_authoritative_operator_signals",
+      "kind": "security_intent",
+      "text": "TopUpRequestedFromCustodian and ExcessFundsTransferredToCustodian events should be authoritative signals from the protocol operator, not triggerable by any address.",
+      "modality": "inferred",
+      "entity_ids": [
+        "rebalance_funds",
+        "custodian"
+      ],
+      "evidence": [
+        "Because the interface states `rebalanceFunds` is owner‑only, custodian infrastructure and monitoring systems are likely to treat `TopUpRequestedFromCustodian` and `ExcessFundsTransferredToCustodian` events as authoritative signals from the protocol operator. In reality, these events can be triggered by any address. This can lead to miscalibrated off‑chain behavior (e.g., sending funds in response to an event triggered by an attacker, or misinterpreting vault state)."
+      ]
+    },
+    {
+      "id": "fast_access_denial_of_service",
+      "kind": "impact",
+      "text": "Any user with no special permissions can repeatedly call `rebalanceFunds` to keep the buffer close to its target, reducing the likelihood that large redemptions can be served from the vault.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "Any user with no special permissions can repeatedly call `rebalanceFunds` to keep the buffer close to its target, reducing the likelihood that large redemptions can be served from the vault. Those redemptions are instead routed to the custodian path, which is inherently slower and dependent on off‑chain actions, contradicting the design goal of a “Fast Access Vault”."
+      ]
+    },
+    {
+      "id": "redemptions_routed_to_slower_custodian_path",
+      "kind": "impact",
+      "text": "Those redemptions are instead routed to the custodian path, which is inherently slower and dependent on off‑chain actions, contradicting the design goal of a “Fast Access Vault”.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "Any user with no special permissions can repeatedly call `rebalanceFunds` to keep the buffer close to its target, reducing the likelihood that large redemptions can be served from the vault. Those redemptions are instead routed to the custodian path, which is inherently slower and dependent on off‑chain actions, contradicting the design goal of a “Fast Access Vault”."
+      ]
+    },
+    {
+      "id": "griefing_forcing_custodian_path",
+      "kind": "impact",
+      "text": "An attacker can monitor the mempool and call `rebalanceFunds` just before large redemptions are included in a block, systematically forcing them into the custodian path despite ample on‑chain liquidity being available at the time users submitted their transactions.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "An attacker can monitor the mempool and call `rebalanceFunds` just before large redemptions are included in a block, systematically forcing them into the custodian path despite ample on‑chain liquidity being available at the time users submitted their transactions. This is a clean griefing vector: the attacker pays only gas and does not need to hold any DLF or iTRY."
+      ]
+    },
+    {
+      "id": "miscalibrated_offchain_behavior",
+      "kind": "impact",
+      "text": "This can lead to miscalibrated off‑chain behavior (e.g., sending funds in response to an event triggered by an attacker, or misinterpreting vault state).",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "Because the interface states `rebalanceFunds` is owner‑only, custodian infrastructure and monitoring systems are likely to treat `TopUpRequestedFromCustodian` and `ExcessFundsTransferredToCustodian` events as authoritative signals from the protocol operator. In reality, these events can be triggered by any address. This can lead to miscalibrated off‑chain behavior (e.g., sending funds in response to an event triggered by an attacker, or misinterpreting vault state)."
+      ]
+    },
+    {
+      "id": "weakened_liquidity_guarantees",
+      "kind": "impact",
+      "text": "it materially weakens the protocol’s liquidity guarantees",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "While this bug does not allow an attacker to steal funds—the DLF always goes from the vault to the protocol‑defined `custodian` address—it materially weakens the protocol’s liquidity guarantees and gives an unprivileged party a lever to sabotage user redemptions."
+      ]
+    },
+    {
+      "id": "sabotage_user_redemptions",
+      "kind": "impact",
+      "text": "gives an unprivileged party a lever to sabotage user redemptions",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "While this bug does not allow an attacker to steal funds—the DLF always goes from the vault to the protocol‑defined `custodian` address—it materially weakens the protocol’s liquidity guarantees and gives an unprivileged party a lever to sabotage user redemptions."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "attacker_calls_rebalance",
+    "excess_transferred_to_custodian"
+  ],
+  "ambiguities": [
+    "Report does not state whether the attacker's call occurs in a real observed transaction; scenario is described as potential.",
+    "The exact targetBalance value and buffer amounts are not given numerically.",
+    "Whether the owner actually exists or has previously called rebalanceFunds is not stated.",
+    "Redemptions may be forced down the `_redeemFromCustodian` path (e_18114238d594_0015) is stated as a potential consequence and overlaps with the routed-to-custodian-path outcome."
+  ]
+}

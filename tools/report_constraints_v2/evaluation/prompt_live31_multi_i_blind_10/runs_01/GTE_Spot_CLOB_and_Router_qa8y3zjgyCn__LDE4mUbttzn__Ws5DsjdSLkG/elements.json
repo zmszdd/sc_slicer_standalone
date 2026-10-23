@@ -1,0 +1,168 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "FOK fill order matching against CLOB where incoming order amount is not a multiple of lotSize",
+    "environment": "CLOB order matching contract",
+    "evidence": [
+      "FOK fill orders revert when not a multiple of lotSize",
+      "Under CLOB Fill Rounding of the documentation:",
+      "> \"On CLOB fill, filled amounts are rounded down to the nearest lot. FOK fill orders _should_ not revert if only the amount rounded off is left unfilled\"",
+      "However, it is the case that FOK fill orders **will revert** even if only the amount rounded off is left unfilled.",
+      "The `currMatch.matchedAmount` is a multiple of lot size as it is derived from",
+      "If the incoming order has amount that is not a multiple of lot size, the line `incomingOrder.amount -= currMatch.matchedAmount;` will return a non-zero amount and therefore revert with `FOKOrderNotFilled()`.",
+      "`if (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount > 0) revert FOKOrderNotFilled();`",
+      "Therefore, the FOK order is reverted even though only the amount rounded off is left unfilled.",
+      "Round the incoming order down to the nearest lot size"
+    ]
+  },
+  "entities": [
+    {
+      "id": "incoming_order",
+      "name": "incoming FOK fill order",
+      "role": "other",
+      "evidence": [
+        "If the incoming order has amount that is not a multiple of lot size, the line `incomingOrder.amount -= currMatch.matchedAmount;` will return a non-zero amount and therefore revert with `FOKOrderNotFilled()`.",
+        "`if (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount > 0) revert FOKOrderNotFilled();`"
+      ]
+    },
+    {
+      "id": "clob_matching",
+      "name": "CLOB order matching logic",
+      "role": "contract",
+      "evidence": [
+        "The `currMatch.matchedAmount` is a multiple of lot size as it is derived from",
+        "If the incoming order has amount that is not a multiple of lot size, the line `incomingOrder.amount -= currMatch.matchedAmount;` will return a non-zero amount and therefore revert with `FOKOrderNotFilled()`.",
+        "`if (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount > 0) revert FOKOrderNotFilled();`"
+      ]
+    },
+    {
+      "id": "lot_size",
+      "name": "lot size",
+      "role": "asset",
+      "evidence": [
+        "FOK fill orders revert when not a multiple of lotSize",
+        "The `currMatch.matchedAmount` is a multiple of lot size as it is derived from",
+        "Round the incoming order down to the nearest lot size"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "incoming_amount_not_multiple_of_lot",
+      "kind": "precondition",
+      "text": "The incoming order has an amount that is not a multiple of lot size.",
+      "modality": "potential",
+      "entity_ids": [
+        "incoming_order",
+        "lot_size"
+      ],
+      "evidence": [
+        "If the incoming order has amount that is not a multiple of lot size, the line `incomingOrder.amount -= currMatch.matchedAmount;` will return a non-zero amount and therefore revert with `FOKOrderNotFilled()`."
+      ]
+    },
+    {
+      "id": "fok_fill_order_type",
+      "kind": "precondition",
+      "text": "The incoming order is a FOK fill order (fillOrderType is FILL_OR_KILL).",
+      "modality": "asserted",
+      "entity_ids": [
+        "incoming_order"
+      ],
+      "evidence": [
+        "`if (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount > 0) revert FOKOrderNotFilled();`"
+      ]
+    },
+    {
+      "id": "matched_amount_multiple_of_lot",
+      "kind": "precondition",
+      "text": "currMatch.matchedAmount is a multiple of lot size as derived from matching.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_matching",
+        "lot_size"
+      ],
+      "evidence": [
+        "The `currMatch.matchedAmount` is a multiple of lot size as it is derived from"
+      ]
+    },
+    {
+      "id": "subtract_matched_amount",
+      "kind": "action",
+      "text": "The matching logic subtracts currMatch.matchedAmount from incomingOrder.amount.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_matching",
+        "incoming_order"
+      ],
+      "evidence": [
+        "If the incoming order has amount that is not a multiple of lot size, the line `incomingOrder.amount -= currMatch.matchedAmount;` will return a non-zero amount and therefore revert with `FOKOrderNotFilled()`."
+      ]
+    },
+    {
+      "id": "check_remaining_amount_revert",
+      "kind": "action",
+      "text": "The logic checks whether the FOK order's remaining amount is greater than zero and reverts with FOKOrderNotFilled() if so.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_matching",
+        "incoming_order"
+      ],
+      "evidence": [
+        "`if (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount > 0) revert FOKOrderNotFilled();`"
+      ]
+    },
+    {
+      "id": "non_lot_remainder_causes_revert",
+      "kind": "root_cause",
+      "text": "Because the incoming amount is not a multiple of lot size, subtracting the lot-multiple matched amount leaves a non-zero remainder, triggering the FOKOrderNotFilled() revert.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_matching",
+        "incoming_order",
+        "lot_size"
+      ],
+      "evidence": [
+        "If the incoming order has amount that is not a multiple of lot size, the line `incomingOrder.amount -= currMatch.matchedAmount;` will return a non-zero amount and therefore revert with `FOKOrderNotFilled()`.",
+        "`if (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount > 0) revert FOKOrderNotFilled();`"
+      ]
+    },
+    {
+      "id": "intent_fok_no_revert_for_rounding_remainder",
+      "kind": "security_intent",
+      "text": "On CLOB fill, FOK fill orders should not revert if only the amount rounded off to the nearest lot is left unfilled.",
+      "modality": "asserted",
+      "entity_ids": [
+        "incoming_order",
+        "clob_matching",
+        "lot_size"
+      ],
+      "evidence": [
+        "Under CLOB Fill Rounding of the documentation:",
+        "> \"On CLOB fill, filled amounts are rounded down to the nearest lot. FOK fill orders _should_ not revert if only the amount rounded off is left unfilled\""
+      ]
+    },
+    {
+      "id": "intent_round_incoming_down",
+      "kind": "security_intent",
+      "text": "The incoming order amount should be rounded down to the nearest lot size before matching.",
+      "modality": "inferred",
+      "entity_ids": [
+        "incoming_order",
+        "lot_size"
+      ],
+      "evidence": [
+        "Round the incoming order down to the nearest lot size"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "subtract_matched_amount",
+    "check_remaining_amount_revert"
+  ],
+  "ambiguities": [
+    "Report does not state who submits the incoming FOK order or any authorization condition.",
+    "Report does not specify the concrete lot size value or the exact incoming amount.",
+    "The rounding-down remediation is a suggested fix; its intended property is inferred from the recommendation rather than stated as a requirement.",
+    "No explicitly labeled Impact area; impacts were not inferred."
+  ]
+}

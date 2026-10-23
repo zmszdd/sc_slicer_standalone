@@ -1,0 +1,181 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "e2f1c0ba08ad6ef6f5452b4f3df0d1f077e874141a113988b9923503d3883dda",
+  "fragments": [
+    {
+      "id": "e_e2f1c0ba08ad_0001",
+      "text": "multiSplit Causes Permanent Accounting Drift for Permanent Locks",
+      "start": 0,
+      "end": 64,
+      "line": 1
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0002",
+      "text": "## Summary",
+      "start": 66,
+      "end": 76,
+      "line": 3
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0003",
+      "text": "Splitting a permanent veNFT via `multiSplit()` allocates child amounts with floor division and does not reconcile `permanentLockBalance`, causing (1) deterministic rounding loss of locked value and (2) global permanent accounting drift.",
+      "start": 77,
+      "end": 313,
+      "line": 4
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0004",
+      "text": "## Finding Description",
+      "start": 315,
+      "end": 337,
+      "line": 6
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0005",
+      "text": "`multiSplit()` burns the parent veNFT and mints multiple child veNFTs with proportional amounts calculated by integer division. For a parent with amount `A` and weights `w[i]`, each child receives `floor(A * w[i] / Σw)`. This truncation yields Σ(child) ≤ A and usually Σ(child) < A when `A` is not exactly divisible by `Σw`. The parent is first burned and then children are minted, so the rounding remainder is lost on-chain.",
+      "start": 338,
+      "end": 763,
+      "line": 7
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0006",
+      "text": "When the parent is a permanent lock (`originalLocked.isPermanent == true`), `multiSplit()` never adjusts the global `permanentLockBalance` to reflect the (smaller) sum of the new child amounts. As a result, `permanentLockBalance` remains at its pre-split value, while the true sum of permanent child locks is smaller due to rounding. This breaks the invariant that `permanentLockBalance` equals the sum of all permanently locked amounts and contaminates global voting-supply snapshots (via `_checkpoint`, which records `last_point.permanent = permanentLockBalance`).",
+      "start": 765,
+      "end": 1331,
+      "line": 9
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0007",
+      "text": "Security guarantees broken:",
+      "start": 1333,
+      "end": 1360,
+      "line": 11
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0008",
+      "text": "- Conservation of locked value in splits: Σ(child amounts) must equal the parent’s amount.",
+      "start": 1361,
+      "end": 1451,
+      "line": 12
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0009",
+      "text": "- Accuracy of global permanent accounting: `permanentLockBalance` must track the real sum of permanent locks to ensure correct supply snapshots and downstream weighting.",
+      "start": 1452,
+      "end": 1621,
+      "line": 13
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0010",
+      "text": "Relevant code:",
+      "start": 1623,
+      "end": 1637,
+      "line": 15
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0011",
+      "text": "- Burn parent, checkpoint, and mint children with floor division:",
+      "start": 1638,
+      "end": 1703,
+      "line": 16
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0012",
+      "text": "- ve33/contracts/VotingEscrow.sol:1162–1189",
+      "start": 1706,
+      "end": 1749,
+      "line": 17
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0013",
+      "text": "- Global permanent included in checkpoints:",
+      "start": 1750,
+      "end": 1793,
+      "line": 18
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0014",
+      "text": "- ve33/contracts/VotingEscrow.sol:733",
+      "start": 1796,
+      "end": 1833,
+      "line": 19
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0015",
+      "text": "- No permanent reconciliation in `multiSplit`.",
+      "start": 1834,
+      "end": 1880,
+      "line": 20
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0016",
+      "text": "## Impact Explanation",
+      "start": 1882,
+      "end": 1903,
+      "line": 22
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0017",
+      "text": "Medium impact:",
+      "start": 1904,
+      "end": 1918,
+      "line": 23
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0018",
+      "text": "- On-chain locked value is lost deterministically (rounding “dust”) upon splitting; users cannot recover it.",
+      "start": 1919,
+      "end": 2027,
+      "line": 24
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0019",
+      "text": "- `permanentLockBalance` becomes larger than the true permanent total, skewing global accounting and analyses that rely on accurate permanent weights (e.g., supply curves, voting snapshots).",
+      "start": 2028,
+      "end": 2218,
+      "line": 25
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0020",
+      "text": "- The drift accumulates each time permanent locks are split, affecting protocol-wide accounting.",
+      "start": 2219,
+      "end": 2315,
+      "line": 26
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0021",
+      "text": "## Likelihood Explanation",
+      "start": 2317,
+      "end": 2342,
+      "line": 28
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0022",
+      "text": "High likelihood:",
+      "start": 2343,
+      "end": 2359,
+      "line": 29
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0023",
+      "text": "- The behavior is triggered by normal user actions (splitting a permanent veNFT) without special timing or adversarial setup.",
+      "start": 2360,
+      "end": 2485,
+      "line": 30
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0024",
+      "text": "- Any split into ≥2 children under non-divisible allocations produces rounding loss.",
+      "start": 2486,
+      "end": 2570,
+      "line": 31
+    },
+    {
+      "id": "e_e2f1c0ba08ad_0025",
+      "text": "- No safeguards currently adjust `permanentLockBalance` in `multiSplit`.",
+      "start": 2571,
+      "end": 2643,
+      "line": 32
+    }
+  ]
+}

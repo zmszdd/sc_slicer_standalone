@@ -1,0 +1,377 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "c05494b90_collateral_math_value": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "mathematical collateral value of the position (1000)",
+      "checkpoint": "before liquidation check",
+      "entity_ids": [
+        "pf_collateral"
+      ],
+      "evidence": "- **Liquidation Threshold:** `10`"
+    },
+    "c05494b90_liquidation_threshold_value": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "mathematical liquidation threshold value (10)",
+      "checkpoint": "before liquidation check",
+      "entity_ids": [
+        "pf_threshold"
+      ],
+      "evidence": "- **Liquidation Threshold:** `10`"
+    },
+    "c05494b90_collateral_mantissa": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "mantissa of the unnormalized packedFloat collateral representation (1e40)",
+      "checkpoint": "before liquidation check",
+      "entity_ids": [
+        "pf_collateral"
+      ],
+      "evidence": "2. **`pfCollateral` (Value = 1000):** Attacker influences an oracle to provide `1000` in a specific non-normalized format, which the protocol wraps directly. Mantissa: `1e40` | Exponent: `-37`"
+    },
+    "c05494b90_collateral_exponent": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "exponent of the unnormalized packedFloat collateral representation (-37)",
+      "checkpoint": "before liquidation check",
+      "entity_ids": [
+        "pf_collateral"
+      ],
+      "evidence": "2. **`pfCollateral` (Value = 1000):** Attacker influences an oracle to provide `1000` in a specific non-normalized format, which the protocol wraps directly. Mantissa: `1e40` | Exponent: `-37`"
+    },
+    "c05494b90_threshold_mantissa": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "mantissa of the normalized packedFloat threshold representation (1e37)",
+      "checkpoint": "before liquidation check",
+      "entity_ids": [
+        "pf_threshold"
+      ],
+      "evidence": "1. **`pfThreshold` (Value = 10):** Stored normalized value by the protocol. Mantissa: `1e37` | Exponent: `-36`"
+    },
+    "c05494b90_threshold_exponent": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "exponent of the normalized packedFloat threshold representation (-36)",
+      "checkpoint": "before liquidation check",
+      "entity_ids": [
+        "pf_threshold"
+      ],
+      "evidence": "1. **`pfThreshold` (Value = 10):** Stored normalized value by the protocol. Mantissa: `1e37` | Exponent: `-36`"
+    },
+    "c05494b90_oracle_influenced_by_attacker": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "whether the attacker influences an oracle to supply the collateral value in the non-normalized representation",
+      "checkpoint": "before liquidation check",
+      "entity_ids": [
+        "attacker",
+        "pf_collateral"
+      ],
+      "evidence": "2. **`pfCollateral` (Value = 1000):** Attacker influences an oracle to provide `1000` in a specific non-normalized format, which the protocol wraps directly. Mantissa: `1e40` | Exponent: `-37`"
+    },
+    "c05494b90_liquidation_triggered": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "whether the protocol wrongfully liquidates the position despite collateral value exceeding the threshold",
+      "checkpoint": "after lt comparison",
+      "entity_ids": [
+        "victim",
+        "lending_protocol"
+      ],
+      "evidence": "Let's assume a lending protocol liquidates a user's position when their collateral value drops below a required threshold. This vulnerability allows an attacker to trigger wrong liquidations by manipulating the representation of the collateral value, even when its mathematical value is above the threshold."
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_equal_values_compare_unequal_8a1d9d33",
+      "scope": "packedFloat comparison functions (eq, lt) operating on raw representation instead of mathematical value",
+      "modality": "asserted",
+      "impact_ids": [
+        "equal_values_compare_unequal"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The actual mathematical collateral value is 1000, which is greater than the liquidation threshold of 10.; pfThreshold is stored as a normalized value with mantissa 1e37 and exponent -36.; pfCollateral is provided in a non-normalized format with mantissa 1e40 and exponent -37, wrapped directly by the protocol.; The attacker influences an oracle to supply the collateral value in the non-normalized representation.; The scenario assumes the attacker can cause the protocol to wrap an unnormalized collateral representation, e.g. via oracle influence.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "collateral_value_above_threshold",
+            "threshold_normalized",
+            "collateral_unnormalized",
+            "attacker_influences_oracle",
+            "assumption_attacker_controls_representation"
+          ],
+          "evidence": [
+            "- **Liquidation Threshold:** `10`",
+            "- **Actual Collateral Value:** `1000` (`1000 > 10`, so no liquidation should occur).",
+            "1. **`pfThreshold` (Value = 10):** Stored normalized value by the protocol. Mantissa: `1e37` | Exponent: `-36`",
+            "2. **`pfCollateral` (Value = 1000):** Attacker influences an oracle to provide `1000` in a specific non-normalized format, which the protocol wraps directly. Mantissa: `1e40` | Exponent: `-37`"
+          ]
+        },
+        "safety": {
+          "text": "Comparison functions should compare the mathematical value of packedFloat inputs, so that mathematically equal values compare equal and ordering reflects true magnitude regardless of representation.; A position whose collateral mathematical value is above the liquidation threshold should not be liquidated.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "intent_compare_math_value",
+            "intent_no_liquidation_above_threshold"
+          ],
+          "evidence": [
+            "The library's comparison functions (`eq`, `lt`, etc.) incorrectly operate on the raw bit or representation of `packedFloat` inputs, rather than their mathematical value. For example this is the eq() function that does not check if inputs are normalized or not.",
+            "Because the type system allows creating `packedFloat` values that are not normalized (e.g., representing `1e7` as `100e5`), comparisons between mathematically equal but differently represented numbers fail. This violates fundamental mathematical expectations and enables critical logic failures in dependent contracts.",
+            "The core issue is that `packedFloat` is an alias for `uint256` (is it defined as `type packedFloat is uint256`), allowing `packedFloat.wrap(any_uint256)`. While the library *intends* usage via `toPackedFloat` which normalizes, it **doesn't enforce** this. The comparison functions skip normalization for gas efficiency but consequently compare internal exponents/mantissas directly. If two inputs, `A` and `B`, represent the same number (e.g., `A = 100e5`, `B = 1e7`) but differ in representation, the comparison yields mathematically wrong results based on the differing raw exponent/mantissa bits.",
+            "Let's assume a lending protocol liquidates a user's position when their collateral value drops below a required threshold. This vulnerability allows an attacker to trigger wrong liquidations by manipulating the representation of the collateral value, even when its mathematical value is above the threshold.",
+            "- **Actual Collateral Value:** `1000` (`1000 > 10`, so no liquidation should occur).",
+            "4. **Outcome:** Liquidation is **wrongfully triggered** even though the collateral's mathematical value (`1000`) was much greater than the threshold (`10`). The attacker exploited the comparison function by providing an unnormalized representation with a misleadingly low raw exponent."
+          ]
+        },
+        "effects": {
+          "text": "Comparisons between mathematically equal but differently represented numbers fail, yielding mathematically wrong results.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "equal_values_compare_unequal"
+          ],
+          "evidence": [
+            "Because the type system allows creating `packedFloat` values that are not normalized (e.g., representing `1e7` as `100e5`), comparisons between mathematically equal but differently represented numbers fail. This violates fundamental mathematical expectations and enables critical logic failures in dependent contracts.",
+            "The core issue is that `packedFloat` is an alias for `uint256` (is it defined as `type packedFloat is uint256`), allowing `packedFloat.wrap(any_uint256)`. While the library *intends* usage via `toPackedFloat` which normalizes, it **doesn't enforce** this. The comparison functions skip normalization for gas efficiency but consequently compare internal exponents/mantissas directly. If two inputs, `A` and `B`, represent the same number (e.g., `A = 100e5`, `B = 1e7`) but differ in representation, the comparison yields mathematically wrong results based on the differing raw exponent/mantissa bits."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "equal_values_compare_unequal",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: equal_values_compare_unequal other_mismatch: Statement is about mathematically equal values failing, but predicate asserts unequal math values (1000 > 10) with a wrong result, a different fact.; P/I/V relation other_mismatch: V negates comparison_result_matches_math while I implies it under the same antecedent, so V contradicts I, but V's scenario is unequal values rather than the eq"
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: equal_values_compare_unequal other_mismatch: Statement is about mathematically equal values failing, but predicate asserts unequal math values (1000 > 10) with a wrong result, a different fact.; P/I/V relation other_mismatch: V negates comparison_result_matches_math while I implies it under the same antecedent, so V contradicts I, but V's scenario is unequal values rather than the eq"
+      ]
+    },
+    {
+      "id": "impact_claim_wrongful_liquidation_2ce05a9d",
+      "scope": "packedFloat comparison functions (eq, lt) operating on raw representation instead of mathematical value",
+      "modality": "asserted",
+      "impact_ids": [
+        "wrongful_liquidation"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The actual mathematical collateral value is 1000, which is greater than the liquidation threshold of 10.; pfThreshold is stored as a normalized value with mantissa 1e37 and exponent -36.; pfCollateral is provided in a non-normalized format with mantissa 1e40 and exponent -37, wrapped directly by the protocol.; The attacker influences an oracle to supply the collateral value in the non-normalized representation.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "c05494b90_collateral_math_value"
+                  },
+                  {
+                    "var": "c05494b90_liquidation_threshold_value"
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "c05494b90_threshold_exponent"
+                  },
+                  {
+                    "const": -36
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "c05494b90_collateral_exponent"
+                  },
+                  {
+                    "const": -37
+                  }
+                ]
+              },
+              {
+                "var": "c05494b90_oracle_influenced_by_attacker"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "collateral_value_above_threshold",
+            "threshold_normalized",
+            "collateral_unnormalized",
+            "attacker_influences_oracle"
+          ],
+          "evidence": [
+            "- **Liquidation Threshold:** `10`",
+            "- **Actual Collateral Value:** `1000` (`1000 > 10`, so no liquidation should occur).",
+            "1. **`pfThreshold` (Value = 10):** Stored normalized value by the protocol. Mantissa: `1e37` | Exponent: `-36`",
+            "2. **`pfCollateral` (Value = 1000):** Attacker influences an oracle to provide `1000` in a specific non-normalized format, which the protocol wraps directly. Mantissa: `1e40` | Exponent: `-37`"
+          ]
+        },
+        "safety": {
+          "text": "A position whose collateral mathematical value is above the liquidation threshold should not be liquidated.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "c05494b90_collateral_math_value"
+                  },
+                  {
+                    "var": "c05494b90_liquidation_threshold_value"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "c05494b90_liquidation_triggered"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_no_liquidation_above_threshold"
+          ],
+          "evidence": [
+            "Let's assume a lending protocol liquidates a user's position when their collateral value drops below a required threshold. This vulnerability allows an attacker to trigger wrong liquidations by manipulating the representation of the collateral value, even when its mathematical value is above the threshold.",
+            "- **Actual Collateral Value:** `1000` (`1000 > 10`, so no liquidation should occur).",
+            "4. **Outcome:** Liquidation is **wrongfully triggered** even though the collateral's mathematical value (`1000`) was much greater than the threshold (`10`). The attacker exploited the comparison function by providing an unnormalized representation with a misleadingly low raw exponent."
+          ]
+        },
+        "effects": {
+          "text": "Liquidation is wrongfully triggered even though the collateral's mathematical value 1000 is much greater than the threshold 10.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "c05494b90_collateral_math_value"
+                  },
+                  {
+                    "var": "c05494b90_liquidation_threshold_value"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c05494b90_liquidation_triggered"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "wrongful_liquidation"
+          ],
+          "evidence": [
+            "Let's assume a lending protocol liquidates a user's position when their collateral value drops below a required threshold. This vulnerability allows an attacker to trigger wrong liquidations by manipulating the representation of the collateral value, even when its mathematical value is above the threshold.",
+            "4. **Outcome:** Liquidation is **wrongfully triggered** even though the collateral's mathematical value (`1000`) was much greater than the threshold (`10`). The attacker exploited the comparison function by providing an unnormalized representation with a misleadingly low raw exponent."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "collateral_value_above_threshold",
+            "threshold_normalized",
+            "collateral_unnormalized",
+            "attacker_influences_oracle"
+          ],
+          "args.0": [
+            "collateral_value_above_threshold",
+            "threshold_normalized",
+            "collateral_unnormalized",
+            "attacker_influences_oracle"
+          ],
+          "args.1": [
+            "collateral_value_above_threshold",
+            "threshold_normalized",
+            "collateral_unnormalized",
+            "attacker_influences_oracle"
+          ],
+          "args.2": [
+            "collateral_value_above_threshold",
+            "threshold_normalized",
+            "collateral_unnormalized",
+            "attacker_influences_oracle"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_no_liquidation_above_threshold"
+          ],
+          "args.0": [
+            "intent_no_liquidation_above_threshold"
+          ],
+          "args.1": [
+            "intent_no_liquidation_above_threshold"
+          ]
+        },
+        "effects": {
+          "": [
+            "wrongful_liquidation"
+          ],
+          "args.0": [
+            "wrongful_liquidation"
+          ],
+          "args.1": [
+            "wrongful_liquidation"
+          ],
+          "args.1.args.0": [
+            "wrongful_liquidation"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "wrongful_liquidation",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The protocol wraps oracle-supplied collateral representation directly without normalization.",
+        "The attacker can cause the protocol to receive an unnormalized collateral representation via oracle influence.",
+        "The lt comparison is the sole gate deciding liquidation for this position."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "The claim formalizes only the wrongful_liquidation impact; the separate equal-values-compare-unequal impact is not covered here.",
+    "The attacker's oracle influence is encoded as a grounded Boolean occurrence symbol rather than a numeric relation.",
+    "The representation-to-mathematical-value mapping is not encoded; the condition uses the report-stated mathematical values directly.",
+    "equal_values_compare_unequal: No faithful claim generated after bounded retries: semantic faithfulness mismatch: equal_values_compare_unequal other_mismatch: Statement is about mathematically equal values failing, but predicate asserts unequal math values (1000 > 10) with a wrong result, a different fact.; P/I/V relation other_mismatch: V negates comparison_result_matches_math while I implies it under the same antecedent, so V contradicts I, but V's scenario is unequal values rather than the eq"
+  ]
+}

@@ -1,0 +1,181 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "9738d391b328acd560a422c84691fec5fade8261a6e8e1b8156ea3acc0449475",
+  "fragments": [
+    {
+      "id": "e_9738d391b328_0001",
+      "text": "Full BLP unwind does not retire 0x811 supplied-slot registry, causing global Accountant DoS",
+      "start": 0,
+      "end": 91,
+      "line": 1
+    },
+    {
+      "id": "e_9738d391b328_0002",
+      "text": "## Summary",
+      "start": 93,
+      "end": 103,
+      "line": 3
+    },
+    {
+      "id": "e_9738d391b328_0003",
+      "text": "The function `MonetrixVault.supplyToBlp()`",
+      "start": 105,
+      "end": 147,
+      "line": 5
+    },
+    {
+      "id": "e_9738d391b328_0004",
+      "text": "automatically registers a Vault-side 0x811 supplied slot in `MonetrixAccountant.vaultSupplied`.",
+      "start": 151,
+      "end": 246,
+      "line": 8
+    },
+    {
+      "id": "e_9738d391b328_0005",
+      "text": "but `MonetrixVault.withdrawFromBlp()`",
+      "start": 249,
+      "end": 286,
+      "line": 11
+    },
+    {
+      "id": "e_9738d391b328_0006",
+      "text": "never removes that registry entry when the BLP position is fully unwound. MonetrixAccountant.totalBackingSigned()",
+      "start": 289,
+      "end": 402,
+      "line": 13
+    },
+    {
+      "id": "e_9738d391b328_0007",
+      "text": "later iterates every registered supplied slot and performs a strict `PrecompileReader.suppliedBalance()` read",
+      "start": 406,
+      "end": 515,
+      "line": 16
+    },
+    {
+      "id": "e_9738d391b328_0008",
+      "text": "which **reverts** if the external 0x811 slot is absent or unreadable. As a result, after a normal BLP supply-then-full-withdraw lifecycle, the protocol can enter a state where `totalBackingSigned()`, `surplus()`, `distributableSurplus()`, and `settle()` all revert until a separate manual `removeSuppliedEntry()` cleanup is performed. Essentially a cosmic DoS leading to a lifecycle-coupling and accounting-liveness bug, not a theft bug.",
+      "start": 519,
+      "end": 956,
+      "line": 19
+    },
+    {
+      "id": "e_9738d391b328_0009",
+      "text": "### There was a quick peform RPC call test and it returns",
+      "start": 958,
+      "end": 1015,
+      "line": 21
+    },
+    {
+      "id": "e_9738d391b328_0010",
+      "text": "So the real RPC did not return a normal zero-filled payload for the absent 0x811 slot. It errored.",
+      "start": 1019,
+      "end": 1117,
+      "line": 24
+    },
+    {
+      "id": "e_9738d391b328_0011",
+      "text": "That is why, in the PoC, modeling the missing slot as an unreadable/reverting PRECOMPILE_SUPPLIED_BALANCE call is consistent with what we observed on the live RPC.",
+      "start": 1119,
+      "end": 1282,
+      "line": 26
+    },
+    {
+      "id": "e_9738d391b328_0012",
+      "text": "# Impact",
+      "start": 1285,
+      "end": 1293,
+      "line": 29
+    },
+    {
+      "id": "e_9738d391b328_0013",
+      "text": "- Uses a normal supported BLP lifecycle: supply, then withdraw max/full unwind",
+      "start": 1295,
+      "end": 1373,
+      "line": 31
+    },
+    {
+      "id": "e_9738d391b328_0014",
+      "text": "- Not a theft bug and not bad-parameter misuse",
+      "start": 1374,
+      "end": 1420,
+      "line": 32
+    },
+    {
+      "id": "e_9738d391b328_0015",
+      "text": "- Root cause is incomplete lifecycle coupling between registry registration and registry retirement",
+      "start": 1421,
+      "end": 1520,
+      "line": 33
+    },
+    {
+      "id": "e_9738d391b328_0016",
+      "text": "- Impact is protocol-wide accounting and settlement liveness failure",
+      "start": 1521,
+      "end": 1589,
+      "line": 34
+    },
+    {
+      "id": "e_9738d391b328_0017",
+      "text": "# Note to the Judge and Sponsor",
+      "start": 1592,
+      "end": 1623,
+      "line": 37
+    },
+    {
+      "id": "e_9738d391b328_0018",
+      "text": "The issue resides in a Operator side vector and perfectly fits the 2 categories mentioned in the contest details:",
+      "start": 1625,
+      "end": 1738,
+      "line": 39
+    },
+    {
+      "id": "e_9738d391b328_0019",
+      "text": "### Areas of concern (where to focus for bugs)",
+      "start": 1740,
+      "end": 1786,
+      "line": 41
+    },
+    {
+      "id": "e_9738d391b328_0020",
+      "text": "1. Accountant 4-gate settle pipeline",
+      "start": 1788,
+      "end": 1824,
+      "line": 43
+    },
+    {
+      "id": "e_9738d391b328_0021",
+      "text": "2. HyperCore precompile read semantics.",
+      "start": 1825,
+      "end": 1864,
+      "line": 44
+    },
+    {
+      "id": "e_9738d391b328_0022",
+      "text": "The issue its **NOT** about the operator theft or trusting the operator because of funds or other inputs, the issue **its a lifecycle bug** that directly breaks the Monetrix accounting state, in a obviously vector where the operator usually peforms actions.",
+      "start": 1866,
+      "end": 2123,
+      "line": 46
+    },
+    {
+      "id": "e_9738d391b328_0023",
+      "text": "So the bug lives in an Operator vector area, but the flaw is still a protocol lifecycle/invariant bug, not a trust-minimization complaint. That is consistent with the sponsor calling out the Accountant settle pipeline and HyperCore precompile semantics as areas of concern.",
+      "start": 2126,
+      "end": 2399,
+      "line": 48
+    },
+    {
+      "id": "e_9738d391b328_0024",
+      "text": "Technically. Monetrix models BLP-supplied assets as a registered external resource, but its lifecycle is asymmetric: the resource is auto-registered when created and not auto-unregistered when destroyed, so strict Accountant reads can keep treating a dead `0x811` slot as mandatory and brick global accounting.",
+      "start": 2401,
+      "end": 2711,
+      "line": 50
+    },
+    {
+      "id": "e_9738d391b328_0025",
+      "text": "in short this is a lifecycle/accounting bug, not an operator theft/inactivity bug",
+      "start": 2713,
+      "end": 2794,
+      "line": 52
+    }
+  ]
+}

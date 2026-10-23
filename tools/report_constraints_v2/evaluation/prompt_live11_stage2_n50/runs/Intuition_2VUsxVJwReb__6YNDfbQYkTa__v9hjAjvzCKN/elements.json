@@ -1,0 +1,255 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "AtomWallet 77-byte signature validation and UserOperation time-window enforcement",
+    "environment": "AtomWallet / ERC-4337 EntryPoint bundling",
+    "evidence": [
+      "AtomWallet 77-byte signatures do not authenticate `validUntil`/`validAfter`, allowing relayers to rewrite the execution window",
+      "`AtomWallet` supports a 77-byte signature format: `r || s || v || validUntil || validAfter`.",
+      "The root cause is that the wallet does not authenticate the last 12 bytes.",
+      "In [`AtomWallet._validateSignature`](https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L294-L310), the contract first calls `_extractValidUntilAndValidAfterFromSignature(userOp.signature)`, which strips off the final 12 bytes and returns only the first 65 bytes as `rawSignature`.",
+      "The parsed `validUntil` and `validAfter` values are only packed into `validationData` after recovery succeeds.",
+      "In [`AtomWallet._extractValidUntilAndValidAfterFromSignature`](https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L337-L360), the last 12 bytes are treated as metadata and are never included in the signed message.",
+      "This becomes exploitable because [`IEntryPoint.getUserOpHash`](https://github.com/code-423n4/2026-03-intuition/blob/main/lib/account-abstraction/contracts/interfaces/IEntryPoint.sol#L171-L178) explicitly hashes the UserOperation excluding the `signature` field. So changing the last 12 bytes of `userOp.signature` does not change `userOpHash`.",
+      "As a result, any relayer/bundler that has a valid 77-byte signed operation can arbitrarily rewrite the time-window suffix without invalidating the owner’s signature.",
+      "- change a future-only operation into one valid immediately",
+      "- remove expiry entirely by changing the suffix to `(0, 0)`",
+      "- extend or shorten the authorization window at will",
+      "- the signer’s intended time restriction is not enforced",
+      "- stale signed `AtomWallet` operations can be executed outside the user-approved window",
+      "- since `AtomWallet.execute` can perform arbitrary calls, this can enable unauthorized token transfers, approvals, or other wallet actions at attacker-chosen times"
+    ]
+  },
+  "entities": [
+    {
+      "id": "relayer",
+      "name": "relayer/bundler",
+      "role": "attacker",
+      "evidence": [
+        "As a result, any relayer/bundler that has a valid 77-byte signed operation can arbitrarily rewrite the time-window suffix without invalidating the owner’s signature."
+      ]
+    },
+    {
+      "id": "signer",
+      "name": "AtomWallet owner/signer",
+      "role": "victim",
+      "evidence": [
+        "As a result, any relayer/bundler that has a valid 77-byte signed operation can arbitrarily rewrite the time-window suffix without invalidating the owner’s signature.",
+        "- the signer’s intended time restriction is not enforced"
+      ]
+    },
+    {
+      "id": "atom_wallet",
+      "name": "AtomWallet contract",
+      "role": "contract",
+      "evidence": [
+        "`AtomWallet` supports a 77-byte signature format: `r || s || v || validUntil || validAfter`.",
+        "In [`AtomWallet._validateSignature`](https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L294-L310), the contract first calls `_extractValidUntilAndValidAfterFromSignature(userOp.signature)`, which strips off the final 12 bytes and returns only the first 65 bytes as `rawSignature`.",
+        "- since `AtomWallet.execute` can perform arbitrary calls, this can enable unauthorized token transfers, approvals, or other wallet actions at attacker-chosen times"
+      ]
+    },
+    {
+      "id": "entry_point",
+      "name": "ERC-4337 EntryPoint",
+      "role": "contract",
+      "evidence": [
+        "This becomes exploitable because [`IEntryPoint.getUserOpHash`](https://github.com/code-423n4/2026-03-intuition/blob/main/lib/account-abstraction/contracts/interfaces/IEntryPoint.sol#L171-L178) explicitly hashes the UserOperation excluding the `signature` field. So changing the last 12 bytes of `userOp.signature` does not change `userOpHash`."
+      ]
+    },
+    {
+      "id": "user_op",
+      "name": "signed UserOperation",
+      "role": "asset",
+      "evidence": [
+        "This becomes exploitable because [`IEntryPoint.getUserOpHash`](https://github.com/code-423n4/2026-03-intuition/blob/main/lib/account-abstraction/contracts/interfaces/IEntryPoint.sol#L171-L178) explicitly hashes the UserOperation excluding the `signature` field. So changing the last 12 bytes of `userOp.signature` does not change `userOpHash`.",
+        "As a result, any relayer/bundler that has a valid 77-byte signed operation can arbitrarily rewrite the time-window suffix without invalidating the owner’s signature."
+      ]
+    },
+    {
+      "id": "time_window",
+      "name": "validUntil/validAfter suffix",
+      "role": "asset",
+      "evidence": [
+        "`AtomWallet` supports a 77-byte signature format: `r || s || v || validUntil || validAfter`.",
+        "In [`AtomWallet._extractValidUntilAndValidAfterFromSignature`](https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L337-L360), the last 12 bytes are treated as metadata and are never included in the signed message."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_valid_77byte_signed_op",
+      "kind": "precondition",
+      "text": "A valid 77-byte signed UserOperation exists whose owner signature covers only the 65-byte rawSignature and userOpHash.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user_op",
+        "signer",
+        "atom_wallet"
+      ],
+      "evidence": [
+        "`AtomWallet` supports a 77-byte signature format: `r || s || v || validUntil || validAfter`.",
+        "In [`AtomWallet._validateSignature`](https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L294-L310), the contract first calls `_extractValidUntilAndValidAfterFromSignature(userOp.signature)`, which strips off the final 12 bytes and returns only the first 65 bytes as `rawSignature`.",
+        "- `userOpHash`",
+        "- the stripped 65-byte `rawSignature`",
+        "As a result, any relayer/bundler that has a valid 77-byte signed operation can arbitrarily rewrite the time-window suffix without invalidating the owner’s signature."
+      ]
+    },
+    {
+      "id": "p_relayer_holds_op",
+      "kind": "precondition",
+      "text": "A relayer/bundler holds that valid 77-byte signed operation.",
+      "modality": "asserted",
+      "entity_ids": [
+        "relayer",
+        "user_op"
+      ],
+      "evidence": [
+        "As a result, any relayer/bundler that has a valid 77-byte signed operation can arbitrarily rewrite the time-window suffix without invalidating the owner’s signature."
+      ]
+    },
+    {
+      "id": "p_suffix_not_hashed",
+      "kind": "precondition",
+      "text": "getUserOpHash excludes the signature field, so the last 12 bytes of userOp.signature are not part of userOpHash.",
+      "modality": "asserted",
+      "entity_ids": [
+        "entry_point",
+        "user_op",
+        "time_window"
+      ],
+      "evidence": [
+        "This becomes exploitable because [`IEntryPoint.getUserOpHash`](https://github.com/code-423n4/2026-03-intuition/blob/main/lib/account-abstraction/contracts/interfaces/IEntryPoint.sol#L171-L178) explicitly hashes the UserOperation excluding the `signature` field. So changing the last 12 bytes of `userOp.signature` does not change `userOpHash`."
+      ]
+    },
+    {
+      "id": "a_rewrite_suffix",
+      "kind": "action",
+      "text": "The relayer rewrites the 12-byte validUntil/validAfter suffix of userOp.signature.",
+      "modality": "asserted",
+      "entity_ids": [
+        "relayer",
+        "user_op",
+        "time_window"
+      ],
+      "evidence": [
+        "As a result, any relayer/bundler that has a valid 77-byte signed operation can arbitrarily rewrite the time-window suffix without invalidating the owner’s signature.",
+        "- extend or shorten the authorization window at will"
+      ]
+    },
+    {
+      "id": "a_submit_op",
+      "kind": "action",
+      "text": "The relayer submits the modified UserOperation for validation and execution.",
+      "modality": "asserted",
+      "entity_ids": [
+        "relayer",
+        "user_op",
+        "atom_wallet"
+      ],
+      "evidence": [
+        "As a result, any relayer/bundler that has a valid 77-byte signed operation can arbitrarily rewrite the time-window suffix without invalidating the owner’s signature.",
+        "- stale signed `AtomWallet` operations can be executed outside the user-approved window"
+      ]
+    },
+    {
+      "id": "rc_unauthenticated_suffix",
+      "kind": "root_cause",
+      "text": "AtomWallet verifies the owner signature only over userOpHash and the stripped 65-byte rawSignature, never authenticating the last 12 bytes carrying validUntil/validAfter.",
+      "modality": "asserted",
+      "entity_ids": [
+        "atom_wallet",
+        "time_window",
+        "user_op"
+      ],
+      "evidence": [
+        "The root cause is that the wallet does not authenticate the last 12 bytes.",
+        "In [`AtomWallet._validateSignature`](https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L294-L310), the contract first calls `_extractValidUntilAndValidAfterFromSignature(userOp.signature)`, which strips off the final 12 bytes and returns only the first 65 bytes as `rawSignature`.",
+        "The parsed `validUntil` and `validAfter` values are only packed into `validationData` after recovery succeeds.",
+        "In [`AtomWallet._extractValidUntilAndValidAfterFromSignature`](https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L337-L360), the last 12 bytes are treated as metadata and are never included in the signed message."
+      ]
+    },
+    {
+      "id": "i_window_not_enforced",
+      "kind": "impact",
+      "text": "The signer's intended time restriction is not enforced.",
+      "modality": "asserted",
+      "entity_ids": [
+        "signer",
+        "time_window",
+        "atom_wallet"
+      ],
+      "evidence": [
+        "- the signer’s intended time restriction is not enforced"
+      ]
+    },
+    {
+      "id": "i_execute_outside_window",
+      "kind": "impact",
+      "text": "Stale signed AtomWallet operations can be executed outside the user-approved window.",
+      "modality": "potential",
+      "entity_ids": [
+        "atom_wallet",
+        "user_op",
+        "signer"
+      ],
+      "evidence": [
+        "- stale signed `AtomWallet` operations can be executed outside the user-approved window"
+      ]
+    },
+    {
+      "id": "i_unauthorized_wallet_actions",
+      "kind": "impact",
+      "text": "Because AtomWallet.execute can perform arbitrary calls, unauthorized token transfers, approvals, or other wallet actions can occur at attacker-chosen times.",
+      "modality": "potential",
+      "entity_ids": [
+        "atom_wallet",
+        "relayer",
+        "signer"
+      ],
+      "evidence": [
+        "- since `AtomWallet.execute` can perform arbitrary calls, this can enable unauthorized token transfers, approvals, or other wallet actions at attacker-chosen times"
+      ]
+    },
+    {
+      "id": "si_authenticate_window",
+      "kind": "security_intent",
+      "text": "The validUntil/validAfter time window must be covered by the owner's signature so a relayer cannot alter it without invalidating the signature.",
+      "modality": "inferred",
+      "entity_ids": [
+        "atom_wallet",
+        "time_window",
+        "signer"
+      ],
+      "evidence": [
+        "AtomWallet 77-byte signatures do not authenticate `validUntil`/`validAfter`, allowing relayers to rewrite the execution window",
+        "The root cause is that the wallet does not authenticate the last 12 bytes.",
+        "In [`AtomWallet._extractValidUntilAndValidAfterFromSignature`](https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L337-L360), the last 12 bytes are treated as metadata and are never included in the signed message.",
+        "- the signer’s intended time restriction is not enforced"
+      ]
+    },
+    {
+      "id": "si_enforce_window",
+      "kind": "security_intent",
+      "text": "AtomWallet operations must execute only within the signer-approved validUntil/validAfter window.",
+      "modality": "inferred",
+      "entity_ids": [
+        "atom_wallet",
+        "time_window",
+        "user_op"
+      ],
+      "evidence": [
+        "- the signer’s intended time restriction is not enforced",
+        "- stale signed `AtomWallet` operations can be executed outside the user-approved window"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_rewrite_suffix",
+    "a_submit_op"
+  ],
+  "ambiguities": [
+    "Report does not state whether the relayer is a legitimate bundler or an external attacker beyond holding the signed op.",
+    "Whether the rewritten window is actually accepted by EntryPoint validation is described as capability, not an observed incident.",
+    "No specific prior transaction establishing the original window values is given."
+  ]
+}

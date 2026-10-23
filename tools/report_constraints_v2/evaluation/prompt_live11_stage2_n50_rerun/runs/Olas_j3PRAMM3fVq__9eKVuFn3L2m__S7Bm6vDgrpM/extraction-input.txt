@@ -1,0 +1,18 @@
+Uniswap V2 oracle TWAP check collapses to spot
+
+**Vulnerability details**  
+`UniswapPriceOracle.validatePrice` (autonolas-tokenomics/contracts/oracles/UniswapPriceOracle.sol) reproduces a “TWAP” by adding `tradePrice * elapsedTime` to the last cumulative price and immediately subtracts the same value, so `derivation` is calculated against `tradePrice` itself. Any flash-loan or MEV attack that pushes `tradePrice` to an attacker-controlled level passes the slippage guard, meaning subsequent swaps or liquidity removals execute at manipulated prices. This affects buybacks and liquidity actions that rely on this oracle and results in value loss.
+
+**Technical root cause**  
+The function recomputes the same price twice and never uses historical data, so rebound slippage is computed between `tradePrice` and `timeWeightedAverage` that are identical:
+Even though `cumulativePrice` and `timeWeightedAverage` are meant to capture history, the math cancels out. The guard therefore enforces no protection, and an attacker can transiently move the spot price before the swap; the oracle still reports everything inside slippage limits.
+
+**Impact**  
+- Liquidity manager operations or buybacks can be executed at attacker-determined prices, allowing drain of protocol-owned reserves.  
+- Protocol funds are swapped or rebalanced at manipulated rates, leading to immediate economic loss unique to Autonolas’ buyback/liquidity flows.
+
+**Mitigation**  
+1. Sample the previous cumulative price from the prior observation (`trade_price_last` stored separately) instead of recomputing `tradePrice` twice.
+
+
+2. Store the historical cumulative price in state and use the delta between now and then, instead of deriving from the just-read spot price.

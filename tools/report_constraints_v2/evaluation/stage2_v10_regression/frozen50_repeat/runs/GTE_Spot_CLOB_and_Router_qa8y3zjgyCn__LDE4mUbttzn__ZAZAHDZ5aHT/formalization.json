@@ -1,0 +1,548 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "c61a46d92_order_is_quote_denominated": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "incoming fill order is quote-denominated (amountIsBase = false)",
+      "checkpoint": "before _matchIncomingOrder",
+      "entity_ids": [
+        "quote_denominated_order"
+      ],
+      "evidence": "This bug exists in the `_matchIncomingOrder` [function](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L823-L827) in `CLOB.sol` where quote-denominated fill orders (`amountIsBase: false`) incorrectly track remaining amounts when lot-size flooring occurs."
+    },
+    "c61a46d92_lot_size_in_base": {
+      "sort": "int",
+      "unit": "base token units",
+      "meaning": "lot-size constraint in base units (e.g. 1e18) enabling lot-size flooring",
+      "checkpoint": "before _matchIncomingOrder",
+      "entity_ids": [
+        "quote_denominated_order"
+      ],
+      "evidence": "- `lotSizeInBase = 1e18`"
+    },
+    "c61a46d92_remaining_quote_amount": {
+      "sort": "int",
+      "unit": "quote token units",
+      "meaning": "incoming order remaining quote amount (e.g. taker.amount = 2.5e18)",
+      "checkpoint": "before _matchIncomingOrder",
+      "entity_ids": [
+        "quote_denominated_order",
+        "taker"
+      ],
+      "evidence": "- `remaining taker.amount = 2.5e18` (2.5 quote units)"
+    },
+    "c61a46d92_maker_base_liquidity": {
+      "sort": "int",
+      "unit": "base token units",
+      "meaning": "available maker base liquidity (e.g. maker base = 3e18)",
+      "checkpoint": "before _matchIncomingOrder",
+      "entity_ids": [
+        "quote_denominated_order"
+      ],
+      "evidence": "- `remaining taker.amount = 2.5e18` (2.5 quote units)"
+    },
+    "c61a46d92_fok_validation_passed": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "FOK validation check passes (newOrder.amount reduced to 0) while dust quote amount remains unfilled",
+      "checkpoint": "after matching, at FOK validation",
+      "entity_ids": [
+        "fok_order",
+        "clob_contract"
+      ],
+      "evidence": "For Fill-or-Kill orders, this creates a critical failure mode. The FOK validation check"
+    },
+    "c61a46d92_unfilled_quote_remains": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "dust quote amount remains unfilled at FOK validation time",
+      "checkpoint": "at FOK validation",
+      "entity_ids": [
+        "fok_order"
+      ],
+      "evidence": "For Fill-or-Kill orders, this creates a critical failure mode. The FOK validation check"
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_i_fewer_base_tokens_651c77a0",
+      "scope": "_matchIncomingOrder quote-denominated fill order matching with lot-size flooring",
+      "modality": "asserted",
+      "impact_ids": [
+        "i_fewer_base_tokens"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The incoming fill order is quote-denominated (amountIsBase = false).; A lot-size constraint is present (e.g., lotSizeInBase = 1e18) so lot-size flooring can reduce the tradeable base amount.; The incoming order has a remaining quote amount (e.g., taker.amount = 2.5e18) and maker base liquidity is available (e.g., maker base = 3e18).",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "p_quote_denominated",
+            "p_lot_size_present",
+            "p_remaining_quote"
+          ],
+          "evidence": [
+            "This bug exists in the `_matchIncomingOrder` [function](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L823-L827) in `CLOB.sol` where quote-denominated fill orders (`amountIsBase: false`) incorrectly track remaining amounts when lot-size flooring occurs.",
+            "- `amountIsBase = false`",
+            "- `lotSizeInBase = 1e18`",
+            "3. `baseDelta = floor(2.5e18 / 1e18) * 1e18 = 2e18` (lot-size flooring)",
+            "This bug affects all quote-denominated fill orders when lot-size constraints are present, which is a core feature as evidenced by test coverage in .",
+            "- `remaining taker.amount = 2.5e18` (2.5 quote units)",
+            "- `maker base = 3e18`"
+          ]
+        },
+        "safety": {
+          "text": "The incoming order's remaining amount should be decremented by the actual quote amount consumed (quoteDelta), so matching continues against additional liquidity and the order is not marked fully filled while unfilled quote remains.; A Fill-or-Kill order should either execute completely or fail entirely, not pass validation while dust quote amount remains unfilled.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "si_remaining_tracks_consumed",
+            "si_fok_all_or_nothing"
+          ],
+          "evidence": [
+            "When `baseDelta != matchedBase` (which happens when lot-size flooring reduces the tradeable amount), the system incorrectly sets `matchedAmount = takerOrder.amount` (the full remaining quote amount) instead of `quoteDelta` (the actual quote amount consumed).",
+            "The incorrect `matchedAmount` is used to decrement the incoming order's remaining amount in both [bid](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L763) and [ask](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L797) matching loops. This over-subtraction causes the matching loop to terminate prematurely, preventing the order from continuing to match against additional liquidity.",
+            "Users receive fewer base tokens than their quote amount should purchase. Settlement uses the correct (smaller) `quoteDelta` and `baseDelta` values, but the user's order is marked as fully filled despite only partial execution.",
+            "This check passes because `newOrder.amount` has been incorrectly reduced to 0, even though dust quote amount remains unfilled. This violates the FOK guarantee that orders either execute completely or fail entirely."
+          ]
+        },
+        "effects": {
+          "text": "Users receive fewer base tokens than their quote amount should purchase; settlement uses the correct smaller quoteDelta and baseDelta, but the order is marked fully filled despite only partial execution.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "i_fewer_base_tokens"
+          ],
+          "evidence": [
+            "Users receive fewer base tokens than their quote amount should purchase. Settlement uses the correct (smaller) `quoteDelta` and `baseDelta` values, but the user's order is marked as fully filled despite only partial execution."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_fewer_base_tokens",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: type/unit mismatch: ge int base token units int quote token units"
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: type/unit mismatch: ge int base token units int quote token units"
+      ]
+    },
+    {
+      "id": "impact_claim_i_fok_passes_740b7f39",
+      "scope": "_matchIncomingOrder quote-denominated fill order matching with lot-size flooring",
+      "modality": "asserted",
+      "impact_ids": [
+        "i_fok_passes"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The incoming fill order is quote-denominated (amountIsBase = false).; A lot-size constraint is present (e.g., lotSizeInBase = 1e18) so lot-size flooring can reduce the tradeable base amount.; The incoming order has a remaining quote amount (e.g., taker.amount = 2.5e18) and maker base liquidity is available (e.g., maker base = 3e18).",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c61a46d92_order_is_quote_denominated"
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "c61a46d92_lot_size_in_base"
+                  },
+                  {
+                    "const": 1000000000000000000
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c61a46d92_remaining_quote_amount"
+                      },
+                      {
+                        "const": 2500000000000000000
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c61a46d92_maker_base_liquidity"
+                      },
+                      {
+                        "const": 3000000000000000000
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_quote_denominated",
+            "p_lot_size_present",
+            "p_remaining_quote"
+          ],
+          "evidence": [
+            "This bug exists in the `_matchIncomingOrder` [function](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L823-L827) in `CLOB.sol` where quote-denominated fill orders (`amountIsBase: false`) incorrectly track remaining amounts when lot-size flooring occurs.",
+            "- `amountIsBase = false`",
+            "- `lotSizeInBase = 1e18`",
+            "3. `baseDelta = floor(2.5e18 / 1e18) * 1e18 = 2e18` (lot-size flooring)",
+            "This bug affects all quote-denominated fill orders when lot-size constraints are present, which is a core feature as evidenced by test coverage in .",
+            "- `remaining taker.amount = 2.5e18` (2.5 quote units)",
+            "- `maker base = 3e18`"
+          ]
+        },
+        "safety": {
+          "text": "A Fill-or-Kill order should either execute completely or fail entirely, not pass validation while dust quote amount remains unfilled.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c61a46d92_order_is_quote_denominated"
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c61a46d92_lot_size_in_base"
+                      },
+                      {
+                        "const": 1000000000000000000
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c61a46d92_remaining_quote_amount"
+                      },
+                      {
+                        "const": 2500000000000000000
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c61a46d92_maker_base_liquidity"
+                      },
+                      {
+                        "const": 3000000000000000000
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c61a46d92_fok_validation_passed"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c61a46d92_unfilled_quote_remains"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_fok_all_or_nothing"
+          ],
+          "evidence": [
+            "This check passes because `newOrder.amount` has been incorrectly reduced to 0, even though dust quote amount remains unfilled. This violates the FOK guarantee that orders either execute completely or fail entirely."
+          ]
+        },
+        "effects": {
+          "text": "For Fill-or-Kill orders, the FOK validation check passes because newOrder.amount was incorrectly reduced to 0 even though dust quote amount remains unfilled, violating the all-or-nothing FOK guarantee.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c61a46d92_order_is_quote_denominated"
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c61a46d92_lot_size_in_base"
+                      },
+                      {
+                        "const": 1000000000000000000
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c61a46d92_remaining_quote_amount"
+                      },
+                      {
+                        "const": 2500000000000000000
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c61a46d92_maker_base_liquidity"
+                      },
+                      {
+                        "const": 3000000000000000000
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "or",
+                    "args": [
+                      {
+                        "op": "not",
+                        "args": [
+                          {
+                            "var": "c61a46d92_fok_validation_passed"
+                          }
+                        ]
+                      },
+                      {
+                        "op": "not",
+                        "args": [
+                          {
+                            "var": "c61a46d92_unfilled_quote_remains"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_fok_passes"
+          ],
+          "evidence": [
+            "For Fill-or-Kill orders, this creates a critical failure mode. The FOK validation check",
+            "This check passes because `newOrder.amount` has been incorrectly reduced to 0, even though dust quote amount remains unfilled. This violates the FOK guarantee that orders either execute completely or fail entirely."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_quote_denominated",
+            "p_lot_size_present",
+            "p_remaining_quote"
+          ],
+          "args.1": [
+            "p_quote_denominated",
+            "p_lot_size_present",
+            "p_remaining_quote"
+          ],
+          "args.2": [
+            "p_quote_denominated",
+            "p_lot_size_present",
+            "p_remaining_quote"
+          ],
+          "args.2.args.0": [
+            "p_quote_denominated",
+            "p_lot_size_present",
+            "p_remaining_quote"
+          ],
+          "args.2.args.1": [
+            "p_quote_denominated",
+            "p_lot_size_present",
+            "p_remaining_quote"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_fok_all_or_nothing"
+          ],
+          "args.0": [
+            "si_fok_all_or_nothing"
+          ],
+          "args.0.args.1": [
+            "si_fok_all_or_nothing"
+          ],
+          "args.0.args.2": [
+            "si_fok_all_or_nothing"
+          ],
+          "args.0.args.3": [
+            "si_fok_all_or_nothing"
+          ],
+          "args.1": [
+            "si_fok_all_or_nothing"
+          ],
+          "args.1.args.0": [
+            "si_fok_all_or_nothing"
+          ],
+          "args.1.args.1": [
+            "si_fok_all_or_nothing"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_fok_passes"
+          ],
+          "args.0": [
+            "i_fok_passes"
+          ],
+          "args.0.args.1": [
+            "i_fok_passes"
+          ],
+          "args.0.args.2": [
+            "i_fok_passes"
+          ],
+          "args.0.args.3": [
+            "i_fok_passes"
+          ],
+          "args.1": [
+            "i_fok_passes"
+          ],
+          "args.1.args.0": [
+            "i_fok_passes"
+          ],
+          "args.1.args.0.args.0": [
+            "i_fok_passes"
+          ],
+          "args.1.args.0.args.1": [
+            "i_fok_passes"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_fok_passes",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The FOK order is the incoming quote-denominated order being matched by _matchIncomingOrder.",
+        "The FOK validation check is performed after the matching loops decrement the remaining amount.",
+        "The example values (2.5e18 quote, 3e18 maker base, 1e18 lot size) are illustrative of the reported scenario."
+      ],
+      "unresolved": []
+    },
+    {
+      "id": "impact_claim_i_value_loss_20pct_23f528ad",
+      "scope": "_matchIncomingOrder quote-denominated fill order matching with lot-size flooring",
+      "modality": "asserted",
+      "impact_ids": [
+        "i_value_loss_20pct"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The incoming fill order is quote-denominated (amountIsBase = false).; A lot-size constraint is present (e.g., lotSizeInBase = 1e18) so lot-size flooring can reduce the tradeable base amount.; The incoming order has a remaining quote amount (e.g., taker.amount = 2.5e18) and maker base liquidity is available (e.g., maker base = 3e18).",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "p_quote_denominated",
+            "p_lot_size_present",
+            "p_remaining_quote"
+          ],
+          "evidence": [
+            "This bug exists in the `_matchIncomingOrder` [function](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L823-L827) in `CLOB.sol` where quote-denominated fill orders (`amountIsBase: false`) incorrectly track remaining amounts when lot-size flooring occurs.",
+            "- `amountIsBase = false`",
+            "- `lotSizeInBase = 1e18`",
+            "3. `baseDelta = floor(2.5e18 / 1e18) * 1e18 = 2e18` (lot-size flooring)",
+            "This bug affects all quote-denominated fill orders when lot-size constraints are present, which is a core feature as evidenced by test coverage in .",
+            "- `remaining taker.amount = 2.5e18` (2.5 quote units)",
+            "- `maker base = 3e18`"
+          ]
+        },
+        "safety": {
+          "text": "The incoming order's remaining amount should be decremented by the actual quote amount consumed (quoteDelta), so matching continues against additional liquidity and the order is not marked fully filled while unfilled quote remains.; A Fill-or-Kill order should either execute completely or fail entirely, not pass validation while dust quote amount remains unfilled.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "si_remaining_tracks_consumed",
+            "si_fok_all_or_nothing"
+          ],
+          "evidence": [
+            "When `baseDelta != matchedBase` (which happens when lot-size flooring reduces the tradeable amount), the system incorrectly sets `matchedAmount = takerOrder.amount` (the full remaining quote amount) instead of `quoteDelta` (the actual quote amount consumed).",
+            "The incorrect `matchedAmount` is used to decrement the incoming order's remaining amount in both [bid](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L763) and [ask](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L797) matching loops. This over-subtraction causes the matching loop to terminate prematurely, preventing the order from continuing to match against additional liquidity.",
+            "Users receive fewer base tokens than their quote amount should purchase. Settlement uses the correct (smaller) `quoteDelta` and `baseDelta` values, but the user's order is marked as fully filled despite only partial execution.",
+            "This check passes because `newOrder.amount` has been incorrectly reduced to 0, even though dust quote amount remains unfilled. This violates the FOK guarantee that orders either execute completely or fail entirely."
+          ]
+        },
+        "effects": {
+          "text": "In the example, the order amount is reduced by 2.5 units while only 2 units worth of base tokens are traded, resulting in a 20% loss of expected value.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "i_value_loss_20pct"
+          ],
+          "evidence": [
+            "The order amount is reduced by 2.5 units, but only 2 units worth of base tokens are actually traded, resulting in a 20% loss of expected value."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_value_loss_20pct",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: type/unit mismatch: eq int base token units int quote token units"
+        }
+      ],
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: type/unit mismatch: eq int base token units int quote token units"
+      ]
+    }
+  ],
+  "limitations": [
+    "Formalizes only the FOK all-or-nothing impact; the 20% value-loss impact is handled in a separate claim pass.",
+    "The dust quote amount remaining unfilled is represented as a Boolean observable since no numeric dust threshold is stated.",
+    "i_fewer_base_tokens: No faithful claim generated after bounded retries: type/unit mismatch: ge int base token units int quote token units",
+    "i_value_loss_20pct: No faithful claim generated after bounded retries: type/unit mismatch: eq int base token units int quote token units"
+  ]
+}

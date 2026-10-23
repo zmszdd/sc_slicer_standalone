@@ -1,0 +1,189 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "p_anyone_deposit_for_recipient",
+    "p_no_minimum_deposit",
+    "p_victim_holds_ghybr",
+    "p_locks_expire_24h"
+  ],
+  "intent_id": "i_transfer_gas_within_block_limit",
+  "impact_ids": [
+    "freeze_victim_assets"
+  ],
+  "symbols": {
+    "third_party_deposit_allowed": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "any address may call deposit() on behalf of an arbitrary recipient without access control",
+      "checkpoint": "before attacker deposits",
+      "entity_ids": [
+        "attacker",
+        "growth_hybr"
+      ],
+      "source_ids": [
+        "p_anyone_deposit_for_recipient"
+      ]
+    },
+    "min_deposit_wei": {
+      "sort": "int",
+      "unit": "wei",
+      "meaning": "minimum deposit amount accepted per lock entry (report: no minimum, 1-wei deposits accepted)",
+      "checkpoint": "before attacker deposits",
+      "entity_ids": [
+        "growth_hybr",
+        "user_locks"
+      ],
+      "source_ids": [
+        "p_no_minimum_deposit"
+      ]
+    },
+    "victim_ghybr_balance": {
+      "sort": "int",
+      "unit": "gHYBR token units",
+      "meaning": "victim's gHYBR token balance held before the attack",
+      "checkpoint": "before attacker deposits",
+      "entity_ids": [
+        "victim",
+        "ghybr_tokens"
+      ],
+      "source_ids": [
+        "p_victim_holds_ghybr"
+      ]
+    },
+    "lock_expiry_hours": {
+      "sort": "int",
+      "unit": "hours",
+      "meaning": "lock entry expiry duration after deposit",
+      "checkpoint": "at deposit time",
+      "entity_ids": [
+        "growth_hybr",
+        "user_locks"
+      ],
+      "source_ids": [
+        "p_locks_expire_24h"
+      ]
+    },
+    "victim_transfer_completes": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "victim's token transfer completes within Hyperliquid's 30M gas slow block limit despite the number of lock entries in userLocks[victim]",
+      "checkpoint": "after attacker deposits, at victim transfer",
+      "entity_ids": [
+        "victim",
+        "growth_hybr",
+        "user_locks"
+      ],
+      "source_ids": [
+        "i_transfer_gas_within_block_limit",
+        "freeze_victim_assets"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_anyone_deposit_for_recipient",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "third_party_deposit_allowed",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_no_minimum_deposit",
+      "predicate": {
+        "kind": "comparison",
+        "left": "min_deposit_wei",
+        "operator": "le",
+        "right": {
+          "const": 1
+        }
+      }
+    },
+    {
+      "source_id": "p_victim_holds_ghybr",
+      "predicate": {
+        "kind": "comparison",
+        "left": "victim_ghybr_balance",
+        "operator": "gt",
+        "right": {
+          "const": 0
+        }
+      }
+    },
+    {
+      "source_id": "p_locks_expire_24h",
+      "predicate": {
+        "kind": "comparison",
+        "left": "lock_expiry_hours",
+        "operator": "eq",
+        "right": {
+          "const": 24
+        }
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "third_party_deposit_allowed",
+          "value": true
+        },
+        {
+          "kind": "comparison",
+          "left": "min_deposit_wei",
+          "operator": "le",
+          "right": {
+            "const": 1
+          }
+        },
+        {
+          "kind": "comparison",
+          "left": "victim_ghybr_balance",
+          "operator": "gt",
+          "right": {
+            "const": 0
+          }
+        },
+        {
+          "kind": "comparison",
+          "left": "lock_expiry_hours",
+          "operator": "eq",
+          "right": {
+            "const": 24
+          }
+        }
+      ]
+    },
+    "relation": {
+      "kind": "truth",
+      "symbol": "victim_transfer_completes",
+      "value": true
+    }
+  },
+  "assumptions": [
+    "The victim's transfer is the transfer that invokes _beforeTokenTransfer() and _cleanExpired() per report wording.",
+    "The 30M gas slow block limit is the applicable bound for the victim's transfer completion.",
+    "Attacker deposits are made for the victim as recipient, appending entries to userLocks[victim]."
+  ],
+  "unresolved": [
+    {
+      "category": "unsupported_relation",
+      "description": "Report does not give a per-lock gas cost or exact lock count at which cleanup exceeds 30M gas, so the freeze threshold cannot be expressed numerically; the completion obligation is kept as a grounded Boolean.",
+      "source_ids": [
+        "i_transfer_gas_within_block_limit",
+        "freeze_victim_assets"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The freeze impact is formalized as failure of the victim's transfer to complete within the 30M gas block limit; the ~$100 attacker cost and 'millions in victim assets' magnitude are not encoded as a numeric relation.",
+    "Whether lock entries must be expired at cleanup time for the DoS is not fully specified; the plan does not encode expiry state at cleanup."
+  ]
+}

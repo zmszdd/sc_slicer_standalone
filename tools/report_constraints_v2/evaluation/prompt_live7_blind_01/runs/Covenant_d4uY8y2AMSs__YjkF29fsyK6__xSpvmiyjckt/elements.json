@@ -1,0 +1,204 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "redeem() and swap() base-token payout paths in Covenant",
+    "environment": "Covenant contract with ERC20 base token; standard ERC20 self-transfer treated as no-op",
+    "evidence": [
+      "The Covenant contract allows users to set the recipient address to the contract itself (`address(this)`) when redeeming tokens or swapping to base assets. This creates a vulnerability where ERC20 transfers become no-ops while internal accounting (`baseSupply`) is still decremented, permanently locking base tokens in the contract and reducing effective liquidity for all users.",
+      "In the `redeem()` and `swap()` functions, when base tokens are being paid out, the contract transfers tokens to a user-specified recipient address without validating that the recipient is not the contract itself. When a user sets the recipient to `address(this)`, the ERC20 transfer becomes a self-transfer that most standard ERC20 implementations treat as a no-op - the token balance remains unchanged. However, the contract still decrements `marketState.baseSupply` by the payout amount and any protocol fees, creating a persistent divergence between the contract's actual token balance and its internal accounting.",
+      "The vulnerability occurs in two specific code paths. In `redeem()`, the function updates `ms.baseSupply = localBaseSupply - amountOut - protocolFees` and then executes `IERC20(mp.baseToken).safeTransfer(redeemParams.to, amountOut)`. Similarly, in `swap()` when `assetOut == BASE`, the function updates `ms.baseSupply = localBaseSupply - amount - protocolFees` and executes `IERC20(mp.baseToken).safeTransfer(swapParams.to, amount)`. In both cases, if the recipient is `address(this)`, the accounting update occurs but no tokens actually leave the contract.",
+      "The vulnerability enables permanent locking of base tokens within the contract. Each time a self-transfer occurs, the difference between the contract's actual ERC20 balance and the tracked `baseSupply` increases by the payout amount plus any protocol fees. These excess tokens become permanently stranded since they are not reflected in the internal accounting and cannot be withdrawn through normal user flows or protocol fee collection mechanisms. The locked funds reduce the effective liquidity available to all users, as liquidity calculations rely on `baseSupply` rather than the actual token balance, potentially impairing future redemptions and degrading overall market functionality.",
+      "The vulnerability can be triggered by any user simply by setting the recipient parameter to the Covenant contract address during redemption or base-out swaps. Most standard ERC20 tokens allow self-transfers without reverting, making the condition broadly applicable across different base tokens. However, materializing significant impact requires attackers to sacrifice their own redemption proceeds, as they must lock their own tokens to harm the system. While the exploit mechanism is straightforward to execute, causing substantial damage would require repeated execution with considerable capital investment."
+    ]
+  },
+  "entities": [
+    {
+      "id": "covenant",
+      "name": "Covenant contract",
+      "role": "contract",
+      "evidence": [
+        "The Covenant contract allows users to set the recipient address to the contract itself (`address(this)`) when redeeming tokens or swapping to base assets. This creates a vulnerability where ERC20 transfers become no-ops while internal accounting (`baseSupply`) is still decremented, permanently locking base tokens in the contract and reducing effective liquidity for all users.",
+        "In the `redeem()` and `swap()` functions, when base tokens are being paid out, the contract transfers tokens to a user-specified recipient address without validating that the recipient is not the contract itself. When a user sets the recipient to `address(this)`, the ERC20 transfer becomes a self-transfer that most standard ERC20 implementations treat as a no-op - the token balance remains unchanged. However, the contract still decrements `marketState.baseSupply` by the payout amount and any protocol fees, creating a persistent divergence between the contract's actual token balance and its internal accounting."
+      ]
+    },
+    {
+      "id": "user",
+      "name": "User setting recipient",
+      "role": "attacker",
+      "evidence": [
+        "The Covenant contract allows users to set the recipient address to the contract itself (`address(this)`) when redeeming tokens or swapping to base assets. This creates a vulnerability where ERC20 transfers become no-ops while internal accounting (`baseSupply`) is still decremented, permanently locking base tokens in the contract and reducing effective liquidity for all users.",
+        "The vulnerability can be triggered by any user simply by setting the recipient parameter to the Covenant contract address during redemption or base-out swaps. Most standard ERC20 tokens allow self-transfers without reverting, making the condition broadly applicable across different base tokens. However, materializing significant impact requires attackers to sacrifice their own redemption proceeds, as they must lock their own tokens to harm the system. While the exploit mechanism is straightforward to execute, causing substantial damage would require repeated execution with considerable capital investment."
+      ]
+    },
+    {
+      "id": "base_token",
+      "name": "ERC20 base token",
+      "role": "asset",
+      "evidence": [
+        "In the `redeem()` and `swap()` functions, when base tokens are being paid out, the contract transfers tokens to a user-specified recipient address without validating that the recipient is not the contract itself. When a user sets the recipient to `address(this)`, the ERC20 transfer becomes a self-transfer that most standard ERC20 implementations treat as a no-op - the token balance remains unchanged. However, the contract still decrements `marketState.baseSupply` by the payout amount and any protocol fees, creating a persistent divergence between the contract's actual token balance and its internal accounting.",
+        "The vulnerability enables permanent locking of base tokens within the contract. Each time a self-transfer occurs, the difference between the contract's actual ERC20 balance and the tracked `baseSupply` increases by the payout amount plus any protocol fees. These excess tokens become permanently stranded since they are not reflected in the internal accounting and cannot be withdrawn through normal user flows or protocol fee collection mechanisms. The locked funds reduce the effective liquidity available to all users, as liquidity calculations rely on `baseSupply` rather than the actual token balance, potentially impairing future redemptions and degrading overall market functionality."
+      ]
+    },
+    {
+      "id": "base_supply",
+      "name": "marketState.baseSupply accounting",
+      "role": "other",
+      "evidence": [
+        "In the `redeem()` and `swap()` functions, when base tokens are being paid out, the contract transfers tokens to a user-specified recipient address without validating that the recipient is not the contract itself. When a user sets the recipient to `address(this)`, the ERC20 transfer becomes a self-transfer that most standard ERC20 implementations treat as a no-op - the token balance remains unchanged. However, the contract still decrements `marketState.baseSupply` by the payout amount and any protocol fees, creating a persistent divergence between the contract's actual token balance and its internal accounting.",
+        "The vulnerability occurs in two specific code paths. In `redeem()`, the function updates `ms.baseSupply = localBaseSupply - amountOut - protocolFees` and then executes `IERC20(mp.baseToken).safeTransfer(redeemParams.to, amountOut)`. Similarly, in `swap()` when `assetOut == BASE`, the function updates `ms.baseSupply = localBaseSupply - amount - protocolFees` and executes `IERC20(mp.baseToken).safeTransfer(swapParams.to, amount)`. In both cases, if the recipient is `address(this)`, the accounting update occurs but no tokens actually leave the contract."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "recipient_is_contract",
+      "kind": "precondition",
+      "text": "A user sets the payout recipient parameter to the Covenant contract address (address(this)) during redeem() or a base-out swap().",
+      "modality": "potential",
+      "entity_ids": [
+        "user",
+        "covenant"
+      ],
+      "evidence": [
+        "The Covenant contract allows users to set the recipient address to the contract itself (`address(this)`) when redeeming tokens or swapping to base assets. This creates a vulnerability where ERC20 transfers become no-ops while internal accounting (`baseSupply`) is still decremented, permanently locking base tokens in the contract and reducing effective liquidity for all users.",
+        "In the `redeem()` and `swap()` functions, when base tokens are being paid out, the contract transfers tokens to a user-specified recipient address without validating that the recipient is not the contract itself. When a user sets the recipient to `address(this)`, the ERC20 transfer becomes a self-transfer that most standard ERC20 implementations treat as a no-op - the token balance remains unchanged. However, the contract still decrements `marketState.baseSupply` by the payout amount and any protocol fees, creating a persistent divergence between the contract's actual token balance and its internal accounting.",
+        "The vulnerability can be triggered by any user simply by setting the recipient parameter to the Covenant contract address during redemption or base-out swaps. Most standard ERC20 tokens allow self-transfers without reverting, making the condition broadly applicable across different base tokens. However, materializing significant impact requires attackers to sacrifice their own redemption proceeds, as they must lock their own tokens to harm the system. While the exploit mechanism is straightforward to execute, causing substantial damage would require repeated execution with considerable capital investment."
+      ]
+    },
+    {
+      "id": "base_token_self_transfer_noop",
+      "kind": "precondition",
+      "text": "The base token is a standard ERC20 implementation that treats a self-transfer as a no-op, leaving the token balance unchanged.",
+      "modality": "potential",
+      "entity_ids": [
+        "base_token",
+        "covenant"
+      ],
+      "evidence": [
+        "In the `redeem()` and `swap()` functions, when base tokens are being paid out, the contract transfers tokens to a user-specified recipient address without validating that the recipient is not the contract itself. When a user sets the recipient to `address(this)`, the ERC20 transfer becomes a self-transfer that most standard ERC20 implementations treat as a no-op - the token balance remains unchanged. However, the contract still decrements `marketState.baseSupply` by the payout amount and any protocol fees, creating a persistent divergence between the contract's actual token balance and its internal accounting.",
+        "The vulnerability can be triggered by any user simply by setting the recipient parameter to the Covenant contract address during redemption or base-out swaps. Most standard ERC20 tokens allow self-transfers without reverting, making the condition broadly applicable across different base tokens. However, materializing significant impact requires attackers to sacrifice their own redemption proceeds, as they must lock their own tokens to harm the system. While the exploit mechanism is straightforward to execute, causing substantial damage would require repeated execution with considerable capital investment."
+      ]
+    },
+    {
+      "id": "redeem_self_transfer",
+      "kind": "action",
+      "text": "In redeem(), the contract updates ms.baseSupply = localBaseSupply - amountOut - protocolFees and then executes safeTransfer to the user-specified recipient.",
+      "modality": "asserted",
+      "entity_ids": [
+        "covenant",
+        "base_supply",
+        "base_token"
+      ],
+      "evidence": [
+        "The vulnerability occurs in two specific code paths. In `redeem()`, the function updates `ms.baseSupply = localBaseSupply - amountOut - protocolFees` and then executes `IERC20(mp.baseToken).safeTransfer(redeemParams.to, amountOut)`. Similarly, in `swap()` when `assetOut == BASE`, the function updates `ms.baseSupply = localBaseSupply - amount - protocolFees` and executes `IERC20(mp.baseToken).safeTransfer(swapParams.to, amount)`. In both cases, if the recipient is `address(this)`, the accounting update occurs but no tokens actually leave the contract."
+      ]
+    },
+    {
+      "id": "swap_self_transfer",
+      "kind": "action",
+      "text": "In swap() when assetOut == BASE, the contract updates ms.baseSupply = localBaseSupply - amount - protocolFees and then executes safeTransfer to the user-specified recipient.",
+      "modality": "asserted",
+      "entity_ids": [
+        "covenant",
+        "base_supply",
+        "base_token"
+      ],
+      "evidence": [
+        "The vulnerability occurs in two specific code paths. In `redeem()`, the function updates `ms.baseSupply = localBaseSupply - amountOut - protocolFees` and then executes `IERC20(mp.baseToken).safeTransfer(redeemParams.to, amountOut)`. Similarly, in `swap()` when `assetOut == BASE`, the function updates `ms.baseSupply = localBaseSupply - amount - protocolFees` and executes `IERC20(mp.baseToken).safeTransfer(swapParams.to, amount)`. In both cases, if the recipient is `address(this)`, the accounting update occurs but no tokens actually leave the contract."
+      ]
+    },
+    {
+      "id": "no_recipient_validation",
+      "kind": "root_cause",
+      "text": "The redeem() and swap() payout paths do not validate that the recipient is not the contract itself, unlike collectProtocolFee() which reverts on recipient == address(this).",
+      "modality": "asserted",
+      "entity_ids": [
+        "covenant"
+      ],
+      "evidence": [
+        "In the `redeem()` and `swap()` functions, when base tokens are being paid out, the contract transfers tokens to a user-specified recipient address without validating that the recipient is not the contract itself. When a user sets the recipient to `address(this)`, the ERC20 transfer becomes a self-transfer that most standard ERC20 implementations treat as a no-op - the token balance remains unchanged. However, the contract still decrements `marketState.baseSupply` by the payout amount and any protocol fees, creating a persistent divergence between the contract's actual token balance and its internal accounting.",
+        "This behavior is inconsistent with the `collectProtocolFee()` function, which explicitly prevents self-transfers by checking `if (recipient == address(this)) revert Errors.E_Unauthorized()`. The absence of this same validation in the payout paths creates an unintended griefing vector."
+      ]
+    },
+    {
+      "id": "supply_decremented_no_transfer",
+      "kind": "impact",
+      "text": "When the recipient is address(this), baseSupply is decremented by the payout amount plus protocol fees while no base tokens actually leave the contract, creating a persistent divergence between actual balance and internal accounting.",
+      "modality": "asserted",
+      "entity_ids": [
+        "covenant",
+        "base_supply",
+        "base_token"
+      ],
+      "evidence": [
+        "In the `redeem()` and `swap()` functions, when base tokens are being paid out, the contract transfers tokens to a user-specified recipient address without validating that the recipient is not the contract itself. When a user sets the recipient to `address(this)`, the ERC20 transfer becomes a self-transfer that most standard ERC20 implementations treat as a no-op - the token balance remains unchanged. However, the contract still decrements `marketState.baseSupply` by the payout amount and any protocol fees, creating a persistent divergence between the contract's actual token balance and its internal accounting.",
+        "The vulnerability occurs in two specific code paths. In `redeem()`, the function updates `ms.baseSupply = localBaseSupply - amountOut - protocolFees` and then executes `IERC20(mp.baseToken).safeTransfer(redeemParams.to, amountOut)`. Similarly, in `swap()` when `assetOut == BASE`, the function updates `ms.baseSupply = localBaseSupply - amount - protocolFees` and executes `IERC20(mp.baseToken).safeTransfer(swapParams.to, amount)`. In both cases, if the recipient is `address(this)`, the accounting update occurs but no tokens actually leave the contract.",
+        "The vulnerability enables permanent locking of base tokens within the contract. Each time a self-transfer occurs, the difference between the contract's actual ERC20 balance and the tracked `baseSupply` increases by the payout amount plus any protocol fees. These excess tokens become permanently stranded since they are not reflected in the internal accounting and cannot be withdrawn through normal user flows or protocol fee collection mechanisms. The locked funds reduce the effective liquidity available to all users, as liquidity calculations rely on `baseSupply` rather than the actual token balance, potentially impairing future redemptions and degrading overall market functionality."
+      ]
+    },
+    {
+      "id": "funds_stranded",
+      "kind": "impact",
+      "text": "The excess base tokens become permanently stranded, not reflected in internal accounting and not withdrawable through normal user flows or protocol fee collection.",
+      "modality": "asserted",
+      "entity_ids": [
+        "covenant",
+        "base_token"
+      ],
+      "evidence": [
+        "The vulnerability enables permanent locking of base tokens within the contract. Each time a self-transfer occurs, the difference between the contract's actual ERC20 balance and the tracked `baseSupply` increases by the payout amount plus any protocol fees. These excess tokens become permanently stranded since they are not reflected in the internal accounting and cannot be withdrawn through normal user flows or protocol fee collection mechanisms. The locked funds reduce the effective liquidity available to all users, as liquidity calculations rely on `baseSupply` rather than the actual token balance, potentially impairing future redemptions and degrading overall market functionality."
+      ]
+    },
+    {
+      "id": "liquidity_reduced",
+      "kind": "impact",
+      "text": "Locked funds reduce effective liquidity available to all users because liquidity calculations rely on baseSupply rather than the actual token balance, potentially impairing future redemptions.",
+      "modality": "potential",
+      "entity_ids": [
+        "covenant",
+        "base_supply",
+        "base_token"
+      ],
+      "evidence": [
+        "The vulnerability enables permanent locking of base tokens within the contract. Each time a self-transfer occurs, the difference between the contract's actual ERC20 balance and the tracked `baseSupply` increases by the payout amount plus any protocol fees. These excess tokens become permanently stranded since they are not reflected in the internal accounting and cannot be withdrawn through normal user flows or protocol fee collection mechanisms. The locked funds reduce the effective liquidity available to all users, as liquidity calculations rely on `baseSupply` rather than the actual token balance, potentially impairing future redemptions and degrading overall market functionality."
+      ]
+    },
+    {
+      "id": "intent_no_self_payout",
+      "kind": "security_intent",
+      "text": "Inferred: base-token payouts in redeem() and swap() should reject a recipient equal to the contract itself so that accounting decrements correspond to tokens actually leaving the contract.",
+      "modality": "inferred",
+      "entity_ids": [
+        "covenant",
+        "base_supply",
+        "base_token"
+      ],
+      "evidence": [
+        "In the `redeem()` and `swap()` functions, when base tokens are being paid out, the contract transfers tokens to a user-specified recipient address without validating that the recipient is not the contract itself. When a user sets the recipient to `address(this)`, the ERC20 transfer becomes a self-transfer that most standard ERC20 implementations treat as a no-op - the token balance remains unchanged. However, the contract still decrements `marketState.baseSupply` by the payout amount and any protocol fees, creating a persistent divergence between the contract's actual token balance and its internal accounting.",
+        "This behavior is inconsistent with the `collectProtocolFee()` function, which explicitly prevents self-transfers by checking `if (recipient == address(this)) revert Errors.E_Unauthorized()`. The absence of this same validation in the payout paths creates an unintended griefing vector."
+      ]
+    },
+    {
+      "id": "attacker_sacrifices_proceeds",
+      "kind": "assumption",
+      "text": "Materializing significant impact requires the triggering user to sacrifice their own redemption proceeds by locking their own tokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "base_token"
+      ],
+      "evidence": [
+        "The vulnerability can be triggered by any user simply by setting the recipient parameter to the Covenant contract address during redemption or base-out swaps. Most standard ERC20 tokens allow self-transfers without reverting, making the condition broadly applicable across different base tokens. However, materializing significant impact requires attackers to sacrifice their own redemption proceeds, as they must lock their own tokens to harm the system. While the exploit mechanism is straightforward to execute, causing substantial damage would require repeated execution with considerable capital investment."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "redeem_self_transfer",
+    "swap_self_transfer"
+  ],
+  "ambiguities": [
+    "Report does not establish a concrete prior transaction or observed incident; trigger is conditional on a user choosing address(this) as recipient.",
+    "Whether the base token in any deployed market actually treats self-transfer as a no-op is not verified, only stated as typical.",
+    "Exact magnitude of stranded funds and liquidity degradation is not quantified."
+  ]
+}

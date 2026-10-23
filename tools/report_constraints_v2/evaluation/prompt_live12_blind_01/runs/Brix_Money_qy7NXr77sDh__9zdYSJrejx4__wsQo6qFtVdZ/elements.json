@@ -1,0 +1,184 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "LayerZero cross-chain message delivery minting iTryTokenOFT tokens on the Spoke chain (MegaETH)",
+    "environment": "Spoke chain (MegaETH), iTryTokenOFT inheriting OFT, LayerZero v2 endpoint",
+    "evidence": [
+      "The `iTryTokenOFT` contract on the Spoke chain (MegaETH) implements a `_beforeTokenTransfer` hook that reverts if the `to` address is blacklisted, even during minting operations triggered by the bridge.",
+      "When a cross-chain message arrives via LayerZero to mint tokens to a user:",
+      "1.  The LayerZero Endpoint calls `lzReceive` on the `iTryTokenOFT` (which inherits `OFT`).",
+      "2.  `OFT` calls `_credit`.",
+      "3.  `_credit` calls `_mint`.",
+      "4.  `_mint` calls `_beforeTokenTransfer`.",
+      "5.  If the recipient is blacklisted, `_beforeTokenTransfer` reverts with `OperationNotAllowed`.",
+      "6.  The `lzReceive` transaction reverts.",
+      "In LayerZero v2, if the execution of a message reverts, the message is considered \"failed\" but the nonce is still strictly ordered. Subsequent messages with higher nonces cannot be processed until the failed message is successfully executed. Since the user is blacklisted, the message will *never* succeed (unless the admin un-blacklists the user). This effectively permanently blocks the cross-chain channel.",
+      "*   **Denial of Service:** The entire Hub-to-Spoke cross-chain bridge is blocked. No other users can bridge tokens or receive unstaked funds.",
+      "*   **Griefing:** A user who knows they are about to be blacklisted (or is already blacklisted) can intentionally bridge tokens to themselves to sabotage the protocol."
+    ]
+  },
+  "entities": [
+    {
+      "id": "blacklisted_user",
+      "name": "Blacklisted recipient user",
+      "role": "attacker",
+      "evidence": [
+        "5.  If the recipient is blacklisted, `_beforeTokenTransfer` reverts with `OperationNotAllowed`.",
+        "*   **Griefing:** A user who knows they are about to be blacklisted (or is already blacklisted) can intentionally bridge tokens to themselves to sabotage the protocol."
+      ]
+    },
+    {
+      "id": "other_users",
+      "name": "Other bridge users",
+      "role": "victim",
+      "evidence": [
+        "*   **Denial of Service:** The entire Hub-to-Spoke cross-chain bridge is blocked. No other users can bridge tokens or receive unstaked funds."
+      ]
+    },
+    {
+      "id": "itry_token_oft",
+      "name": "iTryTokenOFT contract",
+      "role": "contract",
+      "evidence": [
+        "The `iTryTokenOFT` contract on the Spoke chain (MegaETH) implements a `_beforeTokenTransfer` hook that reverts if the `to` address is blacklisted, even during minting operations triggered by the bridge.",
+        "1.  The LayerZero Endpoint calls `lzReceive` on the `iTryTokenOFT` (which inherits `OFT`)."
+      ]
+    },
+    {
+      "id": "layerzero_endpoint",
+      "name": "LayerZero Endpoint",
+      "role": "contract",
+      "evidence": [
+        "1.  The LayerZero Endpoint calls `lzReceive` on the `iTryTokenOFT` (which inherits `OFT`).",
+        "In LayerZero v2, if the execution of a message reverts, the message is considered \"failed\" but the nonce is still strictly ordered. Subsequent messages with higher nonces cannot be processed until the failed message is successfully executed. Since the user is blacklisted, the message will *never* succeed (unless the admin un-blacklists the user). This effectively permanently blocks the cross-chain channel."
+      ]
+    },
+    {
+      "id": "cross_chain_bridge",
+      "name": "Hub-to-Spoke cross-chain bridge",
+      "role": "asset",
+      "evidence": [
+        "*   **Denial of Service:** The entire Hub-to-Spoke cross-chain bridge is blocked. No other users can bridge tokens or receive unstaked funds."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "recipient_blacklisted",
+      "kind": "precondition",
+      "text": "The recipient address of the cross-chain mint is blacklisted.",
+      "modality": "asserted",
+      "entity_ids": [
+        "blacklisted_user",
+        "itry_token_oft"
+      ],
+      "evidence": [
+        "5.  If the recipient is blacklisted, `_beforeTokenTransfer` reverts with `OperationNotAllowed`.",
+        "*   **Griefing:** A user who knows they are about to be blacklisted (or is already blacklisted) can intentionally bridge tokens to themselves to sabotage the protocol."
+      ]
+    },
+    {
+      "id": "cross_chain_message_arrives",
+      "kind": "precondition",
+      "text": "A cross-chain message arrives via LayerZero to mint tokens to a user on the Spoke chain.",
+      "modality": "asserted",
+      "entity_ids": [
+        "layerzero_endpoint",
+        "itry_token_oft"
+      ],
+      "evidence": [
+        "When a cross-chain message arrives via LayerZero to mint tokens to a user:",
+        "1.  The LayerZero Endpoint calls `lzReceive` on the `iTryTokenOFT` (which inherits `OFT`)."
+      ]
+    },
+    {
+      "id": "hook_reverts_on_blacklisted_recipient",
+      "kind": "root_cause",
+      "text": "The _beforeTokenTransfer hook reverts with OperationNotAllowed if the to address is blacklisted, including during bridge-triggered minting.",
+      "modality": "asserted",
+      "entity_ids": [
+        "itry_token_oft"
+      ],
+      "evidence": [
+        "The `iTryTokenOFT` contract on the Spoke chain (MegaETH) implements a `_beforeTokenTransfer` hook that reverts if the `to` address is blacklisted, even during minting operations triggered by the bridge.",
+        "4.  `_mint` calls `_beforeTokenTransfer`.",
+        "5.  If the recipient is blacklisted, `_beforeTokenTransfer` reverts with `OperationNotAllowed`."
+      ]
+    },
+    {
+      "id": "lzreceive_reverts",
+      "kind": "impact",
+      "text": "The lzReceive transaction reverts when the mint recipient is blacklisted.",
+      "modality": "asserted",
+      "entity_ids": [
+        "itry_token_oft",
+        "layerzero_endpoint"
+      ],
+      "evidence": [
+        "6.  The `lzReceive` transaction reverts."
+      ]
+    },
+    {
+      "id": "channel_permanently_blocked",
+      "kind": "impact",
+      "text": "Because the failed message's nonce remains strictly ordered and the blacklisted message never succeeds, the cross-chain channel is effectively permanently blocked.",
+      "modality": "potential",
+      "entity_ids": [
+        "cross_chain_bridge",
+        "layerzero_endpoint"
+      ],
+      "evidence": [
+        "In LayerZero v2, if the execution of a message reverts, the message is considered \"failed\" but the nonce is still strictly ordered. Subsequent messages with higher nonces cannot be processed until the failed message is successfully executed. Since the user is blacklisted, the message will *never* succeed (unless the admin un-blacklists the user). This effectively permanently blocks the cross-chain channel."
+      ]
+    },
+    {
+      "id": "bridge_dos",
+      "kind": "impact",
+      "text": "The entire Hub-to-Spoke cross-chain bridge is blocked so no other users can bridge tokens or receive unstaked funds.",
+      "modality": "potential",
+      "entity_ids": [
+        "cross_chain_bridge",
+        "other_users"
+      ],
+      "evidence": [
+        "*   **Denial of Service:** The entire Hub-to-Spoke cross-chain bridge is blocked. No other users can bridge tokens or receive unstaked funds."
+      ]
+    },
+    {
+      "id": "griefing_sabotage",
+      "kind": "impact",
+      "text": "A user who is already blacklisted or about to be blacklisted can intentionally bridge tokens to themselves to sabotage the protocol.",
+      "modality": "potential",
+      "entity_ids": [
+        "blacklisted_user",
+        "cross_chain_bridge"
+      ],
+      "evidence": [
+        "*   **Griefing:** A user who knows they are about to be blacklisted (or is already blacklisted) can intentionally bridge tokens to themselves to sabotage the protocol."
+      ]
+    },
+    {
+      "id": "intent_blacklist_should_not_block_channel",
+      "kind": "security_intent",
+      "text": "A blacklisted recipient of a bridge mint should not cause the LayerZero message execution to revert in a way that blocks processing of subsequent higher-nonce messages for other users.",
+      "modality": "inferred",
+      "entity_ids": [
+        "itry_token_oft",
+        "layerzero_endpoint",
+        "other_users"
+      ],
+      "evidence": [
+        "5.  If the recipient is blacklisted, `_beforeTokenTransfer` reverts with `OperationNotAllowed`.",
+        "6.  The `lzReceive` transaction reverts.",
+        "In LayerZero v2, if the execution of a message reverts, the message is considered \"failed\" but the nonce is still strictly ordered. Subsequent messages with higher nonces cannot be processed until the failed message is successfully executed. Since the user is blacklisted, the message will *never* succeed (unless the admin un-blacklists the user). This effectively permanently blocks the cross-chain channel.",
+        "*   **Denial of Service:** The entire Hub-to-Spoke cross-chain bridge is blocked. No other users can bridge tokens or receive unstaked funds."
+      ]
+    }
+  ],
+  "attack_steps": [],
+  "ambiguities": [
+    "Report does not state who triggers the bridging of tokens to the blacklisted recipient or whether the attacker controls the source-chain send.",
+    "No explicit statement that anyone can call the relevant functions; authorization of the bridging actor is unspecified.",
+    "Whether the channel is truly permanent depends on admin un-blacklisting, which the report notes as an exception."
+  ]
+}

@@ -1,0 +1,535 @@
+{
+  "schema_version": "stage2-semantic-bundle/1",
+  "core_formalization_status": "formalized_candidate",
+  "acceptance_status": "candidate_checks_passed",
+  "report_warnings": [],
+  "unassigned_impact_ids": [
+    "complete_dos_token_transfers_withdrawals",
+    "freeze_victim_assets",
+    "victims_cannot_transfer_withdraw_rebalance"
+  ],
+  "claims": [
+    {
+      "id": "impact_claim_permanent_dos_f4bb9b22",
+      "formalization_status": "formalized_candidate",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity.",
+        "direct_counterexample_status": "passed"
+      },
+      "review_reasons": [],
+      "properties": {
+        "preconditions": {
+          "text": "Any address can call deposit() to deposit tokens on behalf of any recipient without access control.; Each deposit appends to userLocks[recipient] with no minimum amount requirement, so 1-wei deposits are accepted.; The victim holds gHYBR tokens and is the recipient of the lock entries.; Deposits create lock entries that expire after 24 hours.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c791a6aab_deposit_open_to_any_caller"
+              },
+              {
+                "op": "le",
+                "args": [
+                  {
+                    "var": "c791a6aab_min_deposit_wei"
+                  },
+                  {
+                    "const": 1
+                  }
+                ]
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "c791a6aab_victim_ghybr_balance"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "c791a6aab_lock_expiry_hours"
+                  },
+                  {
+                    "const": 24
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_anyone_deposit_for_recipient",
+            "p_no_minimum_deposit",
+            "p_victim_holds_ghybr",
+            "p_locks_expire_24h"
+          ],
+          "evidence": [
+            "The `GrowthHYBR.deposit()` function allows any address to deposit tokens on behalf of any recipient, creating an unbounded array of lock entries in `userLocks[recipient]`. An attacker can exploit this by making thousands of 1-wei deposits for a victim, causing the victim's token transfers to trigger expensive array cleanup operations in `_cleanExpired()` that exceed Hyperliquid's 30M gas block limit ([source](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/dual-block-architecture)), effectively freezing the victim's tokens at minimal cost to the attacker.",
+            "Line 126 of `deposit()` allows anyone to deposit for any recipient without access control:",
+            "Each deposit appends to `userLocks[recipient]` with no minimum amount requirement (line 271), enabling attackers to create thousands of 1-wei locks. The DoS occurs during token transfers when `_beforeTokenTransfer()` calls `_cleanExpired()` to remove expired locks:",
+            "Any user holding gHYBR tokens can be targeted. DeFi integrations (pools, lending, vaults) face particularly severe risk since smart contracts cannot manually clean up or migrate to new addresses, enabling permanent griefing.",
+            "The GrowthHYBR contract (in GovernanceHYBR.sol) implements time-locked tokens where deposits create lock entries expiring after 24 hours. The vulnerability combines unrestricted third-party deposits with unbounded array growth, causing expensive cleanup operations during transfers."
+          ]
+        },
+        "safety": {
+          "text": "Token transfers for a holder should complete within Hyperliquid's 30M gas slow block limit regardless of the number of lock entries in userLocks[holder].",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c791a6aab_deposit_open_to_any_caller"
+                  },
+                  {
+                    "op": "le",
+                    "args": [
+                      {
+                        "var": "c791a6aab_min_deposit_wei"
+                      },
+                      {
+                        "const": 1
+                      }
+                    ]
+                  },
+                  {
+                    "op": "gt",
+                    "args": [
+                      {
+                        "var": "c791a6aab_victim_ghybr_balance"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c791a6aab_lock_expiry_hours"
+                      },
+                      {
+                        "const": 24
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c791a6aab_victim_transfer_completes"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c791a6aab_permanent_dos_holds"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "i_transfer_gas_within_block_limit"
+          ],
+          "evidence": [
+            "With 4,000+ locks, this cleanup consumes 30-40M gas (reading 4,000 slots + array compaction + storage deletions), exceeding Hyperliquid's 30M gas slow block limit ([source](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/dual-block-architecture)) and reverting all transfer attempts. An attacker spends 4,000 wei HYBR (~$0.000000001) plus ~$100 gas to freeze millions in victim assets.",
+            "This vulnerability enables griefing where an attacker spending ~$100 can freeze millions in victim assets. The attack causes complete DoS on token transfers and withdrawals via 30-40M gas cleanup that exceeds Hyperliquid's 30M gas slow block limit ([source](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/dual-block-architecture))."
+          ]
+        },
+        "effects": {
+          "text": "maintaining permanent DoS for ~$100/day",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c791a6aab_deposit_open_to_any_caller"
+                  },
+                  {
+                    "op": "le",
+                    "args": [
+                      {
+                        "var": "c791a6aab_min_deposit_wei"
+                      },
+                      {
+                        "const": 1
+                      }
+                    ]
+                  },
+                  {
+                    "op": "gt",
+                    "args": [
+                      {
+                        "var": "c791a6aab_victim_ghybr_balance"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "c791a6aab_lock_expiry_hours"
+                      },
+                      {
+                        "const": 24
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "var": "c791a6aab_victim_transfer_completes"
+                      },
+                      {
+                        "op": "not",
+                        "args": [
+                          {
+                            "var": "c791a6aab_permanent_dos_holds"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "permanent_dos"
+          ],
+          "evidence": [
+            "The attack sustains indefinitely—while individual locks expire after 24 hours, attackers continuously deposit new locks before expiry, maintaining permanent DoS for ~$100/day. Victims cannot transfer, withdraw, or rebalance positions during market volatility, creating direct financial losses."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_anyone_deposit_for_recipient",
+            "p_no_minimum_deposit",
+            "p_victim_holds_ghybr",
+            "p_locks_expire_24h"
+          ],
+          "args.1": [
+            "p_anyone_deposit_for_recipient",
+            "p_no_minimum_deposit",
+            "p_victim_holds_ghybr",
+            "p_locks_expire_24h"
+          ],
+          "args.2": [
+            "p_anyone_deposit_for_recipient",
+            "p_no_minimum_deposit",
+            "p_victim_holds_ghybr",
+            "p_locks_expire_24h"
+          ],
+          "args.3": [
+            "p_anyone_deposit_for_recipient",
+            "p_no_minimum_deposit",
+            "p_victim_holds_ghybr",
+            "p_locks_expire_24h"
+          ]
+        },
+        "safety": {
+          "": [
+            "i_transfer_gas_within_block_limit"
+          ],
+          "args.0": [
+            "i_transfer_gas_within_block_limit"
+          ],
+          "args.0.args.1": [
+            "i_transfer_gas_within_block_limit"
+          ],
+          "args.0.args.2": [
+            "i_transfer_gas_within_block_limit"
+          ],
+          "args.0.args.3": [
+            "i_transfer_gas_within_block_limit"
+          ],
+          "args.1": [
+            "i_transfer_gas_within_block_limit"
+          ],
+          "args.1.args.1": [
+            "i_transfer_gas_within_block_limit"
+          ]
+        },
+        "effects": {
+          "": [
+            "permanent_dos"
+          ],
+          "args.0": [
+            "permanent_dos"
+          ],
+          "args.0.args.1": [
+            "permanent_dos"
+          ],
+          "args.0.args.2": [
+            "permanent_dos"
+          ],
+          "args.0.args.3": [
+            "permanent_dos"
+          ],
+          "args.1": [
+            "permanent_dos"
+          ],
+          "args.1.args.0": [
+            "permanent_dos"
+          ],
+          "args.1.args.0.args.1": [
+            "permanent_dos"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "permanent_dos",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "scope": "GrowthHYBR.deposit() third-party deposits into userLocks[recipient] and _cleanExpired() cleanup during token transfers",
+      "modality": "asserted",
+      "assumptions": [
+        "Attacker makes thousands of 1-wei deposits for the victim, appending lock entries to userLocks[victim].",
+        "A victim token transfer invokes _beforeTokenTransfer() which calls _cleanExpired().",
+        "_cleanExpired() iterates the entire userLocks array, so gas cost grows with array length.",
+        "Hyperliquid slow block gas limit is 30M."
+      ],
+      "unresolved": []
+    }
+  ],
+  "report_impact_coverage": [
+    {
+      "impact_id": "complete_dos_token_transfers_withdrawals",
+      "evidence": [
+        "This vulnerability enables griefing where an attacker spending ~$100 can freeze millions in victim assets. The attack causes complete DoS on token transfers and withdrawals via 30-40M gas cleanup that exceeds Hyperliquid's 30M gas slow block limit ([source](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/dual-block-architecture))."
+      ],
+      "claim_ids": [],
+      "status": "unformalized",
+      "reason": "No claim currently formalizes this report impact."
+    },
+    {
+      "impact_id": "freeze_victim_assets",
+      "evidence": [
+        "This vulnerability enables griefing where an attacker spending ~$100 can freeze millions in victim assets. The attack causes complete DoS on token transfers and withdrawals via 30-40M gas cleanup that exceeds Hyperliquid's 30M gas slow block limit ([source](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/dual-block-architecture))."
+      ],
+      "claim_ids": [],
+      "status": "unformalized",
+      "reason": "No claim currently formalizes this report impact."
+    },
+    {
+      "impact_id": "permanent_dos",
+      "evidence": [
+        "The attack sustains indefinitely—while individual locks expire after 24 hours, attackers continuously deposit new locks before expiry, maintaining permanent DoS for ~$100/day. Victims cannot transfer, withdraw, or rebalance positions during market volatility, creating direct financial losses."
+      ],
+      "claim_ids": [
+        "impact_claim_permanent_dos_f4bb9b22"
+      ],
+      "status": "formalized",
+      "reason": "Program-generated exact coverage for selected direct impact."
+    },
+    {
+      "impact_id": "victims_cannot_transfer_withdraw_rebalance",
+      "evidence": [
+        "The attack sustains indefinitely—while individual locks expire after 24 hours, attackers continuously deposit new locks before expiry, maintaining permanent DoS for ~$100/day. Victims cannot transfer, withdraw, or rebalance positions during market volatility, creating direct financial losses."
+      ],
+      "claim_ids": [],
+      "status": "unformalized",
+      "reason": "No claim currently formalizes this report impact."
+    }
+  ],
+  "coverage_is_model_declared_not_semantically_verified": true,
+  "human_semantic_review_required": true,
+  "code_alignment_status": "not_attempted",
+  "execution_ready": false,
+  "consistency_verdict": "not_evaluated",
+  "verdict_policy": "signals-v2",
+  "report_ambiguities_declared": [
+    "Report does not state whether the victim's transfer is initiated by the victim or by the attacker; treated as a victim transfer per report wording.",
+    "Exact gas threshold at which cleanup reverts is given as 30-40M vs 30M limit; precise per-lock gas not specified.",
+    "Whether locks must be expired at cleanup time for the DoS is not fully specified; report notes continuous re-deposit sustains DoS.",
+    "Omitted stated outcome: DeFi integrations (pools, lending, vaults) face particularly severe risk since smart contracts cannot manually clean up or migrate to new addresses, enabling permanent griefing."
+  ],
+  "formalization_limitations_declared": [
+    "DoS is modeled as a Boolean outcome because the report gives no exact gas threshold or per-lock gas figure.",
+    "The 30M block gas limit is treated as a qualitative bound; no numeric comparison is encoded.",
+    "Only the permanent_dos impact is formalized; other impacts are handled in separate passes.",
+    "freeze_victim_assets: No faithful claim generated after bounded retries: local repair changed frozen fields",
+    "complete_dos_token_transfers_withdrawals: No faithful claim generated after bounded retries: local repair changed frozen fields",
+    "victims_cannot_transfer_withdraw_rebalance: No faithful claim generated after bounded retries: local repair changed frozen fields"
+  ],
+  "coverage_status": "partial",
+  "coverage_gaps": [
+    "impacts_not_assigned"
+  ],
+  "unassigned_precondition_ids": [],
+  "precondition_coverage_is_structural_not_semantic": true,
+  "piv_completeness_gate": {
+    "claims_present": true,
+    "all_claims_have_p_i_v": true,
+    "relationship_checks_are_structural_only": true,
+    "semantic_fidelity_verified": false
+  },
+  "observability_review": {
+    "schema_version": "observability-review/1",
+    "claims": [
+      {
+        "claim_id": "impact_claim_permanent_dos_f4bb9b22",
+        "safety_variables": [
+          "c791a6aab_deposit_open_to_any_caller",
+          "c791a6aab_lock_expiry_hours",
+          "c791a6aab_min_deposit_wei",
+          "c791a6aab_permanent_dos_holds",
+          "c791a6aab_victim_ghybr_balance",
+          "c791a6aab_victim_transfer_completes"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      }
+    ],
+    "review_status": "no_structural_warning",
+    "observability_established": false,
+    "human_semantic_review_required": true,
+    "limitations": [
+      "I-only Boolean may be a legitimate observation; hints are not automatic errors",
+      "No code binding, predicate-name interpretation or report truth assessment",
+      "Both SAT is a review hint, not a universal UNSAT requirement"
+    ],
+    "model_calls": 0
+  },
+  "provenance": {
+    "code_provided_to_model": false,
+    "contract_file_read": false,
+    "paired_case_checked": true,
+    "case_id": "Hybra_Finance_xo4hapwL2Jy__4hPkdyb8kNg__Fh34wvW4Ctu",
+    "submission_uid": "Fh34wvW4Ctu",
+    "finding_uid": "4hPkdyb8kNg",
+    "target_test": "test_HIGH4_UnboundedArrayDoS",
+    "declared_code_sha256": "c40209fa931c6faea410cc3b332f10ea0a11d6378bc080b6100a461754a2447e",
+    "report_path": "/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/Hybra_Finance_xo4hapwL2Jy__4hPkdyb8kNg__Fh34wvW4Ctu/report.json",
+    "report_sha256": "a9906e757ce56c60724ce870817e082912859eb8aa7571d534f80d4b9f755b32",
+    "report_input_sha256": "2d17492f12376da3188e966be660854e2cb48f38b91c122bf387d5dc81583c62",
+    "report_input_policy": {
+      "source_format": "report.json",
+      "selected_fields": [
+        "title",
+        "body.description_and_impact"
+      ],
+      "excluded_fields": [
+        "proof_of_concept",
+        "recommended_mitigation",
+        "source_record",
+        "pairing",
+        "contract_code"
+      ],
+      "policy_version": "report-json-input/4",
+      "title_deduplicated": false
+    },
+    "candidate_origin": "external_model",
+    "elements_source": null,
+    "formalization_source": null,
+    "prompt_version": "semantic-live",
+    "prompt_features": {
+      "strict_piv": true,
+      "plan_synthesis": true,
+      "structured_unresolved": true,
+      "numeric_guard": true,
+      "address_guard": true,
+      "lean_formal_input": true,
+      "step_normalization": true,
+      "core_count": true,
+      "id_normalization": true,
+      "relation_alignment": true,
+      "local_repair": true,
+      "referenced_catalog": true,
+      "allowed_statement_ids": true,
+      "protocol_identifier_exclusion": false,
+      "assumption_numeric_relief": true,
+      "duplicate_predicate_gate": true,
+      "requirement_source_review": false,
+      "intent_scope_review": false,
+      "partial_formalization": true,
+      "example_pinning_review": false,
+      "placeholder_predicate_review": false,
+      "semantic_faithfulness_audit": true,
+      "mixed_unit_scaling_review": false,
+      "symbol_table_review": false,
+      "impact_level_claims": true,
+      "impact_section_scope": true,
+      "impact_inventory_stage": true
+    },
+    "requested_formalization_scope": "core",
+    "formal_retries_allowed": 1,
+    "element_retries_allowed": 1,
+    "lean_formal_input": true,
+    "mechanical_salvage": false,
+    "model_catalog_view": "exact_id_text_without_offsets",
+    "neural_mode": "two_step",
+    "formalization_generation": "deterministic_from_plan",
+    "reference_answers_provided_to_model": false,
+    "audit_provider": "deepseek",
+    "audit_model": "deepseek-flash",
+    "model_provider": "deepseek",
+    "model_name": "deepseek-flash",
+    "deepseek_proxy_policy": "environment",
+    "prompt_resolution": "prompts.active/1",
+    "requested_evidence_mode": "ids",
+    "element_prompt_sha256": "1b3d0129c6da39026de74d771c700f82f6e8dbb6b9b6d335ca001691c67e1e2c",
+    "formal_prompt_sha256": "afd40fb7b4f7c24b2ebdc60783f5fb923ba1c4b9610241d3d8c0fe2304c1331d",
+    "impact_inventory_prompt_sha256": "12ac8c81979b22e14ec06247685b0bec78ff628089c59a892f8ad057c83d7fa6",
+    "claim_verdict_policy": "signals-v2",
+    "acceptance_policy_version": "complete-piv-v1",
+    "external_model_invocations": 14,
+    "input_screening": "deepseek-report-readiness-v1"
+  },
+  "external_model_invocations": 14
+}

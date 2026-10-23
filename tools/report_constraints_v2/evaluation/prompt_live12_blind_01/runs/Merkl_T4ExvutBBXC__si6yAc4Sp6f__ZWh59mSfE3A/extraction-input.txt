@@ -1,0 +1,34 @@
+Allowance Enforcement Bypass in `_pullTokens()` Allows Unauthorized Fund Source Switching
+
+## Finding description and impact
+
+The `_pullTokens()` function in `DistributionCreator.sol` file contains a critical access control flaw that completely bypasses the allowance enforcement mechanism when operators attempt to create campaigns on behalf of creators using pre-deposited funds. When an operator has insufficient allowance but the creator has sufficient pre-deposited balance, the function silently switches the funding source from the creator's pre-deposit to the operator's wallet without reverting or consuming the allowance. This breaks the fundamental security guarantees of the allowance system and causes unintended financial consequences.
+
+## Affected code
+
+## Attack Scenrio
+1. Alice pre-deposits 1000 tokens into the `DistributionCreator` contract
+2. Alice grants Bob (an operator) 50 tokens allowance to manage campaigns on her behalf
+3. Bob attempts to create a 100 token campaign for Alice, expecting to use her pre-deposited funds
+4. `Expected behavior: Transaction reverts with "insufficient allowance" error`
+5. Actual behavior: Bob's wallet is charged 100 tokens (10 token fee + 90 tokens to distributor), Alice's 1000 token balance remains untouched, and Bob's 50 token allowance is never checked or decremented
+
+`Question will be?:` why will Operator intentionally exceed allowance, but here is a more realistic reason.
+
+1. Dynamic Allowance Management (Most Common)
+ //Day 1: Alice grants Bob 100 token allowance
+alice.`increaseTokenAllowance(bob, 100 ether)`;
+
+// Day 2: Bob creates a 40 token campaign - works fine
+bob.createCampaign(40 ether); // Allowance now: 60 tokens
+
+// Day 3: Bob creates another 30 token campaign - works fine  
+bob.createCampaign(30 ether); // Allowance now: 30 tokens
+
+// Day 4: Alice REDUCES Bob's allowance (maybe she's running low on funds)
+alice.decreaseTokenAllowance(bob, 20 ether); // Allowance now: 10 tokens
+
+// Day 5: Bob tries to create his planned 50 token campaign
+// He EXPECTS this to revert (insufficient allowance)
+// INSTEAD: His own wallet gets drained without warning
+bob.createCampaign(50 ether); // VULNERABILITY TRIGGERED

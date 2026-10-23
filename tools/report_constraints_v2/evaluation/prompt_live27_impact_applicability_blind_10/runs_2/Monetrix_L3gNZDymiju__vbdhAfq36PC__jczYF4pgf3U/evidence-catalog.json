@@ -1,0 +1,356 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "2c5bafe0b46e0e2686a9bd3ae66e0575048ed57fc3972b2d0c415c21525036e5",
+  "fragments": [
+    {
+      "id": "e_2c5bafe0b46e_0001",
+      "text": "PM Borrow Liabilities Are Ignored in `totalBackingSigned`, Enabling Phantom Yield and USDM Insolvency",
+      "start": 0,
+      "end": 101,
+      "line": 1
+    },
+    {
+      "id": "e_2c5bafe0b46e_0002",
+      "text": "`MonetrixAccountant.totalBackingSigned()` counts Portfolio Margin borrow/lend supplied balances from Hyperliquid precompile `0x811`, but it never subtracts the corresponding borrow liabilities exposed by the same precompile. As a result, PM collateral can be reported as backing while PM debt is omitted.",
+      "start": 103,
+      "end": 407,
+      "line": 3
+    },
+    {
+      "id": "e_2c5bafe0b46e_0003",
+      "text": "The inflated backing flows into `surplus()`, `distributableSurplus()`, and Gate 3 of `settleDailyPnL`. The Operator can then settle and distribute yield that does not exist economically. After distribution, Monetrix can still report full solvency, while real backing is lower than USDM supply by the omitted PM borrow debt.",
+      "start": 409,
+      "end": 732,
+      "line": 5
+    },
+    {
+      "id": "e_2c5bafe0b46e_0004",
+      "text": "## Finding Description",
+      "start": 734,
+      "end": 756,
+      "line": 7
+    },
+    {
+      "id": "e_2c5bafe0b46e_0005",
+      "text": "The root cause is in `PrecompileReader.suppliedBalance()`. Hyperliquid's `0x811` borrow/lend user-state precompile returns a full `BorrowLendUserTokenState`:",
+      "start": 758,
+      "end": 915,
+      "line": 9
+    },
+    {
+      "id": "e_2c5bafe0b46e_0006",
+      "text": "This ABI is attached by Hyperliquid as `L1Read.sol` from the official HyperCore interaction docs. In ABI form, the response is four `uint64` words:",
+      "start": 918,
+      "end": 1065,
+      "line": 12
+    },
+    {
+      "id": "e_2c5bafe0b46e_0007",
+      "text": "Hyperliquid's public API docs expose the same model for `borrowLendUserState`, with per-token `borrow` and `supply` objects. Hyperliquid's Portfolio Margin docs also state that insufficient balances can be automatically borrowed against eligible collateral, and borrowed assets accrue interest.",
+      "start": 1068,
+      "end": 1362,
+      "line": 15
+    },
+    {
+      "id": "e_2c5bafe0b46e_0008",
+      "text": "Monetrix decodes the same response but discards the first three words and returns only the fourth word, `supply.value`:",
+      "start": 1364,
+      "end": 1483,
+      "line": 17
+    },
+    {
+      "id": "e_2c5bafe0b46e_0009",
+      "text": "[`src/core/PrecompileReader.sol#L84-L91`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L84-L91)",
+      "start": 1485,
+      "end": 1622,
+      "line": 19
+    },
+    {
+      "id": "e_2c5bafe0b46e_0010",
+      "text": "`MonetrixAccountant._readL1Backing()` then adds registered supplied values to backing:",
+      "start": 1625,
+      "end": 1711,
+      "line": 22
+    },
+    {
+      "id": "e_2c5bafe0b46e_0011",
+      "text": "[`src/core/MonetrixAccountant.sol#L146-L157`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L146-L157)",
+      "start": 1713,
+      "end": 1858,
+      "line": 24
+    },
+    {
+      "id": "e_2c5bafe0b46e_0012",
+      "text": "There is no corresponding read of `borrow.value`, no conversion of borrowed non-USDC assets to USDC, and no subtraction from `total`.",
+      "start": 1861,
+      "end": 1994,
+      "line": 27
+    },
+    {
+      "id": "e_2c5bafe0b46e_0013",
+      "text": "This directly breaks the backing model. The same PM account can have:",
+      "start": 1996,
+      "end": 2065,
+      "line": 29
+    },
+    {
+      "id": "e_2c5bafe0b46e_0014",
+      "text": "1. supplied BTC worth 1,000 USDC; and",
+      "start": 2067,
+      "end": 2104,
+      "line": 31
+    },
+    {
+      "id": "e_2c5bafe0b46e_0015",
+      "text": "2. borrowed USDC worth 1,000 USDC.",
+      "start": 2105,
+      "end": 2139,
+      "line": 32
+    },
+    {
+      "id": "e_2c5bafe0b46e_0016",
+      "text": "Economically, the net PM value of those two borrow/lend components is zero. Monetrix reports +1,000 USDC because only the supplied side is included.",
+      "start": 2141,
+      "end": 2289,
+      "line": 34
+    },
+    {
+      "id": "e_2c5bafe0b46e_0017",
+      "text": "The inflated total propagates through the settlement pipeline:",
+      "start": 2291,
+      "end": 2353,
+      "line": 36
+    },
+    {
+      "id": "e_2c5bafe0b46e_0018",
+      "text": "[`src/core/MonetrixAccountant.sol#L180-L192`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L180-L192)",
+      "start": 2355,
+      "end": 2500,
+      "line": 38
+    },
+    {
+      "id": "e_2c5bafe0b46e_0019",
+      "text": "Gate 3 of `settleDailyPnL()` accepts any `proposedYield` up to this inflated `distributableSurplus()`:",
+      "start": 2503,
+      "end": 2605,
+      "line": 41
+    },
+    {
+      "id": "e_2c5bafe0b46e_0020",
+      "text": "[`src/core/MonetrixAccountant.sol#L213-L216`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L213-L216)",
+      "start": 2607,
+      "end": 2752,
+      "line": 43
+    },
+    {
+      "id": "e_2c5bafe0b46e_0021",
+      "text": "`MonetrixVault.settle()` then transfers real USDC from the Vault to `YieldEscrow`, and `distributeYield()` mints USDM to sUSDM and routes USDC to the Insurance Fund and Foundation:",
+      "start": 2755,
+      "end": 2935,
+      "line": 46
+    },
+    {
+      "id": "e_2c5bafe0b46e_0022",
+      "text": "[`src/core/MonetrixVault.sol#L364-L414`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L364-L414)",
+      "start": 2937,
+      "end": 3072,
+      "line": 48
+    },
+    {
+      "id": "e_2c5bafe0b46e_0023",
+      "text": "This is not prevented by the EVM USDC check in `settle()`:",
+      "start": 3074,
+      "end": 3132,
+      "line": 50
+    },
+    {
+      "id": "e_2c5bafe0b46e_0024",
+      "text": "That check only verifies that the Vault has enough liquid USDC to move into the yield pipeline. It does not verify that the USDC is surplus. If `totalBackingSigned()` is inflated by omitted PM debt, `settle()` can move depositor principal as if it were yield.",
+      "start": 3135,
+      "end": 3394,
+      "line": 53
+    },
+    {
+      "id": "e_2c5bafe0b46e_0025",
+      "text": "This issue is distinct from treating supplied USDC as immediately bridgeable. That bridge issue concerns `_sendL1Bridge()` and CoreWriter `SEND_ASSET` availability. This finding concerns solvency accounting in `MonetrixAccountant.totalBackingSigned()`: borrow/lend debt is present in the same `0x811` state Monetrix reads, but only the asset side is booked.",
+      "start": 3396,
+      "end": 3753,
+      "line": 55
+    },
+    {
+      "id": "e_2c5bafe0b46e_0026",
+      "text": "## Impact Explanation",
+      "start": 3755,
+      "end": 3776,
+      "line": 57
+    },
+    {
+      "id": "e_2c5bafe0b46e_0027",
+      "text": "The impact is USDM insolvency through over-distribution of yield.",
+      "start": 3778,
+      "end": 3843,
+      "line": 59
+    },
+    {
+      "id": "e_2c5bafe0b46e_0028",
+      "text": "In the demonstrated scenario:",
+      "start": 3845,
+      "end": 3874,
+      "line": 61
+    },
+    {
+      "id": "e_2c5bafe0b46e_0029",
+      "text": "1. A user deposits and stakes 1,000,000 USDC, producing 1,000,000 USDM supply.",
+      "start": 3876,
+      "end": 3954,
+      "line": 63
+    },
+    {
+      "id": "e_2c5bafe0b46e_0030",
+      "text": "2. The Vault has PM borrow/lend state with BTC supply worth 1,000 USDC.",
+      "start": 3955,
+      "end": 4026,
+      "line": 64
+    },
+    {
+      "id": "e_2c5bafe0b46e_0031",
+      "text": "3. The same PM account has a USDC borrow liability worth 1,000 USDC.",
+      "start": 4027,
+      "end": 4095,
+      "line": 65
+    },
+    {
+      "id": "e_2c5bafe0b46e_0032",
+      "text": "4. Real backing is exactly equal to USDM supply before settlement.",
+      "start": 4096,
+      "end": 4162,
+      "line": 66
+    },
+    {
+      "id": "e_2c5bafe0b46e_0033",
+      "text": "5. `totalBackingSigned()` reports 1,001,000 USDC because it counts the BTC supply and ignores the USDC borrow.",
+      "start": 4163,
+      "end": 4273,
+      "line": 67
+    },
+    {
+      "id": "e_2c5bafe0b46e_0034",
+      "text": "6. `distributableSurplus()` reports 1,000 USDC of phantom surplus.",
+      "start": 4274,
+      "end": 4340,
+      "line": 68
+    },
+    {
+      "id": "e_2c5bafe0b46e_0035",
+      "text": "7. `settle(1_000e6)` and `distributeYield()` succeed.",
+      "start": 4341,
+      "end": 4394,
+      "line": 69
+    },
+    {
+      "id": "e_2c5bafe0b46e_0036",
+      "text": "8. `distributeYield()` mints 700 USDM to sUSDM and routes 300 USDC out to Insurance/Foundation under the default 70% / 10% / 20% split.",
+      "start": 4395,
+      "end": 4530,
+      "line": 70
+    },
+    {
+      "id": "e_2c5bafe0b46e_0037",
+      "text": "9. Reported backing still equals reported USDM supply, but real backing is 1,000 USDC short after subtracting the still-present PM borrow liability.",
+      "start": 4531,
+      "end": 4679,
+      "line": 71
+    },
+    {
+      "id": "e_2c5bafe0b46e_0038",
+      "text": "The loss is not an accounting display issue only. Real USDC leaves the Vault or is converted into user yield distributions, while the unbooked PM debt remains economically owed by the Vault's PM account. Remaining USDM holders are diluted because USDM supply exceeds real backing.",
+      "start": 4681,
+      "end": 4961,
+      "line": 73
+    },
+    {
+      "id": "e_2c5bafe0b46e_0039",
+      "text": "High severity is justified because this breaks the core peg-solvency invariant and allows the protocol to distribute non-existent yield as real value. Gate 4 limits the maximum yield per settlement interval, but it does not eliminate the issue; it only bounds the rate at which omitted PM debt can be converted into phantom yield. The impact scales with the size of omitted borrow liabilities and can recur across settlement cycles while the debt remains unaccounted.",
+      "start": 4963,
+      "end": 5430,
+      "line": 75
+    },
+    {
+      "id": "e_2c5bafe0b46e_0040",
+      "text": "## Likelihood Explanation",
+      "start": 5432,
+      "end": 5457,
+      "line": 77
+    },
+    {
+      "id": "e_2c5bafe0b46e_0041",
+      "text": "The issue requires Portfolio Margin / borrow-lend state to exist for the Vault or configured multisig PM account. That is a realistic operating condition: Monetrix explicitly integrates the `0x811` PM supplied balance into its backing calculation, and Hyperliquid's Portfolio Margin docs state that eligible assets can be supplied and that insufficient balances can be automatically borrowed against eligible collateral.",
+      "start": 5459,
+      "end": 5879,
+      "line": 79
+    },
+    {
+      "id": "e_2c5bafe0b46e_0042",
+      "text": "The immediate settlement path is Operator-gated. This does not make the issue purely trusted-operator risk. The protocol deliberately relies on `MonetrixAccountant` Gate 3 to bound an Operator-submitted `proposedYield` by real distributable surplus. The bug is that the on-chain bound is computed from an incomplete PM balance sheet.",
+      "start": 5881,
+      "end": 6214,
+      "line": 81
+    },
+    {
+      "id": "e_2c5bafe0b46e_0043",
+      "text": "The practical prerequisites are:",
+      "start": 6216,
+      "end": 6248,
+      "line": 83
+    },
+    {
+      "id": "e_2c5bafe0b46e_0044",
+      "text": "1. PM / borrow-lend is active for the relevant L1 account.",
+      "start": 6250,
+      "end": 6308,
+      "line": 85
+    },
+    {
+      "id": "e_2c5bafe0b46e_0045",
+      "text": "2. The account has supplied collateral that Monetrix registers and counts.",
+      "start": 6309,
+      "end": 6383,
+      "line": 86
+    },
+    {
+      "id": "e_2c5bafe0b46e_0046",
+      "text": "3. The account also has borrow debt, potentially in a different token.",
+      "start": 6384,
+      "end": 6454,
+      "line": 87
+    },
+    {
+      "id": "e_2c5bafe0b46e_0047",
+      "text": "4. The Vault has enough EVM USDC liquidity to execute `settle()`.",
+      "start": 6455,
+      "end": 6520,
+      "line": 88
+    },
+    {
+      "id": "e_2c5bafe0b46e_0048",
+      "text": "5. The Operator submits a `proposedYield` that fits within the inflated Gate 3 and Gate 4 caps.",
+      "start": 6521,
+      "end": 6616,
+      "line": 89
+    },
+    {
+      "id": "e_2c5bafe0b46e_0049",
+      "text": "No oracle manipulation, reentrancy, unusual token behavior, or transaction ordering is required. The debt can arise from normal Portfolio Margin behavior. Hyperliquid documents that, when placing spot and perp orders under PM, insufficient balance can be automatically borrowed against eligible collateral and borrowed assets accrue interest.",
+      "start": 6618,
+      "end": 6960,
+      "line": 91
+    },
+    {
+      "id": "e_2c5bafe0b46e_0050",
+      "text": "The main deployment constraint is that Hyperliquid PM has per-user and global caps during alpha/pre-alpha phases. Those caps can limit the maximum omitted borrow debt at a given time, but they do not change the root cause or eliminate the solvency impact for any non-zero borrow liability.",
+      "start": 6962,
+      "end": 7251,
+      "line": 93
+    }
+  ]
+}

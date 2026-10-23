@@ -1,0 +1,130 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Merkl_T4ExvutBBXC",
+    "audit_uid": "T4ExvutBBXC",
+    "requested_submission_uid": "thfmBytrnVT",
+    "requested_finding_uid": "kvqzFvQzjLT",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Merkl_T4ExvutBBXC/20260618_144946/findings.json",
+    "source_submission_uid": "thfmBytrnVT",
+    "source_finding_uid": "kvqzFvQzjLT",
+    "original_report_path": "Merkl_T4ExvutBBXC\\medium_valid_thfmBytrnVT.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "thfmBytrnVT",
+  "finding_uid": "kvqzFvQzjLT",
+  "finding_number": "1",
+  "title": "Validation of campaign minimum reward amount on gross value allows creation of sub-threshold campaigns",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "lonelybones",
+  "body": "## Finding description and impact\n\nThe `DistributionCreator` contract enforces a minimum reward amount (`rewardTokenMinAmounts`) for whitelisted tokens to ensure campaigns meet a specific economic threshold. This validation is intended to prevent spam and ensure that campaigns are viable for the off-chain reward computation engine.\n\nHowever, the validation logic in `_createCampaign` checks the **gross** amount provided by the user *before* protocol fees are calculated and deducted.\n\nhttps://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L533\n```solidity\n// if the amount distributed is too small with respect to what is allowed\nif ((newCampaign.amount * HOUR) / newCampaign.duration < rewardTokenMinAmount) revert Errors.CampaignRewardTooLow();\n```\n\nImmediately after this check passes, the contract calculates the fees and updates the campaign amount to the **net** value:\n\nhttps://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L535-L538\n```solidity\n// Computing fees and pulling tokens\nuint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);\n// ...\nnewCampaign.amount = campaignAmountMinusFees;\n```\n\nIf a user creates a campaign with an amount exactly equal to (or slightly above) the minimum, the subsequent fee deduction will drop the final distributed amount **below** the mandatory threshold.\n\n**Impact:**\nThis discrepancy allows for the creation of \"Zombie Campaigns\"—campaigns that are valid on-chain but violate the protocol's minimum economic constraints off-chain.\n1.  **Fund Lock:** The campaign is successfully created, and the net funds are transferred to the `Distributor` contract.\n2.  **Service Denial:** The Merkl off-chain engine, which reads chain state to compute rewards, enforces the `rewardTokenMinAmount` logic to filter out spam or dust campaigns. Because the stored campaign amount is now below this threshold, the engine will likely ignore or reject the campaign.\n3.  **Loss of Assets:** Since the engine ignores the campaign, no Merkle root updates will be generated for it. The user's funds remain stuck in the `Distributor` contract indefinitely, indistinguishable from other idle funds, unless manual governance intervention occurs.\n\n## Recommended mitigation steps\n\nUpdate `_createCampaign` to validate the **net** amount (after fees) against the minimum threshold. This ensures that only campaigns capable of distributing the required minimum rewards are accepted.\n\n```diff\n    function _createCampaign(CampaignParameters memory newCampaign) internal returns (bytes32) {\n        uint256 rewardTokenMinAmount = rewardTokenMinAmounts[newCampaign.rewardToken];\n        // ... (duration check) ...\n        if (rewardTokenMinAmount == 0) revert Errors.CampaignRewardTokenNotWhitelisted();\n\n-       if ((newCampaign.amount * HOUR) / newCampaign.duration < rewardTokenMinAmount) revert Errors.CampaignRewardTooLow();\n        \n        // Computing fees and pulling tokens\n        uint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);\n        \n+       // Validate NET amount\n+       if ((campaignAmountMinusFees * HOUR) / newCampaign.duration < rewardTokenMinAmount) revert Errors.CampaignRewardTooLow();\n\n        if (newCampaign.creator == address(0)) newCampaign.creator = msg.sender;\n        _pullTokens(newCampaign.creator, newCampaign.rewardToken, newCampaign.amount, campaignAmountMinusFees);\n        newCampaign.amount = campaignAmountMinusFees;\n        // ...\n```",
+  "proof_of_concept": "### Proof of Concept (PoC)\n\nCopy and paste the following code into `test/c4/C4PoC.t.sol`. This test demonstrates a campaign being created where the final amount stored (`90e18`) is less than the minimum required amount (`100e18`), and verifies the funds are transferred to the Distributor.\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\n\ncontract C4PoC is Fixture {\n    function setUp() public override {\n        super.setUp();\n\n        // 1. Set Protocol Fees to 10%\n        vm.prank(governor);\n        creator.setFees(1e8); \n\n        // 2. Set Minimum Amount for Angle Token to 100 tokens\n        // This ensures the off-chain engine only processes campaigns with significant value\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 100e18; \n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        // Fund Alice\n        angle.mint(address(alice), 1000e18);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n    }\n\n    function test_submissionValidity() external {\n        // Alice creates a campaign with exactly 100 tokens (the min required)\n        // Fees are 10%, so net amount will be 90.\n        uint256 amount = 100e18;\n        \n        CampaignParameters memory params = CampaignParameters({\n            campaignId: bytes32(0),\n            creator: address(alice),\n            rewardToken: address(angle),\n            amount: amount, \n            campaignType: 0,\n            startTimestamp: uint32(block.timestamp + 100),\n            duration: 3600,\n            campaignData: \"\"\n        });\n\n        vm.prank(alice);\n        bytes32 campaignId = creator.createCampaign(params);\n\n        CampaignParameters memory created = creator.campaign(campaignId);\n\n        // 1. Verify net amount is 90 (100 - 10% fee)\n        assertEq(created.amount, 90e18, \"Net amount should be 90\");\n        \n        // 2. Verify we bypassed the minimum check\n        // The campaign exists with 90 tokens, even though min is 100.\n        // This confirms the creation of a \"Zombie Campaign\".\n        assertTrue(created.amount < 100e18, \"Campaign created below min threshold\");\n\n        // 3. Verify funds are locked in distributor\n        // The funds move to the distributor, but the campaign is invalid off-chain.\n        address distributorAddr = creator.distributor();\n        assertEq(angle.balanceOf(distributorAddr), 90e18, \"Funds trapped in Distributor\");\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L533",
+    "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L535-L538"
+  ],
+  "source_record": {
+    "project_id": "T4ExvutBBXC",
+    "submission_index": "266",
+    "api_submission_id": "",
+    "uid": "thfmBytrnVT",
+    "number": "266",
+    "title": "Validation of campaign minimum reward amount on gross value allows creation of sub-threshold campaigns",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "lonelybones",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L533",
+      "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L535-L538"
+    ],
+    "body": "## Finding description and impact\n\nThe `DistributionCreator` contract enforces a minimum reward amount (`rewardTokenMinAmounts`) for whitelisted tokens to ensure campaigns meet a specific economic threshold. This validation is intended to prevent spam and ensure that campaigns are viable for the off-chain reward computation engine.\n\nHowever, the validation logic in `_createCampaign` checks the **gross** amount provided by the user *before* protocol fees are calculated and deducted.\n\nhttps://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L533\n```solidity\n// if the amount distributed is too small with respect to what is allowed\nif ((newCampaign.amount * HOUR) / newCampaign.duration < rewardTokenMinAmount) revert Errors.CampaignRewardTooLow();\n```\n\nImmediately after this check passes, the contract calculates the fees and updates the campaign amount to the **net** value:\n\nhttps://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L535-L538\n```solidity\n// Computing fees and pulling tokens\nuint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);\n// ...\nnewCampaign.amount = campaignAmountMinusFees;\n```\n\nIf a user creates a campaign with an amount exactly equal to (or slightly above) the minimum, the subsequent fee deduction will drop the final distributed amount **below** the mandatory threshold.\n\n**Impact:**\nThis discrepancy allows for the creation of \"Zombie Campaigns\"—campaigns that are valid on-chain but violate the protocol's minimum economic constraints off-chain.\n1.  **Fund Lock:** The campaign is successfully created, and the net funds are transferred to the `Distributor` contract.\n2.  **Service Denial:** The Merkl off-chain engine, which reads chain state to compute rewards, enforces the `rewardTokenMinAmount` logic to filter out spam or dust campaigns. Because the stored campaign amount is now below this threshold, the engine will likely ignore or reject the campaign.\n3.  **Loss of Assets:** Since the engine ignores the campaign, no Merkle root updates will be generated for it. The user's funds remain stuck in the `Distributor` contract indefinitely, indistinguishable from other idle funds, unless manual governance intervention occurs.\n\n## Recommended mitigation steps\n\nUpdate `_createCampaign` to validate the **net** amount (after fees) against the minimum threshold. This ensures that only campaigns capable of distributing the required minimum rewards are accepted.\n\n```diff\n    function _createCampaign(CampaignParameters memory newCampaign) internal returns (bytes32) {\n        uint256 rewardTokenMinAmount = rewardTokenMinAmounts[newCampaign.rewardToken];\n        // ... (duration check) ...\n        if (rewardTokenMinAmount == 0) revert Errors.CampaignRewardTokenNotWhitelisted();\n\n-       if ((newCampaign.amount * HOUR) / newCampaign.duration < rewardTokenMinAmount) revert Errors.CampaignRewardTooLow();\n        \n        // Computing fees and pulling tokens\n        uint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);\n        \n+       // Validate NET amount\n+       if ((campaignAmountMinusFees * HOUR) / newCampaign.duration < rewardTokenMinAmount) revert Errors.CampaignRewardTooLow();\n\n        if (newCampaign.creator == address(0)) newCampaign.creator = msg.sender;\n        _pullTokens(newCampaign.creator, newCampaign.rewardToken, newCampaign.amount, campaignAmountMinusFees);\n        newCampaign.amount = campaignAmountMinusFees;\n        // ...\n```",
+    "proof_of_concept": "### Proof of Concept (PoC)\n\nCopy and paste the following code into `test/c4/C4PoC.t.sol`. This test demonstrates a campaign being created where the final amount stored (`90e18`) is less than the minimum required amount (`100e18`), and verifies the funds are transferred to the Distributor.\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\n\ncontract C4PoC is Fixture {\n    function setUp() public override {\n        super.setUp();\n\n        // 1. Set Protocol Fees to 10%\n        vm.prank(governor);\n        creator.setFees(1e8); \n\n        // 2. Set Minimum Amount for Angle Token to 100 tokens\n        // This ensures the off-chain engine only processes campaigns with significant value\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 100e18; \n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        // Fund Alice\n        angle.mint(address(alice), 1000e18);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n    }\n\n    function test_submissionValidity() external {\n        // Alice creates a campaign with exactly 100 tokens (the min required)\n        // Fees are 10%, so net amount will be 90.\n        uint256 amount = 100e18;\n        \n        CampaignParameters memory params = CampaignParameters({\n            campaignId: bytes32(0),\n            creator: address(alice),\n            rewardToken: address(angle),\n            amount: amount, \n            campaignType: 0,\n            startTimestamp: uint32(block.timestamp + 100),\n            duration: 3600,\n            campaignData: \"\"\n        });\n\n        vm.prank(alice);\n        bytes32 campaignId = creator.createCampaign(params);\n\n        CampaignParameters memory created = creator.campaign(campaignId);\n\n        // 1. Verify net amount is 90 (100 - 10% fee)\n        assertEq(created.amount, 90e18, \"Net amount should be 90\");\n        \n        // 2. Verify we bypassed the minimum check\n        // The campaign exists with 90 tokens, even though min is 100.\n        // This confirms the creation of a \"Zombie Campaign\".\n        assertTrue(created.amount < 100e18, \"Campaign created below min threshold\");\n\n        // 3. Verify funds are locked in distributor\n        // The funds move to the distributor, but the campaign is invalid off-chain.\n        address distributorAddr = creator.distributor();\n        assertEq(angle.balanceOf(distributorAddr), 90e18, \"Funds trapped in Distributor\");\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/T4ExvutBBXC/submissions/266",
+    "raw": {
+      "auditUid": "T4ExvutBBXC",
+      "createdAt": "2025-11-28T02:02:16.113Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "jY74wx8XzB2",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T08:54:36.667Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "kvqzFvQzjLT"
+        },
+        {
+          "uid": "kjPZtj44Spf",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T14:16:47.667Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "thfmBytrnVT",
+          "findingUid": null
+        },
+        {
+          "uid": "D5h73PEwKLh",
+          "userUid": "V5DsSDYbiY2",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-12-11T16:00:04.151Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "kvqzFvQzjLT"
+        },
+        {
+          "uid": "y9ekfzYpmA3",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-13T00:57:19.970Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "kvqzFvQzjLT"
+        }
+      ],
+      "finding": {
+        "uid": "kvqzFvQzjLT",
+        "number": 1,
+        "duplicates": 16
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2026-01-13T00:57:19.970Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Validation of campaign minimum reward amount on gross value allows creation of sub-threshold campaigns",
+      "uid": "thfmBytrnVT",
+      "updatedAt": "2025-11-28T02:02:16.113Z",
+      "user": {
+        "uid": "9vKe2inRwyT",
+        "handle": "lonelybones"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe `DistributionCreator` contract enforces a minimum reward amount (`rewardTokenMinAmounts`) for whitelisted tokens to ensure campaigns meet a specific economic threshold. This validation is intended to prevent spam and ensure that campaigns are viable for the off-chain reward computation engine.\n\nHowever, the validation logic in `_createCampaign` checks the **gross** amount provided by the user *before* protocol fees are calculated and deducted.\n\nhttps://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L533\n```solidity\n// if the amount distributed is too small with respect to what is allowed\nif ((newCampaign.amount * HOUR) / newCampaign.duration < rewardTokenMinAmount) revert Errors.CampaignRewardTooLow();\n```\n\nImmediately after this check passes, the contract calculates the fees and updates the campaign amount to the **net** value:\n\nhttps://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L535-L538\n```solidity\n// Computing fees and pulling tokens\nuint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);\n// ...\nnewCampaign.amount = campaignAmountMinusFees;\n```\n\nIf a user creates a campaign with an amount exactly equal to (or slightly above) the minimum, the subsequent fee deduction will drop the final distributed amount **below** the mandatory threshold.\n\n**Impact:**\nThis discrepancy allows for the creation of \"Zombie Campaigns\"—campaigns that are valid on-chain but violate the protocol's minimum economic constraints off-chain.\n1.  **Fund Lock:** The campaign is successfully created, and the net funds are transferred to the `Distributor` contract.\n2.  **Service Denial:** The Merkl off-chain engine, which reads chain state to compute rewards, enforces the `rewardTokenMinAmount` logic to filter out spam or dust campaigns. Because the stored campaign amount is now below this threshold, the engine will likely ignore or reject the campaign.\n3.  **Loss of Assets:** Since the engine ignores the campaign, no Merkle root updates will be generated for it. The user's funds remain stuck in the `Distributor` contract indefinitely, indistinguishable from other idle funds, unless manual governance intervention occurs.\n\n## Recommended mitigation steps\n\nUpdate `_createCampaign` to validate the **net** amount (after fees) against the minimum threshold. This ensures that only campaigns capable of distributing the required minimum rewards are accepted.\n\n```diff\n    function _createCampaign(CampaignParameters memory newCampaign) internal returns (bytes32) {\n        uint256 rewardTokenMinAmount = rewardTokenMinAmounts[newCampaign.rewardToken];\n        // ... (duration check) ...\n        if (rewardTokenMinAmount == 0) revert Errors.CampaignRewardTokenNotWhitelisted();\n\n-       if ((newCampaign.amount * HOUR) / newCampaign.duration < rewardTokenMinAmount) revert Errors.CampaignRewardTooLow();\n        \n        // Computing fees and pulling tokens\n        uint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);\n        \n+       // Validate NET amount\n+       if ((campaignAmountMinusFees * HOUR) / newCampaign.duration < rewardTokenMinAmount) revert Errors.CampaignRewardTooLow();\n\n        if (newCampaign.creator == address(0)) newCampaign.creator = msg.sender;\n        _pullTokens(newCampaign.creator, newCampaign.rewardToken, newCampaign.amount, campaignAmountMinusFees);\n        newCampaign.amount = campaignAmountMinusFees;\n        // ...\n```",
+      "proofOfConcept": "### Proof of Concept (PoC)\n\nCopy and paste the following code into `test/c4/C4PoC.t.sol`. This test demonstrates a campaign being created where the final amount stored (`90e18`) is less than the minimum required amount (`100e18`), and verifies the funds are transferred to the Distributor.\n\n```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\n\ncontract C4PoC is Fixture {\n    function setUp() public override {\n        super.setUp();\n\n        // 1. Set Protocol Fees to 10%\n        vm.prank(governor);\n        creator.setFees(1e8); \n\n        // 2. Set Minimum Amount for Angle Token to 100 tokens\n        // This ensures the off-chain engine only processes campaigns with significant value\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 100e18; \n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        // Fund Alice\n        angle.mint(address(alice), 1000e18);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n    }\n\n    function test_submissionValidity() external {\n        // Alice creates a campaign with exactly 100 tokens (the min required)\n        // Fees are 10%, so net amount will be 90.\n        uint256 amount = 100e18;\n        \n        CampaignParameters memory params = CampaignParameters({\n            campaignId: bytes32(0),\n            creator: address(alice),\n            rewardToken: address(angle),\n            amount: amount, \n            campaignType: 0,\n            startTimestamp: uint32(block.timestamp + 100),\n            duration: 3600,\n            campaignData: \"\"\n        });\n\n        vm.prank(alice);\n        bytes32 campaignId = creator.createCampaign(params);\n\n        CampaignParameters memory created = creator.campaign(campaignId);\n\n        // 1. Verify net amount is 90 (100 - 10% fee)\n        assertEq(created.amount, 90e18, \"Net amount should be 90\");\n        \n        // 2. Verify we bypassed the minimum check\n        // The campaign exists with 90 tokens, even though min is 100.\n        // This confirms the creation of a \"Zombie Campaign\".\n        assertTrue(created.amount < 100e18, \"Campaign created below min threshold\");\n\n        // 3. Verify funds are locked in distributor\n        // The funds move to the distributor, but the campaign is invalid off-chain.\n        address distributorAddr = creator.distributor();\n        assertEq(angle.balanceOf(distributorAddr), 90e18, \"Funds trapped in Distributor\");\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L533,https://github.com/code-423n4/2025-11-merkl/blob/main/contracts/DistributionCreator.sol#L535-L538",
+      "number": 266,
+      "aiExplanation": null,
+      "_index": 266
+    }
+  }
+}

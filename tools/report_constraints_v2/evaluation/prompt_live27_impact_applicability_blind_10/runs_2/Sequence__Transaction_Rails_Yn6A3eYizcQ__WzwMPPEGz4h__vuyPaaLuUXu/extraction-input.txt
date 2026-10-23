@@ -1,0 +1,19 @@
+Permanent DoS on Signature Validation Due to Immutable DOMAIN_SEPARATOR Mismatch during Chain Fork
+
+## Description
+The contract calculates DOMAIN_SEPARATOR only once, at constructor execution, and stores it as an immutable variable. The contract uses block.chainid during deployment for this calculation.
+However, in the _verifyAndMarkIntent function, the logic for creating the struct hash (intentHash) includes the chainid() opcode which is dynamic (retrieving the current Chain ID):
+Logical Bug:
+If a blockchain experiences a hard fork or a network ID change (which is common in EVM chains), the block.chainid will change.
+1. The user's wallet (client-side such as Metamask/Ethers.js) will detect the new chain ID and generate a signature based on the new DOMAIN_SEPARATOR (as per the EIP-712 standard).
+2. The contract will verify the signature using:
+- OLD DOMAIN_SEPARATOR (because it is immutable).
+- NEW chainid (in the intentHash).
+A mismatch between the user's (new) DOMAIN_SEPARATOR and the contract's (old) DOMAIN_SEPARATOR will cause the ECDSA.recover function to return an incorrect address or fail. Consequently, all contract features will be DoSed, and no valid transactions can be processed post-fork.
+
+Impacted Code:
+1.	Constructor: Sets DOMAIN_SEPARATOR statically.
+2.	Function _verifyAndMarkIntent: Combines static DOMAIN_SEPARATOR with dynamic hash.
+## Impact
+1. Protocol Bricking: If the Chain ID changes, the contract becomes permanently useless because it cannot verify a new valid signature.
+2. Mismatch with the Standard: This implementation violates the EIP-712 recommendation, which recommends recalculating the DOMAIN_SEPARATOR if the chain ID changes to prevent inter-chain replay attacks and ensure post-fork validity.

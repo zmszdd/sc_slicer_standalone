@@ -1,0 +1,276 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "StakingManager.stake() deposit immediately before OracleManager.generatePerformance() reward increase, then queue and confirm withdrawal to capture yield",
+    "environment": "Kinetiq staking protocol (StakingManager, OracleManager, StakingAccountant)",
+    "evidence": [
+      "Attacker can steal users' rewards by front-running oracle rewards transaction",
+      "The current distribution of rewards does not consider the staking duration. This allows a malicious user to simply call [StakingManager.stake()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L242) right before the rewards are increased through [OracleManager.generatePerformance()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/OracleManager.sol#L274). Once the rewards are increased, nothing prevents the malicious user to withdraw the funds with yield.",
+      "Take a look on how the [current exchange ratio](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingAccountant.sol#L216-L219) is calculated when queueing a withdrawal:",
+      "- To confirm a withdrawal, the user must wait the withdrawal delay which currently is 7 days.",
+      "- `MANAGER_ROLE` can call `cancelWithdrawal` **but this does not change the fact that the malicious user deposited with a lower rate** than the current exchange rate.",
+      "- The max staking amount per user can be bypassed by making minimal deposits from several accounts. I.e: smart contract A delegate smart contract B ~ Z the task to make the deposit.",
+      "- Deposit HYPE right before rewards are increased.",
+      "- Once the rewards are increased, the malicious user can queue withdrawal",
+      "- Execute the withdraw process(queue, wait for the delay and confirm withdrawal)",
+      "Notice that is not necessary to be a \"sandwich\" transaction, even if the attacker queues the withdrawal 1 hour later, he is already benefiting from the new ratio caused by the rewards.",
+      "- Malicious user that do not have funds in the protocol, can steal protocol rewards by making a deposit right before rewards are increased."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "malicious user",
+      "role": "attacker",
+      "evidence": [
+        "The current distribution of rewards does not consider the staking duration. This allows a malicious user to simply call [StakingManager.stake()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L242) right before the rewards are increased through [OracleManager.generatePerformance()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/OracleManager.sol#L274). Once the rewards are increased, nothing prevents the malicious user to withdraw the funds with yield.",
+        "- Deposit HYPE right before rewards are increased.",
+        "- Malicious user that do not have funds in the protocol, can steal protocol rewards by making a deposit right before rewards are increased."
+      ]
+    },
+    {
+      "id": "victim_stakers",
+      "name": "users with committed stakes",
+      "role": "victim",
+      "evidence": [
+        "- Profit. Attacker stole the rewards from the users's staking.",
+        "- User rewards are stolen permanently.",
+        "- Protocol yield is lost and users with committed stakes will not receive their yield."
+      ]
+    },
+    {
+      "id": "staking_manager",
+      "name": "StakingManager",
+      "role": "contract",
+      "evidence": [
+        "The current distribution of rewards does not consider the staking duration. This allows a malicious user to simply call [StakingManager.stake()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L242) right before the rewards are increased through [OracleManager.generatePerformance()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/OracleManager.sol#L274). Once the rewards are increased, nothing prevents the malicious user to withdraw the funds with yield."
+      ]
+    },
+    {
+      "id": "oracle_manager",
+      "name": "OracleManager",
+      "role": "contract",
+      "evidence": [
+        "The current distribution of rewards does not consider the staking duration. This allows a malicious user to simply call [StakingManager.stake()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L242) right before the rewards are increased through [OracleManager.generatePerformance()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/OracleManager.sol#L274). Once the rewards are increased, nothing prevents the malicious user to withdraw the funds with yield."
+      ]
+    },
+    {
+      "id": "staking_accountant",
+      "name": "StakingAccountant",
+      "role": "contract",
+      "evidence": [
+        "Take a look on how the [current exchange ratio](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingAccountant.sol#L216-L219) is calculated when queueing a withdrawal:"
+      ]
+    },
+    {
+      "id": "hype_asset",
+      "name": "HYPE",
+      "role": "asset",
+      "evidence": [
+        "- Deposit HYPE right before rewards are increased."
+      ]
+    },
+    {
+      "id": "rewards",
+      "name": "protocol rewards / yield",
+      "role": "asset",
+      "evidence": [
+        "- Profit. Attacker stole the rewards from the users's staking.",
+        "- Malicious user that do not have funds in the protocol, can steal protocol rewards by making a deposit right before rewards are increased.",
+        "- Protocol yield is lost and users with committed stakes will not receive their yield."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "attacker_has_no_prior_stake",
+      "kind": "precondition",
+      "text": "The malicious user does not have funds already staked in the protocol before the deposit.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker"
+      ],
+      "evidence": [
+        "- Malicious user that do not have funds in the protocol, can steal protocol rewards by making a deposit right before rewards are increased."
+      ]
+    },
+    {
+      "id": "attacker_deposits_before_reward_increase",
+      "kind": "precondition",
+      "text": "The malicious user calls StakingManager.stake() right before rewards are increased through OracleManager.generatePerformance().",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "staking_manager",
+        "oracle_manager"
+      ],
+      "evidence": [
+        "The current distribution of rewards does not consider the staking duration. This allows a malicious user to simply call [StakingManager.stake()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L242) right before the rewards are increased through [OracleManager.generatePerformance()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/OracleManager.sol#L274). Once the rewards are increased, nothing prevents the malicious user to withdraw the funds with yield.",
+        "- Deposit HYPE right before rewards are increased."
+      ]
+    },
+    {
+      "id": "withdrawal_delay_seven_days",
+      "kind": "precondition",
+      "text": "Confirming a withdrawal requires waiting the withdrawal delay, currently 7 days.",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_manager"
+      ],
+      "evidence": [
+        "- To confirm a withdrawal, the user must wait the withdrawal delay which currently is 7 days."
+      ]
+    },
+    {
+      "id": "attacker_deposits_hype",
+      "kind": "action",
+      "text": "The malicious user deposits HYPE via StakingManager.stake() before the reward increase.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "hype_asset",
+        "staking_manager"
+      ],
+      "evidence": [
+        "The current distribution of rewards does not consider the staking duration. This allows a malicious user to simply call [StakingManager.stake()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L242) right before the rewards are increased through [OracleManager.generatePerformance()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/OracleManager.sol#L274). Once the rewards are increased, nothing prevents the malicious user to withdraw the funds with yield.",
+        "- Deposit HYPE right before rewards are increased."
+      ]
+    },
+    {
+      "id": "attacker_queues_withdrawal",
+      "kind": "action",
+      "text": "After rewards are increased, the malicious user queues a withdrawal at the current exchange ratio.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "staking_accountant"
+      ],
+      "evidence": [
+        "Take a look on how the [current exchange ratio](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingAccountant.sol#L216-L219) is calculated when queueing a withdrawal:",
+        "- Once the rewards are increased, the malicious user can queue withdrawal"
+      ]
+    },
+    {
+      "id": "attacker_confirms_withdrawal",
+      "kind": "action",
+      "text": "The malicious user executes the withdraw process: queue, wait for the delay, and confirm withdrawal.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "staking_manager"
+      ],
+      "evidence": [
+        "- Execute the withdraw process(queue, wait for the delay and confirm withdrawal)"
+      ]
+    },
+    {
+      "id": "reward_distribution_ignores_staking_duration",
+      "kind": "root_cause",
+      "text": "The current distribution of rewards does not consider the staking duration, so a deposit made just before the reward increase captures yield.",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_manager",
+        "oracle_manager",
+        "rewards"
+      ],
+      "evidence": [
+        "The current distribution of rewards does not consider the staking duration. This allows a malicious user to simply call [StakingManager.stake()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L242) right before the rewards are increased through [OracleManager.generatePerformance()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/OracleManager.sol#L274). Once the rewards are increased, nothing prevents the malicious user to withdraw the funds with yield.",
+        "Take a look on how the [current exchange ratio](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingAccountant.sol#L216-L219) is calculated when queueing a withdrawal:"
+      ]
+    },
+    {
+      "id": "intent_duration_proportional_rewards",
+      "kind": "security_intent",
+      "text": "Reward distribution should account for staking duration so that a deposit made immediately before a reward increase does not capture rewards attributable to prior committed stakes.",
+      "modality": "inferred",
+      "entity_ids": [
+        "staking_manager",
+        "rewards",
+        "victim_stakers"
+      ],
+      "evidence": [
+        "The current distribution of rewards does not consider the staking duration. This allows a malicious user to simply call [StakingManager.stake()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L242) right before the rewards are increased through [OracleManager.generatePerformance()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/OracleManager.sol#L274). Once the rewards are increased, nothing prevents the malicious user to withdraw the funds with yield.",
+        "- Profit. Attacker stole the rewards from the users's staking."
+      ]
+    },
+    {
+      "id": "intent_no_immediate_yield_capture",
+      "kind": "security_intent",
+      "text": "A user who deposits right before rewards are increased should not be able to withdraw those funds with the newly increased yield.",
+      "modality": "inferred",
+      "entity_ids": [
+        "attacker",
+        "rewards"
+      ],
+      "evidence": [
+        "The current distribution of rewards does not consider the staking duration. This allows a malicious user to simply call [StakingManager.stake()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L242) right before the rewards are increased through [OracleManager.generatePerformance()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/OracleManager.sol#L274). Once the rewards are increased, nothing prevents the malicious user to withdraw the funds with yield.",
+        "Notice that is not necessary to be a \"sandwich\" transaction, even if the attacker queues the withdrawal 1 hour later, he is already benefiting from the new ratio caused by the rewards."
+      ]
+    },
+    {
+      "id": "intent_committed_stakers_keep_yield",
+      "kind": "security_intent",
+      "text": "Users with committed stakes should receive the yield generated by protocol rewards rather than having it captured by a newly depositing user.",
+      "modality": "inferred",
+      "entity_ids": [
+        "victim_stakers",
+        "rewards"
+      ],
+      "evidence": [
+        "- User rewards are stolen permanently.",
+        "- Protocol yield is lost and users with committed stakes will not receive their yield."
+      ]
+    },
+    {
+      "id": "steal_protocol_rewards",
+      "kind": "impact",
+      "text": "Malicious user that do not have funds in the protocol, can steal protocol rewards by making a deposit right before rewards are increased.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "- Malicious user that do not have funds in the protocol, can steal protocol rewards by making a deposit right before rewards are increased."
+      ]
+    },
+    {
+      "id": "user_rewards_stolen_permanently",
+      "kind": "impact",
+      "text": "User rewards are stolen permanently.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- User rewards are stolen permanently."
+      ]
+    },
+    {
+      "id": "protocol_yield_lost",
+      "kind": "impact",
+      "text": "Protocol yield is lost",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- Protocol yield is lost and users with committed stakes will not receive their yield."
+      ]
+    },
+    {
+      "id": "committed_stakers_no_yield",
+      "kind": "impact",
+      "text": "users with committed stakes will not receive their yield",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- Protocol yield is lost and users with committed stakes will not receive their yield."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "attacker_deposits_hype",
+    "attacker_queues_withdrawal",
+    "attacker_confirms_withdrawal"
+  ],
+  "ambiguities": [
+    "Report does not state whether stake() is permissionless or restricted; no explicit unauthorized-caller condition.",
+    "Report does not give the exact exchange-ratio formula or numeric values, only that the ratio is used when queueing withdrawal.",
+    "Report does not establish a concrete prior transaction/state beyond the attacker having no funds in the protocol.",
+    "Whether cancelWithdrawal by MANAGER_ROLE is exercised is not established as an actual trigger."
+  ]
+}

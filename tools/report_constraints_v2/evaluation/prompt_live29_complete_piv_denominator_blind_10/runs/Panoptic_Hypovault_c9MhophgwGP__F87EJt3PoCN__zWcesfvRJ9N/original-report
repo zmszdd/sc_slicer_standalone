@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Panoptic Hypovault_c9MhophgwGP",
+    "audit_uid": "c9MhophgwGP",
+    "requested_submission_uid": "zWcesfvRJ9N",
+    "requested_finding_uid": "F87EJt3PoCN",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Panoptic_Hypovault_c9MhophgwGP/20260618_092947/findings.json",
+    "source_submission_uid": "zWcesfvRJ9N",
+    "source_finding_uid": "F87EJt3PoCN",
+    "original_report_path": "Panoptic Hypovault_c9MhophgwGP\\high_valid_zWcesfvRJ9N.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "zWcesfvRJ9N",
+  "finding_uid": "F87EJt3PoCN",
+  "finding_number": "69",
+  "title": "Premium Calculation Logic Error - Inconsistency of Premium Token1 Calculation Formula",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "JuggerNaut63",
+  "body": "## Finding Description and Impact\nThere is a critical inconsistency in the premium exposure calculation formula between token0 and token1 in the `computeNAV()` function in the `PanopticVaultAccountant` contract.\n```solidity\n// Token0 - CORRECT Formula\npoolExposure0 = int256(uint256(shortPremium.rightSlot())) - int256(uint256(longPremium.rightSlot()));\n\n// Token1 - WRONG formula (reverse)\npoolExposure1 = int256(uint256(longPremium.leftSlot())) - int256(uint256(shortPremium.leftSlot()));\n``` \nWhere it should be:\n```solidity\n// Token0\npoolExposure0 = int256(uint256(shortPremium.rightSlot())) - int256(uint256(longPremium.rightSlot()));\n\n// Token1 - FIX\npoolExposure1 = int256(uint256(shortPremium.leftSlot())) - int256(uint256(longPremium.leftSlot()));\n```\nThis will cause vaults with premium positions to experience significant NAV miscalculations. Any vault that has a net positive premium on token1 will lose value in the NAV calculation. Incorrect NAVs can lead to premature or late liquidations.\n\nImpact Scenario\n- Premium Token0: Short 100 ETH, Long 30 ETH → Exposure = +70 ETH ✅\n- Premium Token1: Short 50,000 USDC, Long 20,000 USDC → Exposure = -30,000 USDC ❌ (should be +30,000 USDC)\n- Total Exposure: 70 ETH + (-30,000 USDC) = negative → NAV = 0 (after Math.max)\n- Loss: 30,070 ether in NAV calculation\n\n## Recommended Mitigation Steps\n```diff\n// Calculating pool exposure based on the difference between short and long premiums\n// rightSlot() takes the value of token0, leftSlot() takes the value of token1\npoolExposure0 = int256(uint256(shortPremium.rightSlot())) - int256(uint256(longPremium.rightSlot()));\n- poolExposure1 = int256(uint256(longPremium.leftSlot())) - int256(uint256(shortPremium.leftSlot()));\n+ poolExposure1 = int256(uint256(shortPremium.leftSlot())) - int256(uint256(longPremium.leftSlot()));\n```",
+  "proof_of_concept": "## Proof of Concept\nMathematical Proof\nScenario Test:\n-\tToken0: Short Premium = 100 ETH, Long Premium = 30 ETH\n-\tToken1: Short Premium = 50,000 USDC, Long Premium = 20,000 USDC\n\nThe calculation should be (Correct):\n-\tToken0 Exposure = 100 - 30 = +70 ETH\n-\tToken1 Exposure = 50,000 - 20,000 = +30,000 USDC\n-\tTotal = +70 ETH + 30,000 USDC = 30,070 (in underlying)\n\nCurrent calculation (Wrong):\n-\tToken0 Exposure = 100 - 30 = +70 ETH ✅\n-\tToken1 Exposure = 20,000 - 50,000 = -30,000 USDC ❌\n-\tTotal = +70 ETH + (-30,000 USDC) = negatif → Math.max(0, negatif) = 0\n\nAdd to `PanopticVaultAccountant.t.sol`.\n```solidity\nfunction testPremiumCalculationLogicError() public {\n    // Setup pools\n    PanopticVaultAccountant.PoolInfo[] memory pools = createDefaultPools();\n    bytes32 poolsHash = keccak256(abi.encode(pools));\n    accountant.updatePoolsHash(vault, poolsHash);\n\n    // Setup scenario with clear premiums to prove the error\n    // Token0 (ETH): Short Premium = 100 ETH, Long Premium = 30 ETH\n    // Token1 (USDC): Short Premium = 50,000 USDC, Long Premium = 20,000 USDC\n    \n    uint256 token0ShortPremium = 100 ether;\n    uint256 token0LongPremium = 30 ether;\n    uint256 token1ShortPremium = 50000 ether;\n    uint256 token1LongPremium = 20000 ether;\n\n    // Setup premium using LeftRightUnsigned\n    // rightSlot = token0, leftSlot = token1\n    LeftRightUnsigned shortPremium = LeftRightUnsigned.wrap(\n        (token1ShortPremium << 128) | token0ShortPremium\n    );\n    LeftRightUnsigned longPremium = LeftRightUnsigned.wrap(\n        (token1LongPremium << 128) | token0LongPremium\n    );\n\n    // Setup mock with predefined premiums\n    mockPool.setMockPremiums(shortPremium, longPremium);\n    mockPool.setNumberOfLegs(vault, 0);\n    mockPool.setMockPositionBalanceArray(new uint256[2][](0));\n\n    // Setup minimal balances to focus on premium calculation\n    token0.setBalance(vault, 0);\n    token1.setBalance(vault, 0);\n    underlyingToken.setBalance(vault, 0);\n    mockPool.collateralToken0().setBalance(vault, 0);\n    mockPool.collateralToken0().setPreviewRedeemReturn(0);\n    mockPool.collateralToken1().setBalance(vault, 0);\n    mockPool.collateralToken1().setPreviewRedeemReturn(0);\n\n    // Create empty tokenIds\n    TokenId[][] memory tokenIds = new TokenId[][](1);\n    tokenIds[0] = new TokenId[](0);\n\n    // Encode manager input\n    bytes memory managerInput = createManagerInput(pools, tokenIds);\n\n    // Calculate NAV with current implementation (which is wrong)\n    uint256 actualNAV = accountant.computeNAV(vault, address(underlyingToken), managerInput);\n\n    // Calculate expected NAV with correct formula\n    // Token0: shortPremium - longPremium = 100 - 30 = 70 ETH\n    int256 expectedToken0Exposure = int256(token0ShortPremium) - int256(token0LongPremium);\n    \n    // Token1: shortPremium - longPremium = 50,000 - 20,000 = 30,000 USDC (CORRECT)\n    int256 expectedToken1Exposure = int256(token1ShortPremium) - int256(token1LongPremium);\n    \n    // Total expected exposure (both positive)\n    int256 expectedTotalExposure = expectedToken0Exposure + expectedToken1Exposure;\n    uint256 expectedNAV = uint256(expectedTotalExposure); // 70 + 30,000 = 30,070\n\n    // Calculate NAV with current implementation (which is wrong)\n    // Token1: longPremium - shortPremium = 20,000 - 50,000 = -30,000 USDC (WRONG!)\n    int256 actualToken1Exposure = int256(token1LongPremium) - int256(token1ShortPremium);\n\n    // Prove that actual result is wrong\n    assertEq(actualNAV, 0, \"NAV should be 0 due to negative exposure from bug\");\n    \n    // Prove that NAV should be 30,070 ether\n    assertTrue(expectedNAV == 30070 ether, \"Expected NAV should be 30,070 ether\");\n    \n    // Prove significant difference due to bug\n    uint256 navDifference = expectedNAV; // because actualNAV = 0\n    assertEq(navDifference, 30070 ether, \"NAV difference due to premium calculation bug\");\n\n    // Prove that token1 exposure is calculated in reverse\n    assertEq(actualToken1Exposure, -30000 ether, \"Token1 exposure incorrectly calculated as negative\");\n    assertEq(expectedToken1Exposure, 30000 ether, \"Token1 exposure should be positive\");\n    \n    // Total difference = 60,000 USDC (30,000 from negative to positive)\n    int256 token1ExposureDifference = expectedToken1Exposure - actualToken1Exposure;\n    assertEq(token1ExposureDifference, 60000 ether, \"Token1 exposure difference is 60,000 due to formula inconsistency\");\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-06-panoptic/blob/a73f19df5ad5f7fac54934950688eb0ea845ef80/src/accountants/PanopticVaultAccountant.sol#L131-L136"
+  ],
+  "source_record": {
+    "project_id": "c9MhophgwGP",
+    "submission_index": "176",
+    "api_submission_id": "",
+    "uid": "zWcesfvRJ9N",
+    "number": "176",
+    "title": "Premium Calculation Logic Error - Inconsistency of Premium Token1 Calculation Formula",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "JuggerNaut63",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-06-panoptic/blob/a73f19df5ad5f7fac54934950688eb0ea845ef80/src/accountants/PanopticVaultAccountant.sol#L131-L136"
+    ],
+    "body": "## Finding Description and Impact\nThere is a critical inconsistency in the premium exposure calculation formula between token0 and token1 in the `computeNAV()` function in the `PanopticVaultAccountant` contract.\n```solidity\n// Token0 - CORRECT Formula\npoolExposure0 = int256(uint256(shortPremium.rightSlot())) - int256(uint256(longPremium.rightSlot()));\n\n// Token1 - WRONG formula (reverse)\npoolExposure1 = int256(uint256(longPremium.leftSlot())) - int256(uint256(shortPremium.leftSlot()));\n``` \nWhere it should be:\n```solidity\n// Token0\npoolExposure0 = int256(uint256(shortPremium.rightSlot())) - int256(uint256(longPremium.rightSlot()));\n\n// Token1 - FIX\npoolExposure1 = int256(uint256(shortPremium.leftSlot())) - int256(uint256(longPremium.leftSlot()));\n```\nThis will cause vaults with premium positions to experience significant NAV miscalculations. Any vault that has a net positive premium on token1 will lose value in the NAV calculation. Incorrect NAVs can lead to premature or late liquidations.\n\nImpact Scenario\n- Premium Token0: Short 100 ETH, Long 30 ETH → Exposure = +70 ETH ✅\n- Premium Token1: Short 50,000 USDC, Long 20,000 USDC → Exposure = -30,000 USDC ❌ (should be +30,000 USDC)\n- Total Exposure: 70 ETH + (-30,000 USDC) = negative → NAV = 0 (after Math.max)\n- Loss: 30,070 ether in NAV calculation\n\n## Recommended Mitigation Steps\n```diff\n// Calculating pool exposure based on the difference between short and long premiums\n// rightSlot() takes the value of token0, leftSlot() takes the value of token1\npoolExposure0 = int256(uint256(shortPremium.rightSlot())) - int256(uint256(longPremium.rightSlot()));\n- poolExposure1 = int256(uint256(longPremium.leftSlot())) - int256(uint256(shortPremium.leftSlot()));\n+ poolExposure1 = int256(uint256(shortPremium.leftSlot())) - int256(uint256(longPremium.leftSlot()));\n```",
+    "proof_of_concept": "## Proof of Concept\nMathematical Proof\nScenario Test:\n-\tToken0: Short Premium = 100 ETH, Long Premium = 30 ETH\n-\tToken1: Short Premium = 50,000 USDC, Long Premium = 20,000 USDC\n\nThe calculation should be (Correct):\n-\tToken0 Exposure = 100 - 30 = +70 ETH\n-\tToken1 Exposure = 50,000 - 20,000 = +30,000 USDC\n-\tTotal = +70 ETH + 30,000 USDC = 30,070 (in underlying)\n\nCurrent calculation (Wrong):\n-\tToken0 Exposure = 100 - 30 = +70 ETH ✅\n-\tToken1 Exposure = 20,000 - 50,000 = -30,000 USDC ❌\n-\tTotal = +70 ETH + (-30,000 USDC) = negatif → Math.max(0, negatif) = 0\n\nAdd to `PanopticVaultAccountant.t.sol`.\n```solidity\nfunction testPremiumCalculationLogicError() public {\n    // Setup pools\n    PanopticVaultAccountant.PoolInfo[] memory pools = createDefaultPools();\n    bytes32 poolsHash = keccak256(abi.encode(pools));\n    accountant.updatePoolsHash(vault, poolsHash);\n\n    // Setup scenario with clear premiums to prove the error\n    // Token0 (ETH): Short Premium = 100 ETH, Long Premium = 30 ETH\n    // Token1 (USDC): Short Premium = 50,000 USDC, Long Premium = 20,000 USDC\n    \n    uint256 token0ShortPremium = 100 ether;\n    uint256 token0LongPremium = 30 ether;\n    uint256 token1ShortPremium = 50000 ether;\n    uint256 token1LongPremium = 20000 ether;\n\n    // Setup premium using LeftRightUnsigned\n    // rightSlot = token0, leftSlot = token1\n    LeftRightUnsigned shortPremium = LeftRightUnsigned.wrap(\n        (token1ShortPremium << 128) | token0ShortPremium\n    );\n    LeftRightUnsigned longPremium = LeftRightUnsigned.wrap(\n        (token1LongPremium << 128) | token0LongPremium\n    );\n\n    // Setup mock with predefined premiums\n    mockPool.setMockPremiums(shortPremium, longPremium);\n    mockPool.setNumberOfLegs(vault, 0);\n    mockPool.setMockPositionBalanceArray(new uint256[2][](0));\n\n    // Setup minimal balances to focus on premium calculation\n    token0.setBalance(vault, 0);\n    token1.setBalance(vault, 0);\n    underlyingToken.setBalance(vault, 0);\n    mockPool.collateralToken0().setBalance(vault, 0);\n    mockPool.collateralToken0().setPreviewRedeemReturn(0);\n    mockPool.collateralToken1().setBalance(vault, 0);\n    mockPool.collateralToken1().setPreviewRedeemReturn(0);\n\n    // Create empty tokenIds\n    TokenId[][] memory tokenIds = new TokenId[][](1);\n    tokenIds[0] = new TokenId[](0);\n\n    // Encode manager input\n    bytes memory managerInput = createManagerInput(pools, tokenIds);\n\n    // Calculate NAV with current implementation (which is wrong)\n    uint256 actualNAV = accountant.computeNAV(vault, address(underlyingToken), managerInput);\n\n    // Calculate expected NAV with correct formula\n    // Token0: shortPremium - longPremium = 100 - 30 = 70 ETH\n    int256 expectedToken0Exposure = int256(token0ShortPremium) - int256(token0LongPremium);\n    \n    // Token1: shortPremium - longPremium = 50,000 - 20,000 = 30,000 USDC (CORRECT)\n    int256 expectedToken1Exposure = int256(token1ShortPremium) - int256(token1LongPremium);\n    \n    // Total expected exposure (both positive)\n    int256 expectedTotalExposure = expectedToken0Exposure + expectedToken1Exposure;\n    uint256 expectedNAV = uint256(expectedTotalExposure); // 70 + 30,000 = 30,070\n\n    // Calculate NAV with current implementation (which is wrong)\n    // Token1: longPremium - shortPremium = 20,000 - 50,000 = -30,000 USDC (WRONG!)\n    int256 actualToken1Exposure = int256(token1LongPremium) - int256(token1ShortPremium);\n\n    // Prove that actual result is wrong\n    assertEq(actualNAV, 0, \"NAV should be 0 due to negative exposure from bug\");\n    \n    // Prove that NAV should be 30,070 ether\n    assertTrue(expectedNAV == 30070 ether, \"Expected NAV should be 30,070 ether\");\n    \n    // Prove significant difference due to bug\n    uint256 navDifference = expectedNAV; // because actualNAV = 0\n    assertEq(navDifference, 30070 ether, \"NAV difference due to premium calculation bug\");\n\n    // Prove that token1 exposure is calculated in reverse\n    assertEq(actualToken1Exposure, -30000 ether, \"Token1 exposure incorrectly calculated as negative\");\n    assertEq(expectedToken1Exposure, 30000 ether, \"Token1 exposure should be positive\");\n    \n    // Total difference = 60,000 USDC (30,000 from negative to positive)\n    int256 token1ExposureDifference = expectedToken1Exposure - actualToken1Exposure;\n    assertEq(token1ExposureDifference, 60000 ether, \"Token1 exposure difference is 60,000 due to formula inconsistency\");\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/c9MhophgwGP/submissions/176",
+    "raw": {
+      "auditUid": "c9MhophgwGP",
+      "createdAt": "2025-06-30T14:22:41.071Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "QjSPq6wwzWK",
+          "userUid": "FtdUe6YkFxN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-10T13:28:56.076Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "F87EJt3PoCN"
+        },
+        {
+          "uid": "pFNh89uV9hz",
+          "userUid": "FtdUe6YkFxN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-10T13:37:40.767Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "zWcesfvRJ9N",
+          "findingUid": null
+        },
+        {
+          "uid": "wJmoCUkAupc",
+          "userUid": "foNT8nGvdaV",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-07-15T18:19:01.472Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "F87EJt3PoCN"
+        },
+        {
+          "uid": "hnvJpGp8oNp",
+          "userUid": "FtdUe6YkFxN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-23T02:53:18.508Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "F87EJt3PoCN"
+        }
+      ],
+      "finding": {
+        "uid": "F87EJt3PoCN",
+        "number": 69,
+        "duplicates": 13
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-07-23T02:53:18.508Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Premium Calculation Logic Error - Inconsistency of Premium Token1 Calculation Formula",
+      "uid": "zWcesfvRJ9N",
+      "updatedAt": "2025-06-30T14:22:41.071Z",
+      "user": {
+        "uid": "AMrxBSpoSDD",
+        "handle": "JuggerNaut63"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding Description and Impact\nThere is a critical inconsistency in the premium exposure calculation formula between token0 and token1 in the `computeNAV()` function in the `PanopticVaultAccountant` contract.\n```solidity\n// Token0 - CORRECT Formula\npoolExposure0 = int256(uint256(shortPremium.rightSlot())) - int256(uint256(longPremium.rightSlot()));\n\n// Token1 - WRONG formula (reverse)\npoolExposure1 = int256(uint256(longPremium.leftSlot())) - int256(uint256(shortPremium.leftSlot()));\n``` \nWhere it should be:\n```solidity\n// Token0\npoolExposure0 = int256(uint256(shortPremium.rightSlot())) - int256(uint256(longPremium.rightSlot()));\n\n// Token1 - FIX\npoolExposure1 = int256(uint256(shortPremium.leftSlot())) - int256(uint256(longPremium.leftSlot()));\n```\nThis will cause vaults with premium positions to experience significant NAV miscalculations. Any vault that has a net positive premium on token1 will lose value in the NAV calculation. Incorrect NAVs can lead to premature or late liquidations.\n\nImpact Scenario\n- Premium Token0: Short 100 ETH, Long 30 ETH → Exposure = +70 ETH ✅\n- Premium Token1: Short 50,000 USDC, Long 20,000 USDC → Exposure = -30,000 USDC ❌ (should be +30,000 USDC)\n- Total Exposure: 70 ETH + (-30,000 USDC) = negative → NAV = 0 (after Math.max)\n- Loss: 30,070 ether in NAV calculation\n\n## Recommended Mitigation Steps\n```diff\n// Calculating pool exposure based on the difference between short and long premiums\n// rightSlot() takes the value of token0, leftSlot() takes the value of token1\npoolExposure0 = int256(uint256(shortPremium.rightSlot())) - int256(uint256(longPremium.rightSlot()));\n- poolExposure1 = int256(uint256(longPremium.leftSlot())) - int256(uint256(shortPremium.leftSlot()));\n+ poolExposure1 = int256(uint256(shortPremium.leftSlot())) - int256(uint256(longPremium.leftSlot()));\n```",
+      "proofOfConcept": "## Proof of Concept\nMathematical Proof\nScenario Test:\n-\tToken0: Short Premium = 100 ETH, Long Premium = 30 ETH\n-\tToken1: Short Premium = 50,000 USDC, Long Premium = 20,000 USDC\n\nThe calculation should be (Correct):\n-\tToken0 Exposure = 100 - 30 = +70 ETH\n-\tToken1 Exposure = 50,000 - 20,000 = +30,000 USDC\n-\tTotal = +70 ETH + 30,000 USDC = 30,070 (in underlying)\n\nCurrent calculation (Wrong):\n-\tToken0 Exposure = 100 - 30 = +70 ETH ✅\n-\tToken1 Exposure = 20,000 - 50,000 = -30,000 USDC ❌\n-\tTotal = +70 ETH + (-30,000 USDC) = negatif → Math.max(0, negatif) = 0\n\nAdd to `PanopticVaultAccountant.t.sol`.\n```solidity\nfunction testPremiumCalculationLogicError() public {\n    // Setup pools\n    PanopticVaultAccountant.PoolInfo[] memory pools = createDefaultPools();\n    bytes32 poolsHash = keccak256(abi.encode(pools));\n    accountant.updatePoolsHash(vault, poolsHash);\n\n    // Setup scenario with clear premiums to prove the error\n    // Token0 (ETH): Short Premium = 100 ETH, Long Premium = 30 ETH\n    // Token1 (USDC): Short Premium = 50,000 USDC, Long Premium = 20,000 USDC\n    \n    uint256 token0ShortPremium = 100 ether;\n    uint256 token0LongPremium = 30 ether;\n    uint256 token1ShortPremium = 50000 ether;\n    uint256 token1LongPremium = 20000 ether;\n\n    // Setup premium using LeftRightUnsigned\n    // rightSlot = token0, leftSlot = token1\n    LeftRightUnsigned shortPremium = LeftRightUnsigned.wrap(\n        (token1ShortPremium << 128) | token0ShortPremium\n    );\n    LeftRightUnsigned longPremium = LeftRightUnsigned.wrap(\n        (token1LongPremium << 128) | token0LongPremium\n    );\n\n    // Setup mock with predefined premiums\n    mockPool.setMockPremiums(shortPremium, longPremium);\n    mockPool.setNumberOfLegs(vault, 0);\n    mockPool.setMockPositionBalanceArray(new uint256[2][](0));\n\n    // Setup minimal balances to focus on premium calculation\n    token0.setBalance(vault, 0);\n    token1.setBalance(vault, 0);\n    underlyingToken.setBalance(vault, 0);\n    mockPool.collateralToken0().setBalance(vault, 0);\n    mockPool.collateralToken0().setPreviewRedeemReturn(0);\n    mockPool.collateralToken1().setBalance(vault, 0);\n    mockPool.collateralToken1().setPreviewRedeemReturn(0);\n\n    // Create empty tokenIds\n    TokenId[][] memory tokenIds = new TokenId[][](1);\n    tokenIds[0] = new TokenId[](0);\n\n    // Encode manager input\n    bytes memory managerInput = createManagerInput(pools, tokenIds);\n\n    // Calculate NAV with current implementation (which is wrong)\n    uint256 actualNAV = accountant.computeNAV(vault, address(underlyingToken), managerInput);\n\n    // Calculate expected NAV with correct formula\n    // Token0: shortPremium - longPremium = 100 - 30 = 70 ETH\n    int256 expectedToken0Exposure = int256(token0ShortPremium) - int256(token0LongPremium);\n    \n    // Token1: shortPremium - longPremium = 50,000 - 20,000 = 30,000 USDC (CORRECT)\n    int256 expectedToken1Exposure = int256(token1ShortPremium) - int256(token1LongPremium);\n    \n    // Total expected exposure (both positive)\n    int256 expectedTotalExposure = expectedToken0Exposure + expectedToken1Exposure;\n    uint256 expectedNAV = uint256(expectedTotalExposure); // 70 + 30,000 = 30,070\n\n    // Calculate NAV with current implementation (which is wrong)\n    // Token1: longPremium - shortPremium = 20,000 - 50,000 = -30,000 USDC (WRONG!)\n    int256 actualToken1Exposure = int256(token1LongPremium) - int256(token1ShortPremium);\n\n    // Prove that actual result is wrong\n    assertEq(actualNAV, 0, \"NAV should be 0 due to negative exposure from bug\");\n    \n    // Prove that NAV should be 30,070 ether\n    assertTrue(expectedNAV == 30070 ether, \"Expected NAV should be 30,070 ether\");\n    \n    // Prove significant difference due to bug\n    uint256 navDifference = expectedNAV; // because actualNAV = 0\n    assertEq(navDifference, 30070 ether, \"NAV difference due to premium calculation bug\");\n\n    // Prove that token1 exposure is calculated in reverse\n    assertEq(actualToken1Exposure, -30000 ether, \"Token1 exposure incorrectly calculated as negative\");\n    assertEq(expectedToken1Exposure, 30000 ether, \"Token1 exposure should be positive\");\n    \n    // Total difference = 60,000 USDC (30,000 from negative to positive)\n    int256 token1ExposureDifference = expectedToken1Exposure - actualToken1Exposure;\n    assertEq(token1ExposureDifference, 60000 ether, \"Token1 exposure difference is 60,000 due to formula inconsistency\");\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-06-panoptic/blob/a73f19df5ad5f7fac54934950688eb0ea845ef80/src/accountants/PanopticVaultAccountant.sol#L131-L136",
+      "number": 176,
+      "aiExplanation": null,
+      "_index": 176
+    }
+  }
+}

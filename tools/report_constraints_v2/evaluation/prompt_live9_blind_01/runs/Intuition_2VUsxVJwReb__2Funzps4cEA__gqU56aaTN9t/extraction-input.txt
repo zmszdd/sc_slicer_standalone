@@ -1,0 +1,14 @@
+AtomWallet._validateSignature reverts on high-s signatures instead of returning SIG_VALIDATION_FAILED, breaking ERC-4337 compliance
+
+## Finding description and impact
+
+`AtomWallet._validateSignature` reverts with `AtomWallet_InvalidSignatureS` when `ECDSA.tryRecover` returns `RecoverError.InvalidSignatureS`, instead of returning `SIG_VALIDATION_FAILED` as required by ERC-4337.
+
+ERC-4337 mandates that `_validateSignature` **never reverts** — it must return `SIG_VALIDATION_FAILED` (a non-zero packed validation data value) for any invalid signature. When the function reverts, `EntryPoint.validateUserOp` propagates the revert, breaking the account abstraction flow entirely for any user operation signed with a high-s ECDSA signature.
+
+The vulnerable code:
+
+
+A high-s signature is a valid secp256k1 signature where `s > secp256k1n/2`. OpenZeppelin's `ECDSA.tryRecover` rejects these for malleability protection, returning `RecoverError.InvalidSignatureS`. Any wallet software or bundler that produces such a signature (or an attacker who mallates a low-s signature to high-s) will cause `validateUserOp` to revert rather than gracefully fail, permanently blocking that user operation from being processed through the EntryPoint.
+
+The `InvalidSignatureLength` branch above it is dead code: `_extractValidUntilAndValidAfterFromSignature` already reverts for any signature that isn't exactly 65 or 77 bytes, so `ECDSA.tryRecover` never sees a wrong-length input.

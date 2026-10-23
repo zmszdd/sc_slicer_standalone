@@ -1,0 +1,76 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "b3faacd0b8f50c4a7cd28080847821d630abd83d50cc1a4d53f242bba05a9946",
+  "fragments": [
+    {
+      "id": "e_b3faacd0b8f5_0001",
+      "text": "Malicious input token can manipulate updateDebt to drain pool assets, violating solvency invariants",
+      "start": 0,
+      "end": 99,
+      "line": 1
+    },
+    {
+      "id": "e_b3faacd0b8f5_0002",
+      "text": "## Finding description and impact",
+      "start": 101,
+      "end": 134,
+      "line": 3
+    },
+    {
+      "id": "e_b3faacd0b8f5_0003",
+      "text": "The `FlashAccountant` contract enforces solvency by ensuring that all debts recorded during a lock are settled to zero before the lock concludes. However, the `updateDebt` function allows any address to modify its own debt record for the current lock without authorization.",
+      "start": 136,
+      "end": 409,
+      "line": 5
+    },
+    {
+      "id": "e_b3faacd0b8f5_0004",
+      "text": "[src/base/FlashAccountant.sol#L132-L141](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/base/FlashAccountant.sol#L132-L141)",
+      "start": 411,
+      "end": 545,
+      "line": 7
+    },
+    {
+      "id": "e_b3faacd0b8f5_0005",
+      "text": "This lack of access control allows a malicious token to bypass payment requirements during a swap. When the Router attempts to collect payment for a swap, it uses `payFrom`, which relies on a \"snapshot-and-diff\" mechanism:",
+      "start": 548,
+      "end": 770,
+      "line": 10
+    },
+    {
+      "id": "e_b3faacd0b8f5_0006",
+      "text": "[src/libraries/FlashAccountantLib.sol#L54-L60](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/libraries/FlashAccountantLib.sol#L54-L60)",
+      "start": 772,
+      "end": 918,
+      "line": 12
+    },
+    {
+      "id": "e_b3faacd0b8f5_0007",
+      "text": "A token with non-standard behavior, such as a Fee-on-Transfer token, can exploit this. In a legitimate FoT scenario, the pool receives less than the requested amount, which would normally leave a nonzero remainder and revert under the accountant’s solvency check (as the balance increase is less than the recorded debt). However, a malicious token can implement `transferFrom` to re-enter `updateDebt` and erase the debt corresponding to the missing tax amount:",
+      "start": 921,
+      "end": 1382,
+      "line": 15
+    },
+    {
+      "id": "e_b3faacd0b8f5_0008",
+      "text": "The `FlashAccountant` observes a balance increase equal to net (amount - tax). The accountant observes only net paid via balance diff, leaving tax unpaid. Because debts are keyed by token address and updateDebt applies to msg.sender, the token contract can directly mutate its own debt entry for the active lock. The token calls `updateDebt`(-tax) during the same lock to erase the unpaid remainder, so the lock passes despite underpayment.",
+      "start": 1385,
+      "end": 1825,
+      "line": 18
+    },
+    {
+      "id": "e_b3faacd0b8f5_0009",
+      "text": "[src/base/FlashAccountant.sol#L168-L172](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/base/FlashAccountant.sol#L168-L172)",
+      "start": 1827,
+      "end": 1961,
+      "line": 20
+    },
+    {
+      "id": "e_b3faacd0b8f5_0010",
+      "text": "This results in the pool paying out the output asset as if fully paid while receiving less than the required input assets (suffering a loss equal to the tax), violating the contest's specific invariant regarding non-standard tokens: \"those pools can never become insolvent in the other token due to non-standard behavior in one token.\"",
+      "start": 1964,
+      "end": 2299,
+      "line": 23
+    }
+  ]
+}

@@ -1,0 +1,181 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "9e08cc26aa47fea2484c0515cc6a96179e07a470680111c449665d1334d1526d",
+  "fragments": [
+    {
+      "id": "e_9e08cc26aa47_0001",
+      "text": "RiskEngine.twapEMA() computes the wrong TWAP tick due to incorrect tuple unpacking of OraclePack.getEMAs()",
+      "start": 0,
+      "end": 106,
+      "line": 1
+    },
+    {
+      "id": "e_9e08cc26aa47_0002",
+      "text": "## Finding description",
+      "start": 108,
+      "end": 130,
+      "line": 3
+    },
+    {
+      "id": "e_9e08cc26aa47_0003",
+      "text": "`OraclePack.getEMAs()` has a well-defined return order:",
+      "start": 131,
+      "end": 186,
+      "line": 4
+    },
+    {
+      "id": "e_9e08cc26aa47_0004",
+      "text": "So the tuple returned by getEMAs() is:",
+      "start": 188,
+      "end": 226,
+      "line": 6
+    },
+    {
+      "id": "e_9e08cc26aa47_0005",
+      "text": "`spotEMA` (index 0)",
+      "start": 228,
+      "end": 247,
+      "line": 8
+    },
+    {
+      "id": "e_9e08cc26aa47_0006",
+      "text": "`fastEMA` (index 1)",
+      "start": 248,
+      "end": 267,
+      "line": 9
+    },
+    {
+      "id": "e_9e08cc26aa47_0007",
+      "text": "`slowEMA` (index 2)",
+      "start": 268,
+      "end": 287,
+      "line": 10
+    },
+    {
+      "id": "e_9e08cc26aa47_0008",
+      "text": "`eonsEMA` (index 3)",
+      "start": 288,
+      "end": 307,
+      "line": 11
+    },
+    {
+      "id": "e_9e08cc26aa47_0009",
+      "text": "`medianTick` (index 4)",
+      "start": 308,
+      "end": 330,
+      "line": 12
+    },
+    {
+      "id": "e_9e08cc26aa47_0010",
+      "text": "However, `RiskEngine.twapEMA()` unpacks this tuple in the wrong order:",
+      "start": 331,
+      "end": 401,
+      "line": 13
+    },
+    {
+      "id": "e_9e08cc26aa47_0011",
+      "text": "Solidity tuple assignment is positional, therefore this code assigns:",
+      "start": 403,
+      "end": 472,
+      "line": 15
+    },
+    {
+      "id": "e_9e08cc26aa47_0012",
+      "text": "`eonsEMA <- spotEMA`",
+      "start": 474,
+      "end": 494,
+      "line": 17
+    },
+    {
+      "id": "e_9e08cc26aa47_0013",
+      "text": "`slowEMA <- fastEMA`",
+      "start": 495,
+      "end": 515,
+      "line": 18
+    },
+    {
+      "id": "e_9e08cc26aa47_0014",
+      "text": "`fastEMA <- slowEMA`",
+      "start": 516,
+      "end": 536,
+      "line": 19
+    },
+    {
+      "id": "e_9e08cc26aa47_0015",
+      "text": "So the function does not compute the intended `0.6*fast + 0.3*slow + 0.1*eons`.It instead computes `(6 * slow + 3 * fast + spot) / 10`",
+      "start": 537,
+      "end": 671,
+      "line": 20
+    },
+    {
+      "id": "e_9e08cc26aa47_0016",
+      "text": "This is further confirmed by `RiskEngine.isSafeMode()`, which unpacks `getEMAs()` using the correct order:",
+      "start": 672,
+      "end": 778,
+      "line": 21
+    },
+    {
+      "id": "e_9e08cc26aa47_0017",
+      "text": "Meaning `twapEMA()` is internally inconsistent with the rest of the system’s own interpretation of `getEMAs()`.",
+      "start": 779,
+      "end": 890,
+      "line": 22
+    },
+    {
+      "id": "e_9e08cc26aa47_0018",
+      "text": "## Impact",
+      "start": 892,
+      "end": 901,
+      "line": 24
+    },
+    {
+      "id": "e_9e08cc26aa47_0019",
+      "text": "This incorrect TWAP tick is consumed by the protocol via `PanopticPool.getTWAP()`:",
+      "start": 902,
+      "end": 984,
+      "line": 25
+    },
+    {
+      "id": "e_9e08cc26aa47_0020",
+      "text": "`twapTick` is then used in `dispatchFrom()` (liquidations/force exercises/settlements):",
+      "start": 986,
+      "end": 1073,
+      "line": 27
+    },
+    {
+      "id": "e_9e08cc26aa47_0021",
+      "text": "- Manipulation / staleness guard uses `twapTick`:",
+      "start": 1075,
+      "end": 1124,
+      "line": 29
+    },
+    {
+      "id": "e_9e08cc26aa47_0022",
+      "text": "- Solvency is explicitly checked at `twapTick`:",
+      "start": 1125,
+      "end": 1172,
+      "line": 30
+    },
+    {
+      "id": "e_9e08cc26aa47_0023",
+      "text": "- Liquidation pricing and bonus use `twapTick`:",
+      "start": 1173,
+      "end": 1220,
+      "line": 31
+    },
+    {
+      "id": "e_9e08cc26aa47_0024",
+      "text": "As a result, the system’s liquidation/dispatch logic relies on a TWAP that is mathematically different than intended. This can cause false positives/negatives in `StaleOracle()` checks, potentially allowing operations when the intended TWAP would block them, or blocking operations when the intended TWAP would allow them.",
+      "start": 1221,
+      "end": 1543,
+      "line": 32
+    },
+    {
+      "id": "e_9e08cc26aa47_0025",
+      "text": "It can also cause incorrect solvency classification at the TWAP checkpoint (since one of the four price points in the solvency grid is wrong) ans also incorrect liquidation bonus / conversion pricing inputs (since `getLiquidationBonus` is fed `sqrtRatioAtTick(twapTick)`).",
+      "start": 1545,
+      "end": 1817,
+      "line": 34
+    }
+  ]
+}

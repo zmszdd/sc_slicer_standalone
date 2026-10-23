@@ -1,0 +1,18 @@
+Blacklisted User can Permanently Block Cross-Chain Bridge
+
+## Vulnerability Details
+The `iTryTokenOFT` contract on the Spoke chain (MegaETH) implements a `_beforeTokenTransfer` hook that reverts if the `to` address is blacklisted, even during minting operations triggered by the bridge.
+
+When a cross-chain message arrives via LayerZero to mint tokens to a user:
+1.  The LayerZero Endpoint calls `lzReceive` on the `iTryTokenOFT` (which inherits `OFT`).
+2.  `OFT` calls `_credit`.
+3.  `_credit` calls `_mint`.
+4.  `_mint` calls `_beforeTokenTransfer`.
+5.  If the recipient is blacklisted, `_beforeTokenTransfer` reverts with `OperationNotAllowed`.
+6.  The `lzReceive` transaction reverts.
+
+In LayerZero v2, if the execution of a message reverts, the message is considered "failed" but the nonce is still strictly ordered. Subsequent messages with higher nonces cannot be processed until the failed message is successfully executed. Since the user is blacklisted, the message will *never* succeed (unless the admin un-blacklists the user). This effectively permanently blocks the cross-chain channel.
+
+## Impact
+*   **Denial of Service:** The entire Hub-to-Spoke cross-chain bridge is blocked. No other users can bridge tokens or receive unstaked funds.
+*   **Griefing:** A user who knows they are about to be blacklisted (or is already blacklisted) can intentionally bridge tokens to themselves to sabotage the protocol.

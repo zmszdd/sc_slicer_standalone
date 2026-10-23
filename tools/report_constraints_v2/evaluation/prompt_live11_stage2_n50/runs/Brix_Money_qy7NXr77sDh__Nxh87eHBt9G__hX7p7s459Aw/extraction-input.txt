@@ -1,0 +1,32 @@
+Blacklisted users can call unstake() and lock the funds in the adapter forever.
+
+## Finding description and impact
+
+``_beforeTokenTransfer()`` in ``iTryTokenOFT.sol`` prevents ``blacklisted`` users from transferring any token:
+
+https://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/iTRY/crosschain/iTryTokenOFT.sol#L139-L177
+
+``unstake()`` on ``unstakeMessenger.sol`` can be called even by ``blacklisted`` users.
+
+https://github.com/code-423n4/2025-11-brix-money/blob/68bf3dcb7105a1b0ed88b97a57691b0a6230e4e9/src/token/wiTRY/crosschain/UnstakeMessenger.sol#L108-L151
+
+The whole flow works as follows:
+1. Blacklisted user Alice completes cooldown for ``100`` iTRY tokens.
+2. Alice calls ``UnstakeMessenger.unstake(0.05 ETH)``  
+    - Pays 0.1 ETH total (0.05 for spoke→hub, 0.05 for return) │
+    - Message: UnstakeMessage({user: Alice, ...})               │
+    - LayerZero message sent to hub    
+3. LayerZero Endpoint calls ``wiTryVaultComposer._lzReceive()``
+4. ``_lzReceive()`` decodes message and calls ``_handleUnstake()``
+5. StakediTryCrosschain.unstakeThroughComposer(Alice) is called
+6. ``_handleUnstake()`` continues
+7. ``iTryTokenOFTAdapter.send()`` is called
+8. LayerZero Endpoint delivers message 
+    - Calls: iTryTokenOFT._lzReceive()
+9. ``iTryTokenOFT._lzReceive()`` executes:
+10. ``_credit()`` calls ``_mint()``
+11. ``_mint()`` triggers ``_beforeTokenTransfer()`` which ``reverts()``.
+
+This is how ``unstake()`` of ``unstakeMessenger.sol`` calls ``_beforeTokenTransfer()`` on ``iTryTokenOFT.sol``.
+
+Now the main problem is when our ``_credit()`` fails due to ``blacklisted``,  our ``100 iTRY`` tokens are still locked in ``iTryTokenOFTAdapter()`` with no ``rescue`` mechanism.

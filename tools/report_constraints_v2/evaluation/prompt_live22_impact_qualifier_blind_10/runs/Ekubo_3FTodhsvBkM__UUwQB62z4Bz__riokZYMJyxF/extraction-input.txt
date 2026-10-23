@@ -1,0 +1,24 @@
+[M-01] Missing Transaction Expiration (Deadline) Check in `Router.sol` allows pending transactions to be executed at unfavorable times.
+
+## Brief/Intro/Overview
+The `Router.sol` contract allows users to perform swaps but fails to accept or validate a transaction expiration timestamp (`deadline`). Unlike standard AMM Routers (e.g., Uniswap), which enforce that a transaction must execute by a specific time, Ekubo's router allows signed transactions to remain valid indefinitely. This exposes users to delayed execution and predatory MEV extraction.
+
+## Affected Contracts / Files
+* `src/Router.sol`
+
+## Vulnerability Details
+In the Ethereum Virtual Machine (EVM), signed transactions do not have an inherent expiration time; they remain valid in the mempool until their nonce is consumed. To mitigate this, standard DeFi protocols include a `deadline` parameter in their Router functions, enforcing `require(block.timestamp <= deadline)`.
+
+The `Router.sol` contract implements `swap`, `multihopSwap`, and `multiMultihopSwap` functions without this parameter or any equivalent check.
+
+**The Vulnerability:**
+1.  A user signs a transaction to swap `1 ETH` for `Token A` with a specific slippage tolerance.
+2.  The transaction to remain pending in the mempool (this could be intentionally or not).
+3.  Without a deadline, this transaction remains valid **indefinitely** (hours, days, or years).
+4.  A validator or MEV bot can "hold" this transaction and execute it at a future block where market conditions have changed drastically, often to the user's detriment.
+
+## Impact Details
+
+- **MEV Exploitation (The "Free Option"):** Without a deadline, a user's transaction gives validators a "free option." They can hold the transaction and execute it **if and only if** it becomes profitable for them (e.g., waiting for market volatility to create a sandwiching opportunity). If it never becomes profitable, they drop it.
+
+- **Loss of User Agency:** Users lose the ability to safeguard their trades against time-based risks. A transaction intended for specific market conditions can execute long after those conditions have passed (e.g., after a stablecoin de-peg event).

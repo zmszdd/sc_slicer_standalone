@@ -1,0 +1,230 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "TrustBonding first-claim utilization ratio computation in _getPersonalUtilizationRatio",
+    "environment": "TrustBonding.sol emissions contract",
+    "evidence": [
+      "Incorrect execution order in _getPersonalUtilizationRatio applies penalty to first-time claimants, bypassing intended exemption",
+      "The TrustBonding contract uses a utilization ratio to scale user rewards. If a user's utilization delta is less than or equal to zero (meaning they did not actively increase their participation in the MultiVault), their yield is slashed to the personalUtilizationLowerBound (default 2500, or 25%).",
+      "However, the developers explicitly intended to exempt new users from this penalty on their first claim. As noted in the comments at line 527: \"If the user had nothing claimable last epoch, don't penalize them as it's their first ever claim.\" Due to an execution ordering error in _getPersonalUtilizationRatio, this exemption is unreachable for passive stakers. The strict penalty check (rawUtilizationDelta <= 0) is evaluated before the first-claim exemption check (userUtilizationTarget == 0).",
+      "When a new user stakes TRUST purely for yield and does not interact with the MultiVault, their rawUtilizationDelta for their first epoch mathematically evaluates to 0.",
+      "When they attempt to make their first claim, the function evaluates rawUtilizationDelta <= 0. Because 0 <= 0 is true, the function returns early and applies the personalUtilizationLowerBound. The execution never reaches the intended exemption block.",
+      "int256 rawUtilizationDelta = userUtilizationAfter - userUtilizationBefore;",
+      "if (rawUtilizationDelta <= 0) {",
+      "return personalUtilizationLowerBound;",
+      "uint256 userUtilizationTarget = userClaimedRewardsForEpoch[_account][_epoch - 1];",
+      "if (userUtilizationTarget == 0) {",
+      "// If the user had nothing claimable last epoch, don't penalize them as it's their first ever claim",
+      "if (_userEligibleRewardsForEpoch(_account, _epoch - 1) == 0) {",
+      "return BASIS_POINTS_DIVISOR;",
+      "return personalUtilizationLowerBound;",
+      "Any new user who locks TRUST to passively stake without interacting with the MultiVault will have up to 75% of their first epoch's matured yield permanently destroyed. This directly contradicts the protocol's explicitly documented economic design. As per Code4rena severity criteria, deterministic loss of matured yield due to incorrect logic implementation is classified as High severity."
+    ]
+  },
+  "entities": [
+    {
+      "id": "new_passive_user",
+      "name": "new user staking TRUST without MultiVault interaction",
+      "role": "victim",
+      "evidence": [
+        "When a new user stakes TRUST purely for yield and does not interact with the MultiVault, their rawUtilizationDelta for their first epoch mathematically evaluates to 0.",
+        "Any new user who locks TRUST to passively stake without interacting with the MultiVault will have up to 75% of their first epoch's matured yield permanently destroyed. This directly contradicts the protocol's explicitly documented economic design. As per Code4rena severity criteria, deterministic loss of matured yield due to incorrect logic implementation is classified as High severity."
+      ]
+    },
+    {
+      "id": "trust_bonding",
+      "name": "TrustBonding contract",
+      "role": "contract",
+      "evidence": [
+        "The TrustBonding contract uses a utilization ratio to scale user rewards. If a user's utilization delta is less than or equal to zero (meaning they did not actively increase their participation in the MultiVault), their yield is slashed to the personalUtilizationLowerBound (default 2500, or 25%).",
+        "// src/protocol/emissions/TrustBonding.sol"
+      ]
+    },
+    {
+      "id": "personal_utilization_lower_bound",
+      "name": "personalUtilizationLowerBound (default 2500, 25%)",
+      "role": "asset",
+      "evidence": [
+        "The TrustBonding contract uses a utilization ratio to scale user rewards. If a user's utilization delta is less than or equal to zero (meaning they did not actively increase their participation in the MultiVault), their yield is slashed to the personalUtilizationLowerBound (default 2500, or 25%).",
+        "return personalUtilizationLowerBound;"
+      ]
+    },
+    {
+      "id": "basis_points_divisor",
+      "name": "BASIS_POINTS_DIVISOR exemption value",
+      "role": "asset",
+      "evidence": [
+        "return BASIS_POINTS_DIVISOR;"
+      ]
+    },
+    {
+      "id": "first_epoch_yield",
+      "name": "first epoch matured yield",
+      "role": "asset",
+      "evidence": [
+        "Any new user who locks TRUST to passively stake without interacting with the MultiVault will have up to 75% of their first epoch's matured yield permanently destroyed. This directly contradicts the protocol's explicitly documented economic design. As per Code4rena severity criteria, deterministic loss of matured yield due to incorrect logic implementation is classified as High severity."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_new_user_stakes_trust_passively",
+      "kind": "precondition",
+      "text": "A new user stakes TRUST purely for yield and does not interact with the MultiVault.",
+      "modality": "potential",
+      "entity_ids": [
+        "new_passive_user",
+        "trust_bonding"
+      ],
+      "evidence": [
+        "When a new user stakes TRUST purely for yield and does not interact with the MultiVault, their rawUtilizationDelta for their first epoch mathematically evaluates to 0."
+      ]
+    },
+    {
+      "id": "p_first_claim_attempt",
+      "kind": "precondition",
+      "text": "The new passive user attempts to make their first claim.",
+      "modality": "potential",
+      "entity_ids": [
+        "new_passive_user",
+        "trust_bonding"
+      ],
+      "evidence": [
+        "When they attempt to make their first claim, the function evaluates rawUtilizationDelta <= 0. Because 0 <= 0 is true, the function returns early and applies the personalUtilizationLowerBound. The execution never reaches the intended exemption block."
+      ]
+    },
+    {
+      "id": "p_raw_delta_zero",
+      "kind": "precondition",
+      "text": "For the new passive user's first epoch, rawUtilizationDelta mathematically evaluates to 0.",
+      "modality": "potential",
+      "entity_ids": [
+        "new_passive_user"
+      ],
+      "evidence": [
+        "When a new user stakes TRUST purely for yield and does not interact with the MultiVault, their rawUtilizationDelta for their first epoch mathematically evaluates to 0.",
+        "int256 rawUtilizationDelta = userUtilizationAfter - userUtilizationBefore;"
+      ]
+    },
+    {
+      "id": "a_compute_raw_delta",
+      "kind": "action",
+      "text": "_getPersonalUtilizationRatio computes rawUtilizationDelta as userUtilizationAfter minus userUtilizationBefore.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trust_bonding"
+      ],
+      "evidence": [
+        "int256 rawUtilizationDelta = userUtilizationAfter - userUtilizationBefore;"
+      ]
+    },
+    {
+      "id": "a_evaluate_strict_penalty_check",
+      "kind": "action",
+      "text": "The function evaluates the strict penalty check rawUtilizationDelta <= 0 before the first-claim exemption check.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trust_bonding"
+      ],
+      "evidence": [
+        "However, the developers explicitly intended to exempt new users from this penalty on their first claim. As noted in the comments at line 527: \"If the user had nothing claimable last epoch, don't penalize them as it's their first ever claim.\" Due to an execution ordering error in _getPersonalUtilizationRatio, this exemption is unreachable for passive stakers. The strict penalty check (rawUtilizationDelta <= 0) is evaluated before the first-claim exemption check (userUtilizationTarget == 0).",
+        "if (rawUtilizationDelta <= 0) {"
+      ]
+    },
+    {
+      "id": "a_return_lower_bound_early",
+      "kind": "action",
+      "text": "Because 0 <= 0 is true, the function returns early with personalUtilizationLowerBound and never reaches the exemption block.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trust_bonding",
+        "personal_utilization_lower_bound"
+      ],
+      "evidence": [
+        "When they attempt to make their first claim, the function evaluates rawUtilizationDelta <= 0. Because 0 <= 0 is true, the function returns early and applies the personalUtilizationLowerBound. The execution never reaches the intended exemption block.",
+        "return personalUtilizationLowerBound;"
+      ]
+    },
+    {
+      "id": "rc_order_penalty_before_exemption",
+      "kind": "root_cause",
+      "text": "An execution ordering error places the rawUtilizationDelta <= 0 penalty check before the userUtilizationTarget == 0 first-claim exemption check, making the exemption unreachable for passive stakers.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trust_bonding"
+      ],
+      "evidence": [
+        "However, the developers explicitly intended to exempt new users from this penalty on their first claim. As noted in the comments at line 527: \"If the user had nothing claimable last epoch, don't penalize them as it's their first ever claim.\" Due to an execution ordering error in _getPersonalUtilizationRatio, this exemption is unreachable for passive stakers. The strict penalty check (rawUtilizationDelta <= 0) is evaluated before the first-claim exemption check (userUtilizationTarget == 0).",
+        "if (rawUtilizationDelta <= 0) {",
+        "if (userUtilizationTarget == 0) {"
+      ]
+    },
+    {
+      "id": "i_penalty_applied_to_first_claim",
+      "kind": "impact",
+      "text": "The personalUtilizationLowerBound penalty is applied to a first-time claimant instead of the intended BASIS_POINTS_DIVISOR exemption.",
+      "modality": "asserted",
+      "entity_ids": [
+        "new_passive_user",
+        "personal_utilization_lower_bound",
+        "basis_points_divisor"
+      ],
+      "evidence": [
+        "Incorrect execution order in _getPersonalUtilizationRatio applies penalty to first-time claimants, bypassing intended exemption",
+        "When they attempt to make their first claim, the function evaluates rawUtilizationDelta <= 0. Because 0 <= 0 is true, the function returns early and applies the personalUtilizationLowerBound. The execution never reaches the intended exemption block.",
+        "return BASIS_POINTS_DIVISOR;"
+      ]
+    },
+    {
+      "id": "i_yield_destroyed",
+      "kind": "impact",
+      "text": "Up to 75% of the new passive user's first epoch matured yield is permanently destroyed.",
+      "modality": "potential",
+      "entity_ids": [
+        "new_passive_user",
+        "first_epoch_yield"
+      ],
+      "evidence": [
+        "Any new user who locks TRUST to passively stake without interacting with the MultiVault will have up to 75% of their first epoch's matured yield permanently destroyed. This directly contradicts the protocol's explicitly documented economic design. As per Code4rena severity criteria, deterministic loss of matured yield due to incorrect logic implementation is classified as High severity."
+      ]
+    },
+    {
+      "id": "si_first_claim_exempt",
+      "kind": "security_intent",
+      "text": "A user with nothing claimable in the prior epoch (first ever claim) must be exempt from the utilization penalty and receive BASIS_POINTS_DIVISOR rather than personalUtilizationLowerBound.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trust_bonding",
+        "basis_points_divisor"
+      ],
+      "evidence": [
+        "However, the developers explicitly intended to exempt new users from this penalty on their first claim. As noted in the comments at line 527: \"If the user had nothing claimable last epoch, don't penalize them as it's their first ever claim.\" Due to an execution ordering error in _getPersonalUtilizationRatio, this exemption is unreachable for passive stakers. The strict penalty check (rawUtilizationDelta <= 0) is evaluated before the first-claim exemption check (userUtilizationTarget == 0).",
+        "// If the user had nothing claimable last epoch, don't penalize them as it's their first ever claim",
+        "return BASIS_POINTS_DIVISOR;"
+      ]
+    },
+    {
+      "id": "as_penalty_condition",
+      "kind": "assumption",
+      "text": "The penalty is intended to apply only when a user's utilization delta is less than or equal to zero and they are not a first-time claimant.",
+      "modality": "inferred",
+      "entity_ids": [
+        "trust_bonding"
+      ],
+      "evidence": [
+        "The TrustBonding contract uses a utilization ratio to scale user rewards. If a user's utilization delta is less than or equal to zero (meaning they did not actively increase their participation in the MultiVault), their yield is slashed to the personalUtilizationLowerBound (default 2500, or 25%).",
+        "However, the developers explicitly intended to exempt new users from this penalty on their first claim. As noted in the comments at line 527: \"If the user had nothing claimable last epoch, don't penalize them as it's their first ever claim.\" Due to an execution ordering error in _getPersonalUtilizationRatio, this exemption is unreachable for passive stakers. The strict penalty check (rawUtilizationDelta <= 0) is evaluated before the first-claim exemption check (userUtilizationTarget == 0)."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_compute_raw_delta",
+    "a_evaluate_strict_penalty_check",
+    "a_return_lower_bound_early"
+  ],
+  "ambiguities": [
+    "Report does not state whether the first-claim scenario was actually observed on-chain; it is described conditionally.",
+    "Exact numeric yield loss depends on the user's matured yield, which is not quantified beyond 'up to 75%'.",
+    "No explicit actor/authorization clause is given; the passive user is the affected party, not an unauthorized caller."
+  ]
+}

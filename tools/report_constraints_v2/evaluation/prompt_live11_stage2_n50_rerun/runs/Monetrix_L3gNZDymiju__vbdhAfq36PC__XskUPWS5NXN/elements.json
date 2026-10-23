@@ -1,0 +1,261 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Monetrix Vault surplus accounting and yield settlement against HyperLiquid BLP borrow/supply state",
+    "environment": "HyperLiquid EVM 0x811 BORROW_LEND_USER_STATE precompile; MonetrixAccountant/MonetrixVault/PrecompileReader",
+    "evidence": [
+      "Borrow leg of 0x811 (BORROW_LEND_USER_STATE) is silently discarded, allowing phantom surplus to drain principal as yield once Vault has any PM auto-borrow position",
+      "`borrow.value` is outstanding debt (principal + accrued interest); `supply.value` is the user's lent balance. For solvency accounting, both legs matter: a user with `supply.value=60k` and `borrow.value=40k` has net BLP exposure of `+20k`, not `+60k`.",
+      "Per HyperLiquid's official Portfolio Margin docs, once PM is enabled on a Vault account, borrows happen automatically — pure adverse price movement against existing collateral is enough to trigger an auto-borrow. No operator action required.",
+      "`PrecompileReader.suppliedBalance` only reads the fourth uint64 slot:",
+      "(,,, supplied) = abi.decode(res, (uint64, uint64, uint64, uint64));",
+      "A repo-wide grep `grep -rn \"borrow\" src/` confirms there is **zero** code anywhere in scope that reads `borrow.basis` or `borrow.value` — neither `PrecompileReader`, `MonetrixAccountant`, `MonetrixVault`, nor `TokenMath`.",
+      "perp accountValue + L1 spot USDC + Σ supply.value + Σ spot hedge × oraclePx + HLP equity",
+      "`borrow.value` is never subtracted. Once an auto-borrow triggers, `totalBackingSigned()` overstates real net assets by exactly the borrow amount.",
+      "- INV-1 (peg solvency) — reported backing > real backing",
+      "- INV-7 (Gate 3 distributable cap) — phantom surplus passes the gate",
+      "- INV-9 (Σ proposedYield ≤ Σ surplus) — `settle` accepts unbacked yield",
+      "2. Vault opens a hedge or carries a spot position. HyperLiquid's PM auto-borrow triggers due to adverse price movement (e.g. BTC drops). The Vault's L1 account now shows: spot USDC = +X, 0x811 borrow.value = +X. Real net assets unchanged.",
+      "3. The Operator's keeper computes `surplus()` from on-chain state. The Accountant reports `surplus = +X` (the borrow leg is invisible). The keeper proposes yield up to this phantom surplus.",
+      "4. `vault.settle(proposedYield)` passes Gate 3 (because reported `distributableSurplus > 0`) and Gate 4 (annualized cap, easy to stay under for moderate amounts), then transfers `proposedYield` USDC from the Vault's principal pool to YieldEscrow.",
+      "5. `distributeYield` routes that USDC to sUSDM stakers (mints USDM yield), InsuranceFund, and Foundation. The principal that backed USDM is now permanently displaced."
+    ]
+  },
+  "entities": [
+    {
+      "id": "vault",
+      "name": "Monetrix Vault",
+      "role": "contract",
+      "evidence": [
+        "1. Vault is in production with USDM minted 1:1 against USDC. PM is activated on the Vault's L1 account.",
+        "4. `vault.settle(proposedYield)` passes Gate 3 (because reported `distributableSurplus > 0`) and Gate 4 (annualized cap, easy to stay under for moderate amounts), then transfers `proposedYield` USDC from the Vault's principal pool to YieldEscrow."
+      ]
+    },
+    {
+      "id": "accountant",
+      "name": "MonetrixAccountant",
+      "role": "contract",
+      "evidence": [
+        "Consequently `MonetrixAccountant._readL1Backing` sums:",
+        "perp accountValue + L1 spot USDC + Σ supply.value + Σ spot hedge × oraclePx + HLP equity"
+      ]
+    },
+    {
+      "id": "precompile_reader",
+      "name": "PrecompileReader",
+      "role": "contract",
+      "evidence": [
+        "`PrecompileReader.suppliedBalance` only reads the fourth uint64 slot:",
+        "(,,, supplied) = abi.decode(res, (uint64, uint64, uint64, uint64));"
+      ]
+    },
+    {
+      "id": "blp_precompile",
+      "name": "0x811 BORROW_LEND_USER_STATE precompile",
+      "role": "contract",
+      "evidence": [
+        "HyperLiquid's `0x0000…0811` precompile is `BORROW_LEND_USER_STATE_PRECOMPILE_ADDRESS` (per `hyperliquid-dev/hyper-evm-lib/src/PrecompileLib.sol` and the official `L1Read.sol`). It returns the struct:",
+        "— ABI-encoded as four sequential `uint64` slots: `(borrow.basis, borrow.value, supply.basis, supply.value)`."
+      ]
+    },
+    {
+      "id": "keeper",
+      "name": "Operator keeper",
+      "role": "other",
+      "evidence": [
+        "3. The Operator's keeper computes `surplus()` from on-chain state. The Accountant reports `surplus = +X` (the borrow leg is invisible). The keeper proposes yield up to this phantom surplus.",
+        "The attack does not require Operator collusion — a buggy or rational keeper that trusts on-chain `surplus()` will mechanically propose phantom yield."
+      ]
+    },
+    {
+      "id": "principal_pool",
+      "name": "Vault principal pool / USDC backing",
+      "role": "asset",
+      "evidence": [
+        "4. `vault.settle(proposedYield)` passes Gate 3 (because reported `distributableSurplus > 0`) and Gate 4 (annualized cap, easy to stay under for moderate amounts), then transfers `proposedYield` USDC from the Vault's principal pool to YieldEscrow.",
+        "5. `distributeYield` routes that USDC to sUSDM stakers (mints USDM yield), InsuranceFund, and Foundation. The principal that backed USDM is now permanently displaced."
+      ]
+    },
+    {
+      "id": "yield_escrow",
+      "name": "YieldEscrow",
+      "role": "contract",
+      "evidence": [
+        "4. `vault.settle(proposedYield)` passes Gate 3 (because reported `distributableSurplus > 0`) and Gate 4 (annualized cap, easy to stay under for moderate amounts), then transfers `proposedYield` USDC from the Vault's principal pool to YieldEscrow."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "pm_auto_borrow_active",
+      "kind": "precondition",
+      "text": "Portfolio Margin is enabled on the Vault's L1 account and an auto-borrow has triggered, so the account shows spot USDC +X and 0x811 borrow.value = +X with real net assets unchanged.",
+      "modality": "potential",
+      "entity_ids": [
+        "vault",
+        "blp_precompile"
+      ],
+      "evidence": [
+        "Per HyperLiquid's official Portfolio Margin docs, once PM is enabled on a Vault account, borrows happen automatically — pure adverse price movement against existing collateral is enough to trigger an auto-borrow. No operator action required.",
+        "2. Vault opens a hedge or carries a spot position. HyperLiquid's PM auto-borrow triggers due to adverse price movement (e.g. BTC drops). The Vault's L1 account now shows: spot USDC = +X, 0x811 borrow.value = +X. Real net assets unchanged."
+      ]
+    },
+    {
+      "id": "keeper_reads_surplus",
+      "kind": "precondition",
+      "text": "The Operator's keeper computes surplus() from on-chain state before proposing yield.",
+      "modality": "potential",
+      "entity_ids": [
+        "keeper",
+        "accountant"
+      ],
+      "evidence": [
+        "3. The Operator's keeper computes `surplus()` from on-chain state. The Accountant reports `surplus = +X` (the borrow leg is invisible). The keeper proposes yield up to this phantom surplus."
+      ]
+    },
+    {
+      "id": "borrow_leg_discarded",
+      "kind": "root_cause",
+      "text": "PrecompileReader.suppliedBalance decodes only the fourth uint64 slot, discarding borrow.basis and borrow.value, and no code in scope reads the borrow leg.",
+      "modality": "asserted",
+      "entity_ids": [
+        "precompile_reader",
+        "blp_precompile"
+      ],
+      "evidence": [
+        "`PrecompileReader.suppliedBalance` only reads the fourth uint64 slot:",
+        "(,,, supplied) = abi.decode(res, (uint64, uint64, uint64, uint64));",
+        "// ^^^ borrow.basis, borrow.value, supply.basis discarded",
+        "A repo-wide grep `grep -rn \"borrow\" src/` confirms there is **zero** code anywhere in scope that reads `borrow.basis` or `borrow.value` — neither `PrecompileReader`, `MonetrixAccountant`, `MonetrixVault`, nor `TokenMath`."
+      ]
+    },
+    {
+      "id": "backing_overstated",
+      "kind": "root_cause",
+      "text": "_readL1Backing sums supply.value without subtracting borrow.value, so totalBackingSigned() overstates real net assets by exactly the borrow amount.",
+      "modality": "asserted",
+      "entity_ids": [
+        "accountant"
+      ],
+      "evidence": [
+        "perp accountValue + L1 spot USDC + Σ supply.value + Σ spot hedge × oraclePx + HLP equity",
+        "`borrow.value` is never subtracted. Once an auto-borrow triggers, `totalBackingSigned()` overstates real net assets by exactly the borrow amount."
+      ]
+    },
+    {
+      "id": "keeper_proposes_phantom_yield",
+      "kind": "action",
+      "text": "The keeper proposes yield up to the phantom surplus reported by the Accountant.",
+      "modality": "potential",
+      "entity_ids": [
+        "keeper",
+        "accountant"
+      ],
+      "evidence": [
+        "3. The Operator's keeper computes `surplus()` from on-chain state. The Accountant reports `surplus = +X` (the borrow leg is invisible). The keeper proposes yield up to this phantom surplus."
+      ]
+    },
+    {
+      "id": "settle_transfers_principal",
+      "kind": "action",
+      "text": "vault.settle(proposedYield) passes Gate 3 and Gate 4 and transfers proposedYield USDC from the Vault's principal pool to YieldEscrow.",
+      "modality": "potential",
+      "entity_ids": [
+        "vault",
+        "yield_escrow",
+        "principal_pool"
+      ],
+      "evidence": [
+        "4. `vault.settle(proposedYield)` passes Gate 3 (because reported `distributableSurplus > 0`) and Gate 4 (annualized cap, easy to stay under for moderate amounts), then transfers `proposedYield` USDC from the Vault's principal pool to YieldEscrow."
+      ]
+    },
+    {
+      "id": "distribute_routes_yield",
+      "kind": "action",
+      "text": "distributeYield routes the transferred USDC to sUSDM stakers, InsuranceFund, and Foundation.",
+      "modality": "potential",
+      "entity_ids": [
+        "vault",
+        "yield_escrow"
+      ],
+      "evidence": [
+        "5. `distributeYield` routes that USDC to sUSDM stakers (mints USDM yield), InsuranceFund, and Foundation. The principal that backed USDM is now permanently displaced."
+      ]
+    },
+    {
+      "id": "intent_backing_not_overstated",
+      "kind": "security_intent",
+      "text": "Reported backing must not exceed real net assets; the borrow leg must be accounted so totalBackingSigned() reflects net BLP exposure.",
+      "modality": "inferred",
+      "entity_ids": [
+        "accountant"
+      ],
+      "evidence": [
+        "`borrow.value` is outstanding debt (principal + accrued interest); `supply.value` is the user's lent balance. For solvency accounting, both legs matter: a user with `supply.value=60k` and `borrow.value=40k` has net BLP exposure of `+20k`, not `+60k`.",
+        "- INV-1 (peg solvency) — reported backing > real backing"
+      ]
+    },
+    {
+      "id": "intent_gate3_cap",
+      "kind": "security_intent",
+      "text": "Gate 3 distributable cap must not pass phantom surplus; settle must only accept yield backed by real surplus.",
+      "modality": "inferred",
+      "entity_ids": [
+        "vault"
+      ],
+      "evidence": [
+        "- INV-7 (Gate 3 distributable cap) — phantom surplus passes the gate",
+        "- INV-9 (Σ proposedYield ≤ Σ surplus) — `settle` accepts unbacked yield"
+      ]
+    },
+    {
+      "id": "impact_principal_displaced",
+      "kind": "impact",
+      "text": "Principal that backed USDM is permanently displaced from the Vault's principal pool.",
+      "modality": "potential",
+      "entity_ids": [
+        "principal_pool",
+        "vault"
+      ],
+      "evidence": [
+        "5. `distributeYield` routes that USDC to sUSDM stakers (mints USDM yield), InsuranceFund, and Foundation. The principal that backed USDM is now permanently displaced."
+      ]
+    },
+    {
+      "id": "impact_unbacked_yield",
+      "kind": "impact",
+      "text": "settle accepts unbacked yield, violating Σ proposedYield ≤ Σ surplus.",
+      "modality": "potential",
+      "entity_ids": [
+        "vault"
+      ],
+      "evidence": [
+        "- INV-9 (Σ proposedYield ≤ Σ surplus) — `settle` accepts unbacked yield"
+      ]
+    },
+    {
+      "id": "impact_peg_solvency",
+      "kind": "impact",
+      "text": "Reported backing exceeds real backing, violating peg solvency.",
+      "modality": "potential",
+      "entity_ids": [
+        "accountant",
+        "vault"
+      ],
+      "evidence": [
+        "- INV-1 (peg solvency) — reported backing > real backing"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "keeper_proposes_phantom_yield",
+    "settle_transfers_principal",
+    "distribute_routes_yield"
+  ],
+  "ambiguities": [
+    "Report does not establish a concrete prior transaction or numeric X; auto-borrow trigger is conditional.",
+    "Whether the keeper is buggy or rational is not resolved; no operator collusion is asserted.",
+    "Exact Gate 4 annualized cap values are not given.",
+    "Whether distributeYield mints USDM yield versus transfers USDC is described loosely."
+  ]
+}

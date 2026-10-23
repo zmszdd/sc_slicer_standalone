@@ -1,0 +1,826 @@
+{
+  "schema_version": "stage2-semantic-bundle/1",
+  "core_formalization_status": "formalized_candidate",
+  "acceptance_status": "candidate_checks_passed",
+  "report_warnings": [],
+  "unassigned_impact_ids": [],
+  "claims": [
+    {
+      "id": "impact_claim_i_bundle_revert_b7b30674",
+      "formalization_status": "formalized_candidate",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity.",
+        "direct_counterexample_status": "passed"
+      },
+      "review_reasons": [],
+      "properties": {
+        "preconditions": {
+          "text": "A valid on-chain ECDSA signature from an AtomWallet owner exists and is observable after an executed UserOp.; Any observer can derive a high-s counterpart of a valid owner signature via s' = curve_order - s, v' = v XOR 1, recovering the identical signer address.; A high-s signature causes OpenZeppelin ECDSA tryRecover to return RecoverError.InvalidSignatureS.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c9c5d7818_valid_owner_signature_exists"
+              },
+              {
+                "var": "c9c5d7818_high_s_counterpart_derivable"
+              },
+              {
+                "var": "c9c5d7818_high_s_triggers_invalid_signature_s"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_valid_owner_signature",
+            "p_high_s_derivable",
+            "p_high_s_triggers_branch"
+          ],
+          "evidence": [
+            "`RecoverError.InvalidSignatureS` is triggered by OpenZeppelin's ECDSA library when the `s` component of a signature falls in the upper half of the secp256k1 curve order (high-s signature). While modern wallets following EIP-2 canonical signature rules produce low-s signatures, high-s signatures are technically valid ECDSA signatures. Crucially, any observer of a valid owner signature can derive a high-s counterpart by computing `s' = curve_order - s` — the recovered address is identical, making this a constructable input against any live wallet.",
+            "1. **Adversary-constructable griefing**: Given any valid on-chain ECDSA signature from an AtomWallet owner (observable after any executed UserOp), an adversary derives the high-s counterpart: `s' = secp256k1_order - s`, `v' = v XOR 1`. The recovered address is identical to the original signer, so the signature appears legitimate until `tryRecover` rejects the high-s value. The adversary can then repeatedly submit griefing UserOps targeting any AtomWallet."
+          ]
+        },
+        "safety": {
+          "text": "Signature validation should return SIG_VALIDATION_FAILED without reverting on signature mismatch, including high-s signatures.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c9c5d7818_valid_owner_signature_exists"
+                  },
+                  {
+                    "var": "c9c5d7818_high_s_counterpart_derivable"
+                  },
+                  {
+                    "var": "c9c5d7818_high_s_triggers_invalid_signature_s"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "c9c5d7818_bundle_handleops_reverted"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_no_revert_on_mismatch"
+          ],
+          "evidence": [
+            "> \"MUST validate that the signature is a valid signature of the userOpHash, and SHOULD return SIG_VALIDATION_FAILED (1) without reverting on signature mismatch.\"",
+            "The `InvalidSignature` branch correctly returns `_packValidationData(true, ...)` (i.e. `SIG_VALIDATION_FAILED`). However, the `InvalidSignatureS` branch unconditionally reverts instead."
+          ]
+        },
+        "effects": {
+          "text": "The revert propagates through the entire bundle, causing the bundler's handleOps transaction to fail on-chain and lose gas.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c9c5d7818_valid_owner_signature_exists"
+                  },
+                  {
+                    "var": "c9c5d7818_high_s_counterpart_derivable"
+                  },
+                  {
+                    "var": "c9c5d7818_high_s_triggers_invalid_signature_s"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c9c5d7818_bundle_handleops_reverted"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_bundle_revert"
+          ],
+          "evidence": [
+            "When `validateUserOp` reverts instead of returning `SIG_VALIDATION_FAILED`, the ERC-4337 EntryPoint cannot distinguish a signature failure from a critical wallet bug. During on-chain `handleOps` execution, the EntryPoint calls `validateUserOp` without a try/catch — a revert propagates through the entire bundle, causing the bundler's transaction to fail.",
+            "2. **Bundler availability disruption**: When bundlers simulate the griefing UserOp, `validateUserOp` reverts. Depending on EntryPoint version and bundler implementation: (a) the simulation failure wastes bundler compute on every griefing submission, (b) if the bundler's error handling does not distinguish a wallet revert from a transient failure, it may retry or blacklist the wallet, and (c) in EntryPoint implementations where validation reverts propagate to the outer `handleOps` call, the bundler's entire batch transaction fails on-chain, causing gas loss."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_valid_owner_signature",
+            "p_high_s_derivable",
+            "p_high_s_triggers_branch"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_no_revert_on_mismatch"
+          ],
+          "args.0": [
+            "si_no_revert_on_mismatch"
+          ],
+          "args.1": [
+            "si_no_revert_on_mismatch"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_bundle_revert"
+          ],
+          "args.0": [
+            "i_bundle_revert"
+          ],
+          "args.1": [
+            "i_bundle_revert"
+          ],
+          "args.1.args.0": [
+            "i_bundle_revert"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_bundle_revert",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "scope": "ERC-4337 UserOp signature validation in AtomWallet._validateSignature",
+      "modality": "potential",
+      "assumptions": [
+        "The high-s signature is a 65-byte signature, so the README known issue about signature length does not exclude it.",
+        "EntryPoint calls validateUserOp without try/catch during handleOps, so a validation revert propagates to the bundle transaction."
+      ],
+      "unresolved": []
+    },
+    {
+      "id": "impact_claim_i_bundler_disruption_9fe03115",
+      "formalization_status": "formalized_candidate",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity.",
+        "direct_counterexample_status": "passed"
+      },
+      "review_reasons": [],
+      "properties": {
+        "preconditions": {
+          "text": "A valid on-chain ECDSA signature from an AtomWallet owner exists and is observable after an executed UserOp.; Any observer can derive a high-s counterpart of a valid owner signature via s' = curve_order - s, v' = v XOR 1, recovering the identical signer address.; A high-s signature causes OpenZeppelin ECDSA tryRecover to return RecoverError.InvalidSignatureS.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c6b7b7a7e_valid_owner_signature_exists"
+              },
+              {
+                "var": "c6b7b7a7e_high_s_signature_derivable"
+              },
+              {
+                "var": "c6b7b7a7e_high_s_triggers_invalid_s_branch"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_valid_owner_signature",
+            "p_high_s_derivable",
+            "p_high_s_triggers_branch"
+          ],
+          "evidence": [
+            "`RecoverError.InvalidSignatureS` is triggered by OpenZeppelin's ECDSA library when the `s` component of a signature falls in the upper half of the secp256k1 curve order (high-s signature). While modern wallets following EIP-2 canonical signature rules produce low-s signatures, high-s signatures are technically valid ECDSA signatures. Crucially, any observer of a valid owner signature can derive a high-s counterpart by computing `s' = curve_order - s` — the recovered address is identical, making this a constructable input against any live wallet.",
+            "1. **Adversary-constructable griefing**: Given any valid on-chain ECDSA signature from an AtomWallet owner (observable after any executed UserOp), an adversary derives the high-s counterpart: `s' = secp256k1_order - s`, `v' = v XOR 1`. The recovered address is identical to the original signer, so the signature appears legitimate until `tryRecover` rejects the high-s value. The adversary can then repeatedly submit griefing UserOps targeting any AtomWallet."
+          ]
+        },
+        "safety": {
+          "text": "Signature validation should return SIG_VALIDATION_FAILED without reverting on signature mismatch, including high-s signatures.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c6b7b7a7e_valid_owner_signature_exists"
+                  },
+                  {
+                    "var": "c6b7b7a7e_high_s_signature_derivable"
+                  },
+                  {
+                    "var": "c6b7b7a7e_high_s_triggers_invalid_s_branch"
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c6b7b7a7e_validation_returns_sig_validation_failed_without_rever"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c6b7b7a7e_bundler_disruption_occurs"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_no_revert_on_mismatch"
+          ],
+          "evidence": [
+            "> \"MUST validate that the signature is a valid signature of the userOpHash, and SHOULD return SIG_VALIDATION_FAILED (1) without reverting on signature mismatch.\"",
+            "The `InvalidSignature` branch correctly returns `_packValidationData(true, ...)` (i.e. `SIG_VALIDATION_FAILED`). However, the `InvalidSignatureS` branch unconditionally reverts instead."
+          ]
+        },
+        "effects": {
+          "text": "Bundler simulation failures waste compute and may cause retries or blacklisting of the wallet.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c6b7b7a7e_valid_owner_signature_exists"
+                  },
+                  {
+                    "var": "c6b7b7a7e_high_s_signature_derivable"
+                  },
+                  {
+                    "var": "c6b7b7a7e_high_s_triggers_invalid_s_branch"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "var": "c6b7b7a7e_validation_returns_sig_validation_failed_without_rever"
+                      },
+                      {
+                        "op": "not",
+                        "args": [
+                          {
+                            "var": "c6b7b7a7e_bundler_disruption_occurs"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_bundler_disruption"
+          ],
+          "evidence": [
+            "2. **Bundler availability disruption**: When bundlers simulate the griefing UserOp, `validateUserOp` reverts. Depending on EntryPoint version and bundler implementation: (a) the simulation failure wastes bundler compute on every griefing submission, (b) if the bundler's error handling does not distinguish a wallet revert from a transient failure, it may retry or blacklist the wallet, and (c) in EntryPoint implementations where validation reverts propagate to the outer `handleOps` call, the bundler's entire batch transaction fails on-chain, causing gas loss."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_valid_owner_signature",
+            "p_high_s_derivable",
+            "p_high_s_triggers_branch"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_no_revert_on_mismatch"
+          ],
+          "args.0": [
+            "si_no_revert_on_mismatch"
+          ],
+          "args.1": [
+            "si_no_revert_on_mismatch"
+          ],
+          "args.1.args.1": [
+            "si_no_revert_on_mismatch"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_bundler_disruption"
+          ],
+          "args.0": [
+            "i_bundler_disruption"
+          ],
+          "args.1": [
+            "i_bundler_disruption"
+          ],
+          "args.1.args.0": [
+            "i_bundler_disruption"
+          ],
+          "args.1.args.0.args.1": [
+            "i_bundler_disruption"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_bundler_disruption",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "scope": "ERC-4337 UserOp signature validation in AtomWallet._validateSignature",
+      "modality": "potential",
+      "assumptions": [
+        "The high-s signature is a 65-byte signature in scope (README known issue covers only signature length, not s-value canonicity).",
+        "EntryPoint calls validateUserOp without try/catch during handleOps.",
+        "The adversary is an observer of the public on-chain signature and submits griefing UserOps."
+      ],
+      "unresolved": []
+    },
+    {
+      "id": "impact_claim_i_wallet_degradation_7d8f3e41",
+      "formalization_status": "formalized_candidate",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity.",
+        "direct_counterexample_status": "passed"
+      },
+      "review_reasons": [],
+      "properties": {
+        "preconditions": {
+          "text": "A valid on-chain ECDSA signature from an AtomWallet owner exists and is observable after an executed UserOp.; Any observer can derive a high-s counterpart of a valid owner signature via s' = curve_order - s, v' = v XOR 1, recovering the identical signer address.; A high-s signature causes OpenZeppelin ECDSA tryRecover to return RecoverError.InvalidSignatureS.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "caff8a7d2_owner_signature_valid"
+              },
+              {
+                "var": "caff8a7d2_high_s_derivable"
+              },
+              {
+                "var": "caff8a7d2_high_s_triggers_invalid_s"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_valid_owner_signature",
+            "p_high_s_derivable",
+            "p_high_s_triggers_branch"
+          ],
+          "evidence": [
+            "`RecoverError.InvalidSignatureS` is triggered by OpenZeppelin's ECDSA library when the `s` component of a signature falls in the upper half of the secp256k1 curve order (high-s signature). While modern wallets following EIP-2 canonical signature rules produce low-s signatures, high-s signatures are technically valid ECDSA signatures. Crucially, any observer of a valid owner signature can derive a high-s counterpart by computing `s' = curve_order - s` — the recovered address is identical, making this a constructable input against any live wallet.",
+            "1. **Adversary-constructable griefing**: Given any valid on-chain ECDSA signature from an AtomWallet owner (observable after any executed UserOp), an adversary derives the high-s counterpart: `s' = secp256k1_order - s`, `v' = v XOR 1`. The recovered address is identical to the original signer, so the signature appears legitimate until `tryRecover` rejects the high-s value. The adversary can then repeatedly submit griefing UserOps targeting any AtomWallet."
+          ]
+        },
+        "safety": {
+          "text": "Signature validation should return SIG_VALIDATION_FAILED without reverting on signature mismatch, including high-s signatures.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "caff8a7d2_owner_signature_valid"
+                  },
+                  {
+                    "var": "caff8a7d2_high_s_derivable"
+                  },
+                  {
+                    "var": "caff8a7d2_high_s_triggers_invalid_s"
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "caff8a7d2_validation_reverts"
+                      }
+                    ]
+                  },
+                  {
+                    "var": "caff8a7d2_wallet_serviced"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_no_revert_on_mismatch"
+          ],
+          "evidence": [
+            "> \"MUST validate that the signature is a valid signature of the userOpHash, and SHOULD return SIG_VALIDATION_FAILED (1) without reverting on signature mismatch.\"",
+            "The `InvalidSignature` branch correctly returns `_packValidationData(true, ...)` (i.e. `SIG_VALIDATION_FAILED`). However, the `InvalidSignatureS` branch unconditionally reverts instead."
+          ]
+        },
+        "effects": {
+          "text": "Persistent griefing can cause bundlers to deprioritize or refuse to service the targeted AtomWallet, degrading its ERC-4337 transaction ability.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "caff8a7d2_owner_signature_valid"
+                  },
+                  {
+                    "var": "caff8a7d2_high_s_derivable"
+                  },
+                  {
+                    "var": "caff8a7d2_high_s_triggers_invalid_s"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "op": "not",
+                        "args": [
+                          {
+                            "var": "caff8a7d2_validation_reverts"
+                          }
+                        ]
+                      },
+                      {
+                        "var": "caff8a7d2_wallet_serviced"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_wallet_degradation"
+          ],
+          "evidence": [
+            "3. **Wallet degradation**: Persistent griefing can cause bundlers to deprioritize or refuse to service the targeted AtomWallet, degrading the user's ability to submit transactions through the ERC-4337 infrastructure."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_valid_owner_signature",
+            "p_high_s_derivable",
+            "p_high_s_triggers_branch"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_no_revert_on_mismatch"
+          ],
+          "args.0": [
+            "si_no_revert_on_mismatch"
+          ],
+          "args.1": [
+            "si_no_revert_on_mismatch"
+          ],
+          "args.1.args.0": [
+            "si_no_revert_on_mismatch"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_wallet_degradation"
+          ],
+          "args.0": [
+            "i_wallet_degradation"
+          ],
+          "args.1": [
+            "i_wallet_degradation"
+          ],
+          "args.1.args.0": [
+            "i_wallet_degradation"
+          ],
+          "args.1.args.0.args.0": [
+            "i_wallet_degradation"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_wallet_degradation",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "scope": "ERC-4337 UserOp signature validation in AtomWallet._validateSignature",
+      "modality": "potential",
+      "assumptions": [
+        "The high-s signature is a 65-byte signature and is in scope per the README known-issue scope.",
+        "EntryPoint calls validateUserOp without try/catch so a validation revert is not contained."
+      ],
+      "unresolved": []
+    }
+  ],
+  "report_impact_coverage": [
+    {
+      "impact_id": "i_bundle_revert",
+      "evidence": [
+        "When `validateUserOp` reverts instead of returning `SIG_VALIDATION_FAILED`, the ERC-4337 EntryPoint cannot distinguish a signature failure from a critical wallet bug. During on-chain `handleOps` execution, the EntryPoint calls `validateUserOp` without a try/catch — a revert propagates through the entire bundle, causing the bundler's transaction to fail.",
+        "2. **Bundler availability disruption**: When bundlers simulate the griefing UserOp, `validateUserOp` reverts. Depending on EntryPoint version and bundler implementation: (a) the simulation failure wastes bundler compute on every griefing submission, (b) if the bundler's error handling does not distinguish a wallet revert from a transient failure, it may retry or blacklist the wallet, and (c) in EntryPoint implementations where validation reverts propagate to the outer `handleOps` call, the bundler's entire batch transaction fails on-chain, causing gas loss."
+      ],
+      "claim_ids": [
+        "impact_claim_i_bundle_revert_b7b30674"
+      ],
+      "status": "formalized",
+      "reason": "Program-generated exact coverage for selected direct impact."
+    },
+    {
+      "impact_id": "i_bundler_disruption",
+      "evidence": [
+        "2. **Bundler availability disruption**: When bundlers simulate the griefing UserOp, `validateUserOp` reverts. Depending on EntryPoint version and bundler implementation: (a) the simulation failure wastes bundler compute on every griefing submission, (b) if the bundler's error handling does not distinguish a wallet revert from a transient failure, it may retry or blacklist the wallet, and (c) in EntryPoint implementations where validation reverts propagate to the outer `handleOps` call, the bundler's entire batch transaction fails on-chain, causing gas loss."
+      ],
+      "claim_ids": [
+        "impact_claim_i_bundler_disruption_9fe03115"
+      ],
+      "status": "formalized",
+      "reason": "Program-generated exact coverage for selected direct impact."
+    },
+    {
+      "impact_id": "i_wallet_degradation",
+      "evidence": [
+        "3. **Wallet degradation**: Persistent griefing can cause bundlers to deprioritize or refuse to service the targeted AtomWallet, degrading the user's ability to submit transactions through the ERC-4337 infrastructure."
+      ],
+      "claim_ids": [
+        "impact_claim_i_wallet_degradation_7d8f3e41"
+      ],
+      "status": "formalized",
+      "reason": "Program-generated exact coverage for selected direct impact."
+    }
+  ],
+  "coverage_is_model_declared_not_semantically_verified": true,
+  "human_semantic_review_required": true,
+  "code_alignment_status": "not_attempted",
+  "execution_ready": false,
+  "consistency_verdict": "not_evaluated",
+  "verdict_policy": "signals-v2",
+  "report_ambiguities_declared": [
+    "Report does not state whether a real griefing transaction was observed; impacts are described as potential.",
+    "Whether validation revert propagates to handleOps depends on EntryPoint version and bundler implementation.",
+    "No explicit statement that the adversary is unauthorized beyond being an observer of a public signature."
+  ],
+  "formalization_limitations_declared": [
+    "Formalizes only the i_bundle_revert impact; bundler disruption and wallet degradation are handled in separate passes.",
+    "The condition encodes the report's high-s signature scenario; the general no-revert-on-mismatch requirement is represented through that scenario.",
+    "The bundler disruption impact is formalized as a qualitative Boolean because the report gives no numeric definition of compute waste, retries, or blacklisting.",
+    "Only the i_bundler_disruption impact is formalized; bundle revert and wallet degradation impacts are handled in separate passes.",
+    "The condition encodes the concrete high-s scenario; the intent's general 'signature mismatch' scope is represented only through this subcase.",
+    "The wallet-servicing outcome is represented as a grounded Boolean because the report gives no numeric definition of deprioritization or refusal.",
+    "Impact is formalized as the potential degradation scenario; no concrete griefing transaction is asserted."
+  ],
+  "coverage_status": "complete",
+  "coverage_gaps": [],
+  "unassigned_precondition_ids": [],
+  "precondition_coverage_is_structural_not_semantic": true,
+  "piv_completeness_gate": {
+    "claims_present": true,
+    "all_claims_have_p_i_v": true,
+    "relationship_checks_are_structural_only": true,
+    "semantic_fidelity_verified": false
+  },
+  "observability_review": {
+    "schema_version": "observability-review/1",
+    "claims": [
+      {
+        "claim_id": "impact_claim_i_bundle_revert_b7b30674",
+        "safety_variables": [
+          "c9c5d7818_bundle_handleops_reverted",
+          "c9c5d7818_high_s_counterpart_derivable",
+          "c9c5d7818_high_s_triggers_invalid_signature_s",
+          "c9c5d7818_valid_owner_signature_exists"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      },
+      {
+        "claim_id": "impact_claim_i_bundler_disruption_9fe03115",
+        "safety_variables": [
+          "c6b7b7a7e_bundler_disruption_occurs",
+          "c6b7b7a7e_high_s_signature_derivable",
+          "c6b7b7a7e_high_s_triggers_invalid_s_branch",
+          "c6b7b7a7e_valid_owner_signature_exists",
+          "c6b7b7a7e_validation_returns_sig_validation_failed_without_rever"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      },
+      {
+        "claim_id": "impact_claim_i_wallet_degradation_7d8f3e41",
+        "safety_variables": [
+          "caff8a7d2_high_s_derivable",
+          "caff8a7d2_high_s_triggers_invalid_s",
+          "caff8a7d2_owner_signature_valid",
+          "caff8a7d2_validation_reverts",
+          "caff8a7d2_wallet_serviced"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      }
+    ],
+    "review_status": "no_structural_warning",
+    "observability_established": false,
+    "human_semantic_review_required": true,
+    "limitations": [
+      "I-only Boolean may be a legitimate observation; hints are not automatic errors",
+      "No code binding, predicate-name interpretation or report truth assessment",
+      "Both SAT is a review hint, not a universal UNSAT requirement"
+    ],
+    "model_calls": 0
+  },
+  "provenance": {
+    "code_provided_to_model": false,
+    "contract_file_read": false,
+    "paired_case_checked": true,
+    "case_id": "Intuition_2VUsxVJwReb__2Funzps4cEA__Ae6KNbFGbBN",
+    "submission_uid": "Ae6KNbFGbBN",
+    "finding_uid": "2Funzps4cEA",
+    "target_test": "test_L01_highS_reverts_instead_of_SIG_VALIDATION_FAILED",
+    "declared_code_sha256": "fc71e265f39d3d3b450ff492034d9bc18e9d2cfdc2ed6268c03353791fa02b8c",
+    "report_path": "/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/Intuition_2VUsxVJwReb__2Funzps4cEA__Ae6KNbFGbBN/report.json",
+    "report_sha256": "388fe6fc4a7c0d18809676e6f92d803641e9b7a8cd7ccd36756816f9830b67bc",
+    "report_input_sha256": "ced1542d21ae561a2c5d5ae2b40a478cc367b355c527ddf8683f0c57d46553d3",
+    "report_input_policy": {
+      "source_format": "report.json",
+      "selected_fields": [
+        "title",
+        "body.description_and_impact"
+      ],
+      "excluded_fields": [
+        "proof_of_concept",
+        "recommended_mitigation",
+        "source_record",
+        "pairing",
+        "contract_code"
+      ],
+      "policy_version": "report-json-input/4",
+      "title_deduplicated": false
+    },
+    "candidate_origin": "external_model",
+    "elements_source": null,
+    "formalization_source": null,
+    "prompt_version": "semantic-live",
+    "prompt_features": {
+      "strict_piv": true,
+      "plan_synthesis": true,
+      "structured_unresolved": true,
+      "numeric_guard": true,
+      "address_guard": true,
+      "lean_formal_input": true,
+      "step_normalization": true,
+      "core_count": true,
+      "id_normalization": true,
+      "relation_alignment": true,
+      "local_repair": true,
+      "referenced_catalog": true,
+      "allowed_statement_ids": true,
+      "protocol_identifier_exclusion": false,
+      "assumption_numeric_relief": true,
+      "duplicate_predicate_gate": true,
+      "requirement_source_review": true,
+      "intent_scope_review": true,
+      "partial_formalization": true,
+      "example_pinning_review": true,
+      "placeholder_predicate_review": true,
+      "semantic_faithfulness_audit": true,
+      "mixed_unit_scaling_review": true,
+      "symbol_table_review": true,
+      "impact_level_claims": true
+    },
+    "requested_formalization_scope": "core",
+    "formal_retries_allowed": 1,
+    "element_retries_allowed": 1,
+    "lean_formal_input": true,
+    "mechanical_salvage": false,
+    "model_catalog_view": "exact_id_text_without_offsets",
+    "neural_mode": "two_step",
+    "formalization_generation": "deterministic_from_plan",
+    "reference_answers_provided_to_model": false,
+    "audit_provider": "deepseek",
+    "audit_model": "deepseek-flash",
+    "model_provider": "deepseek",
+    "model_name": "deepseek-flash",
+    "deepseek_proxy_policy": "environment",
+    "prompt_resolution": "prompts.active/1",
+    "requested_evidence_mode": "ids",
+    "element_prompt_sha256": "d429348346de2bacc1083ae09dd42b15a03f398bc4adef2b8fea48a32f6abe69",
+    "formal_prompt_sha256": "87280fb7d687d4f7548bfc079c59584c34cd47d8615c1cbee553ab581601b45a",
+    "claim_verdict_policy": "signals-v2",
+    "acceptance_policy_version": "complete-piv-v1",
+    "external_model_invocations": 14,
+    "input_screening": "deepseek-report-readiness-v1"
+  },
+  "external_model_invocations": 14
+}

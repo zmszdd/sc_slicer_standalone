@@ -1,0 +1,64 @@
+Missing Balance Check Can Lead To Share Price Inflation and Greifing
+
+## Finding description
+
+When fulfilling a redeem request, there are no checks to ensure that $\text{totalAssets()}$ is greater than the amount being fulfilled for the redemption. This omission will lead to an incorrect share calculation and to griefing (DoS) for users when they try to withdraw. I will describe the issue clearly below:
+
+
+
+
+In the above function, if the current asset balance of this contract is less than the sum of $\text{totalPendingDepositAssets}$ + $\text{totalClaimableRedeemAssets}$ + $\text{totalCancelDepositAssets}$, $\text{totalAssets()}$ will return zero.
+
+Let's consider a case where User 1 has deposited $1\_00\_000$ assets. The user's deposit has gone through the three-step process ($\text{requestDeposit} + \text{fulfillDeposit} + \text{deposit}$).
+
+Now let's say another user, User 2, has deposited $10\_000$ assets. This user's deposit has also finished the three steps.
+
+Now the Investing Manager has invested $1\_00\_000$ assets in the settlement layer vault.
+
+The current gloabl state is as follows:
+
+Now user1 want to withdraw their `1_00_000` assets and they will call `requestWithdraw`.
+
+Next, the Investing Manager fulfills the order.
+
+
+Once the request is fulfilled, it updates $\text{totalClaimableRedeemAssets}$ and $\text{totalClaimableRedeemShares}$. Now the state will be as below:
+
+
+Now, if we call $\text{totalAssets()}$, it will return zero because the $\text{current\_balance}$ ($10\_000$) minus the reserved amount ($\text{totalClaimableRedeemAssets}$ of $1\_00\_000$) is less than zero. $\text{totalClaimableRedeemShares}$ will return $1\_00\_000$ (referencing the updated state after $\text{fulfillRedeemRequest}$, which is explained above).
+
+
+Now let's say a new user wants to deposit an additional $1\_00\_000$ tokens. In the $\text{fulfillDeposit}$ logic, the contract will calculate shares based on the $\text{convertNormalizedAssetsToShares}$ function from the $\text{ShareTokenUpgradable}$ contract. The function logic is below:
+
+
+
+
+
+
+
+The above function gets the current $\text{totalShares}$ and $\text{totalAssets}$ through a helper function and applies the normal share price calculation formula. The logic of the internal helper $\text{getCirculatingSupplyAndAssets}$ function is below:
+
+
+
+       
+                                      
+
+The above function calculates the $\text{totalClaimableShares}$ and $\text{totalNormalizedAssets}$ by getting balances from each vault, respectively. For each vault, it calls $\text{getClaimableSharesAndNormalizedAssets}$. The logic for $\text{getClaimableSharesAndNormalizedAssets}$ is below:
+
+
+
+
+
+As stated earlier, in the above function, $\text{totalAssets()}$ will return zero because $\text{current\_balance}$ ($10\_000$) minus $\text{totalClaimableRedeemAssets}$ ($1\_00\_000$) is less than zero. Accordingly, $\text{totalClaimableShares}$ will return $1\_00\_000$ (referencing the updated state after $\text{fulfillRedeemRequest}$, as explained above).
+
+
+Now $\text{getCirculatingSupplyAndAssets}$ function will yield $\text{circulatingSupply}$ and $\text{totalNormalizedAssets}$ as:
+
+Now, since the new user is depositing $1\_00\_000$, the number of shares the user will get is calculated as: $\mathbf{1\_00\_000 \times 10\_000 / 1\_00\_000}$, which is $\mathbf{10\_000}$ shares. This is incorrect, as the user should have received $1\_00\_000$ shares at the proper price. The magnitude of the loss depends on deposit amounts other than the fulfilled redemption. Since there is another $10\_000$ deposit by User 2, the circulating supply is $10\_000$; if there were no other users, it would be zero.
+Now, if User 1 tries to withdraw, User 1 can successfully withdraw $1\_00\_000$ tokens because their share price was calculated before the miscalculation occurred.
+
+In the same way, if User 1 tries to withdraw before someone deposits 1_00_000, User 1's transaction will revert due to insufficient funds.
+
+## Impact
+
+This will lead to share price manipulation and griefing ($\text{DoS}$) for users.

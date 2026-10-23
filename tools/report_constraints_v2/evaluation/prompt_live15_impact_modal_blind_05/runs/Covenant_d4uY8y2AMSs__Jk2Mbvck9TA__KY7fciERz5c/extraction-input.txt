@@ -1,0 +1,50 @@
+Yo-yo griefing via ETWAP lag blocks new mints and permits near-full same-block redemption in early/new markets
+
+The protocol throttles growth and exits using a time weighted average of base supply (ETWAP). Two cap rules are relevant:
+
+Mint cap (once out of bootstrap):
+Let S_cur be current base supply and ETWAP the exponential TWAP of base supply. The cap enforces
+When ETWAP is very small, any positive mint fails.
+
+Redeem cap:
+Requires a post state floor tied to ETWAP, for examplen When ETWAP is very small, very large redemptions pass.
+
+ETWAP is updated inside _calculateMarketState using an exponential half life. In the same block, elapsedTime = 0, so lastETWAPBaseSupply does not move. In the first block of market activity, ETWAP is effectively zero. The mint and redeem caps both anchor to this stale value.
+
+This creates a griefing path:
+
+Phase 1 (bootstrap no-cap): Attacker performs a very large first mint while base supply is below 2^noCapLimit. Bootstrap rules apply, so the mint is effectively uncapped.
+
+Phase 2 (same block redeem): Attacker immediately redeems roughly 99 percent in the same block. ETWAP is still near zero, so the redeem cap is loose. The attacker drains down to a small S_cur, but keeps it above the bootstrap threshold so the system considers the market out of bootstrap.
+
+Phase 3 (DoS window): Now that bootstrap is off, the mint cap applies. With ETWAP tiny, the inequality S_post ≤ 2·ETWAP blocks any honest mint. The window can last many minutes because ETWAP climbs with an exponential half life, and the attacker can keep it low relative to S_cur by touching the market periodically to advance lastUpdateTimestamp while keeping ETWAP lagging.
+
+No direct theft occurs, but honest growth is blocked and exits remain relatively unconstrained during the lag. In young or rapidly expanding markets, this breaks liveness for new lenders and can be used to shape liquidity around the attacker’s schedule.
+
+Why it happens
+
+Design coupling: Both caps reference ETWAP, which is intentionally slow moving. In the first block it is zero.
+Root cause: _calculateMarketState updates lastETWAPBaseSupply only when elapsedTime > 0, and the update uses an exponential half life (see DebtMath).
+
+Asymmetry: Mint cap is strict with small ETWAP. Redeem cap is permissive with small ETWAP.
+
+Bootstrap boundary: noCapLimit allows a large first mint with no cap. The next action in the same block can redeem most of it while ETWAP is still zero, then leave S_cur just above 2^noCapLimit, which flips on the strict mint cap for everyone else.
+
+Impact
+
+Mint DoS for a sustained period after the attacker executes the yo-yo sequence. Honest deposits revert with E_LEX_MintCapExceeded.
+
+Liquidity shaping where the attacker can time exits and leave the market stuck in a low ETWAP state relative to S_cur.
+
+User harm: blocked market growth, failed user transactions, degraded UX, potential market capture by an early actor.
+
+
+Mitifations:
+
+Seed ETWAP on first growth: On the first non zero supply update, initialize lastETWAPBaseSupply = baseSupply (or a large fraction like 80 percent). This removes the near zero anchor.
+
+Dual anchored caps: Make both caps reference current supply as well as ETWAP. For example:
+
+Mint cap: S_post ≤ max(2·ETWAP, S_cur + β·S_cur) with small β, or add a minimum absolute mint allowance to avoid total DoS when ETWAP is tiny.
+
+Redeem cap: S_post ≥ max(α·ETWAP, γ·S_cur) with γ in the 50 to 70 percent range. This prevents near total drains when ETWAP is tiny.

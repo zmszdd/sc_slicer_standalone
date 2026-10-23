@@ -1,0 +1,122 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Intuition_2VUsxVJwReb",
+    "audit_uid": "2VUsxVJwReb",
+    "requested_submission_uid": "deVmwC5DHi7",
+    "requested_finding_uid": "aayBh4TiWVT",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Intuition_2VUsxVJwReb/20260618_132553/findings.json",
+    "source_submission_uid": "deVmwC5DHi7",
+    "source_finding_uid": "aayBh4TiWVT",
+    "original_report_path": "Intuition_2VUsxVJwReb\\medium_valid_deVmwC5DHi7.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "deVmwC5DHi7",
+  "finding_uid": "aayBh4TiWVT",
+  "finding_number": "26",
+  "title": "Epoch boundary lock creation captures previous epoch rewards via inclusive timestamp snapshot.",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "QuillAudits_Team",
+  "body": "## [H-01] Epoch boundary lock creation captures previous epoch rewards via inclusive timestamp snapshot\n\n#### Description:\n[claimRewards()](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L361) computes rewards for `prevEpoch = currentEpoch - 1`. The user's reward share is determined by their balance at `epochTimestampEnd(prevEpoch)`:\n\n- [userBondedBalanceAtEpochEnd](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L212) → `_balanceOf(account, _epochTimestampEnd(epoch))`\n- [totalBondedBalanceAtEpochEnd](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L199) → `_totalSupply(_epochTimestampEnd(epoch))`\n\nTwo properties create the vulnerability:\n\n1. **Shared boundary timestamp:** `epochTimestampEnd(N)` equals `epochTimestampStart(N+1)` since `_calculateEpochTimestampEnd(epoch) = START + epoch * LENGTH + LENGTH`, which is identical to `_calculateEpochTimestampStart(epoch + 1) = START + (epoch + 1) * LENGTH`.\n\n2. **Inclusive VotingEscrow lookup:** The binary search in `_find_user_timestamp_epoch` uses `<=` comparison (`user_point_history[addr][_mid].ts <= _ts`), so a checkpoint created exactly at the boundary timestamp is included in the lookup for epoch N's end.\n\nTherefore, a user who creates a lock at the exact epoch boundary (`block.timestamp == epochTimestampEnd(N) == epochTimestampStart(N+1)`) will:\n- Be in epoch N+1 (so `currentEpoch = N+1`, `prevEpoch = N`)\n- Have their checkpoint at ts = boundary included in the epoch N balance snapshot\n- Successfully claim epoch N rewards despite never being bonded during epoch N\n\n### Impact\n\nAn attacker can capture prior-epoch emissions by timing lock creation to the exact epoch boundary. This directly dilutes rewards of honest stakers who were bonded throughout the earning epoch. In the PoC, the attacker captures ~50% of epoch 0 emissions (~504.85 ETH) by creating a lock at the boundary and claiming in the same transaction.\n\n### Recommended Mitigation\n\nUse a strictly-inside-the-epoch snapshot timestamp for reward share calculations:\n\n```solidity\nfunction totalBondedBalanceAtEpochEnd(uint256 epoch) public view returns (uint256) {\n    if (epoch > currentEpoch()) {\n        revert TrustBonding_InvalidEpoch();\n    }\n    return _totalSupply(_epochTimestampEnd(epoch) - 1);\n}\n\nfunction userBondedBalanceAtEpochEnd(address account, uint256 epoch) public view returns (uint256) {\n    if (account == address(0)) {\n        revert TrustBonding_ZeroAddress();\n    }\n    if (epoch > currentEpoch()) {\n        revert TrustBonding_InvalidEpoch();\n    }\n    return _balanceOf(account, _epochTimestampEnd(epoch) - 1);\n}\n```\n\nThis ensures checkpoints first created in epoch N+1 cannot be included in epoch N's reward accounting.",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: BUSL-1.1\npragma solidity 0.8.29;\n\nimport { ITrustBonding } from \"src/interfaces/ITrustBonding.sol\";\nimport { TrustBondingBase } from \"tests/unit/TrustBonding/TrustBondingBase.t.sol\";\n\ncontract PoCEpochBoundaryClaimH01 is TrustBondingBase {\n    function setUp() public override {\n        super.setUp();\n        vm.deal(address(protocol.satelliteEmissionsController), 10_000_000 ether);\n    }\n\n    function test_boundaryTimestamp_allows_previous_epoch_reward_capture() external {\n        _createLock(users.alice, initialTokens);\n\n        uint256 epochN = protocol.trustBonding.currentEpoch();\n        uint256 boundary = protocol.trustBonding.epochTimestampEnd(epochN);\n\n        // Bob had no lock during epoch N; creates lock exactly at N end (= N+1 start)\n        vm.warp(boundary);\n\n        vm.startPrank(users.bob);\n        uint256 unlockTime = block.timestamp + DEFAULT_LOCK_DURATION;\n        protocol.wrappedTrust.approve(address(protocol.trustBonding), initialTokens);\n        protocol.trustBonding.create_lock(initialTokens, unlockTime);\n        protocol.trustBonding.claimRewards(users.bob);\n        vm.stopPrank();\n\n        uint256 claimed = protocol.trustBonding.userClaimedRewardsForEpoch(users.bob, epochN);\n        assertGt(claimed, 0, \"Bob captured epoch N rewards without being bonded during epoch N\");\n    }\n\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L361",
+    "https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L199",
+    "https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L212"
+  ],
+  "source_record": {
+    "project_id": "2VUsxVJwReb",
+    "submission_index": "636",
+    "api_submission_id": "",
+    "uid": "deVmwC5DHi7",
+    "number": "636",
+    "title": "Epoch boundary lock creation captures previous epoch rewards via inclusive timestamp snapshot.",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "QuillAudits_Team",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L361",
+      "https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L199",
+      "https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L212"
+    ],
+    "body": "## [H-01] Epoch boundary lock creation captures previous epoch rewards via inclusive timestamp snapshot\n\n#### Description:\n[claimRewards()](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L361) computes rewards for `prevEpoch = currentEpoch - 1`. The user's reward share is determined by their balance at `epochTimestampEnd(prevEpoch)`:\n\n- [userBondedBalanceAtEpochEnd](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L212) → `_balanceOf(account, _epochTimestampEnd(epoch))`\n- [totalBondedBalanceAtEpochEnd](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L199) → `_totalSupply(_epochTimestampEnd(epoch))`\n\nTwo properties create the vulnerability:\n\n1. **Shared boundary timestamp:** `epochTimestampEnd(N)` equals `epochTimestampStart(N+1)` since `_calculateEpochTimestampEnd(epoch) = START + epoch * LENGTH + LENGTH`, which is identical to `_calculateEpochTimestampStart(epoch + 1) = START + (epoch + 1) * LENGTH`.\n\n2. **Inclusive VotingEscrow lookup:** The binary search in `_find_user_timestamp_epoch` uses `<=` comparison (`user_point_history[addr][_mid].ts <= _ts`), so a checkpoint created exactly at the boundary timestamp is included in the lookup for epoch N's end.\n\nTherefore, a user who creates a lock at the exact epoch boundary (`block.timestamp == epochTimestampEnd(N) == epochTimestampStart(N+1)`) will:\n- Be in epoch N+1 (so `currentEpoch = N+1`, `prevEpoch = N`)\n- Have their checkpoint at ts = boundary included in the epoch N balance snapshot\n- Successfully claim epoch N rewards despite never being bonded during epoch N\n\n### Impact\n\nAn attacker can capture prior-epoch emissions by timing lock creation to the exact epoch boundary. This directly dilutes rewards of honest stakers who were bonded throughout the earning epoch. In the PoC, the attacker captures ~50% of epoch 0 emissions (~504.85 ETH) by creating a lock at the boundary and claiming in the same transaction.\n\n### Recommended Mitigation\n\nUse a strictly-inside-the-epoch snapshot timestamp for reward share calculations:\n\n```solidity\nfunction totalBondedBalanceAtEpochEnd(uint256 epoch) public view returns (uint256) {\n    if (epoch > currentEpoch()) {\n        revert TrustBonding_InvalidEpoch();\n    }\n    return _totalSupply(_epochTimestampEnd(epoch) - 1);\n}\n\nfunction userBondedBalanceAtEpochEnd(address account, uint256 epoch) public view returns (uint256) {\n    if (account == address(0)) {\n        revert TrustBonding_ZeroAddress();\n    }\n    if (epoch > currentEpoch()) {\n        revert TrustBonding_InvalidEpoch();\n    }\n    return _balanceOf(account, _epochTimestampEnd(epoch) - 1);\n}\n```\n\nThis ensures checkpoints first created in epoch N+1 cannot be included in epoch N's reward accounting.",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: BUSL-1.1\npragma solidity 0.8.29;\n\nimport { ITrustBonding } from \"src/interfaces/ITrustBonding.sol\";\nimport { TrustBondingBase } from \"tests/unit/TrustBonding/TrustBondingBase.t.sol\";\n\ncontract PoCEpochBoundaryClaimH01 is TrustBondingBase {\n    function setUp() public override {\n        super.setUp();\n        vm.deal(address(protocol.satelliteEmissionsController), 10_000_000 ether);\n    }\n\n    function test_boundaryTimestamp_allows_previous_epoch_reward_capture() external {\n        _createLock(users.alice, initialTokens);\n\n        uint256 epochN = protocol.trustBonding.currentEpoch();\n        uint256 boundary = protocol.trustBonding.epochTimestampEnd(epochN);\n\n        // Bob had no lock during epoch N; creates lock exactly at N end (= N+1 start)\n        vm.warp(boundary);\n\n        vm.startPrank(users.bob);\n        uint256 unlockTime = block.timestamp + DEFAULT_LOCK_DURATION;\n        protocol.wrappedTrust.approve(address(protocol.trustBonding), initialTokens);\n        protocol.trustBonding.create_lock(initialTokens, unlockTime);\n        protocol.trustBonding.claimRewards(users.bob);\n        vm.stopPrank();\n\n        uint256 claimed = protocol.trustBonding.userClaimedRewardsForEpoch(users.bob, epochN);\n        assertGt(claimed, 0, \"Bob captured epoch N rewards without being bonded during epoch N\");\n    }\n\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/2VUsxVJwReb/submissions/636",
+    "raw": {
+      "auditUid": "2VUsxVJwReb",
+      "createdAt": "2026-03-09T11:30:42.265Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "Z2sg9hLrjXM",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-18T14:17:05.072Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "aayBh4TiWVT"
+        },
+        {
+          "uid": "s2maj5mPPj4",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-18T14:17:36.723Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "aayBh4TiWVT"
+        },
+        {
+          "uid": "APsQNwoWwqJ",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-18T14:37:02.892Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "deVmwC5DHi7",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "aayBh4TiWVT",
+        "number": 26,
+        "duplicates": 44
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2026-04-28T14:24:44.015Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Epoch boundary lock creation captures previous epoch rewards via inclusive timestamp snapshot.",
+      "uid": "deVmwC5DHi7",
+      "updatedAt": "2026-03-09T11:30:42.265Z",
+      "user": {
+        "uid": "zmJrk8YPv97",
+        "handle": "QuillAudits_Team"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## [H-01] Epoch boundary lock creation captures previous epoch rewards via inclusive timestamp snapshot\n\n#### Description:\n[claimRewards()](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L361) computes rewards for `prevEpoch = currentEpoch - 1`. The user's reward share is determined by their balance at `epochTimestampEnd(prevEpoch)`:\n\n- [userBondedBalanceAtEpochEnd](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L212) → `_balanceOf(account, _epochTimestampEnd(epoch))`\n- [totalBondedBalanceAtEpochEnd](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L199) → `_totalSupply(_epochTimestampEnd(epoch))`\n\nTwo properties create the vulnerability:\n\n1. **Shared boundary timestamp:** `epochTimestampEnd(N)` equals `epochTimestampStart(N+1)` since `_calculateEpochTimestampEnd(epoch) = START + epoch * LENGTH + LENGTH`, which is identical to `_calculateEpochTimestampStart(epoch + 1) = START + (epoch + 1) * LENGTH`.\n\n2. **Inclusive VotingEscrow lookup:** The binary search in `_find_user_timestamp_epoch` uses `<=` comparison (`user_point_history[addr][_mid].ts <= _ts`), so a checkpoint created exactly at the boundary timestamp is included in the lookup for epoch N's end.\n\nTherefore, a user who creates a lock at the exact epoch boundary (`block.timestamp == epochTimestampEnd(N) == epochTimestampStart(N+1)`) will:\n- Be in epoch N+1 (so `currentEpoch = N+1`, `prevEpoch = N`)\n- Have their checkpoint at ts = boundary included in the epoch N balance snapshot\n- Successfully claim epoch N rewards despite never being bonded during epoch N\n\n### Impact\n\nAn attacker can capture prior-epoch emissions by timing lock creation to the exact epoch boundary. This directly dilutes rewards of honest stakers who were bonded throughout the earning epoch. In the PoC, the attacker captures ~50% of epoch 0 emissions (~504.85 ETH) by creating a lock at the boundary and claiming in the same transaction.\n\n### Recommended Mitigation\n\nUse a strictly-inside-the-epoch snapshot timestamp for reward share calculations:\n\n```solidity\nfunction totalBondedBalanceAtEpochEnd(uint256 epoch) public view returns (uint256) {\n    if (epoch > currentEpoch()) {\n        revert TrustBonding_InvalidEpoch();\n    }\n    return _totalSupply(_epochTimestampEnd(epoch) - 1);\n}\n\nfunction userBondedBalanceAtEpochEnd(address account, uint256 epoch) public view returns (uint256) {\n    if (account == address(0)) {\n        revert TrustBonding_ZeroAddress();\n    }\n    if (epoch > currentEpoch()) {\n        revert TrustBonding_InvalidEpoch();\n    }\n    return _balanceOf(account, _epochTimestampEnd(epoch) - 1);\n}\n```\n\nThis ensures checkpoints first created in epoch N+1 cannot be included in epoch N's reward accounting.",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: BUSL-1.1\npragma solidity 0.8.29;\n\nimport { ITrustBonding } from \"src/interfaces/ITrustBonding.sol\";\nimport { TrustBondingBase } from \"tests/unit/TrustBonding/TrustBondingBase.t.sol\";\n\ncontract PoCEpochBoundaryClaimH01 is TrustBondingBase {\n    function setUp() public override {\n        super.setUp();\n        vm.deal(address(protocol.satelliteEmissionsController), 10_000_000 ether);\n    }\n\n    function test_boundaryTimestamp_allows_previous_epoch_reward_capture() external {\n        _createLock(users.alice, initialTokens);\n\n        uint256 epochN = protocol.trustBonding.currentEpoch();\n        uint256 boundary = protocol.trustBonding.epochTimestampEnd(epochN);\n\n        // Bob had no lock during epoch N; creates lock exactly at N end (= N+1 start)\n        vm.warp(boundary);\n\n        vm.startPrank(users.bob);\n        uint256 unlockTime = block.timestamp + DEFAULT_LOCK_DURATION;\n        protocol.wrappedTrust.approve(address(protocol.trustBonding), initialTokens);\n        protocol.trustBonding.create_lock(initialTokens, unlockTime);\n        protocol.trustBonding.claimRewards(users.bob);\n        vm.stopPrank();\n\n        uint256 claimed = protocol.trustBonding.userClaimedRewardsForEpoch(users.bob, epochN);\n        assertGt(claimed, 0, \"Bob captured epoch N rewards without being bonded during epoch N\");\n    }\n\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L361,https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L199,https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L212",
+      "number": 636,
+      "aiExplanation": null,
+      "_index": 636
+    }
+  }
+}

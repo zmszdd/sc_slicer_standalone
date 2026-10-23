@@ -1,0 +1,202 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "increaseLiquidityCurrentRange() liquidity increase via Uniswap V3 NonfungiblePositionManager",
+    "environment": "L2TokenReceiverV2 contract on L2, Uniswap V3 position manager",
+    "evidence": [
+      "L2TokenReceiverV2 contains a critical vulnerability in the increaseLiquidityCurrentRange() function where deadline is hardcoded to block.timestamp, eliminating transaction expiration protection and enabling MEV attacks.",
+      "The function hardcodes deadline: block.timestamp when calling Uniswap V3's increaseLiquidity().",
+      "deadline: block.timestamp  // always true, tx never expires",
+      "deadline = block.timestamp >>> Uniswap’s check block.timestamp <= deadline is always true.",
+      "MEV bots can hold the transaction indefinitely (1 hour, 1 day, 1 week, 1 month >> still executes).",
+      "Looking at the two code snippets above, we can clearly see that the correct implementation (with a user provided deadline and explicit require check) follows Uniswap V3’s security design and is safe against delayed execution. In contrast, the incorrect implementation hardcodes the deadline, removes expiration protection, and introduces a serious vulnerability that can be exploited by MEV bots.",
+      "Detection: MEV bot monitors mempool for increaseLiquidityCurrentRange() calls",
+      "Manipulation: Bot holds transaction until market conditions are unfavorable",
+      "Execution: Transaction executes with stale pricing parameters",
+      "Profit: MEV bot extracts value through arbitrage",
+      "The hardcoded deadline: block.timestamp in L2TokenReceiverV2 creates a critical vulnerability allowing MEV bots to manipulate transaction timing for profit. This directly contradicts Uniswap V3's security model and exposes the protocol to significant financial losses. Immediate remediation is required by adding a user controlled deadline parameter."
+    ]
+  },
+  "entities": [
+    {
+      "id": "l2_token_receiver",
+      "name": "L2TokenReceiverV2 contract",
+      "role": "contract",
+      "evidence": [
+        "Hardcoded Deadline in L2TokenReceiverV2 Liquidity Functions",
+        "L2TokenReceiverV2 contains a critical vulnerability in the increaseLiquidityCurrentRange() function where deadline is hardcoded to block.timestamp, eliminating transaction expiration protection and enabling MEV attacks.",
+        ") external onlyOwner returns (uint128 liquidity_, uint256 amount0_, uint256 amount1_) {"
+      ]
+    },
+    {
+      "id": "owner",
+      "name": "Owner (onlyOwner caller)",
+      "role": "authority",
+      "evidence": [
+        ") external onlyOwner returns (uint128 liquidity_, uint256 amount0_, uint256 amount1_) {"
+      ]
+    },
+    {
+      "id": "mev_bot",
+      "name": "MEV bot",
+      "role": "attacker",
+      "evidence": [
+        "MEV bots can hold the transaction indefinitely (1 hour, 1 day, 1 week, 1 month >> still executes).",
+        "Detection: MEV bot monitors mempool for increaseLiquidityCurrentRange() calls",
+        "Profit: MEV bot extracts value through arbitrage"
+      ]
+    },
+    {
+      "id": "uniswap_position_manager",
+      "name": "Uniswap V3 NonfungiblePositionManager",
+      "role": "contract",
+      "evidence": [
+        "The function hardcodes deadline: block.timestamp when calling Uniswap V3's increaseLiquidity().",
+        "INonfungiblePositionManager.IncreaseLiquidityParams memory params_ ="
+      ]
+    },
+    {
+      "id": "liquidity_position",
+      "name": "Liquidity position (tokenId)",
+      "role": "asset",
+      "evidence": [
+        "uint256 tokenId_,",
+        "tokenId: tokenId_,"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "owner_calls_increase_liquidity",
+      "kind": "precondition",
+      "text": "The increaseLiquidityCurrentRange() function is onlyOwner, so the caller is the contract owner.",
+      "modality": "asserted",
+      "entity_ids": [
+        "l2_token_receiver",
+        "owner"
+      ],
+      "evidence": [
+        ") external onlyOwner returns (uint128 liquidity_, uint256 amount0_, uint256 amount1_) {"
+      ]
+    },
+    {
+      "id": "mev_monitors_mempool",
+      "kind": "precondition",
+      "text": "An MEV bot monitors the mempool for increaseLiquidityCurrentRange() calls.",
+      "modality": "potential",
+      "entity_ids": [
+        "mev_bot",
+        "l2_token_receiver"
+      ],
+      "evidence": [
+        "Detection: MEV bot monitors mempool for increaseLiquidityCurrentRange() calls"
+      ]
+    },
+    {
+      "id": "hardcoded_deadline",
+      "kind": "root_cause",
+      "text": "The function hardcodes deadline: block.timestamp when calling Uniswap V3's increaseLiquidity(), so Uniswap's check block.timestamp <= deadline is always true and the transaction never expires.",
+      "modality": "asserted",
+      "entity_ids": [
+        "l2_token_receiver",
+        "uniswap_position_manager"
+      ],
+      "evidence": [
+        "The function hardcodes deadline: block.timestamp when calling Uniswap V3's increaseLiquidity().",
+        "deadline: block.timestamp  // always true, tx never expires",
+        "deadline = block.timestamp >>> Uniswap’s check block.timestamp <= deadline is always true."
+      ]
+    },
+    {
+      "id": "bot_holds_transaction",
+      "kind": "action",
+      "text": "The MEV bot holds the transaction until market conditions are unfavorable.",
+      "modality": "potential",
+      "entity_ids": [
+        "mev_bot"
+      ],
+      "evidence": [
+        "Manipulation: Bot holds transaction until market conditions are unfavorable"
+      ]
+    },
+    {
+      "id": "stale_execution",
+      "kind": "action",
+      "text": "The held transaction executes with stale pricing parameters.",
+      "modality": "potential",
+      "entity_ids": [
+        "mev_bot",
+        "l2_token_receiver"
+      ],
+      "evidence": [
+        "Execution: Transaction executes with stale pricing parameters"
+      ]
+    },
+    {
+      "id": "intent_deadline_expiry",
+      "kind": "security_intent",
+      "text": "A liquidity-increase transaction should carry a caller-provided deadline and be rejected once block.timestamp exceeds it, so a delayed transaction cannot execute after its intended expiry.",
+      "modality": "inferred",
+      "entity_ids": [
+        "l2_token_receiver",
+        "owner"
+      ],
+      "evidence": [
+        "uint256 deadline_  //  User-provided deadline",
+        "require(block.timestamp <= deadline_, \"Transaction expired\");  //  Proper expiration check",
+        "require(block.timestamp <= deadline_) enforces the same security model as Uniswap V3.",
+        "Looking at the two code snippets above, we can clearly see that the correct implementation (with a user provided deadline and explicit require check) follows Uniswap V3’s security design and is safe against delayed execution. In contrast, the incorrect implementation hardcodes the deadline, removes expiration protection, and introduces a serious vulnerability that can be exploited by MEV bots."
+      ]
+    },
+    {
+      "id": "indefinite_execution",
+      "kind": "impact",
+      "text": "Because the deadline equals block.timestamp, a transaction held by an MEV bot for 1 hour, 1 day, 1 week, or 1 month still executes.",
+      "modality": "potential",
+      "entity_ids": [
+        "mev_bot",
+        "l2_token_receiver"
+      ],
+      "evidence": [
+        "MEV bots can hold the transaction indefinitely (1 hour, 1 day, 1 week, 1 month >> still executes)."
+      ]
+    },
+    {
+      "id": "stale_pricing_executes",
+      "kind": "impact",
+      "text": "The transaction executes with stale pricing parameters after being held until market conditions are unfavorable.",
+      "modality": "potential",
+      "entity_ids": [
+        "mev_bot",
+        "l2_token_receiver"
+      ],
+      "evidence": [
+        "Manipulation: Bot holds transaction until market conditions are unfavorable",
+        "Execution: Transaction executes with stale pricing parameters"
+      ]
+    },
+    {
+      "id": "mev_profit",
+      "kind": "impact",
+      "text": "The MEV bot extracts value through arbitrage, exposing the protocol to significant financial losses.",
+      "modality": "potential",
+      "entity_ids": [
+        "mev_bot",
+        "l2_token_receiver"
+      ],
+      "evidence": [
+        "Profit: MEV bot extracts value through arbitrage",
+        "The hardcoded deadline: block.timestamp in L2TokenReceiverV2 creates a critical vulnerability allowing MEV bots to manipulate transaction timing for profit. This directly contradicts Uniswap V3's security model and exposes the protocol to significant financial losses. Immediate remediation is required by adding a user controlled deadline parameter."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "bot_holds_transaction",
+    "stale_execution"
+  ],
+  "ambiguities": [
+    "Report does not state a concrete observed transaction or quantified loss; MEV profit and stale-pricing execution are described as potential.",
+    "Report does not establish a specific prior market state or price movement that makes the held transaction unfavorable.",
+    "The 'significant financial losses' claim is not quantified or tied to a specific amount or asset."
+  ]
+}

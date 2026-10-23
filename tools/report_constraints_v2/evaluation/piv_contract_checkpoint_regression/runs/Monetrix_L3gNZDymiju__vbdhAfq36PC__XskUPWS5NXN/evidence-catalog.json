@@ -1,0 +1,279 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "3a9a1d9ad023694910c6ea1ba4252054972a595a97101fe729aabdb98de62eba",
+  "fragments": [
+    {
+      "id": "e_3a9a1d9ad023_0001",
+      "text": "Borrow leg of 0x811 (BORROW_LEND_USER_STATE) is silently discarded, allowing phantom surplus to drain principal as yield once Vault has any PM auto-borrow position",
+      "start": 0,
+      "end": 163,
+      "line": 1
+    },
+    {
+      "id": "e_3a9a1d9ad023_0002",
+      "text": "## Background",
+      "start": 165,
+      "end": 178,
+      "line": 3
+    },
+    {
+      "id": "e_3a9a1d9ad023_0003",
+      "text": "HyperLiquid's `0x0000…0811` precompile is `BORROW_LEND_USER_STATE_PRECOMPILE_ADDRESS` (per `hyperliquid-dev/hyper-evm-lib/src/PrecompileLib.sol` and the official `L1Read.sol`). It returns the struct:",
+      "start": 180,
+      "end": 379,
+      "line": 5
+    },
+    {
+      "id": "e_3a9a1d9ad023_0004",
+      "text": "struct BorrowLendUserTokenState {",
+      "start": 385,
+      "end": 418,
+      "line": 7
+    },
+    {
+      "id": "e_3a9a1d9ad023_0005",
+      "text": "BasisAndValue borrow;   // borrow.basis (uint64), borrow.value (uint64)",
+      "start": 427,
+      "end": 498,
+      "line": 8
+    },
+    {
+      "id": "e_3a9a1d9ad023_0006",
+      "text": "BasisAndValue supply;   // supply.basis (uint64), supply.value (uint64)",
+      "start": 507,
+      "end": 578,
+      "line": 9
+    },
+    {
+      "id": "e_3a9a1d9ad023_0007",
+      "text": "}",
+      "start": 583,
+      "end": 584,
+      "line": 10
+    },
+    {
+      "id": "e_3a9a1d9ad023_0008",
+      "text": "— ABI-encoded as four sequential `uint64` slots: `(borrow.basis, borrow.value, supply.basis, supply.value)`.",
+      "start": 586,
+      "end": 694,
+      "line": 12
+    },
+    {
+      "id": "e_3a9a1d9ad023_0009",
+      "text": "`borrow.value` is outstanding debt (principal + accrued interest); `supply.value` is the user's lent balance. For solvency accounting, both legs matter: a user with `supply.value=60k` and `borrow.value=40k` has net BLP exposure of `+20k`, not `+60k`.",
+      "start": 696,
+      "end": 946,
+      "line": 14
+    },
+    {
+      "id": "e_3a9a1d9ad023_0010",
+      "text": "Per HyperLiquid's official Portfolio Margin docs, once PM is enabled on a Vault account, borrows happen automatically — pure adverse price movement against existing collateral is enough to trigger an auto-borrow. No operator action required.",
+      "start": 948,
+      "end": 1189,
+      "line": 16
+    },
+    {
+      "id": "e_3a9a1d9ad023_0011",
+      "text": "## Root cause",
+      "start": 1191,
+      "end": 1204,
+      "line": 18
+    },
+    {
+      "id": "e_3a9a1d9ad023_0012",
+      "text": "`PrecompileReader.suppliedBalance` only reads the fourth uint64 slot:",
+      "start": 1206,
+      "end": 1275,
+      "line": 20
+    },
+    {
+      "id": "e_3a9a1d9ad023_0013",
+      "text": "function suppliedBalance(address account, uint64 token) internal view returns (uint64 supplied) {",
+      "start": 1281,
+      "end": 1378,
+      "line": 22
+    },
+    {
+      "id": "e_3a9a1d9ad023_0014",
+      "text": "(bool ok, bytes memory res) = PRECOMPILE_SUPPLIED_BALANCE.staticcall(abi.encode(account, token));",
+      "start": 1387,
+      "end": 1484,
+      "line": 23
+    },
+    {
+      "id": "e_3a9a1d9ad023_0015",
+      "text": "require(ok, \"supplied: precompile failed\");",
+      "start": 1493,
+      "end": 1536,
+      "line": 24
+    },
+    {
+      "id": "e_3a9a1d9ad023_0016",
+      "text": "require(res.length >= 128, \"supplied: bad len\");",
+      "start": 1545,
+      "end": 1593,
+      "line": 25
+    },
+    {
+      "id": "e_3a9a1d9ad023_0017",
+      "text": "(,,, supplied) = abi.decode(res, (uint64, uint64, uint64, uint64));",
+      "start": 1602,
+      "end": 1669,
+      "line": 26
+    },
+    {
+      "id": "e_3a9a1d9ad023_0018",
+      "text": "// ^^^ borrow.basis, borrow.value, supply.basis discarded",
+      "start": 1678,
+      "end": 1735,
+      "line": 27
+    },
+    {
+      "id": "e_3a9a1d9ad023_0019",
+      "text": "}",
+      "start": 1740,
+      "end": 1741,
+      "line": 28
+    },
+    {
+      "id": "e_3a9a1d9ad023_0020",
+      "text": "A repo-wide grep `grep -rn \"borrow\" src/` confirms there is **zero** code anywhere in scope that reads `borrow.basis` or `borrow.value` — neither `PrecompileReader`, `MonetrixAccountant`, `MonetrixVault`, nor `TokenMath`.",
+      "start": 1743,
+      "end": 1964,
+      "line": 30
+    },
+    {
+      "id": "e_3a9a1d9ad023_0021",
+      "text": "Consequently `MonetrixAccountant._readL1Backing` sums:",
+      "start": 1966,
+      "end": 2020,
+      "line": 32
+    },
+    {
+      "id": "e_3a9a1d9ad023_0022",
+      "text": "perp accountValue + L1 spot USDC + Σ supply.value + Σ spot hedge × oraclePx + HLP equity",
+      "start": 2026,
+      "end": 2114,
+      "line": 34
+    },
+    {
+      "id": "e_3a9a1d9ad023_0023",
+      "text": "`borrow.value` is never subtracted. Once an auto-borrow triggers, `totalBackingSigned()` overstates real net assets by exactly the borrow amount.",
+      "start": 2116,
+      "end": 2261,
+      "line": 36
+    },
+    {
+      "id": "e_3a9a1d9ad023_0024",
+      "text": "## Invariants violated",
+      "start": 2263,
+      "end": 2285,
+      "line": 38
+    },
+    {
+      "id": "e_3a9a1d9ad023_0025",
+      "text": "- INV-1 (peg solvency) — reported backing > real backing",
+      "start": 2287,
+      "end": 2343,
+      "line": 40
+    },
+    {
+      "id": "e_3a9a1d9ad023_0026",
+      "text": "- INV-7 (Gate 3 distributable cap) — phantom surplus passes the gate",
+      "start": 2344,
+      "end": 2412,
+      "line": 41
+    },
+    {
+      "id": "e_3a9a1d9ad023_0027",
+      "text": "- INV-9 (Σ proposedYield ≤ Σ surplus) — `settle` accepts unbacked yield",
+      "start": 2413,
+      "end": 2484,
+      "line": 42
+    },
+    {
+      "id": "e_3a9a1d9ad023_0028",
+      "text": "## Attack flow",
+      "start": 2486,
+      "end": 2500,
+      "line": 44
+    },
+    {
+      "id": "e_3a9a1d9ad023_0029",
+      "text": "1. Vault is in production with USDM minted 1:1 against USDC. PM is activated on the Vault's L1 account.",
+      "start": 2502,
+      "end": 2605,
+      "line": 46
+    },
+    {
+      "id": "e_3a9a1d9ad023_0030",
+      "text": "2. Vault opens a hedge or carries a spot position. HyperLiquid's PM auto-borrow triggers due to adverse price movement (e.g. BTC drops). The Vault's L1 account now shows: spot USDC = +X, 0x811 borrow.value = +X. Real net assets unchanged.",
+      "start": 2606,
+      "end": 2844,
+      "line": 47
+    },
+    {
+      "id": "e_3a9a1d9ad023_0031",
+      "text": "3. The Operator's keeper computes `surplus()` from on-chain state. The Accountant reports `surplus = +X` (the borrow leg is invisible). The keeper proposes yield up to this phantom surplus.",
+      "start": 2845,
+      "end": 3034,
+      "line": 48
+    },
+    {
+      "id": "e_3a9a1d9ad023_0032",
+      "text": "4. `vault.settle(proposedYield)` passes Gate 3 (because reported `distributableSurplus > 0`) and Gate 4 (annualized cap, easy to stay under for moderate amounts), then transfers `proposedYield` USDC from the Vault's principal pool to YieldEscrow.",
+      "start": 3035,
+      "end": 3281,
+      "line": 49
+    },
+    {
+      "id": "e_3a9a1d9ad023_0033",
+      "text": "5. `distributeYield` routes that USDC to sUSDM stakers (mints USDM yield), InsuranceFund, and Foundation. The principal that backed USDM is now permanently displaced.",
+      "start": 3282,
+      "end": 3448,
+      "line": 50
+    },
+    {
+      "id": "e_3a9a1d9ad023_0034",
+      "text": "The attack does not require Operator collusion — a buggy or rational keeper that trusts on-chain `surplus()` will mechanically propose phantom yield.",
+      "start": 3450,
+      "end": 3599,
+      "line": 52
+    },
+    {
+      "id": "e_3a9a1d9ad023_0035",
+      "text": "## Verification of the precompile layout",
+      "start": 3601,
+      "end": 3641,
+      "line": 54
+    },
+    {
+      "id": "e_3a9a1d9ad023_0036",
+      "text": "Decoding can be cross-checked against an actual mainnet API response. HyperLiquid's `clearinghouseState` for any user with active BLP positions returns entries like:",
+      "start": 3643,
+      "end": 3808,
+      "line": 56
+    },
+    {
+      "id": "e_3a9a1d9ad023_0037",
+      "text": "\"borrow\": {\"basis\": \"10.00000000\", \"value\": \"10.04217650\"},",
+      "start": 3814,
+      "end": 3873,
+      "line": 58
+    },
+    {
+      "id": "e_3a9a1d9ad023_0038",
+      "text": "\"supply\": {\"basis\": \"44.69295862\", \"value\": \"44.69692314\"}",
+      "start": 3878,
+      "end": 3936,
+      "line": 59
+    },
+    {
+      "id": "e_3a9a1d9ad023_0039",
+      "text": "— `value > basis` confirms `value = principal + accrued interest`. Both legs are present in the precompile response; the contract only consumes one.",
+      "start": 3938,
+      "end": 4086,
+      "line": 61
+    }
+  ]
+}

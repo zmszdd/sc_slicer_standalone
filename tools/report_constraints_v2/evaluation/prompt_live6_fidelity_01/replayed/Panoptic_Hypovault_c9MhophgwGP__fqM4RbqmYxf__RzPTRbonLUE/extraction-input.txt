@@ -1,0 +1,23 @@
+Manipulate asset-to-share ratio by donation attack before `fulfillDeposits`
+
+## Finding description and impact
+In `HypoVault` contract, initial supply is `1e6` and in `fulfillDeposits` function there is `+1`:
+Above 2 settings are to initialize asset-to-share ratio to 1e6.
+
+When manager fulfills deposits, `totalAssets` is calculated with `accountant.computeNAV` function call.
+Looking into `accountant.computeNAV` function, you can notice that underlying token balance of vault is added to `nav` (Ofc when `skipUnderlying` is false):
+If attacker donates underlying token to `vault` contract before manager fulfills deposits on epoch 0, asset-to-share ratio could be manipulated.
+The larger the donation amount, the smaller `sharesReceived` will be, and `sharesReceived` may even become 0.
+
+If `sharesReceived` is small, further calculations for deposit and withdraw occurs serious loss with multiplication and division operations.
+For example, if the `totalSupply`  is nearly 1000, precision loss of share is nearly 0.1% and if the `totalSupply` is nearly 100, precision loss of share is nearly 1%. (Attack should donate 10000x of `epochState.assetsDeposited` to manipulate `totalSupply` to nearly 100. This is not such an impossible condition.)
+And in worst case, `sharesReceived` could be 0.
+There is no check or validate mechanism for `sharesReceived` in `fulfillDeposits` function, so the attack is possible.
+
+Let's imagine the following scenario:
+1. Alice requests deposit of 1e18.
+2. Manager is going to fulfills deposits on epoch 0 and attacker tries front-run.
+3. Attacker donates underlying token to vault, and the amount is `1e6 * 1e18`.
+4. Manager calls `fulfillDeposits` function. In `fulfillDeposits` function, there is no mechanism to validate `sharesReceived`.
+5. `sharesReceived` is 0 and Alice can't get any share while executes deposit.
+6. Further operations of deposit and withdraw are done with serious loss due to manipulated asset-to-share ratio.

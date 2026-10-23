@@ -1,0 +1,108 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Intuition_2VUsxVJwReb",
+    "audit_uid": "2VUsxVJwReb",
+    "requested_submission_uid": "gqU56aaTN9t",
+    "requested_finding_uid": "2Funzps4cEA",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Intuition_2VUsxVJwReb/20260618_132553/findings.json",
+    "source_submission_uid": "gqU56aaTN9t",
+    "source_finding_uid": "2Funzps4cEA",
+    "original_report_path": "Intuition_2VUsxVJwReb\\low_valid_gqU56aaTN9t.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "gqU56aaTN9t",
+  "finding_uid": "2Funzps4cEA",
+  "finding_number": "11",
+  "title": "AtomWallet._validateSignature reverts on high-s signatures instead of returning SIG_VALIDATION_FAILED, breaking ERC-4337 compliance",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "cryptopochita",
+  "body": "## Finding description and impact\n\n`AtomWallet._validateSignature` reverts with `AtomWallet_InvalidSignatureS` when `ECDSA.tryRecover` returns `RecoverError.InvalidSignatureS`, instead of returning `SIG_VALIDATION_FAILED` as required by ERC-4337.\n\nERC-4337 mandates that `_validateSignature` **never reverts** — it must return `SIG_VALIDATION_FAILED` (a non-zero packed validation data value) for any invalid signature. When the function reverts, `EntryPoint.validateUserOp` propagates the revert, breaking the account abstraction flow entirely for any user operation signed with a high-s ECDSA signature.\n\nThe vulnerable code:\n\n```solidity\n} else if (recoverError == ECDSA.RecoverError.InvalidSignatureS) {\n    revert AtomWallet_InvalidSignatureS(errorArg);  // should return SIG_VALIDATION_FAILED\n}\n```\n\nA high-s signature is a valid secp256k1 signature where `s > secp256k1n/2`. OpenZeppelin's `ECDSA.tryRecover` rejects these for malleability protection, returning `RecoverError.InvalidSignatureS`. Any wallet software or bundler that produces such a signature (or an attacker who mallates a low-s signature to high-s) will cause `validateUserOp` to revert rather than gracefully fail, permanently blocking that user operation from being processed through the EntryPoint.\n\nThe `InvalidSignatureLength` branch above it is dead code: `_extractValidUntilAndValidAfterFromSignature` already reverts for any signature that isn't exactly 65 or 77 bytes, so `ECDSA.tryRecover` never sees a wrong-length input.\n\n## Recommended mitigation steps\n\nReplace the revert with a return of `SIG_VALIDATION_FAILED`:\n\n```solidity\n} else if (recoverError == ECDSA.RecoverError.InvalidSignatureS) {\n    return _packValidationData(true, validUntil, validAfter);\n}\n```\n\nThis matches the handling of `RecoverError.InvalidSignature` already present in the function and satisfies the ERC-4337 requirement that `_validateSignature` never reverts.",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: BUSL-1.1\npragma solidity 0.8.29;\n\nimport { Test } from \"forge-std/src/Test.sol\";\nimport { PackedUserOperation } from \"@account-abstraction/interfaces/PackedUserOperation.sol\";\nimport { _packValidationData } from \"@account-abstraction/core/Helpers.sol\";\nimport { TransparentUpgradeableProxy } from \"@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol\";\nimport { AtomWallet } from \"src/protocol/wallet/AtomWallet.sol\";\n\ncontract MockMultiVault {\n    address internal _warden;\n    constructor(address warden) { _warden = warden; }\n    function getAtomWarden() external view returns (address) { return _warden; }\n}\n\ncontract MockEntryPoint {\n    mapping(address => uint256) public balanceOf;\n    function depositTo(address a) external payable { balanceOf[a] += msg.value; }\n}\n\ncontract AtomWalletHighSTest is Test {\n    uint256 constant SECP256K1N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;\n\n    AtomWallet wallet;\n    MockEntryPoint entryPoint;\n    uint256 ownerKey = 0xA11CE;\n\n    function setUp() public {\n        address owner = vm.addr(ownerKey);\n        entryPoint = new MockEntryPoint();\n        MockMultiVault mv = new MockMultiVault(owner);\n        AtomWallet impl = new AtomWallet();\n        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(\n            address(impl), address(this),\n            abi.encodeWithSelector(AtomWallet.initialize.selector, address(entryPoint), address(mv), bytes32(\"ATOM\"))\n        );\n        wallet = AtomWallet(payable(address(proxy)));\n    }\n\n    function _makeUserOp(bytes memory sig) internal view returns (PackedUserOperation memory) {\n        return PackedUserOperation({\n            sender: address(wallet), nonce: 0, initCode: \"\", callData: \"\",\n            accountGasLimits: bytes32(uint256(1_000_000) << 128 | 1_000_000),\n            preVerificationGas: 21_000, gasFees: bytes32(uint256(1e9) << 128 | 1e9),\n            paymasterAndData: \"\", signature: sig\n        });\n    }\n\n    // Bug: high-s signature causes revert instead of returning SIG_VALIDATION_FAILED\n    function test_highS_revertsInsteadOfSigValidationFailed() public {\n        bytes32 userOpHash = keccak256(\"userOpHash\");\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", userOpHash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerKey, digest);\n\n        // Flip s to high-s: s_high = N - s_low (valid secp256k1 signature, rejected by OZ for malleability)\n        bytes32 highS = bytes32(SECP256K1N - uint256(s));\n        uint8 highV = v == 27 ? 28 : 27;\n        bytes memory highSSig = abi.encodePacked(r, highS, highV);\n\n        PackedUserOperation memory userOp = _makeUserOp(highSSig);\n\n        // ERC-4337 requires _validateSignature to NEVER revert.\n        // This call reverts with AtomWallet_InvalidSignatureS — breaking the EntryPoint flow.\n        vm.prank(address(entryPoint));\n        vm.expectRevert(abi.encodeWithSelector(AtomWallet.AtomWallet_InvalidSignatureS.selector, highS));\n        wallet.validateUserOp(userOp, userOpHash, 0);\n    }\n}\n```\n\nRun with: `forge test --match-test test_highS_revertsInsteadOfSigValidationFailed -vv`\n\nBoth tests pass, confirming the revert on high-s and correct behavior on low-s.",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L303-L304"
+  ],
+  "source_record": {
+    "project_id": "2VUsxVJwReb",
+    "submission_index": "315",
+    "api_submission_id": "",
+    "uid": "gqU56aaTN9t",
+    "number": "315",
+    "title": "AtomWallet._validateSignature reverts on high-s signatures instead of returning SIG_VALIDATION_FAILED, breaking ERC-4337 compliance",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "",
+    "handle": "cryptopochita",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L303-L304"
+    ],
+    "body": "## Finding description and impact\n\n`AtomWallet._validateSignature` reverts with `AtomWallet_InvalidSignatureS` when `ECDSA.tryRecover` returns `RecoverError.InvalidSignatureS`, instead of returning `SIG_VALIDATION_FAILED` as required by ERC-4337.\n\nERC-4337 mandates that `_validateSignature` **never reverts** — it must return `SIG_VALIDATION_FAILED` (a non-zero packed validation data value) for any invalid signature. When the function reverts, `EntryPoint.validateUserOp` propagates the revert, breaking the account abstraction flow entirely for any user operation signed with a high-s ECDSA signature.\n\nThe vulnerable code:\n\n```solidity\n} else if (recoverError == ECDSA.RecoverError.InvalidSignatureS) {\n    revert AtomWallet_InvalidSignatureS(errorArg);  // should return SIG_VALIDATION_FAILED\n}\n```\n\nA high-s signature is a valid secp256k1 signature where `s > secp256k1n/2`. OpenZeppelin's `ECDSA.tryRecover` rejects these for malleability protection, returning `RecoverError.InvalidSignatureS`. Any wallet software or bundler that produces such a signature (or an attacker who mallates a low-s signature to high-s) will cause `validateUserOp` to revert rather than gracefully fail, permanently blocking that user operation from being processed through the EntryPoint.\n\nThe `InvalidSignatureLength` branch above it is dead code: `_extractValidUntilAndValidAfterFromSignature` already reverts for any signature that isn't exactly 65 or 77 bytes, so `ECDSA.tryRecover` never sees a wrong-length input.\n\n## Recommended mitigation steps\n\nReplace the revert with a return of `SIG_VALIDATION_FAILED`:\n\n```solidity\n} else if (recoverError == ECDSA.RecoverError.InvalidSignatureS) {\n    return _packValidationData(true, validUntil, validAfter);\n}\n```\n\nThis matches the handling of `RecoverError.InvalidSignature` already present in the function and satisfies the ERC-4337 requirement that `_validateSignature` never reverts.",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: BUSL-1.1\npragma solidity 0.8.29;\n\nimport { Test } from \"forge-std/src/Test.sol\";\nimport { PackedUserOperation } from \"@account-abstraction/interfaces/PackedUserOperation.sol\";\nimport { _packValidationData } from \"@account-abstraction/core/Helpers.sol\";\nimport { TransparentUpgradeableProxy } from \"@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol\";\nimport { AtomWallet } from \"src/protocol/wallet/AtomWallet.sol\";\n\ncontract MockMultiVault {\n    address internal _warden;\n    constructor(address warden) { _warden = warden; }\n    function getAtomWarden() external view returns (address) { return _warden; }\n}\n\ncontract MockEntryPoint {\n    mapping(address => uint256) public balanceOf;\n    function depositTo(address a) external payable { balanceOf[a] += msg.value; }\n}\n\ncontract AtomWalletHighSTest is Test {\n    uint256 constant SECP256K1N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;\n\n    AtomWallet wallet;\n    MockEntryPoint entryPoint;\n    uint256 ownerKey = 0xA11CE;\n\n    function setUp() public {\n        address owner = vm.addr(ownerKey);\n        entryPoint = new MockEntryPoint();\n        MockMultiVault mv = new MockMultiVault(owner);\n        AtomWallet impl = new AtomWallet();\n        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(\n            address(impl), address(this),\n            abi.encodeWithSelector(AtomWallet.initialize.selector, address(entryPoint), address(mv), bytes32(\"ATOM\"))\n        );\n        wallet = AtomWallet(payable(address(proxy)));\n    }\n\n    function _makeUserOp(bytes memory sig) internal view returns (PackedUserOperation memory) {\n        return PackedUserOperation({\n            sender: address(wallet), nonce: 0, initCode: \"\", callData: \"\",\n            accountGasLimits: bytes32(uint256(1_000_000) << 128 | 1_000_000),\n            preVerificationGas: 21_000, gasFees: bytes32(uint256(1e9) << 128 | 1e9),\n            paymasterAndData: \"\", signature: sig\n        });\n    }\n\n    // Bug: high-s signature causes revert instead of returning SIG_VALIDATION_FAILED\n    function test_highS_revertsInsteadOfSigValidationFailed() public {\n        bytes32 userOpHash = keccak256(\"userOpHash\");\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", userOpHash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerKey, digest);\n\n        // Flip s to high-s: s_high = N - s_low (valid secp256k1 signature, rejected by OZ for malleability)\n        bytes32 highS = bytes32(SECP256K1N - uint256(s));\n        uint8 highV = v == 27 ? 28 : 27;\n        bytes memory highSSig = abi.encodePacked(r, highS, highV);\n\n        PackedUserOperation memory userOp = _makeUserOp(highSSig);\n\n        // ERC-4337 requires _validateSignature to NEVER revert.\n        // This call reverts with AtomWallet_InvalidSignatureS — breaking the EntryPoint flow.\n        vm.prank(address(entryPoint));\n        vm.expectRevert(abi.encodeWithSelector(AtomWallet.AtomWallet_InvalidSignatureS.selector, highS));\n        wallet.validateUserOp(userOp, userOpHash, 0);\n    }\n}\n```\n\nRun with: `forge test --match-test test_highS_revertsInsteadOfSigValidationFailed -vv`\n\nBoth tests pass, confirming the revert on high-s and correct behavior on low-s.",
+    "detail_url": "https://code4rena.com/api/v1/audits/2VUsxVJwReb/submissions/315",
+    "raw": {
+      "auditUid": "2VUsxVJwReb",
+      "createdAt": "2026-03-06T19:36:43.746Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "Nr9HEwmubmD",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T12:45:12.429Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "2Funzps4cEA"
+        },
+        {
+          "uid": "DmEFYPigkvz",
+          "userUid": "WYVDNVcjWo5",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T12:45:21.488Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "2Funzps4cEA"
+        }
+      ],
+      "finding": {
+        "uid": "2Funzps4cEA",
+        "number": 11,
+        "duplicates": 19
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2026-04-28T14:24:44.015Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "AtomWallet._validateSignature reverts on high-s signatures instead of returning SIG_VALIDATION_FAILED, breaking ERC-4337 compliance",
+      "uid": "gqU56aaTN9t",
+      "updatedAt": "2026-03-06T19:36:43.746Z",
+      "user": {
+        "uid": "nPhk7Pvt2k3",
+        "handle": "cryptopochita"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\n`AtomWallet._validateSignature` reverts with `AtomWallet_InvalidSignatureS` when `ECDSA.tryRecover` returns `RecoverError.InvalidSignatureS`, instead of returning `SIG_VALIDATION_FAILED` as required by ERC-4337.\n\nERC-4337 mandates that `_validateSignature` **never reverts** — it must return `SIG_VALIDATION_FAILED` (a non-zero packed validation data value) for any invalid signature. When the function reverts, `EntryPoint.validateUserOp` propagates the revert, breaking the account abstraction flow entirely for any user operation signed with a high-s ECDSA signature.\n\nThe vulnerable code:\n\n```solidity\n} else if (recoverError == ECDSA.RecoverError.InvalidSignatureS) {\n    revert AtomWallet_InvalidSignatureS(errorArg);  // should return SIG_VALIDATION_FAILED\n}\n```\n\nA high-s signature is a valid secp256k1 signature where `s > secp256k1n/2`. OpenZeppelin's `ECDSA.tryRecover` rejects these for malleability protection, returning `RecoverError.InvalidSignatureS`. Any wallet software or bundler that produces such a signature (or an attacker who mallates a low-s signature to high-s) will cause `validateUserOp` to revert rather than gracefully fail, permanently blocking that user operation from being processed through the EntryPoint.\n\nThe `InvalidSignatureLength` branch above it is dead code: `_extractValidUntilAndValidAfterFromSignature` already reverts for any signature that isn't exactly 65 or 77 bytes, so `ECDSA.tryRecover` never sees a wrong-length input.\n\n## Recommended mitigation steps\n\nReplace the revert with a return of `SIG_VALIDATION_FAILED`:\n\n```solidity\n} else if (recoverError == ECDSA.RecoverError.InvalidSignatureS) {\n    return _packValidationData(true, validUntil, validAfter);\n}\n```\n\nThis matches the handling of `RecoverError.InvalidSignature` already present in the function and satisfies the ERC-4337 requirement that `_validateSignature` never reverts.",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: BUSL-1.1\npragma solidity 0.8.29;\n\nimport { Test } from \"forge-std/src/Test.sol\";\nimport { PackedUserOperation } from \"@account-abstraction/interfaces/PackedUserOperation.sol\";\nimport { _packValidationData } from \"@account-abstraction/core/Helpers.sol\";\nimport { TransparentUpgradeableProxy } from \"@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol\";\nimport { AtomWallet } from \"src/protocol/wallet/AtomWallet.sol\";\n\ncontract MockMultiVault {\n    address internal _warden;\n    constructor(address warden) { _warden = warden; }\n    function getAtomWarden() external view returns (address) { return _warden; }\n}\n\ncontract MockEntryPoint {\n    mapping(address => uint256) public balanceOf;\n    function depositTo(address a) external payable { balanceOf[a] += msg.value; }\n}\n\ncontract AtomWalletHighSTest is Test {\n    uint256 constant SECP256K1N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;\n\n    AtomWallet wallet;\n    MockEntryPoint entryPoint;\n    uint256 ownerKey = 0xA11CE;\n\n    function setUp() public {\n        address owner = vm.addr(ownerKey);\n        entryPoint = new MockEntryPoint();\n        MockMultiVault mv = new MockMultiVault(owner);\n        AtomWallet impl = new AtomWallet();\n        TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(\n            address(impl), address(this),\n            abi.encodeWithSelector(AtomWallet.initialize.selector, address(entryPoint), address(mv), bytes32(\"ATOM\"))\n        );\n        wallet = AtomWallet(payable(address(proxy)));\n    }\n\n    function _makeUserOp(bytes memory sig) internal view returns (PackedUserOperation memory) {\n        return PackedUserOperation({\n            sender: address(wallet), nonce: 0, initCode: \"\", callData: \"\",\n            accountGasLimits: bytes32(uint256(1_000_000) << 128 | 1_000_000),\n            preVerificationGas: 21_000, gasFees: bytes32(uint256(1e9) << 128 | 1e9),\n            paymasterAndData: \"\", signature: sig\n        });\n    }\n\n    // Bug: high-s signature causes revert instead of returning SIG_VALIDATION_FAILED\n    function test_highS_revertsInsteadOfSigValidationFailed() public {\n        bytes32 userOpHash = keccak256(\"userOpHash\");\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", userOpHash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerKey, digest);\n\n        // Flip s to high-s: s_high = N - s_low (valid secp256k1 signature, rejected by OZ for malleability)\n        bytes32 highS = bytes32(SECP256K1N - uint256(s));\n        uint8 highV = v == 27 ? 28 : 27;\n        bytes memory highSSig = abi.encodePacked(r, highS, highV);\n\n        PackedUserOperation memory userOp = _makeUserOp(highSSig);\n\n        // ERC-4337 requires _validateSignature to NEVER revert.\n        // This call reverts with AtomWallet_InvalidSignatureS — breaking the EntryPoint flow.\n        vm.prank(address(entryPoint));\n        vm.expectRevert(abi.encodeWithSelector(AtomWallet.AtomWallet_InvalidSignatureS.selector, highS));\n        wallet.validateUserOp(userOp, userOpHash, 0);\n    }\n}\n```\n\nRun with: `forge test --match-test test_highS_revertsInsteadOfSigValidationFailed -vv`\n\nBoth tests pass, confirming the revert on high-s and correct behavior on low-s.",
+      "linesOfCode": "https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/wallet/AtomWallet.sol#L303-L304",
+      "number": 315,
+      "aiExplanation": null,
+      "_index": 315
+    }
+  }
+}

@@ -1,0 +1,32 @@
+The check: rewardTokenMinAmount() is performed on the pre fee campaign amount instead of the post fee amount.
+
+### Finding description and impact
+
+The invariant intended to enforce a minimum reward-per-epoch distribution is incorrectly computed in _createCampaign() inside DistributionCreator. The check uses the before fee removal campaign amount instead of the after fee removal distributed amount, allowing creators to bypass the minimum amount distributed per-epoch requirement.
+
+### Root cause
+
+During campaign creation, the protocol applies fees to the reward amount:
+
+
+However, the invariant meant to enforce sufficient reward per epoch is evaluated using the original amount, not the distributedAmount:
+
+This produces a logical mismatch:
+	•	The check verifies that the pre-fee amount per epoch exceeds the minimum threshold.
+	•	But the actual tokens delivered to the Distributor are reduced by fees, resulting in a lower real distribution per epoch.
+
+The PoC demonstrates this flaw:
+	1.	A user chooses a reward amount just above the minimum-per-epoch threshold.
+	2.	After fee deduction, the real amount becomes lower than the required minimum.
+	3.	The campaign still passes validation because the invariant used the higher pre-fee value.
+
+As a result, a campaign can be created with underfunded per-epoch rewards, violating the economic guarantees the invariant was supposed to enforce.
+
+## Impact
+
+This vulnerability enables systematic circumvention of the minimum reward-per-epoch constraints:
+	•	Campaign creators can intentionally select an amount that barely meets the invariant, knowing that fees will push the real distribution below the enforced minimum.
+	•	Underfunded distributions may lead to:
+	•	Inadequate per epoch incentives.
+	•	Misleading campaign configurations passed off as compliant.
+	•	Potential downstream issues for users expecting a minimum guaranteed payout.

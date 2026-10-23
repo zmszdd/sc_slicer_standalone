@@ -1,0 +1,33 @@
+Oracle storage slot collision allows DoS of any oracle pool via `expandCapacity`
+
+### Description
+
+The Oracle extension in `src/extensions/Oracle.sol` maintains two distinct data structures in storage:
+- [Counts](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/types/counts.sol)
+- [Snapshot](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/types/snapshot.sol)
+
+Both counters and snapshots are written into the same 256-bit storage key space. For a given token, `Counts[tokenA]` lives at the slot `V = uint256(uint160(tokenA))`
+
+Snapshots are stored at slots of the form `S = (uint256(uint160(tokenB)) << 32) | i`
+
+Because both patterns share the same namespace, it’s always possible to pick some (tokenB, i) such that `S == V`, meaning a snapshot write can overwrite another token’s Counts entry.
+
+It is easy to calculate the collision token, here is an example in solidity:
+
+
+Counts storage:
+
+Snapshot storage:
+
+
+
+The `expandCapacity` function is fully permissionless. It has no access control, does not validate that the token is a real ERC20, and does not check whether an oracle pool exists for the token.
+
+When the attacker calls `oracle.expandCapacity(tokenB, i + 1)`:
+- The loop iterates from 0 to i (since `tokenB` has no prior capacity)
+- At iteration i, it executes `sstore((tokenB << 32) | i, 1)`
+- This is equivalent to `sstore(tokenA, 1)`, overwriting `Counts[tokenA]`
+
+### Impact
+
+On any subsequent pool operation (swap, deposit, withdraw) that triggers `maybeInsertSnapshot`, the following code executes:

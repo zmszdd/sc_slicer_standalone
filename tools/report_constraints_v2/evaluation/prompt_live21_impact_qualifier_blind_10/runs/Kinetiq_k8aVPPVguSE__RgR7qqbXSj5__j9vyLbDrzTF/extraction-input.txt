@@ -1,0 +1,36 @@
+Attacker gains rewards unfairly by a front run of rewards added into the system
+
+## Finding description:
+
+The reward distribution mechanism in the `StakingManager` contract introduces a vulnerability that can be exploited by attackers to gain a disproportionate share of staking rewards. This issue stems from the way the exchange ratio between `HYPE` and `kHYPE` tokens is calculated and used during staking and withdrawal operations.
+
+At its core, the exchange ratio is computed dynamically based on the `total supply` of `kHYPE` tokens and the total amount of `HYPE` within the system. The exchange ratio is defined as follows:
+
+
+This approach means that the exchange ratio increases immediately when rewards are added to the protocol. Since staking operations convert deposited HYPE into kHYPE using this exchange ratio, a higher exchange ratio results in fewer kHYPE tokens minted per unit of HYPE staked. Conversely, a lower exchange ratio results in more kHYPE being minted.
+
+## Impact:
+The core issue arises when a user—especially a **MEV bot—stakes a huge amount of HYPE** just before the `ValidatorManager` injects new rewards into the system. At this point, the exchange ratio is still low. As a result, the user receives more kHYPE tokens than they would if the reward had already been distributed. Once the reward is deposited, the total HYPE in the system increases, and so does the value of each kHYPE token. If the attacker now withdraws their position (or queues a withdrawal), they receive more HYPE than they initially staked, effectively capturing an unfair portion of the newly added rewards.
+
+This exploit results in short-term attackers diluting the returns of long-term and honest stakers, reducing the protocol's fairness. Furthermore, since the system does not factor in how long someone has been staking—relying solely on snapshot values of total supply and rewards—there is no built-in defense against this timing-based exploitation.
+
+## Exploit Example:
+To illustrate this, consider the following simplified numbers:
+- Total kHYPE supply before the attack: 100,000
+- Total HYPE in the system before rewards: 20,000
+- Exchange ratio: 0.2
+
+An attacker deposits 1,000 HYPE just before validator rewards are sent to the contract. At this time, the attacker is minted:
+- 1,000 / 0.2 = 5,000 kHYPE
+
+Immediately after the stake, the protocol receives a validator reward of 5,000 HYPE. Now the total HYPE is 25,000, but the total kHYPE is 105,000, making the new exchange ratio:
+- 25,000 / 105,000 ≈ 0.238
+
+Now, if the attacker withdraws their 5,000 kHYPE using the updated exchange rate, they will receive:
+- 5,000 * 0.238 ≈ 1,190 HYPE
+
+This results in a net profit of 190 HYPE, which was not earned through legitimate staking, but rather by timing the reward inflow and abusing the dynamic ratio mechanism.
+
+This scenario is effective even if the protocol has more fund into it but it is especially effective in the early days of deployment.
+
+The impact is amplified by the fact that the system does not track how long funds have been staked. Users who stake for a single block and those who stake for weeks or months are treated the same in reward distribution. This design choice unintentionally encourages manipulative staking behavior and undermines the goal of promoting long-term participation.

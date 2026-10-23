@@ -1,0 +1,146 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "value_relation",
+  "precondition_ids": [
+    "pm_enabled_vault",
+    "auto_borrow_triggered"
+  ],
+  "intent_id": "solvency_intent",
+  "impact_ids": [
+    "backing_overstated"
+  ],
+  "symbols": {
+    "portfolio_margin_enabled": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Portfolio Margin is activated on the Vault's L1 account",
+      "checkpoint": "before keeper computes surplus",
+      "entity_ids": [
+        "vault",
+        "l1_account"
+      ],
+      "source_ids": [
+        "pm_enabled_vault"
+      ]
+    },
+    "auto_borrow_active": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "HyperLiquid PM auto-borrow has triggered on the Vault's L1 account due to adverse price movement",
+      "checkpoint": "before keeper computes surplus",
+      "entity_ids": [
+        "l1_account"
+      ],
+      "source_ids": [
+        "auto_borrow_triggered"
+      ]
+    },
+    "borrow_value": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "0x811 borrow.value of the Vault's L1 account, the borrow leg amount (+X)",
+      "checkpoint": "before keeper computes surplus",
+      "entity_ids": [
+        "l1_account"
+      ],
+      "source_ids": [
+        "auto_borrow_triggered",
+        "backing_overstated"
+      ]
+    },
+    "total_backing_signed": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "totalBackingSigned() value reported by the Accountant",
+      "checkpoint": "after auto-borrow, when surplus is computed",
+      "entity_ids": [
+        "accountant"
+      ],
+      "source_ids": [
+        "backing_overstated",
+        "solvency_intent"
+      ]
+    },
+    "real_net_assets": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "real net assets of the Vault's L1 account, unchanged by the auto-borrow",
+      "checkpoint": "after auto-borrow, when surplus is computed",
+      "entity_ids": [
+        "l1_account"
+      ],
+      "source_ids": [
+        "auto_borrow_triggered",
+        "backing_overstated"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "pm_enabled_vault",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "portfolio_margin_enabled",
+        "value": true
+      }
+    },
+    {
+      "source_id": "auto_borrow_triggered",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "auto_borrow_active",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "portfolio_margin_enabled",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "auto_borrow_active",
+          "value": true
+        }
+      ]
+    },
+    "relation": {
+      "kind": "relation",
+      "left": {
+        "symbol": "total_backing_signed"
+      },
+      "operator": "le",
+      "right": {
+        "symbol": "real_net_assets"
+      }
+    }
+  },
+  "assumptions": [
+    "The borrow leg amount is positive (borrow_value > 0) when auto-borrow triggers, so overstatement by exactly the borrow amount is meaningful.",
+    "real_net_assets is the report's real net assets of the L1 account, unchanged by the auto-borrow.",
+    "total_backing_signed is the Accountant's reported backing used to compute surplus."
+  ],
+  "unresolved": [
+    {
+      "category": "missing_report_definition",
+      "description": "Report does not give a numeric definition of real_net_assets or total_backing_signed beyond the qualitative statement that backing is overstated by exactly the borrow amount; the exact relation total_backing_signed = real_net_assets + borrow_value is stated in prose but not as a numeric formula with operands.",
+      "source_ids": [
+        "backing_overstated",
+        "auto_borrow_triggered"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The plan formalizes only the backing_overstated impact; phantom surplus, principal displacement, and gate bypass are handled in separate passes.",
+    "Exact numeric value X of the borrow amount is not specified; symbols remain symbolic.",
+    "The equality total_backing_signed = real_net_assets + borrow_value is captured only as the safety relation total_backing_signed <= real_net_assets, not as an exact overstatement equation."
+  ]
+}

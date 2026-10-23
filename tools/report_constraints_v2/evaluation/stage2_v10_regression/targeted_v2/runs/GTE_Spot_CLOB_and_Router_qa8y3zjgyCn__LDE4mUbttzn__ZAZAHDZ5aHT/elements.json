@@ -1,0 +1,265 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "_matchIncomingOrder quote-denominated fill order matching with lot-size flooring",
+    "environment": "CLOB.sol on-chain order matching",
+    "evidence": [
+      "This bug exists in the `_matchIncomingOrder` [function](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L823-L827) in `CLOB.sol` where quote-denominated fill orders (`amountIsBase: false`) incorrectly track remaining amounts when lot-size flooring occurs.",
+      "When `baseDelta != matchedBase` (which happens when lot-size flooring reduces the tradeable amount), the system incorrectly sets `matchedAmount = takerOrder.amount` (the full remaining quote amount) instead of `quoteDelta` (the actual quote amount consumed).",
+      "The incorrect `matchedAmount` is used to decrement the incoming order's remaining amount in both [bid](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L763) and [ask](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L797) matching loops. This over-subtraction causes the matching loop to terminate prematurely, preventing the order from continuing to match against additional liquidity.",
+      "This check passes because `newOrder.amount` has been incorrectly reduced to 0, even though dust quote amount remains unfilled. This violates the FOK guarantee that orders either execute completely or fail entirely.",
+      "Users receive fewer base tokens than their quote amount should purchase. Settlement uses the correct (smaller) `quoteDelta` and `baseDelta` values, but the user's order is marked as fully filled despite only partial execution.",
+      "The order amount is reduced by 2.5 units, but only 2 units worth of base tokens are actually traded, resulting in a 20% loss of expected value."
+    ]
+  },
+  "entities": [
+    {
+      "id": "clob_contract",
+      "name": "CLOB.sol",
+      "role": "contract",
+      "evidence": [
+        "This bug exists in the `_matchIncomingOrder` [function](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L823-L827) in `CLOB.sol` where quote-denominated fill orders (`amountIsBase: false`) incorrectly track remaining amounts when lot-size flooring occurs."
+      ]
+    },
+    {
+      "id": "taker",
+      "name": "Incoming order taker",
+      "role": "victim",
+      "evidence": [
+        "Users receive fewer base tokens than their quote amount should purchase. Settlement uses the correct (smaller) `quoteDelta` and `baseDelta` values, but the user's order is marked as fully filled despite only partial execution.",
+        "The order amount is reduced by 2.5 units, but only 2 units worth of base tokens are actually traded, resulting in a 20% loss of expected value."
+      ]
+    },
+    {
+      "id": "quote_denominated_order",
+      "name": "Quote-denominated fill order (amountIsBase: false)",
+      "role": "asset",
+      "evidence": [
+        "This bug exists in the `_matchIncomingOrder` [function](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L823-L827) in `CLOB.sol` where quote-denominated fill orders (`amountIsBase: false`) incorrectly track remaining amounts when lot-size flooring occurs.",
+        "- `amountIsBase = false`"
+      ]
+    },
+    {
+      "id": "fok_order",
+      "name": "Fill-or-Kill order",
+      "role": "asset",
+      "evidence": [
+        "For Fill-or-Kill orders, this creates a critical failure mode. The FOK validation check",
+        "This check passes because `newOrder.amount` has been incorrectly reduced to 0, even though dust quote amount remains unfilled. This violates the FOK guarantee that orders either execute completely or fail entirely."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "quote_denominated_order_condition",
+      "kind": "precondition",
+      "text": "The incoming fill order is quote-denominated (amountIsBase = false).",
+      "modality": "asserted",
+      "entity_ids": [
+        "quote_denominated_order"
+      ],
+      "evidence": [
+        "This bug exists in the `_matchIncomingOrder` [function](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L823-L827) in `CLOB.sol` where quote-denominated fill orders (`amountIsBase: false`) incorrectly track remaining amounts when lot-size flooring occurs.",
+        "- `amountIsBase = false`"
+      ]
+    },
+    {
+      "id": "lot_size_present",
+      "kind": "precondition",
+      "text": "A lot-size constraint is present (e.g., lotSizeInBase = 1e18) so that lot-size flooring can reduce the tradeable base amount.",
+      "modality": "asserted",
+      "entity_ids": [
+        "quote_denominated_order"
+      ],
+      "evidence": [
+        "- `lotSizeInBase = 1e18`",
+        "3. `baseDelta = floor(2.5e18 / 1e18) * 1e18 = 2e18` (lot-size flooring)",
+        "This bug affects all quote-denominated fill orders when lot-size constraints are present, which is a core feature as evidenced by test coverage in ."
+      ]
+    },
+    {
+      "id": "remaining_quote_amount",
+      "kind": "precondition",
+      "text": "The taker order has a remaining quote amount (e.g., 2.5e18) and a maker with sufficient base (e.g., 3e18) is available.",
+      "modality": "asserted",
+      "entity_ids": [
+        "taker",
+        "quote_denominated_order"
+      ],
+      "evidence": [
+        "- `remaining taker.amount = 2.5e18` (2.5 quote units)",
+        "- `maker base = 3e18`"
+      ]
+    },
+    {
+      "id": "flooring_mismatch",
+      "kind": "precondition",
+      "text": "Lot-size flooring makes baseDelta differ from matchedBase (e.g., baseDelta = 2e18 vs matchedBase = 2.5e18).",
+      "modality": "asserted",
+      "entity_ids": [
+        "quote_denominated_order"
+      ],
+      "evidence": [
+        "When `baseDelta != matchedBase` (which happens when lot-size flooring reduces the tradeable amount), the system incorrectly sets `matchedAmount = takerOrder.amount` (the full remaining quote amount) instead of `quoteDelta` (the actual quote amount consumed).",
+        "3. `baseDelta = floor(2.5e18 / 1e18) * 1e18 = 2e18` (lot-size flooring)",
+        "5. Since `baseDelta (2e18) != matchedBase (2.5e18), matchedAmount = takerOrder.amount = 2.5e18`"
+      ]
+    },
+    {
+      "id": "match_incoming_order",
+      "kind": "action",
+      "text": "The _matchIncomingOrder function processes the quote-denominated fill order.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract",
+        "quote_denominated_order"
+      ],
+      "evidence": [
+        "This bug exists in the `_matchIncomingOrder` [function](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L823-L827) in `CLOB.sol` where quote-denominated fill orders (`amountIsBase: false`) incorrectly track remaining amounts when lot-size flooring occurs."
+      ]
+    },
+    {
+      "id": "decrement_remaining",
+      "kind": "action",
+      "text": "The matching loop decrements the incoming order's remaining amount using the computed matchedAmount.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract",
+        "quote_denominated_order"
+      ],
+      "evidence": [
+        "The incorrect `matchedAmount` is used to decrement the incoming order's remaining amount in both [bid](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L763) and [ask](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L797) matching loops. This over-subtraction causes the matching loop to terminate prematurely, preventing the order from continuing to match against additional liquidity."
+      ]
+    },
+    {
+      "id": "fok_validation",
+      "kind": "action",
+      "text": "The FOK validation check is evaluated against the reduced newOrder.amount.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract",
+        "fok_order"
+      ],
+      "evidence": [
+        "For Fill-or-Kill orders, this creates a critical failure mode. The FOK validation check",
+        "This check passes because `newOrder.amount` has been incorrectly reduced to 0, even though dust quote amount remains unfilled. This violates the FOK guarantee that orders either execute completely or fail entirely."
+      ]
+    },
+    {
+      "id": "wrong_matched_amount",
+      "kind": "root_cause",
+      "text": "When baseDelta != matchedBase, matchedAmount is set to the full remaining takerOrder.amount instead of the actual consumed quoteDelta.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract",
+        "quote_denominated_order"
+      ],
+      "evidence": [
+        "When `baseDelta != matchedBase` (which happens when lot-size flooring reduces the tradeable amount), the system incorrectly sets `matchedAmount = takerOrder.amount` (the full remaining quote amount) instead of `quoteDelta` (the actual quote amount consumed).",
+        "5. Since `baseDelta (2e18) != matchedBase (2.5e18), matchedAmount = takerOrder.amount = 2.5e18`"
+      ]
+    },
+    {
+      "id": "premature_termination",
+      "kind": "impact",
+      "text": "Over-subtraction causes the matching loop to terminate prematurely, preventing the order from continuing to match against additional liquidity.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract",
+        "quote_denominated_order"
+      ],
+      "evidence": [
+        "The incorrect `matchedAmount` is used to decrement the incoming order's remaining amount in both [bid](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L763) and [ask](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L797) matching loops. This over-subtraction causes the matching loop to terminate prematurely, preventing the order from continuing to match against additional liquidity."
+      ]
+    },
+    {
+      "id": "fok_guarantee_violated",
+      "kind": "impact",
+      "text": "The FOK check passes because newOrder.amount is incorrectly reduced to 0 even though dust quote amount remains unfilled, violating the all-or-nothing FOK guarantee.",
+      "modality": "asserted",
+      "entity_ids": [
+        "fok_order",
+        "clob_contract"
+      ],
+      "evidence": [
+        "This check passes because `newOrder.amount` has been incorrectly reduced to 0, even though dust quote amount remains unfilled. This violates the FOK guarantee that orders either execute completely or fail entirely."
+      ]
+    },
+    {
+      "id": "fewer_base_tokens",
+      "kind": "impact",
+      "text": "Users receive fewer base tokens than their quote amount should purchase; the order is marked fully filled despite only partial execution.",
+      "modality": "asserted",
+      "entity_ids": [
+        "taker",
+        "quote_denominated_order"
+      ],
+      "evidence": [
+        "Users receive fewer base tokens than their quote amount should purchase. Settlement uses the correct (smaller) `quoteDelta` and `baseDelta` values, but the user's order is marked as fully filled despite only partial execution."
+      ]
+    },
+    {
+      "id": "value_loss_20pct",
+      "kind": "impact",
+      "text": "The order amount is reduced by 2.5 units while only 2 units worth of base tokens are traded, resulting in a 20% loss of expected value.",
+      "modality": "asserted",
+      "entity_ids": [
+        "taker",
+        "quote_denominated_order"
+      ],
+      "evidence": [
+        "The order amount is reduced by 2.5 units, but only 2 units worth of base tokens are actually traded, resulting in a 20% loss of expected value."
+      ]
+    },
+    {
+      "id": "intent_remaining_tracks_consumed",
+      "kind": "security_intent",
+      "text": "The incoming order's remaining amount should be decremented by the actual quote amount consumed (quoteDelta), not the full remaining amount, so matching continues against additional liquidity.",
+      "modality": "inferred",
+      "entity_ids": [
+        "clob_contract",
+        "quote_denominated_order"
+      ],
+      "evidence": [
+        "When `baseDelta != matchedBase` (which happens when lot-size flooring reduces the tradeable amount), the system incorrectly sets `matchedAmount = takerOrder.amount` (the full remaining quote amount) instead of `quoteDelta` (the actual quote amount consumed).",
+        "The incorrect `matchedAmount` is used to decrement the incoming order's remaining amount in both [bid](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L763) and [ask](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/CLOB.sol#L797) matching loops. This over-subtraction causes the matching loop to terminate prematurely, preventing the order from continuing to match against additional liquidity."
+      ]
+    },
+    {
+      "id": "intent_fok_all_or_nothing",
+      "kind": "security_intent",
+      "text": "A Fill-or-Kill order should either execute completely or fail entirely, never be marked fully filled while dust quote amount remains unfilled.",
+      "modality": "asserted",
+      "entity_ids": [
+        "fok_order"
+      ],
+      "evidence": [
+        "This check passes because `newOrder.amount` has been incorrectly reduced to 0, even though dust quote amount remains unfilled. This violates the FOK guarantee that orders either execute completely or fail entirely."
+      ]
+    },
+    {
+      "id": "intent_full_value",
+      "kind": "security_intent",
+      "text": "A quote-denominated fill order should receive base tokens matching the quote amount it pays, without loss of expected value from lot-size flooring.",
+      "modality": "inferred",
+      "entity_ids": [
+        "taker",
+        "quote_denominated_order"
+      ],
+      "evidence": [
+        "Users receive fewer base tokens than their quote amount should purchase. Settlement uses the correct (smaller) `quoteDelta` and `baseDelta` values, but the user's order is marked as fully filled despite only partial execution.",
+        "The order amount is reduced by 2.5 units, but only 2 units worth of base tokens are actually traded, resulting in a 20% loss of expected value."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "match_incoming_order",
+    "decrement_remaining",
+    "fok_validation"
+  ],
+  "ambiguities": [
+    "Report does not state who can call _matchIncomingOrder or whether it is permissionless.",
+    "The 20% loss figure is from a specific example; general magnitude across all orders is not quantified.",
+    "Whether the premature termination always leaves dust unfilled or only in some lot-size configurations is not fully specified."
+  ]
+}

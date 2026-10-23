@@ -1,0 +1,43 @@
+Users Cannot Claim Rewards for the Epoch in Which Their Lock Expires, Causing Guaranteed Loss of Final Epoch Rewards
+
+## Finding description and impact
+
+Every user who lets their lock reach its natural expiry loses 100% of their rewards for the final epoch in which they were bonded. The reward system snapshots `userBondedBalanceAtEpochEnd` at the exact `epochTimestampEnd` timestamp.
+
+As `veTRUST` balance decays linearly to zero at lock expiry, and the lock-end is always <= the epoch-end (due to week-rounding), the snapshot returns *zero* for the *epoch in which the lock expires*. The user was bonded for a part or all of that epoch, yet received nothing.
+
+This affects **100% of locks that reach their natural expiry** without manual extension to unlock time.
+
+For the worst case, users who lock for any duration `<= epochLength` (including the minimum allowed e.g `MINTIME = epochLength = 14 days`) can lose **100% of their rewards**, since the lock can start and expire within the same epoch, leaving no epoch where the end-snapshot captures a non-zero balance.
+
+### Detailed description
+
+The claim system rule from [TrustBonding.sol - Natspec](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L28-L29)
+> _"Rewards for epoch `n` become claimable in epoch `n+1` and are forfeited if not claimed before the next epoch ends
+> (i.e. only the previous epoch's rewards are claimable)."_
+
+`claimRewards` always computes for `prevEpoch = currentEpoch - 1` and evaluates the user's balance at
+`epochTimestampEnd(prevEpoch)`:
+
+which calls 
+
+
+And `userBondedBalanceAtEpochEnd` snapshots at the exact epoch-end timestamp:
+
+
+Where `_balanceOf` computes linearly decaying voting power that reaches exactly zero at lock expiry:
+
+
+This will affect every epoch in which the lock expires.
+
+For example: Consider a user whose lock expires during epoch N 
+- **Epoch N-1 rewards**: Captured at `epochTimestampEnd(N-1)`. Lock hasn't expired, balance > 0. Rewards claimable during epoch N. This works fine.
+- **Epoch N rewards**: The user was bonded for part or all of epoch N. But the snapshot is at `epochTimestampEnd(N)`, by which point `locked.end <= epochTimestampEnd(N)`, so `_balanceOf` returns **0**. `_userEligibleRewardsForEpoch` returns 0. The user **can never claim** epoch N rewards — they are gone.
+
+### Impact
+
+1. Guaranteed loss of the final epoch's rewards for every expiring lock. This is not probabilistic, any
+lock that reaches its `locked.end` loses 100% of rewards for the epoch in which it expires.
+2. Up to 100% total reward loss for lockers with duration <= epochLength
+3. Contradicts documented design - The NatSpec promises rewards "allocated pro rata to users' shares of the total bonded balance." A user bonded for an entire epoch receiving 0% of their share violates this guarantee.
+4. No mitigation without cost - the only escape is extending the lock (more capital lockup than intended), and the user has no way to know they need to do this.

@@ -1,0 +1,180 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "p_non_head_order_exists",
+    "p_new_order_appended"
+  ],
+  "intent_id": "i_addressable_and_reachable_oi",
+  "impact_ids": [
+    "v_best_bid_ask_sentinel"
+  ],
+  "symbols": {
+    "non_head_order_prev_id": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "prevOrderId read from storage for a non-head order in a price-level list",
+      "checkpoint": "before append/removal action",
+      "entity_ids": [
+        "price_level_list"
+      ],
+      "source_ids": [
+        "p_non_head_order_exists"
+      ]
+    },
+    "zero_order_id": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "zero order-id sentinel (prevOrderId == 0)",
+      "checkpoint": "constant",
+      "entity_ids": [
+        "price_level_list"
+      ],
+      "source_ids": [
+        "p_non_head_order_exists"
+      ]
+    },
+    "new_order_append_occurred": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a new order was appended to the price-level list via Book._updateLimitPostOrder",
+      "checkpoint": "at append action",
+      "entity_ids": [
+        "book_contract",
+        "price_level_list"
+      ],
+      "source_ids": [
+        "p_new_order_appended"
+      ]
+    },
+    "final_orphaned_order_deleted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the final orphaned order in the price level is deleted, removing the RB-tree node for that price level",
+      "checkpoint": "at final orphaned order deletion",
+      "entity_ids": [
+        "price_level_list",
+        "book_contract"
+      ],
+      "source_ids": [
+        "v_best_bid_ask_sentinel"
+      ]
+    },
+    "best_bid_ask_sentinel_returned": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "getBestBid/Ask returns the MAX_UINT sentinel for that side of the book after the final orphaned order is deleted",
+      "checkpoint": "after final orphaned order deletion",
+      "entity_ids": [
+        "taker_fills",
+        "price_level_list"
+      ],
+      "source_ids": [
+        "v_best_bid_ask_sentinel"
+      ]
+    },
+    "taker_fills_disabled": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "taker fills are disabled for that side of the book",
+      "checkpoint": "after final orphaned order deletion",
+      "entity_ids": [
+        "taker_fills"
+      ],
+      "source_ids": [
+        "v_best_bid_ask_sentinel"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_non_head_order_exists",
+      "predicate": {
+        "kind": "comparison",
+        "left": "non_head_order_prev_id",
+        "operator": "ne",
+        "right": {
+          "symbol": "zero_order_id"
+        }
+      }
+    },
+    {
+      "source_id": "p_new_order_appended",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "new_order_append_occurred",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "comparison",
+          "left": "non_head_order_prev_id",
+          "operator": "ne",
+          "right": {
+            "symbol": "zero_order_id"
+          }
+        },
+        {
+          "kind": "truth",
+          "symbol": "new_order_append_occurred",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "final_orphaned_order_deleted",
+          "value": true
+        }
+      ]
+    },
+    "relation": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "best_bid_ask_sentinel_returned",
+          "value": false
+        },
+        {
+          "kind": "truth",
+          "symbol": "taker_fills_disabled",
+          "value": false
+        }
+      ]
+    }
+  },
+  "assumptions": [
+    "The append/removal operations are reachable by the attacker as described in the scenario; permissionlessness is not established by the report.",
+    "The final orphaned order deletion is the transition that removes the RB-tree node for that price level."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "Report does not establish that anyone can call the append/removal functions; attacker authorization for the scenario is unspecified.",
+      "source_ids": [
+        "a_append_order",
+        "a_cancel_or_match_non_head"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "missing_checkpoint",
+      "description": "Timing/order of repeated orphaning relative to the final deletion is described only as a scenario, not a concrete transaction sequence.",
+      "source_ids": [
+        "v_best_bid_ask_sentinel"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Formalizes only the v_best_bid_ask_sentinel impact; other impacts (orphaned orders, corrupted price levels, open-interest misaccounting) are handled in separate passes.",
+    "The MAX_UINT sentinel value is not given a numeric literal in the report; it is represented by the observable sentinel-return Boolean.",
+    "The link between the back-link memory-copy root cause and the sentinel outcome is not re-derived here; only the report-stated observable outcome is bound."
+  ]
+}

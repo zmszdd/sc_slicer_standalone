@@ -1,0 +1,208 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "StakingNativeToken._withdraw() balance accounting during ETH transfers with reentrant claim() for a different owned service",
+    "environment": "StakingBase/StakingNativeToken staking contract with native ETH transfers and ServiceOwner reward distribution",
+    "evidence_ids": [
+      "e_38ae2cac8f29_0001",
+      "e_38ae2cac8f29_0003",
+      "e_38ae2cac8f29_0006",
+      "e_38ae2cac8f29_0008",
+      "e_38ae2cac8f29_0026"
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "Attacker owning two services",
+      "role": "attacker",
+      "evidence_ids": [
+        "e_38ae2cac8f29_0008",
+        "e_38ae2cac8f29_0013"
+      ]
+    },
+    {
+      "id": "staking_contract",
+      "name": "StakingNativeToken contract",
+      "role": "contract",
+      "evidence_ids": [
+        "e_38ae2cac8f29_0003",
+        "e_38ae2cac8f29_0008"
+      ]
+    },
+    {
+      "id": "service_a",
+      "name": "Service A",
+      "role": "asset",
+      "evidence_ids": [
+        "e_38ae2cac8f29_0008",
+        "e_38ae2cac8f29_0009"
+      ]
+    },
+    {
+      "id": "service_b",
+      "name": "Service B",
+      "role": "asset",
+      "evidence_ids": [
+        "e_38ae2cac8f29_0008",
+        "e_38ae2cac8f29_0013"
+      ]
+    },
+    {
+      "id": "balance_state",
+      "name": "Contract balance state variable",
+      "role": "other",
+      "evidence_ids": [
+        "e_38ae2cac8f29_0003",
+        "e_38ae2cac8f29_0006",
+        "e_38ae2cac8f29_0023"
+      ]
+    },
+    {
+      "id": "victim",
+      "name": "Victim reward recipient",
+      "role": "victim",
+      "evidence_ids": [
+        "e_38ae2cac8f29_0016"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "attacker_owns_two_services",
+      "kind": "precondition",
+      "text": "The attacker owns two services A and B, both staked in the same StakingNativeToken contract with RewardDistributionType.ServiceOwner.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "service_a",
+        "service_b",
+        "staking_contract"
+      ],
+      "evidence_ids": [
+        "e_38ae2cac8f29_0008"
+      ]
+    },
+    {
+      "id": "contract_balance_100",
+      "kind": "precondition",
+      "text": "Before the outer _withdraw(), the contract balance state variable equals 100 ETH.",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_contract",
+        "balance_state"
+      ],
+      "evidence_ids": [
+        "e_38ae2cac8f29_0008",
+        "e_38ae2cac8f29_0010"
+      ]
+    },
+    {
+      "id": "no_reentrancy_guard",
+      "kind": "precondition",
+      "text": "Neither _claim(), _unstake(), _withdraw(), nor _stake() have reentrancy guards.",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_contract"
+      ],
+      "evidence_ids": [
+        "e_38ae2cac8f29_0026"
+      ]
+    },
+    {
+      "id": "unstake_service_a",
+      "kind": "action",
+      "text": "The attacker calls unstake(serviceA), triggering the outer _withdraw() which reads balance into a local variable and transfers ETH to the attacker.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "service_a",
+        "staking_contract"
+      ],
+      "evidence_ids": [
+        "e_38ae2cac8f29_0009",
+        "e_38ae2cac8f29_0010",
+        "e_38ae2cac8f29_0012"
+      ]
+    },
+    {
+      "id": "reenter_claim_service_b",
+      "kind": "action",
+      "text": "During the ETH transfer, the attacker's receive() re-enters the contract calling claim(serviceB), triggering an inner _withdraw().",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "service_b",
+        "staking_contract"
+      ],
+      "evidence_ids": [
+        "e_38ae2cac8f29_0013",
+        "e_38ae2cac8f29_0014"
+      ]
+    },
+    {
+      "id": "outer_resumes_writes_stale",
+      "kind": "action",
+      "text": "The outer _withdraw() resumes and writes its stale local balance value back to storage, overwriting the inner write.",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_contract",
+        "balance_state"
+      ],
+      "evidence_ids": [
+        "e_38ae2cac8f29_0018",
+        "e_38ae2cac8f29_0019",
+        "e_38ae2cac8f29_0020"
+      ]
+    },
+    {
+      "id": "stale_balance_read_write_after_transfer",
+      "kind": "root_cause",
+      "text": "_withdraw() reads balance into a local variable, performs external ETH transfers in a loop, and only writes the updated balance back to storage after all transfers complete, so a reentrant inner _withdraw() reads stale storage and the outer write overwrites the inner write.",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_contract",
+        "balance_state"
+      ],
+      "evidence_ids": [
+        "e_38ae2cac8f29_0003",
+        "e_38ae2cac8f29_0006"
+      ]
+    },
+    {
+      "id": "balance_updated_before_transfer",
+      "kind": "security_intent",
+      "text": "The balance state variable must be updated in storage before each ETH transfer so that a reentrant call cannot read a stale balance and the outer write cannot overwrite the inner write.",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_contract",
+        "balance_state"
+      ],
+      "evidence_ids": [
+        "e_38ae2cac8f29_0028"
+      ]
+    },
+    {
+      "id": "reentrancy_guard_required",
+      "kind": "security_intent",
+      "text": "_withdraw, _claim, _unstake, and _stake must be protected by a reentrancy guard preventing reentrant entry during ETH transfers.",
+      "modality": "asserted",
+      "entity_ids": [
+        "staking_contract"
+      ],
+      "evidence_ids": [
+        "e_38ae2cac8f29_0029"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "unstake_service_a",
+    "reenter_claim_service_b",
+    "outer_resumes_writes_stale"
+  ],
+  "ambiguities": [
+    "Report does not state whether the attacker's receive() is a contract or EOA; reentrancy requires contract code.",
+    "Report does not specify the exact reward amounts for serviceA and serviceB beyond the illustrative 5 ETH each.",
+    "Report does not state whether claim(serviceB) is permitted for a service the attacker owns while serviceA unstake is in progress beyond the illustrative scenario."
+  ]
+}

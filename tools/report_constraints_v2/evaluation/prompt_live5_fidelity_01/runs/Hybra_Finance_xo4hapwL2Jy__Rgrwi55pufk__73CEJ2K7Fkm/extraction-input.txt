@@ -1,0 +1,32 @@
+multiSplit Causes Permanent Accounting Drift for Permanent Locks
+
+## Summary
+Splitting a permanent veNFT via `multiSplit()` allocates child amounts with floor division and does not reconcile `permanentLockBalance`, causing (1) deterministic rounding loss of locked value and (2) global permanent accounting drift.
+
+## Finding Description
+`multiSplit()` burns the parent veNFT and mints multiple child veNFTs with proportional amounts calculated by integer division. For a parent with amount `A` and weights `w[i]`, each child receives `floor(A * w[i] / Σw)`. This truncation yields Σ(child) ≤ A and usually Σ(child) < A when `A` is not exactly divisible by `Σw`. The parent is first burned and then children are minted, so the rounding remainder is lost on-chain.
+
+When the parent is a permanent lock (`originalLocked.isPermanent == true`), `multiSplit()` never adjusts the global `permanentLockBalance` to reflect the (smaller) sum of the new child amounts. As a result, `permanentLockBalance` remains at its pre-split value, while the true sum of permanent child locks is smaller due to rounding. This breaks the invariant that `permanentLockBalance` equals the sum of all permanently locked amounts and contaminates global voting-supply snapshots (via `_checkpoint`, which records `last_point.permanent = permanentLockBalance`).
+
+Security guarantees broken:
+- Conservation of locked value in splits: Σ(child amounts) must equal the parent’s amount.
+- Accuracy of global permanent accounting: `permanentLockBalance` must track the real sum of permanent locks to ensure correct supply snapshots and downstream weighting.
+
+Relevant code:
+- Burn parent, checkpoint, and mint children with floor division:
+  - ve33/contracts/VotingEscrow.sol:1162–1189
+- Global permanent included in checkpoints:
+  - ve33/contracts/VotingEscrow.sol:733
+- No permanent reconciliation in `multiSplit`.
+
+## Impact Explanation
+Medium impact:
+- On-chain locked value is lost deterministically (rounding “dust”) upon splitting; users cannot recover it.
+- `permanentLockBalance` becomes larger than the true permanent total, skewing global accounting and analyses that rely on accurate permanent weights (e.g., supply curves, voting snapshots).
+- The drift accumulates each time permanent locks are split, affecting protocol-wide accounting.
+
+## Likelihood Explanation
+High likelihood:
+- The behavior is triggered by normal user actions (splitting a permanent veNFT) without special timing or adversarial setup.
+- Any split into ≥2 children under non-divisible allocations produces rounding loss.
+- No safeguards currently adjust `permanentLockBalance` in `multiSplit`.

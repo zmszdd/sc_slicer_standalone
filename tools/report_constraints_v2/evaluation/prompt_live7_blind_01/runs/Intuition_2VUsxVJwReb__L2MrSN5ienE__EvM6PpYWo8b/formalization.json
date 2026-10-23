@@ -1,0 +1,210 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "owner_is_contract": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the AtomWallet owner is a smart contract rather than an EOA",
+      "checkpoint": "before UserOperation signature validation",
+      "entity_ids": [
+        "atom_wallet",
+        "owner",
+        "smart_contract_owner"
+      ],
+      "evidence": "Because smart contracts (such as a Gnosis Safe, a DAO Treasury, or even the protocol's default `AtomWarden`) do not possess private keys, they cannot generate standard `r, s, v` ECDSA signatures. Consequently, `ecrecover` will either fail or recover an unrelated EOA address, ensuring that `recovered != owner()` always evaluates to `true`."
+    },
+    "owner_has_private_key": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the smart-contract owner possesses a private key able to produce standard r,s,v ECDSA signatures",
+      "checkpoint": "before UserOperation signature validation",
+      "entity_ids": [
+        "smart_contract_owner"
+      ],
+      "evidence": "Because smart contracts (such as a Gnosis Safe, a DAO Treasury, or even the protocol's default `AtomWarden`) do not possess private keys, they cannot generate standard `r, s, v` ECDSA signatures. Consequently, `ecrecover` will either fail or recover an unrelated EOA address, ensuring that `recovered != owner()` always evaluates to `true`."
+    },
+    "recovered_equals_owner": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the address recovered by ECDSA.tryRecover() equals owner() so signature validation succeeds",
+      "checkpoint": "during _validateSignature",
+      "entity_ids": [
+        "atom_wallet",
+        "owner"
+      ],
+      "evidence": "Because smart contracts (such as a Gnosis Safe, a DAO Treasury, or even the protocol's default `AtomWarden`) do not possess private keys, they cannot generate standard `r, s, v` ECDSA signatures. Consequently, `ecrecover` will either fail or recover an unrelated EOA address, ensuring that `recovered != owner()` always evaluates to `true`."
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "ERC-4337 UserOperation signature validation in AtomWallet",
+      "modality": "asserted",
+      "impact_ids": [
+        "recovered_not_owner"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The AtomWallet owner is a smart contract (e.g., a multisig such as Safe, or the default AtomWarden) rather than an EOA.; The smart-contract owner does not possess a private key and cannot produce standard r, s, v ECDSA signatures.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "owner_is_contract"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "owner_has_private_key"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "owner_is_smart_contract",
+            "owner_lacks_private_key"
+          ],
+          "evidence": [
+            "Because smart contracts (such as a Gnosis Safe, a DAO Treasury, or even the protocol's default `AtomWarden`) do not possess private keys, they cannot generate standard `r, s, v` ECDSA signatures. Consequently, `ecrecover` will either fail or recover an unrelated EOA address, ensuring that `recovered != owner()` always evaluates to `true`.",
+            "1. **Bricking of Account Abstraction Features**: In the Intuition protocol, high-value `Atoms` representing institutions, DAOs, or community nodes will inherently be controlled via Multi-Signature wallets (e.g., Safe) to ensure security. Once ownership is transferred to a multisig, the `AtomWallet` loses all AA capabilities. The DAO will be permanently unable to route transactions through the `EntryPoint`, meaning they cannot utilize Paymasters for gas sponsorship, batch operations, or automated claim executions.",
+            "2. **Default State Incompatibility**: Newly minted `AtomWallets` are by default owned by the `AtomWarden` (which is a smart contract). This implies that in its initial unclaimed state, the wallet inherently cannot interact with the ERC-4337 pipeline."
+          ]
+        },
+        "safety": {
+          "text": "Inferred: AtomWallet should support ERC-1271 so that a smart-contract owner can authorize UserOperations and retain AA functionality.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "owner_is_contract"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "owner_has_private_key"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "var": "recovered_equals_owner"
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_smart_contract_owner_aa"
+          ],
+          "evidence": [
+            "`AtomWallet` lacks ERC-1271 support, breaking AA functionality for multisig owners",
+            "`AtomWallet` operates as an ERC-4337 Smart Contract Wallet (SCW) intended to provide Account Abstraction (AA) features. The authorization mechanism for ERC-4337 `UserOperations` is handled in the `_validateSignature` function.",
+            "Currently, `_validateSignature` rigidly assumes that the `owner` of the `AtomWallet` is an Externally Owned Account (EOA) possessing a private key. It exclusively utilizes `ECDSA.tryRecover()` to derive the signer's address and directly compares it against `owner()`:"
+          ]
+        },
+        "effects": {
+          "text": "For a smart-contract owner, ecrecover fails or recovers an unrelated EOA address, so recovered != owner() always evaluates true and validation fails.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "owner_is_contract"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "owner_has_private_key"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "recovered_equals_owner"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "recovered_not_owner"
+          ],
+          "evidence": [
+            "Because smart contracts (such as a Gnosis Safe, a DAO Treasury, or even the protocol's default `AtomWarden`) do not possess private keys, they cannot generate standard `r, s, v` ECDSA signatures. Consequently, `ecrecover` will either fail or recover an unrelated EOA address, ensuring that `recovered != owner()` always evaluates to `true`."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "owner_is_smart_contract",
+            "owner_lacks_private_key"
+          ],
+          "args.1": [
+            "owner_is_smart_contract",
+            "owner_lacks_private_key"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_smart_contract_owner_aa"
+          ],
+          "args.0": [
+            "intent_smart_contract_owner_aa"
+          ],
+          "args.0.args.1": [
+            "intent_smart_contract_owner_aa"
+          ]
+        },
+        "effects": {
+          "": [
+            "recovered_not_owner"
+          ],
+          "args.0": [
+            "recovered_not_owner"
+          ],
+          "args.0.args.1": [
+            "recovered_not_owner"
+          ],
+          "args.1": [
+            "recovered_not_owner"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "recovered_not_owner",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "A UserOperation is submitted to AtomWallet for signature validation via _validateSignature.",
+        "The smart-contract owner is a multisig or the default AtomWarden without ERC-1271 handling in _validateSignature."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Only the direct validation-failure impact recovered_not_owner is formalized; aa_features_bricked and default_state_incompatible are deferred and not implied by this claim.",
+    "The plan does not model ERC-1271 support as a mechanism; it encodes only the observable requirement that a smart-contract owner's UserOperation signature validation succeeds.",
+    "No attacker or authorization-bypass scenario is claimed; this is a functionality/compatibility defect.",
+    "Deferred report impact: aa_features_bricked",
+    "Deferred report impact: default_state_incompatible"
+  ]
+}

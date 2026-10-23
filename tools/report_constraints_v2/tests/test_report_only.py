@@ -71,7 +71,7 @@ class ReportOnlyTests(unittest.TestCase):
         body = '## Description\nkeep\n```solidity\nBUG_CODE\n```\nimpact\n## Recommended mitigation steps\nFIX\n## Proof of Concept\nPOC'
         self.assertEqual(r.prose_only(body), '## Description\nkeep\nimpact')
 
-    def test_report_json_is_allow_listed_for_stage2(self):
+    def test_report_json_includes_recommendation_as_report_grounded_i_source(self):
         report = {
             'title': 'Unauthorized withdrawal',
             'body': '## Finding description and impact\nAnyone can withdraw.\n'
@@ -83,9 +83,13 @@ class ReportOnlyTests(unittest.TestCase):
         text, policy = r.report_json_input(report)
         self.assertIn('Unauthorized withdrawal', text)
         self.assertIn('Anyone can withdraw.', text)
-        self.assertNotIn('SECRET_', text)
+        self.assertIn('SECRET_FIX', text)
+        self.assertNotIn('SECRET_POC', text)
+        self.assertNotIn('SECRET_RAW', text)
+        self.assertNotIn('SECRET_PAIRING', text)
         self.assertEqual(policy['source_format'], 'report.json')
-        self.assertEqual(policy['selected_fields'], ['title', 'body.description_and_impact'])
+        self.assertEqual(policy['selected_fields'],
+                         ['title', 'body.description_impact_and_recommendations'])
 
     def test_duplicate_json_title_is_removed(self):
         report = {
@@ -96,7 +100,8 @@ class ReportOnlyTests(unittest.TestCase):
         self.assertEqual(text.count('Missing Caller Authorization'), 1)
         self.assertEqual(text, '# Missing Caller Authorization\n\n## Impact\nFunds can be stolen.')
         self.assertTrue(policy['title_deduplicated'])
-        self.assertEqual(policy['selected_fields'], ['body.description_and_impact'])
+        self.assertEqual(policy['selected_fields'],
+                         ['body.description_impact_and_recommendations'])
 
     def test_distinct_json_title_is_kept(self):
         text, policy = r.report_json_input({
@@ -156,7 +161,7 @@ class ReportOnlyTests(unittest.TestCase):
                            'Recommended mitigation steps\nImmediate Fix\n'
                            'Replace the subtraction.\n## Impact\nUsers cannot claim. ')}
         previous, old_policy = r.report_json_input(report, input_policy_version=3)
-        current, new_policy = r.report_json_input(report)
+        current, new_policy = r.report_json_input(report, input_policy_version=4)
         self.assertIn('Replace the subtraction.', previous)
         self.assertNotIn('Replace the subtraction.', current)
         self.assertIn('Users cannot claim.', current)

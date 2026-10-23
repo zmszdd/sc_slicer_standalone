@@ -1,0 +1,163 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "createCampaign funding and Distributor.claim for campaigns funded with Fee-on-Transfer ERC20 reward tokens",
+    "environment": "ERC20 campaign distribution contract (DistributionCreator/Distributor) with Merkle-based claims",
+    "evidence": [
+      "Fee-on-Transfer tokens cause insolvency in campaign funding, DoS on final claim",
+      "- In createCampaign the system computes campaignAmountMinusFees and then sets newCampaign.amount = campaignAmountMinusFees without validating what the distributor actually received. For FoT tokens, safeTransferFrom / safeTransfer delivers requested - fee_on_transfer , so distributor receives less than newCampaign.amount .",
+      "- Distributor.claim computes toSend = amount - claimed[user][token].amount from the Merkle amounts and attempts to safeTransfer(toSend) from its balance. When cumulative claims equal the recorded campaign amount but the distributor holds less (due to FoT deductions), the final claim reverts for insufficient balance.",
+      "- Creator approves and calls createCampaign with a FoT reward token and amount A.",
+      "- DistributionCreator records newCampaign.amount = A - protocol_fee and transfers that nominal net to the distributor via safeTransferFrom .",
+      "- Because the token is FoT, distributor actually receives (A - protocol_fee) - transfer_fee .",
+      "- Claims proceed; early ones succeed. The last claim attempts to drain the remainder to reach newCampaign.amount and reverts because the distributor balance is lower than the recorded amount."
+    ]
+  },
+  "entities": [
+    {
+      "id": "creator",
+      "name": "Campaign creator",
+      "role": "other",
+      "evidence": [
+        "- Creator approves and calls createCampaign with a FoT reward token and amount A."
+      ]
+    },
+    {
+      "id": "distributor",
+      "name": "Distributor contract",
+      "role": "contract",
+      "evidence": [
+        "- In createCampaign the system computes campaignAmountMinusFees and then sets newCampaign.amount = campaignAmountMinusFees without validating what the distributor actually received. For FoT tokens, safeTransferFrom / safeTransfer delivers requested - fee_on_transfer , so distributor receives less than newCampaign.amount .",
+        "- Distributor.claim computes toSend = amount - claimed[user][token].amount from the Merkle amounts and attempts to safeTransfer(toSend) from its balance. When cumulative claims equal the recorded campaign amount but the distributor holds less (due to FoT deductions), the final claim reverts for insufficient balance.",
+        "- Because the token is FoT, distributor actually receives (A - protocol_fee) - transfer_fee ."
+      ]
+    },
+    {
+      "id": "distribution_creator",
+      "name": "DistributionCreator contract",
+      "role": "contract",
+      "evidence": [
+        "- In createCampaign the system computes campaignAmountMinusFees and then sets newCampaign.amount = campaignAmountMinusFees without validating what the distributor actually received. For FoT tokens, safeTransferFrom / safeTransfer delivers requested - fee_on_transfer , so distributor receives less than newCampaign.amount .",
+        "- DistributionCreator records newCampaign.amount = A - protocol_fee and transfers that nominal net to the distributor via safeTransferFrom ."
+      ]
+    },
+    {
+      "id": "fot_token",
+      "name": "Fee-on-Transfer ERC20 reward token",
+      "role": "asset",
+      "evidence": [
+        "Fee-on-Transfer tokens cause insolvency in campaign funding, DoS on final claim",
+        "- Creator approves and calls createCampaign with a FoT reward token and amount A.",
+        "- Because the token is FoT, distributor actually receives (A - protocol_fee) - transfer_fee ."
+      ]
+    },
+    {
+      "id": "recipient",
+      "name": "Reward recipient / claimant",
+      "role": "victim",
+      "evidence": [
+        "- Final claim permanently reverts on campaigns funded with Fee-on-Transfer ERC20s; recipients cannot withdraw the remaining rewards.",
+        "- Claims proceed; early ones succeed. The last claim attempts to drain the remainder to reach newCampaign.amount and reverts because the distributor balance is lower than the recorded amount."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "creator_approves_and_calls_create_campaign",
+      "kind": "precondition",
+      "text": "The creator approves and calls createCampaign with a Fee-on-Transfer reward token and amount A.",
+      "modality": "asserted",
+      "entity_ids": [
+        "creator",
+        "fot_token",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "- Creator approves and calls createCampaign with a FoT reward token and amount A."
+      ]
+    },
+    {
+      "id": "campaign_funded_with_fot_token",
+      "kind": "precondition",
+      "text": "The campaign is funded with a Fee-on-Transfer ERC20 reward token.",
+      "modality": "asserted",
+      "entity_ids": [
+        "fot_token",
+        "distribution_creator"
+      ],
+      "evidence": [
+        "Fee-on-Transfer tokens cause insolvency in campaign funding, DoS on final claim",
+        "- Creator approves and calls createCampaign with a FoT reward token and amount A."
+      ]
+    },
+    {
+      "id": "record_nominal_net_without_validating_receipt",
+      "kind": "root_cause",
+      "text": "createCampaign computes campaignAmountMinusFees and sets newCampaign.amount to that nominal net without validating what the distributor actually received, so for FoT tokens the distributor receives less than newCampaign.amount.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distribution_creator",
+        "distributor",
+        "fot_token"
+      ],
+      "evidence": [
+        "- In createCampaign the system computes campaignAmountMinusFees and then sets newCampaign.amount = campaignAmountMinusFees without validating what the distributor actually received. For FoT tokens, safeTransferFrom / safeTransfer delivers requested - fee_on_transfer , so distributor receives less than newCampaign.amount .",
+        "- DistributionCreator records newCampaign.amount = A - protocol_fee and transfers that nominal net to the distributor via safeTransferFrom .",
+        "- Because the token is FoT, distributor actually receives (A - protocol_fee) - transfer_fee ."
+      ]
+    },
+    {
+      "id": "claim_computes_from_recorded_amount",
+      "kind": "root_cause",
+      "text": "Distributor.claim computes toSend = amount - claimed[user][token].amount from the Merkle amounts and attempts safeTransfer(toSend) from its balance, so when cumulative claims equal the recorded campaign amount but the distributor holds less due to FoT deductions, the final claim reverts for insufficient balance.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distributor",
+        "fot_token",
+        "recipient"
+      ],
+      "evidence": [
+        "- Distributor.claim computes toSend = amount - claimed[user][token].amount from the Merkle amounts and attempts to safeTransfer(toSend) from its balance. When cumulative claims equal the recorded campaign amount but the distributor holds less (due to FoT deductions), the final claim reverts for insufficient balance.",
+        "- Claims proceed; early ones succeed. The last claim attempts to drain the remainder to reach newCampaign.amount and reverts because the distributor balance is lower than the recorded amount."
+      ]
+    },
+    {
+      "id": "recorded_amount_matches_received",
+      "kind": "security_intent",
+      "text": "The recorded campaign amount must equal the amount the distributor actually received, so that cumulative claims up to the recorded amount can be paid from the distributor's balance.",
+      "modality": "inferred",
+      "entity_ids": [
+        "distribution_creator",
+        "distributor",
+        "fot_token"
+      ],
+      "evidence": [
+        "- In createCampaign the system computes campaignAmountMinusFees and then sets newCampaign.amount = campaignAmountMinusFees without validating what the distributor actually received. For FoT tokens, safeTransferFrom / safeTransfer delivers requested - fee_on_transfer , so distributor receives less than newCampaign.amount .",
+        "- Measure the distributor’s actual balance delta and record that value:",
+        "- set newCampaign.amount = after - before"
+      ]
+    },
+    {
+      "id": "final_claim_succeeds",
+      "kind": "security_intent",
+      "text": "When cumulative claims reach the recorded campaign amount, the final claim must succeed and transfer the remaining rewards to the recipient rather than reverting.",
+      "modality": "inferred",
+      "entity_ids": [
+        "distributor",
+        "recipient"
+      ],
+      "evidence": [
+        "- Final claim permanently reverts on campaigns funded with Fee-on-Transfer ERC20s; recipients cannot withdraw the remaining rewards.",
+        "- Distributor.claim computes toSend = amount - claimed[user][token].amount from the Merkle amounts and attempts to safeTransfer(toSend) from its balance. When cumulative claims equal the recorded campaign amount but the distributor holds less (due to FoT deductions), the final claim reverts for insufficient balance.",
+        "- Claims proceed; early ones succeed. The last claim attempts to drain the remainder to reach newCampaign.amount and reverts because the distributor balance is lower than the recorded amount."
+      ]
+    }
+  ],
+  "attack_steps": [],
+  "ambiguities": [
+    "No explicit attacker actor or unauthorized-caller condition is reported; the scenario is a creator funding with an FoT token, not an attack by a third party.",
+    "The report does not state a concrete numeric value for A, protocol_fee, or transfer_fee, so the exact shortfall amount is unspecified.",
+    "The report does not establish a prior claim state before the checked action beyond 'early claims succeed'; the exact number of prior successful claims is unspecified.",
+    "No explicitly labeled Impact area; impacts were not inferred."
+  ]
+}

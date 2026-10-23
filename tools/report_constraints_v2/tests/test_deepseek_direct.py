@@ -13,6 +13,7 @@ from urllib.error import HTTPError
 from lib import deepseek
 from lib import report_only as report
 from cli import semantic_pipeline as pipeline
+from cli.batch_verify import verify as verify_semantic
 
 
 class FakeOpener:
@@ -204,8 +205,8 @@ class DeepSeekDirectTests(unittest.TestCase):
                 # semantic_pipeline binds proxy= via functools.partial,
                 # so a stand-in for extract_deepseek must absorb it.
                 ids = [row['id'] for row in json.loads(payload)['fragments']]
-                return {'schema_version': 'report-readiness/1', 'decision': 'insufficient',
-                        'dimensions': {
+                result = {'schema_version': 'report-readiness/1',
+                        'decision': 'insufficient', 'dimensions': {
                             'affected_subject': {'status': 'present', 'evidence_ids': [ids[0]],
                                                  'reason': 'named'},
                             'trigger_or_action': {'status': 'present', 'evidence_ids': [ids[0]],
@@ -217,6 +218,8 @@ class DeepSeekDirectTests(unittest.TestCase):
                         },
                         'missing_dimensions': ['direct_effect', 'safety_relation_basis'],
                         'summary': 'insufficient'}
+                (output / 'model-claim.json').write_text(json.dumps(result))
+                return result
 
             with patch('sys.argv', argv), patch.object(pipeline, 'load_deepseek_key',
                     return_value='test-key'), patch.object(pipeline, 'extract_deepseek',
@@ -226,6 +229,7 @@ class DeepSeekDirectTests(unittest.TestCase):
             self.assertFalse((out / 'elements.json').exists())
             status = json.loads((out / 'status.json').read_text())
             self.assertEqual(status['acceptance_status'], 'excluded_before_extraction')
+            self.assertTrue(verify_semantic(out)['offline_verified'])
 
 
 class DeepSeekProxyPolicyTest(unittest.TestCase):

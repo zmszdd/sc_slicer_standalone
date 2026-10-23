@@ -1,0 +1,264 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "c0b500656_corewriter_action_accepted": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a CoreWriter action sent by executeHedge()/supplyToBlp() was accepted locally while the corresponding 0x811 supplied slot does not exist or is not yet active on HyperCore",
+      "checkpoint": "before notifyVaultSupply() registers the slot",
+      "entity_ids": [
+        "monetrix_vault",
+        "hypercore_corewriter"
+      ],
+      "evidence": "`MonetrixVault.executeHedge()` and `MonetrixVault.supplyToBlp()` optimistically register supplied-balance slots in `MonetrixAccountant` immediately after sending CoreWriter actions. The registration is not confirmed against HyperCore. If the CoreWriter action is accepted locally but the corresponding 0x811 supplied slot does not exist or is not yet active, the Accountant records a slot that cannot be read."
+    },
+    "c0b500656_pm_enabled": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "pmEnabled is true when executeHedge() runs",
+      "checkpoint": "before executeHedge() sends hedge actions",
+      "entity_ids": [
+        "monetrix_vault"
+      ],
+      "evidence": "- `executeHedge()` sends the hedge actions and then immediately calls `notifyVaultSupply()` when `pmEnabled` is true."
+    },
+    "c0b500656_backing_reads_available": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "totalBackingSigned() and the accounting reads depending on it complete without reverting for the registered supplied-slot set",
+      "checkpoint": "after the supplied slot is registered in the Accountant registry",
+      "entity_ids": [
+        "monetrix_accountant",
+        "precompile_reader"
+      ],
+      "evidence": "`MonetrixAccountant.totalBackingSigned()` fail-closes on every registered 0x811 slot. One premature or inactive supplied-slot entry therefore makes aggregate backing reads revert. The revert propagates to `surplus()`, `distributableSurplus()`, settlement, and yield/bridge accounting flows that depend on those reads."
+    },
+    "c0b500656_core_accounting_reads_revert_observed": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "core accounting reads revert until the registry is manually cleaned up",
+      "checkpoint": "after the supplied slot is registered in the Accountant registry",
+      "entity_ids": [
+        "monetrix_accountant",
+        "precompile_reader"
+      ],
+      "evidence": "This is a protocol availability/accounting failure, not direct fund theft. Once a bad supplied slot is registered, core accounting reads revert until the registry is manually cleaned up. Affected paths include:"
+    },
+    "c0b500656_registry_manually_cleaned_up": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the Accountant supplied-slot registry has been manually cleaned up",
+      "checkpoint": "after the supplied slot is registered in the Accountant registry",
+      "entity_ids": [
+        "monetrix_accountant",
+        "supplied_slot_registry"
+      ],
+      "evidence": "This is a protocol availability/accounting failure, not direct fund theft. Once a bad supplied slot is registered, core accounting reads revert until the registry is manually cleaned up. Affected paths include:"
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_core_accounting_reads_revert_3a734811",
+      "scope": "MonetrixVault.executeHedge()/supplyToBlp() optimistically register a 0x811 supplied-balance slot in MonetrixAccountant after sending CoreWriter actions, without confirming the slot is readable on HyperCore",
+      "modality": "asserted",
+      "impact_ids": [
+        "core_accounting_reads_revert"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "A CoreWriter action sent by executeHedge() or supplyToBlp() is accepted locally while the corresponding 0x811 supplied slot does not exist or is not yet active on HyperCore.; pmEnabled is true when executeHedge() runs.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c0b500656_corewriter_action_accepted"
+              },
+              {
+                "var": "c0b500656_pm_enabled"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "corewriter_action_accepted_locally",
+            "pm_enabled_true"
+          ],
+          "evidence": [
+            "`MonetrixVault.executeHedge()` and `MonetrixVault.supplyToBlp()` optimistically register supplied-balance slots in `MonetrixAccountant` immediately after sending CoreWriter actions. The registration is not confirmed against HyperCore. If the CoreWriter action is accepted locally but the corresponding 0x811 supplied slot does not exist or is not yet active, the Accountant records a slot that cannot be read.",
+            "- `executeHedge()` sends the hedge actions and then immediately calls `notifyVaultSupply()` when `pmEnabled` is true."
+          ]
+        },
+        "safety": {
+          "text": "totalBackingSigned() and the accounting reads depending on it should remain available (not revert) for the registered supplied-slot set.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c0b500656_core_accounting_reads_revert_observed"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c0b500656_registry_manually_cleaned_up"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "implies",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "var": "c0b500656_corewriter_action_accepted"
+                      },
+                      {
+                        "var": "c0b500656_pm_enabled"
+                      }
+                    ]
+                  },
+                  {
+                    "var": "c0b500656_backing_reads_available"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_backing_reads_available"
+          ],
+          "evidence": [
+            "`MonetrixAccountant.totalBackingSigned()` fail-closes on every registered 0x811 slot. One premature or inactive supplied-slot entry therefore makes aggregate backing reads revert. The revert propagates to `surplus()`, `distributableSurplus()`, settlement, and yield/bridge accounting flows that depend on those reads.",
+            "- Later, `totalBackingSigned()` iterates the registered supplied slots and calls strict 0x811 readers. A failed 0x811 read reverts the entire backing calculation."
+          ]
+        },
+        "effects": {
+          "text": "core accounting reads revert until the registry is manually cleaned up",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c0b500656_core_accounting_reads_revert_observed"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c0b500656_registry_manually_cleaned_up"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "op": "and",
+                    "args": [
+                      {
+                        "var": "c0b500656_corewriter_action_accepted"
+                      },
+                      {
+                        "var": "c0b500656_pm_enabled"
+                      }
+                    ]
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c0b500656_backing_reads_available"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "core_accounting_reads_revert"
+          ],
+          "evidence": [
+            "This is a protocol availability/accounting failure, not direct fund theft. Once a bad supplied slot is registered, core accounting reads revert until the registry is manually cleaned up. Affected paths include:"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "corewriter_action_accepted_locally",
+            "pm_enabled_true"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_backing_reads_available"
+          ],
+          "args.0": [
+            "intent_backing_reads_available"
+          ],
+          "args.0.args.1": [
+            "intent_backing_reads_available"
+          ],
+          "args.1": [
+            "intent_backing_reads_available"
+          ],
+          "args.1.args.0": [
+            "intent_backing_reads_available"
+          ]
+        },
+        "effects": {
+          "": [
+            "core_accounting_reads_revert"
+          ],
+          "args.0": [
+            "core_accounting_reads_revert"
+          ],
+          "args.0.args.1": [
+            "core_accounting_reads_revert"
+          ],
+          "args.1": [
+            "core_accounting_reads_revert"
+          ],
+          "args.1.args.0": [
+            "core_accounting_reads_revert"
+          ],
+          "args.1.args.1": [
+            "core_accounting_reads_revert"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "core_accounting_reads_revert",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The registered supplied-slot set includes the slot appended by notifyVaultSupply() after the locally accepted CoreWriter action.",
+        "The scenario is the report-supported conditional case where the 0x811 slot does not exist or is not yet active when the action is accepted locally."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Formalizes only the core_accounting_reads_revert impact; the potential protocol accounting/settlement availability impact is handled in a separate pass.",
+    "No authorization or caller qualifier is claimed because the report states none.",
+    "backing_reads_available and core_accounting_reads_revert_observed are qualitative Boolean observables pending code-level binding of the strict 0x811 read behavior.",
+    "The temporal qualifier 'until the registry is manually cleaned up' is encoded as registry_manually_cleaned_up being false at the revert checkpoint; the cleanup event itself is not otherwise modeled.",
+    "protocol_accounting_availability_impacted: No faithful claim generated after bounded retries: semantic faithfulness mismatch: intent_backing_reads_available other_mismatch: The statement says accounting reads should remain available, but the predicate makes availability conditional on the action/pmEnabled and even allows unavailabi; P/I/V relation other_mismatch: I does not require availability unconditionally as stated, and V's unavailability does not contradict I's conditional implication, so the violation relation is "
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Merkl_T4ExvutBBXC",
+    "audit_uid": "T4ExvutBBXC",
+    "requested_submission_uid": "nzJVM5K6Bwq",
+    "requested_finding_uid": "kvqzFvQzjLT",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Merkl_T4ExvutBBXC/20260618_144946/findings.json",
+    "source_submission_uid": "nzJVM5K6Bwq",
+    "source_finding_uid": "kvqzFvQzjLT",
+    "original_report_path": "Merkl_T4ExvutBBXC\\medium_valid_nzJVM5K6Bwq.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "nzJVM5K6Bwq",
+  "finding_uid": "kvqzFvQzjLT",
+  "finding_number": "1",
+  "title": "Title: Minimum Reward Validation Uses Gross Amount Instead of Net Amount After Fees",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "KINGWEST",
+  "body": "## Finding Description\n\nIn the `_createCampaign` function, the contract performs minimum reward validation using the gross `newCampaign.amount` before deducting protocol fees:\n```\nif ((newCampaign.amount * HOUR) / newCampaign.duration < rewardTokenMinAmount) \n    revert Errors.CampaignRewardTooLow();\n```\n\nHowever, the actual campaign funding applied to participants is the net amount after fees:\n```\nuint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);\nnewCampaign.amount = campaignAmountMinusFees;\n```\n\nThis mismatch allows campaigns that pass the gross amount check to have a net reward per hour below the intended minimum once fees are applied, violating the expected economic guarantees.\n\n## Impact\n\n- Campaigns may distribute rewards below the minimum intended threshold.\n\n- Economic incentives for participants can be weakened, reducing campaign effectiveness and trust in the protocol.\n\n- Protocol rules for minimum funding are bypassable, potentially leading to misaligned campaign rewards.\n\n## Root cause\n\nThe contract validates minimum rewards against the gross amount before fees are deducted but uses the net amount after fees for actual distribution.\n\n# Recommended Mitigation\n\n- Perform minimum reward validation on the net amount after fees are computed:\n```\nuint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);\nif ((campaignAmountMinusFees * HOUR) / newCampaign.duration < rewardTokenMinAmount)\n    revert Errors.CampaignRewardTooLow();\n```",
+  "proof_of_concept": "```\n// SPDX-License-Identifier: UNLICENSED\n\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\n\ncontract C4PoC is Fixture {\n    uint256 internal constant maxDistribForOOG = 1e4;\n    uint256 internal constant nbrDistrib = 10;\n    uint32 internal initStartTime;\n    uint32 internal initEndTime;\n    uint32 internal startTime;\n    uint32 internal endTime;\n    uint32 internal numEpoch;\n\n    function setUp() public override {\n        super.setUp();\n\n        initStartTime = uint32(block.timestamp);\n        numEpoch = 25;\n        initEndTime = startTime + numEpoch * EPOCH_DURATION;\n\n        vm.prank(governor);\n        creator.setFeeRecipient(dylan);\n\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 1e8;\n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        angle.mint(address(alice), 1e22);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n\n        vm.stopPrank();\n    }\n\n    function test_submissionValidity() external {\n        // Demonstrate: gross amount passes validation but net (after fees) falls below minimum.\n        // Min per-epoch = 1e8 (set in setUp), fee = 10%, duration = 1 hour\n        // Gross = 1e8 passes validation: (1e8 * 3600) / 3600 = 1e8 >= 1e8 ✓\n        // Net = 1e8 * 90% = 9e7 < 1e8 ✗ (but campaign is still accepted)\n\n        uint256 grossAmount = 1e8;\n        \n        CampaignParameters memory campaign = CampaignParameters({\n            campaignId: bytes32(0),\n            creator: alice,\n            rewardToken: address(angle),\n            amount: grossAmount,\n            campaignType: 0,\n            startTimestamp: uint32(block.timestamp + 1),\n            duration: EPOCH_DURATION,\n            campaignData: \"\"\n        });\n\n        vm.prank(alice);\n        bytes32 campaignId = creator.createCampaign(campaign);\n\n        CampaignParameters memory stored = creator.campaign(campaignId);\n        uint256 storedAmount = stored.amount;\n        \n        // Net after 10% fee: 1e8 * 9e8 / 1e9 = 9e7\n        uint256 expectedNet = (grossAmount * 9e8) / 1e9;\n        assertEq(storedAmount, expectedNet);\n        \n        // Verify: net is below minimum, yet campaign was accepted\n        uint256 minPerEpoch = creator.rewardTokenMinAmounts(address(angle));\n        assertTrue(\n            storedAmount < minPerEpoch,\n            \"Net amount below minimum but campaign was accepted - demonstrates the validation issue\"\n        );\n    }\n\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L520-L547"
+  ],
+  "source_record": {
+    "project_id": "T4ExvutBBXC",
+    "submission_index": "739",
+    "api_submission_id": "",
+    "uid": "nzJVM5K6Bwq",
+    "number": "739",
+    "title": "Title: Minimum Reward Validation Uses Gross Amount Instead of Net Amount After Fees",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "KINGWEST",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L520-L547"
+    ],
+    "body": "## Finding Description\n\nIn the `_createCampaign` function, the contract performs minimum reward validation using the gross `newCampaign.amount` before deducting protocol fees:\n```\nif ((newCampaign.amount * HOUR) / newCampaign.duration < rewardTokenMinAmount) \n    revert Errors.CampaignRewardTooLow();\n```\n\nHowever, the actual campaign funding applied to participants is the net amount after fees:\n```\nuint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);\nnewCampaign.amount = campaignAmountMinusFees;\n```\n\nThis mismatch allows campaigns that pass the gross amount check to have a net reward per hour below the intended minimum once fees are applied, violating the expected economic guarantees.\n\n## Impact\n\n- Campaigns may distribute rewards below the minimum intended threshold.\n\n- Economic incentives for participants can be weakened, reducing campaign effectiveness and trust in the protocol.\n\n- Protocol rules for minimum funding are bypassable, potentially leading to misaligned campaign rewards.\n\n## Root cause\n\nThe contract validates minimum rewards against the gross amount before fees are deducted but uses the net amount after fees for actual distribution.\n\n# Recommended Mitigation\n\n- Perform minimum reward validation on the net amount after fees are computed:\n```\nuint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);\nif ((campaignAmountMinusFees * HOUR) / newCampaign.duration < rewardTokenMinAmount)\n    revert Errors.CampaignRewardTooLow();\n```",
+    "proof_of_concept": "```\n// SPDX-License-Identifier: UNLICENSED\n\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\n\ncontract C4PoC is Fixture {\n    uint256 internal constant maxDistribForOOG = 1e4;\n    uint256 internal constant nbrDistrib = 10;\n    uint32 internal initStartTime;\n    uint32 internal initEndTime;\n    uint32 internal startTime;\n    uint32 internal endTime;\n    uint32 internal numEpoch;\n\n    function setUp() public override {\n        super.setUp();\n\n        initStartTime = uint32(block.timestamp);\n        numEpoch = 25;\n        initEndTime = startTime + numEpoch * EPOCH_DURATION;\n\n        vm.prank(governor);\n        creator.setFeeRecipient(dylan);\n\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 1e8;\n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        angle.mint(address(alice), 1e22);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n\n        vm.stopPrank();\n    }\n\n    function test_submissionValidity() external {\n        // Demonstrate: gross amount passes validation but net (after fees) falls below minimum.\n        // Min per-epoch = 1e8 (set in setUp), fee = 10%, duration = 1 hour\n        // Gross = 1e8 passes validation: (1e8 * 3600) / 3600 = 1e8 >= 1e8 ✓\n        // Net = 1e8 * 90% = 9e7 < 1e8 ✗ (but campaign is still accepted)\n\n        uint256 grossAmount = 1e8;\n        \n        CampaignParameters memory campaign = CampaignParameters({\n            campaignId: bytes32(0),\n            creator: alice,\n            rewardToken: address(angle),\n            amount: grossAmount,\n            campaignType: 0,\n            startTimestamp: uint32(block.timestamp + 1),\n            duration: EPOCH_DURATION,\n            campaignData: \"\"\n        });\n\n        vm.prank(alice);\n        bytes32 campaignId = creator.createCampaign(campaign);\n\n        CampaignParameters memory stored = creator.campaign(campaignId);\n        uint256 storedAmount = stored.amount;\n        \n        // Net after 10% fee: 1e8 * 9e8 / 1e9 = 9e7\n        uint256 expectedNet = (grossAmount * 9e8) / 1e9;\n        assertEq(storedAmount, expectedNet);\n        \n        // Verify: net is below minimum, yet campaign was accepted\n        uint256 minPerEpoch = creator.rewardTokenMinAmounts(address(angle));\n        assertTrue(\n            storedAmount < minPerEpoch,\n            \"Net amount below minimum but campaign was accepted - demonstrates the validation issue\"\n        );\n    }\n\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/T4ExvutBBXC/submissions/739",
+    "raw": {
+      "auditUid": "T4ExvutBBXC",
+      "createdAt": "2025-12-01T10:15:10.085Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "jY74wx8XzB2",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T08:54:36.667Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "kvqzFvQzjLT"
+        },
+        {
+          "uid": "yYNHN6wCVoW",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-08T17:22:32.281Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "nzJVM5K6Bwq",
+          "findingUid": null
+        },
+        {
+          "uid": "D5h73PEwKLh",
+          "userUid": "V5DsSDYbiY2",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-12-11T16:00:04.151Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "kvqzFvQzjLT"
+        },
+        {
+          "uid": "y9ekfzYpmA3",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-13T00:57:19.970Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "kvqzFvQzjLT"
+        }
+      ],
+      "finding": {
+        "uid": "kvqzFvQzjLT",
+        "number": 1,
+        "duplicates": 16
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2026-01-13T00:57:19.970Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Title: Minimum Reward Validation Uses Gross Amount Instead of Net Amount After Fees",
+      "uid": "nzJVM5K6Bwq",
+      "updatedAt": "2025-12-01T10:20:50.518Z",
+      "user": {
+        "uid": "9J2LzMySwVe",
+        "handle": "KINGWEST"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding Description\n\nIn the `_createCampaign` function, the contract performs minimum reward validation using the gross `newCampaign.amount` before deducting protocol fees:\n```\nif ((newCampaign.amount * HOUR) / newCampaign.duration < rewardTokenMinAmount) \n    revert Errors.CampaignRewardTooLow();\n```\n\nHowever, the actual campaign funding applied to participants is the net amount after fees:\n```\nuint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);\nnewCampaign.amount = campaignAmountMinusFees;\n```\n\nThis mismatch allows campaigns that pass the gross amount check to have a net reward per hour below the intended minimum once fees are applied, violating the expected economic guarantees.\n\n## Impact\n\n- Campaigns may distribute rewards below the minimum intended threshold.\n\n- Economic incentives for participants can be weakened, reducing campaign effectiveness and trust in the protocol.\n\n- Protocol rules for minimum funding are bypassable, potentially leading to misaligned campaign rewards.\n\n## Root cause\n\nThe contract validates minimum rewards against the gross amount before fees are deducted but uses the net amount after fees for actual distribution.\n\n# Recommended Mitigation\n\n- Perform minimum reward validation on the net amount after fees are computed:\n```\nuint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);\nif ((campaignAmountMinusFees * HOUR) / newCampaign.duration < rewardTokenMinAmount)\n    revert Errors.CampaignRewardTooLow();\n```",
+      "proofOfConcept": "```\n// SPDX-License-Identifier: UNLICENSED\n\npragma solidity ^0.8.17;\n\nimport { Fixture } from \"../Fixture.t.sol\";\nimport { CampaignParameters } from \"../../contracts/struct/CampaignParameters.sol\";\n\ncontract C4PoC is Fixture {\n    uint256 internal constant maxDistribForOOG = 1e4;\n    uint256 internal constant nbrDistrib = 10;\n    uint32 internal initStartTime;\n    uint32 internal initEndTime;\n    uint32 internal startTime;\n    uint32 internal endTime;\n    uint32 internal numEpoch;\n\n    function setUp() public override {\n        super.setUp();\n\n        initStartTime = uint32(block.timestamp);\n        numEpoch = 25;\n        initEndTime = startTime + numEpoch * EPOCH_DURATION;\n\n        vm.prank(governor);\n        creator.setFeeRecipient(dylan);\n\n        vm.startPrank(guardian);\n        address[] memory tokens = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n        tokens[0] = address(angle);\n        amounts[0] = 1e8;\n        creator.setRewardTokenMinAmounts(tokens, amounts);\n        vm.stopPrank();\n\n        angle.mint(address(alice), 1e22);\n        vm.prank(alice);\n        angle.approve(address(creator), type(uint256).max);\n\n        vm.stopPrank();\n    }\n\n    function test_submissionValidity() external {\n        // Demonstrate: gross amount passes validation but net (after fees) falls below minimum.\n        // Min per-epoch = 1e8 (set in setUp), fee = 10%, duration = 1 hour\n        // Gross = 1e8 passes validation: (1e8 * 3600) / 3600 = 1e8 >= 1e8 ✓\n        // Net = 1e8 * 90% = 9e7 < 1e8 ✗ (but campaign is still accepted)\n\n        uint256 grossAmount = 1e8;\n        \n        CampaignParameters memory campaign = CampaignParameters({\n            campaignId: bytes32(0),\n            creator: alice,\n            rewardToken: address(angle),\n            amount: grossAmount,\n            campaignType: 0,\n            startTimestamp: uint32(block.timestamp + 1),\n            duration: EPOCH_DURATION,\n            campaignData: \"\"\n        });\n\n        vm.prank(alice);\n        bytes32 campaignId = creator.createCampaign(campaign);\n\n        CampaignParameters memory stored = creator.campaign(campaignId);\n        uint256 storedAmount = stored.amount;\n        \n        // Net after 10% fee: 1e8 * 9e8 / 1e9 = 9e7\n        uint256 expectedNet = (grossAmount * 9e8) / 1e9;\n        assertEq(storedAmount, expectedNet);\n        \n        // Verify: net is below minimum, yet campaign was accepted\n        uint256 minPerEpoch = creator.rewardTokenMinAmounts(address(angle));\n        assertTrue(\n            storedAmount < minPerEpoch,\n            \"Net amount below minimum but campaign was accepted - demonstrates the validation issue\"\n        );\n    }\n\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-merkl/blob/e8c1d6f5a91c1144571c3ed238358a2b032dd32e/contracts/DistributionCreator.sol#L520-L547",
+      "number": 739,
+      "aiExplanation": null,
+      "_index": 739
+    }
+  }
+}

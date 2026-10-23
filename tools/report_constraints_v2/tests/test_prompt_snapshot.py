@@ -65,13 +65,28 @@ def id_inputs():
     return elements, formal
 
 
-def run_pipeline(root, extra_argv=()):
+def run_pipeline(root, extra_argv=(), report_text=TEXT):
     """One synthetic neural run (default live prompt); artifacts fully replay."""
     elements, formal = id_inputs()
 
     def fake(text, output, model, prompt):
-        if output.name == 'neural-elements':
-            value = elements
+        if output.name == 'impact-inventory':
+            data = json.loads(text)
+            source = data['fragments'][0]
+            value = {
+                'schema_version': 'report-impact-inventory/1',
+                'impacts': [{'id': 'impact_revert', 'text': 'The call reverts.',
+                             'modality': 'asserted',
+                             'evidence_ids': [source['id']]}],
+                'ambiguities': [],
+            }
+        elif output.name == 'neural-elements':
+            value = copy.deepcopy(elements)
+            if '## Impact' not in report_text:
+                data = json.loads(text)
+                evidence_id = data['fragments'][0]['id']
+                for item in [value['scope']] + value['entities'] + value['statements']:
+                    item['evidence_ids'] = [evidence_id]
         elif 'faithfulness-audit' in output.name:
             # S17: the audit call answers with a synthetic all-consistent
             # verdict covering the plan's own P sources exactly once.
@@ -85,6 +100,7 @@ def run_pipeline(root, extra_argv=()):
         return copy.deepcopy(value)
 
     output = root / 'out'
+    root.joinpath('report.md').write_text(report_text)
     argv = ['semantic_pipeline.py', '--report', str(root / 'report.md'),
             '--extract', '--allow-report-upload', '--model', 'synthetic_control',
             '--output', str(output)] + list(extra_argv)
@@ -95,6 +111,19 @@ def run_pipeline(root, extra_argv=()):
 
 
 class PromptSnapshotTests(unittest.TestCase):
+    def test_unmarked_report_stops_without_inventing_impact_and_replays(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            report = 'Description\nA vulnerable call breaks accounting.\n'
+            output = run_pipeline(root, report_text=report)
+            status = json.loads((output / 'status.json').read_text())
+            self.assertEqual(status['acceptance_status'], 'needs_impact_review')
+            self.assertEqual(status['impact_count'], 0)
+            self.assertFalse((output / 'formalization.json').exists())
+            result = verify_semantic.verify(output)
+            self.assertTrue(result['offline_verified'])
+            self.assertEqual(result['model_calls'], 0)
+
     def test_live_run_records_snapshots_and_features(self):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)
@@ -103,18 +132,23 @@ class PromptSnapshotTests(unittest.TestCase):
             provenance = json.loads((output / 'provenance.json').read_text())
             element = (output / 'prompt-element.txt').read_text()
             formal = (output / 'prompt-formal.txt').read_text()
+            impact = (output / 'prompt-impact.txt').read_text()
             self.assertEqual(element, current.ID_ELEMENT_PROMPT)
             self.assertEqual(formal, current.FORMAL_PLAN_PROMPT)
+            self.assertEqual(impact, current.IMPACT_INVENTORY_PROMPT)
             self.assertEqual(provenance['requested_evidence_mode'], 'ids')
             self.assertEqual(set(provenance['prompt_features']),
                              set(current.FEATURES))
-            self.assertTrue(provenance['prompt_features']['strict_piv'])
+            self.assertEqual(provenance['prompt_features']['strict_piv'],
+                             current.FEATURES['strict_piv'])
             self.assertFalse(provenance['prompt_features']
                              ['protocol_identifier_exclusion'])
             # The first element attempt's prompt.txt is prompt + payload, so
             # the cross-check proves the snapshot was the text actually sent.
             sent = (output / 'neural-elements' / 'prompt.txt').read_text()
             self.assertTrue(sent.startswith(element))
+            sent_impact = (output / 'impact-inventory' / 'prompt.txt').read_text()
+            self.assertTrue(sent_impact.startswith(impact))
             result = verify_semantic.verify(output)
             self.assertTrue(result['offline_verified'])
             self.assertIn('prompt_snapshots', result['checks_performed'])

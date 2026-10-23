@@ -1,0 +1,114 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Monetrix_L3gNZDymiju",
+    "audit_uid": "L3gNZDymiju",
+    "requested_submission_uid": "BqP968JWuuF",
+    "requested_finding_uid": "XdnQZTBJovh",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Monetrix_L3gNZDymiju/20260618_131702/findings.json",
+    "source_submission_uid": "BqP968JWuuF",
+    "source_finding_uid": "XdnQZTBJovh",
+    "original_report_path": "Monetrix_L3gNZDymiju\\low_valid_BqP968JWuuF.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "BqP968JWuuF",
+  "finding_uid": "XdnQZTBJovh",
+  "finding_number": "31",
+  "title": "`sUSDM` Reports 6 decimals While ERC-4626 Share Accounting Uses 12-decimal Units, causing  Mispricing.",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "Micky042",
+  "body": "### Description\n\n`sUSDM` sets `_decimalsOffset()` to `6`:\n\n```javascript\nfunction _decimalsOffset() internal pure override returns (uint8) {\n    return 6;\n}\n```\nOpenZeppelin's ERC-4626 math uses that offset directly in both share and asset conversions:\n```javascript\nfunction _convertToShares(uint256 assets, Math.Rounding rounding) internal view virtual returns (uint256) {\n    return assets.mulDiv(totalSupply() + 10 ** _decimalsOffset(), totalAssets() + 1, rounding);\n}\n```\n```javascript\n function _convertToAssets(uint256 shares, Math.Rounding rounding) internal view virtual returns (uint256) {\n        return shares.mulDiv(totalAssets() + 1, totalSupply() + 10 ** _decimalsOffset(), rounding);\n    }\n```\nWith a 6-decimal underlying asset, that means the vault mints share balances in 12-decimal raw units. For example, the first `1e6` USDM deposit mints `1e12` raw share units. However, `sUSDM.decimals()` is overridden to return `6` instead of the `12` decimals implied by the ERC-4626 offset.\n\n```javascript\nfunction decimals() public pure override returns (uint8) {\n    return 6;\n}\n```\nSo the contract's accounting and its ERC-20 metadata mismatch by `1e6`.\n\n\n\n\n### Impact\n\nAny wallet, bridge, AMM, lending market, or accounting system that normalizes `sUSDM` using `decimals()` will treat balances and supplies as `1e6` times larger than they really are.\n\nConcrete failures include:\n1. A user depositing `1 USDM` receives `1e12` raw shares, but every standards-compliant integrator will display that as `1,000,000 sUSDM` instead of `1 sUSDM`.\n2. Off-chain systems that derive price-per-share or TVL from `totalSupply()` and `decimals()` will misprice `sUSDM`.\n3. If `sUSDM` is ever listed in another DeFi protocol, the wrong decimals can lead to catastrophic collateral or swap normalization mistakes.\n\nBecause `sUSDM` is explicitly presented as an ERC-4626 wrapper, this metadata mismatch breaks the assumptions external integrations rely on to handle vault shares safely.\n\n\n\n\n### Recommendation\n\nMake the share token's reported decimals consistent with the ERC-4626 math by removing the custom `decimals()` override and inherit the OpenZeppelin default (`asset decimals + _decimalsOffset()`, which is `12`.)\n\nThe share accounting unit and the published ERC-20 decimals must match.",
+  "proof_of_concept": "### Proof of Concept\n\nThe PoC demonstrates that sUSDM uses ERC-4626 math that mints shares in 12-decimal raw units, but it reports only 6 decimals through ERC-20 metadata. As a result, any standard integration that normalizes balances and supply using decimals() will overstate them by 1e6. This PoC proves this concretely with the smallest clean example which is, staking 1 USDM mints 1e12 raw shares, which will interpret it as 1,000,000 sUSDM instead of 1 sUSDM.\n\nTest suite: test/c4/C4Submission.t.sol\nRun command: forge test --match-path test/c4/C4Submission.t.sol -vvv\n```javascript\n function test_submissionValidity() public {\n        uint256 vaultMinDeposit = 100e6;\n        uint256 oneUsdm = 1e6;\n        uint256 advertisedUnit = 10 ** susdm.decimals();\n\n        _deposit(user1, vaultMinDeposit);\n\n        assertEq(\n            usdm.balanceOf(user1),\n            vaultMinDeposit,\n            \"user should hold minted USDM\"\n        );\n        // This shows the metadata side of the mismatch. The token explicitly advertises 6 decimals.\n        assertEq(susdm.decimals(), 6, \"metadata advertises 6 decimals\");\n        // This shows the first direct proof of the accounting mismatch.\n        // The vault accepts 1 USDM deposit and mints 1e12 raw shares, which is a mismatch of 6 decimals.\n        assertEq(\n            susdm.previewDeposit(oneUsdm),\n            1e12,\n            \"ERC4626 math mints 12-decimal raw shares\"\n        );\n\n        _stake(user1, oneUsdm);\n        // This confirms the actual minted balance matches the previewDeposit math.\n        assertEq(\n            susdm.balanceOf(user1),\n            1e12,\n            \"1 USDM stake mints 1e12 raw share units\"\n        );\n        // This confirms the mismatch exits in totaSupply too, not just the user balance.\n        assertEq(\n            susdm.totalSupply(),\n            1e12,\n            \"total supply is tracked in 12-decimal raw units\"\n        );\n        assertEq(\n            susdm.convertToAssets(advertisedUnit),\n            1,\n            \"1 displayed sUSDM redeems only 1 raw USDM unit\"\n        );\n\n        uint256 normalizedBalance = susdm.balanceOf(user1) / advertisedUnit;\n        uint256 normalizedSupply = susdm.totalSupply() / advertisedUnit;\n        // This proves a wallet using decimals() == 6 would show the user as holding\n        // 1,000,000 sUSDM after depositing only 1 USDM.\n        assertEq(\n            normalizedBalance,\n            1_000_000,\n            \"wallets using decimals() display 1,000,000 sUSDM, not 1\"\n        );\n        // This proves total supply would also be displayed 1e6 too large,\n        // which directly affects TVL and other integrations.\n        assertEq(\n            normalizedSupply,\n            1_000_000,\n            \"integrations normalize totalSupply 1e6 too high\"\n        );\n    }\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/tokens/sUSDM.sol#L106-L108",
+    "https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/tokens/sUSDM.sol#L110-L112",
+    "https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable/blob/cd9362739941ee5ff384e7b2c39ff8b157957d58/contracts/token/ERC20/extensions/ERC4626Upgradeable.sol#L253-L255",
+    "https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable/blob/cd9362739941ee5ff384e7b2c39ff8b157957d58/contracts/token/ERC20/extensions/ERC4626Upgradeable.sol#L260-L262"
+  ],
+  "source_record": {
+    "project_id": "L3gNZDymiju",
+    "submission_index": "739",
+    "api_submission_id": "",
+    "uid": "BqP968JWuuF",
+    "number": "739",
+    "title": "`sUSDM` Reports 6 decimals While ERC-4626 Share Accounting Uses 12-decimal Units, causing  Mispricing.",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "",
+    "handle": "Micky042",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/tokens/sUSDM.sol#L106-L108",
+      "https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/tokens/sUSDM.sol#L110-L112",
+      "https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable/blob/cd9362739941ee5ff384e7b2c39ff8b157957d58/contracts/token/ERC20/extensions/ERC4626Upgradeable.sol#L253-L255",
+      "https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable/blob/cd9362739941ee5ff384e7b2c39ff8b157957d58/contracts/token/ERC20/extensions/ERC4626Upgradeable.sol#L260-L262"
+    ],
+    "body": "### Description\n\n`sUSDM` sets `_decimalsOffset()` to `6`:\n\n```javascript\nfunction _decimalsOffset() internal pure override returns (uint8) {\n    return 6;\n}\n```\nOpenZeppelin's ERC-4626 math uses that offset directly in both share and asset conversions:\n```javascript\nfunction _convertToShares(uint256 assets, Math.Rounding rounding) internal view virtual returns (uint256) {\n    return assets.mulDiv(totalSupply() + 10 ** _decimalsOffset(), totalAssets() + 1, rounding);\n}\n```\n```javascript\n function _convertToAssets(uint256 shares, Math.Rounding rounding) internal view virtual returns (uint256) {\n        return shares.mulDiv(totalAssets() + 1, totalSupply() + 10 ** _decimalsOffset(), rounding);\n    }\n```\nWith a 6-decimal underlying asset, that means the vault mints share balances in 12-decimal raw units. For example, the first `1e6` USDM deposit mints `1e12` raw share units. However, `sUSDM.decimals()` is overridden to return `6` instead of the `12` decimals implied by the ERC-4626 offset.\n\n```javascript\nfunction decimals() public pure override returns (uint8) {\n    return 6;\n}\n```\nSo the contract's accounting and its ERC-20 metadata mismatch by `1e6`.\n\n\n\n\n### Impact\n\nAny wallet, bridge, AMM, lending market, or accounting system that normalizes `sUSDM` using `decimals()` will treat balances and supplies as `1e6` times larger than they really are.\n\nConcrete failures include:\n1. A user depositing `1 USDM` receives `1e12` raw shares, but every standards-compliant integrator will display that as `1,000,000 sUSDM` instead of `1 sUSDM`.\n2. Off-chain systems that derive price-per-share or TVL from `totalSupply()` and `decimals()` will misprice `sUSDM`.\n3. If `sUSDM` is ever listed in another DeFi protocol, the wrong decimals can lead to catastrophic collateral or swap normalization mistakes.\n\nBecause `sUSDM` is explicitly presented as an ERC-4626 wrapper, this metadata mismatch breaks the assumptions external integrations rely on to handle vault shares safely.\n\n\n\n\n### Recommendation\n\nMake the share token's reported decimals consistent with the ERC-4626 math by removing the custom `decimals()` override and inherit the OpenZeppelin default (`asset decimals + _decimalsOffset()`, which is `12`.)\n\nThe share accounting unit and the published ERC-20 decimals must match.",
+    "proof_of_concept": "### Proof of Concept\n\nThe PoC demonstrates that sUSDM uses ERC-4626 math that mints shares in 12-decimal raw units, but it reports only 6 decimals through ERC-20 metadata. As a result, any standard integration that normalizes balances and supply using decimals() will overstate them by 1e6. This PoC proves this concretely with the smallest clean example which is, staking 1 USDM mints 1e12 raw shares, which will interpret it as 1,000,000 sUSDM instead of 1 sUSDM.\n\nTest suite: test/c4/C4Submission.t.sol\nRun command: forge test --match-path test/c4/C4Submission.t.sol -vvv\n```javascript\n function test_submissionValidity() public {\n        uint256 vaultMinDeposit = 100e6;\n        uint256 oneUsdm = 1e6;\n        uint256 advertisedUnit = 10 ** susdm.decimals();\n\n        _deposit(user1, vaultMinDeposit);\n\n        assertEq(\n            usdm.balanceOf(user1),\n            vaultMinDeposit,\n            \"user should hold minted USDM\"\n        );\n        // This shows the metadata side of the mismatch. The token explicitly advertises 6 decimals.\n        assertEq(susdm.decimals(), 6, \"metadata advertises 6 decimals\");\n        // This shows the first direct proof of the accounting mismatch.\n        // The vault accepts 1 USDM deposit and mints 1e12 raw shares, which is a mismatch of 6 decimals.\n        assertEq(\n            susdm.previewDeposit(oneUsdm),\n            1e12,\n            \"ERC4626 math mints 12-decimal raw shares\"\n        );\n\n        _stake(user1, oneUsdm);\n        // This confirms the actual minted balance matches the previewDeposit math.\n        assertEq(\n            susdm.balanceOf(user1),\n            1e12,\n            \"1 USDM stake mints 1e12 raw share units\"\n        );\n        // This confirms the mismatch exits in totaSupply too, not just the user balance.\n        assertEq(\n            susdm.totalSupply(),\n            1e12,\n            \"total supply is tracked in 12-decimal raw units\"\n        );\n        assertEq(\n            susdm.convertToAssets(advertisedUnit),\n            1,\n            \"1 displayed sUSDM redeems only 1 raw USDM unit\"\n        );\n\n        uint256 normalizedBalance = susdm.balanceOf(user1) / advertisedUnit;\n        uint256 normalizedSupply = susdm.totalSupply() / advertisedUnit;\n        // This proves a wallet using decimals() == 6 would show the user as holding\n        // 1,000,000 sUSDM after depositing only 1 USDM.\n        assertEq(\n            normalizedBalance,\n            1_000_000,\n            \"wallets using decimals() display 1,000,000 sUSDM, not 1\"\n        );\n        // This proves total supply would also be displayed 1e6 too large,\n        // which directly affects TVL and other integrations.\n        assertEq(\n            normalizedSupply,\n            1_000_000,\n            \"integrations normalize totalSupply 1e6 too high\"\n        );\n    }\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/L3gNZDymiju/submissions/739",
+    "raw": {
+      "auditUid": "L3gNZDymiju",
+      "createdAt": "2026-04-30T09:13:30.865Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "HuaeeiRMaAx",
+          "userUid": "6LS9McgpnmC",
+          "userAuditRole": "judge",
+          "createdAt": "2026-05-26T13:32:21.519Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "XdnQZTBJovh"
+        },
+        {
+          "uid": "M9CfxKBDg84",
+          "userUid": "6LS9McgpnmC",
+          "userAuditRole": "judge",
+          "createdAt": "2026-05-26T13:32:23.931Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "XdnQZTBJovh"
+        }
+      ],
+      "finding": {
+        "uid": "XdnQZTBJovh",
+        "number": 31,
+        "duplicates": 27
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2026-05-26T13:32:23.931Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "`sUSDM` Reports 6 decimals While ERC-4626 Share Accounting Uses 12-decimal Units, causing  Mispricing.",
+      "uid": "BqP968JWuuF",
+      "updatedAt": "2026-04-30T09:13:30.865Z",
+      "user": {
+        "uid": "WguzcLdh5dG",
+        "handle": "Micky042"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Description\n\n`sUSDM` sets `_decimalsOffset()` to `6`:\n\n```javascript\nfunction _decimalsOffset() internal pure override returns (uint8) {\n    return 6;\n}\n```\nOpenZeppelin's ERC-4626 math uses that offset directly in both share and asset conversions:\n```javascript\nfunction _convertToShares(uint256 assets, Math.Rounding rounding) internal view virtual returns (uint256) {\n    return assets.mulDiv(totalSupply() + 10 ** _decimalsOffset(), totalAssets() + 1, rounding);\n}\n```\n```javascript\n function _convertToAssets(uint256 shares, Math.Rounding rounding) internal view virtual returns (uint256) {\n        return shares.mulDiv(totalAssets() + 1, totalSupply() + 10 ** _decimalsOffset(), rounding);\n    }\n```\nWith a 6-decimal underlying asset, that means the vault mints share balances in 12-decimal raw units. For example, the first `1e6` USDM deposit mints `1e12` raw share units. However, `sUSDM.decimals()` is overridden to return `6` instead of the `12` decimals implied by the ERC-4626 offset.\n\n```javascript\nfunction decimals() public pure override returns (uint8) {\n    return 6;\n}\n```\nSo the contract's accounting and its ERC-20 metadata mismatch by `1e6`.\n\n\n\n\n### Impact\n\nAny wallet, bridge, AMM, lending market, or accounting system that normalizes `sUSDM` using `decimals()` will treat balances and supplies as `1e6` times larger than they really are.\n\nConcrete failures include:\n1. A user depositing `1 USDM` receives `1e12` raw shares, but every standards-compliant integrator will display that as `1,000,000 sUSDM` instead of `1 sUSDM`.\n2. Off-chain systems that derive price-per-share or TVL from `totalSupply()` and `decimals()` will misprice `sUSDM`.\n3. If `sUSDM` is ever listed in another DeFi protocol, the wrong decimals can lead to catastrophic collateral or swap normalization mistakes.\n\nBecause `sUSDM` is explicitly presented as an ERC-4626 wrapper, this metadata mismatch breaks the assumptions external integrations rely on to handle vault shares safely.\n\n\n\n\n### Recommendation\n\nMake the share token's reported decimals consistent with the ERC-4626 math by removing the custom `decimals()` override and inherit the OpenZeppelin default (`asset decimals + _decimalsOffset()`, which is `12`.)\n\nThe share accounting unit and the published ERC-20 decimals must match.",
+      "proofOfConcept": "### Proof of Concept\n\nThe PoC demonstrates that sUSDM uses ERC-4626 math that mints shares in 12-decimal raw units, but it reports only 6 decimals through ERC-20 metadata. As a result, any standard integration that normalizes balances and supply using decimals() will overstate them by 1e6. This PoC proves this concretely with the smallest clean example which is, staking 1 USDM mints 1e12 raw shares, which will interpret it as 1,000,000 sUSDM instead of 1 sUSDM.\n\nTest suite: test/c4/C4Submission.t.sol\nRun command: forge test --match-path test/c4/C4Submission.t.sol -vvv\n```javascript\n function test_submissionValidity() public {\n        uint256 vaultMinDeposit = 100e6;\n        uint256 oneUsdm = 1e6;\n        uint256 advertisedUnit = 10 ** susdm.decimals();\n\n        _deposit(user1, vaultMinDeposit);\n\n        assertEq(\n            usdm.balanceOf(user1),\n            vaultMinDeposit,\n            \"user should hold minted USDM\"\n        );\n        // This shows the metadata side of the mismatch. The token explicitly advertises 6 decimals.\n        assertEq(susdm.decimals(), 6, \"metadata advertises 6 decimals\");\n        // This shows the first direct proof of the accounting mismatch.\n        // The vault accepts 1 USDM deposit and mints 1e12 raw shares, which is a mismatch of 6 decimals.\n        assertEq(\n            susdm.previewDeposit(oneUsdm),\n            1e12,\n            \"ERC4626 math mints 12-decimal raw shares\"\n        );\n\n        _stake(user1, oneUsdm);\n        // This confirms the actual minted balance matches the previewDeposit math.\n        assertEq(\n            susdm.balanceOf(user1),\n            1e12,\n            \"1 USDM stake mints 1e12 raw share units\"\n        );\n        // This confirms the mismatch exits in totaSupply too, not just the user balance.\n        assertEq(\n            susdm.totalSupply(),\n            1e12,\n            \"total supply is tracked in 12-decimal raw units\"\n        );\n        assertEq(\n            susdm.convertToAssets(advertisedUnit),\n            1,\n            \"1 displayed sUSDM redeems only 1 raw USDM unit\"\n        );\n\n        uint256 normalizedBalance = susdm.balanceOf(user1) / advertisedUnit;\n        uint256 normalizedSupply = susdm.totalSupply() / advertisedUnit;\n        // This proves a wallet using decimals() == 6 would show the user as holding\n        // 1,000,000 sUSDM after depositing only 1 USDM.\n        assertEq(\n            normalizedBalance,\n            1_000_000,\n            \"wallets using decimals() display 1,000,000 sUSDM, not 1\"\n        );\n        // This proves total supply would also be displayed 1e6 too large,\n        // which directly affects TVL and other integrations.\n        assertEq(\n            normalizedSupply,\n            1_000_000,\n            \"integrations normalize totalSupply 1e6 too high\"\n        );\n    }\n```",
+      "linesOfCode": "https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/tokens/sUSDM.sol#L106-L108,https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/tokens/sUSDM.sol#L110-L112,https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable/blob/cd9362739941ee5ff384e7b2c39ff8b157957d58/contracts/token/ERC20/extensions/ERC4626Upgradeable.sol#L253-L255,https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable/blob/cd9362739941ee5ff384e7b2c39ff8b157957d58/contracts/token/ERC20/extensions/ERC4626Upgradeable.sol#L260-L262",
+      "number": 739,
+      "aiExplanation": null,
+      "_index": 739
+    }
+  }
+}

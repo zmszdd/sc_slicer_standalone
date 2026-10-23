@@ -1,0 +1,57 @@
+CL gauge authenticity gap enables a fake pool to siphon emissions via `claimFees` balance sweep
+
+> A fake CL pool can be onboarded without proof it is real, then the gauge treats its whole HYBR balance as “fees” and forwards everything to the bribe contract when fees are claimed.
+
+## Summary
+
+The CL gauge creation path does not authenticate that the supplied pool address was created by the canonical CL factory. The code sets `isPair = true` for `gaugeType == 1`, so any contract with code passes the pool check. Only token whitelist and connector checks remain. Once created, the CL gauge exposes `claimFees()` publicly. The fee claim logic calls the pool’s `collectFees()`, then ignores the actual returned amounts and instead reads the gauge’s ERC-20 balances for `token0` and `token1`, and forwards those entire balances to the internal bribe contract. HYBR emissions live temporarily on the gauge each epoch. If a fake pool lies that `token0 == HYBR`, a routine `claimFees()` call forwards the gauge’s full HYBR emissions to bribes. This breaks core incentives and bleeds protocol rewards to whoever votes for the malicious gauge. The pathway is permissionless, requires no exotic timing, and aligns exactly with the code paths below.     
+
+## Vulnerability Details
+
+### Detailed explanation
+
+Gauge creation trusts arbitrary CL pools. In `_createGauge`, when `gaugeType == 1`, the factory authenticity check is removed and `isPair` is set to `true`. Only token whitelist and connector checks remain. The external `createGauge` entry is permissionless. After the gauge is created, the manager calls into the provided pool to “set” the gauge and NFPM without any verification that this is a canonical pool.
+
+
+
+
+
+
+
+
+
+
+Fee claiming sweeps balances rather than deltas. The CL gauge `claimFees()` is public and calls `_claimFees`. The function calls `clPool.collectFees()` and then reads `IERC20(_token0).balanceOf(address(this))` and `IERC20(_token1).balanceOf(address(this))`. It forwards those balances to the internal bribe using `notifyRewardAmount`. The comment suggests epoch fee accounting, but the implementation uses raw balances on the gauge, not the amounts attributable to fees.
+
+
+
+
+HYBR emissions are held by the gauge. Each epoch, the distributor transfers HYBR into the gauge before distribution. This means the gauge can hold non-zero HYBR at claim time, which the balance sweep will forward to bribes if the pool reports HYBR as `token0`.
+
+
+
+
+Design mismatch highlights the bug. The volatile gauge path claims exact amounts returned by the underlying pair, then forwards those amounts to bribes. The CL path should mirror this behavior, but it does not.
+
+
+
+
+Bribes are initialized to accept exactly `tokenA` and `tokenB` derived from the pool’s `token0` and `token1`. If a fake pool reports `token0 = HYBR`, the internal bribe accepts HYBR as a valid reward token.
+
+
+
+## Impact
+
+Protocol emissions are rerouted into bribes on a malicious CL gauge. With minimal votes directed to the fake gauge, HYBR meant for LPs or stakers is swept during fee claims and redirected to the bribe contract that pays whoever votes for that gauge. This drains rewards from honest participants, distorts governance incentives, and can be scaled by concentrating votes. The path requires no privileged roles. It relies only on permissionless CL gauge creation that lacks a factory authenticity check and on the balance sweep in the CL fee claim.   
+
+## Tools Used
+
+Manual Review and foundry.
+
+## Recommendation
+
+Authenticate CL pools at gauge creation. Replace the `isPair = true` shortcut with a hard verification against the canonical CL factory, for example `require(ICLFactory(_factory).isPool(_pool), "POOL")`, or derive the pool address from factory parameters instead of trusting user input.
+
+
+
+Fix CL fee accounting to use the actual fee deltas. After `collectFees()`, read fee amounts from the pool or track deltas, and never sweep `balanceOf(this)`. Explicitly reject `rewardToken` as a fee token for internal bribes on CL gauges, or add a guard that blocks forwarding of the protocol reward token. Mirror the volatile gauge approach that forwards exact returned fee amounts.

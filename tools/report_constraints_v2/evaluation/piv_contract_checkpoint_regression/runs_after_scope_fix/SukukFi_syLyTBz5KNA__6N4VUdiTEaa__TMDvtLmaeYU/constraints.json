@@ -1,0 +1,837 @@
+{
+  "schema_version": "stage2-semantic-bundle/1",
+  "core_formalization_status": "partial",
+  "acceptance_status": "needs_review",
+  "report_warnings": [],
+  "unassigned_impact_ids": [],
+  "claims": [
+    {
+      "id": "impact_claim_v_kyc_bypass_single_call_ee8c0561",
+      "formalization_status": "formalized_candidate",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity.",
+        "direct_counterexample_status": "passed"
+      },
+      "review_reasons": [],
+      "properties": {
+        "preconditions": {
+          "text": "The caller of batchTransfers/rBatchTransfers holds the validator role.; Funds to be moved are held at KYC-verified addresses.; The destination address is not marked isKycVerified (non-KYC or sanctioned).",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c5338751c_caller_has_validator_role"
+              },
+              {
+                "var": "c5338751c_source_is_kyc_verified"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "c5338751c_destination_is_kyc_verified"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_validator_role",
+            "p_kyc_verified_source",
+            "p_non_kyc_destination"
+          ],
+          "evidence": [
+            "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+            "This vulnerability is a KYC enforcement and access control logic flaw in the `WERC7575ShareToken` contract’s validator-only batch transfer mechanisms. The token enforces KYC checks via the isKycVerified mapping in its standard `transfer`, `transferFrom`, `mint`, and `burn` functions, but the `batchTransfers` and `rBatchTransfers` functions, which are restricted to the validator role, directly mutate `_balances` and `_rBalances` without consulting isKycVerified. As a result, these privileged batch operations bypass the on-chain KYC gating applied to normal user flows.",
+            "- The `batchTransfers` validator-only function directly debits and credits `_balances` for multiple accounts without any `isKycVerified` checks and without `whenNotPaused`. A compromised/malicious validator can use this to move balances between arbitrary addresses, including non‑KYCed ones, bypassing the KYC restrictions applied in `transfer`/`transferFrom`.",
+            "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+            "- **KYC bypass by a single key**: Validator can route funds to unverified/sanctioned destinations in one call, nullifying the compliance invariant."
+          ]
+        },
+        "safety": {
+          "text": "All token transfers, including validator batch settlement paths, must be KYC-gated so funds cannot be moved to a non-isKycVerified recipient.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c5338751c_caller_has_validator_role"
+                  },
+                  {
+                    "var": "c5338751c_source_is_kyc_verified"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c5338751c_destination_is_kyc_verified"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "c5338751c_funds_moved_to_non_kyc_destination"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "i_kyc_gate_all_transfers"
+          ],
+          "evidence": [
+            "- This standard transfer function enforces the KYC policy: it requires `whenNotPaused` and explicitly reverts if the recipient `to` is not marked `isKycVerified`. This establishes the intended invariant that all token transfers must be KYC-gated, which the validator batch functions later violate.",
+            "This vulnerability is a KYC enforcement and access control logic flaw in the `WERC7575ShareToken` contract’s validator-only batch transfer mechanisms. The token enforces KYC checks via the isKycVerified mapping in its standard `transfer`, `transferFrom`, `mint`, and `burn` functions, but the `batchTransfers` and `rBatchTransfers` functions, which are restricted to the validator role, directly mutate `_balances` and `_rBalances` without consulting isKycVerified. As a result, these privileged batch operations bypass the on-chain KYC gating applied to normal user flows."
+          ]
+        },
+        "effects": {
+          "text": "A validator moves funds from KYC-verified addresses to non-KYC or sanctioned destinations in one call, nullifying the on-chain compliance invariant.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c5338751c_caller_has_validator_role"
+                  },
+                  {
+                    "var": "c5338751c_source_is_kyc_verified"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c5338751c_destination_is_kyc_verified"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c5338751c_funds_moved_to_non_kyc_destination"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "v_kyc_bypass_single_call"
+          ],
+          "evidence": [
+            "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+            "- **KYC bypass by a single key**: Validator can route funds to unverified/sanctioned destinations in one call, nullifying the compliance invariant."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_validator_role",
+            "p_kyc_verified_source",
+            "p_non_kyc_destination"
+          ],
+          "args.2": [
+            "p_validator_role",
+            "p_kyc_verified_source",
+            "p_non_kyc_destination"
+          ]
+        },
+        "safety": {
+          "": [
+            "i_kyc_gate_all_transfers"
+          ],
+          "args.0": [
+            "i_kyc_gate_all_transfers"
+          ],
+          "args.0.args.2": [
+            "i_kyc_gate_all_transfers"
+          ],
+          "args.1": [
+            "i_kyc_gate_all_transfers"
+          ]
+        },
+        "effects": {
+          "": [
+            "v_kyc_bypass_single_call"
+          ],
+          "args.0": [
+            "v_kyc_bypass_single_call"
+          ],
+          "args.0.args.2": [
+            "v_kyc_bypass_single_call"
+          ],
+          "args.1": [
+            "v_kyc_bypass_single_call"
+          ],
+          "args.1.args.0": [
+            "v_kyc_bypass_single_call"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "v_kyc_bypass_single_call",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "scope": "validator-only batch settlement (batchTransfers/rBatchTransfers) versus KYC-gated standard transfer flows in WERC7575ShareToken",
+      "modality": "asserted",
+      "assumptions": [
+        "The batch transfer path is the checked action; standard transfer/transferFrom/mint/burn KYC gating is the reference behavior the batch path is claimed to bypass.",
+        "The report describes the bypass as a capability of the privileged validator key rather than an observed on-chain transaction."
+      ],
+      "unresolved": []
+    },
+    {
+      "id": "impact_claim_v_onward_routing_e3542db7",
+      "formalization_status": "not_formalized",
+      "structural_formalization_status": "not_formalized",
+      "validation": {
+        "formalization_status": "not_formalized",
+        "checks": {
+          "precondition_feasibility": "not_extracted"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "incomplete_check",
+        "queries": {},
+        "warnings": [
+          "I or V absent; effect/safety relationship not checked"
+        ],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true
+      },
+      "review_reasons": [
+        "I or V absent; effect/safety relationship not checked"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The caller of batchTransfers/rBatchTransfers holds the validator role.; Funds to be moved are held at KYC-verified addresses.; The destination address is not marked isKycVerified (non-KYC or sanctioned).; Standard transfer/transferFrom/mint/burn revert when the recipient (and for mint/burn the holder) is not isKycVerified, and standard transfer requires whenNotPaused.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "p_validator_role",
+            "p_kyc_verified_source",
+            "p_non_kyc_destination",
+            "p_standard_flow_kyc_gate"
+          ],
+          "evidence": [
+            "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+            "This vulnerability is a KYC enforcement and access control logic flaw in the `WERC7575ShareToken` contract’s validator-only batch transfer mechanisms. The token enforces KYC checks via the isKycVerified mapping in its standard `transfer`, `transferFrom`, `mint`, and `burn` functions, but the `batchTransfers` and `rBatchTransfers` functions, which are restricted to the validator role, directly mutate `_balances` and `_rBalances` without consulting isKycVerified. As a result, these privileged batch operations bypass the on-chain KYC gating applied to normal user flows.",
+            "- The `batchTransfers` validator-only function directly debits and credits `_balances` for multiple accounts without any `isKycVerified` checks and without `whenNotPaused`. A compromised/malicious validator can use this to move balances between arbitrary addresses, including non‑KYCed ones, bypassing the KYC restrictions applied in `transfer`/`transferFrom`.",
+            "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+            "- **KYC bypass by a single key**: Validator can route funds to unverified/sanctioned destinations in one call, nullifying the compliance invariant.",
+            "- [`src/WERC7575ShareToken.sol:472-491`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L472-L491)  Standard `transfer` enforces `isKycVerified[to]` under `whenNotPaused`.",
+            "- This standard transfer function enforces the KYC policy: it requires `whenNotPaused` and explicitly reverts if the recipient `to` is not marked `isKycVerified`. This establishes the intended invariant that all token transfers must be KYC-gated, which the validator batch functions later violate."
+          ]
+        },
+        "safety": {
+          "text": "All token transfers, including validator batch settlement paths, must be KYC-gated so funds cannot be moved to a non-isKycVerified recipient.; While the token is paused, no fund movement should occur, including via validator batch paths.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "i_kyc_gate_all_transfers",
+            "i_pause_blocks_movement"
+          ],
+          "evidence": [
+            "- This standard transfer function enforces the KYC policy: it requires `whenNotPaused` and explicitly reverts if the recipient `to` is not marked `isKycVerified`. This establishes the intended invariant that all token transfers must be KYC-gated, which the validator batch functions later violate.",
+            "This vulnerability is a KYC enforcement and access control logic flaw in the `WERC7575ShareToken` contract’s validator-only batch transfer mechanisms. The token enforces KYC checks via the isKycVerified mapping in its standard `transfer`, `transferFrom`, `mint`, and `burn` functions, but the `batchTransfers` and `rBatchTransfers` functions, which are restricted to the validator role, directly mutate `_balances` and `_rBalances` without consulting isKycVerified. As a result, these privileged batch operations bypass the on-chain KYC gating applied to normal user flows.",
+            "- **Pause bypass**: `batchTransfers`/`rBatchTransfers` ignore `whenNotPaused`, allowing fund movement even while the token is paused."
+          ]
+        },
+        "effects": {
+          "text": "Non-KYC recipients can route received funds onward to KYC accounts using normal transfers, which only check the recipient.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "v_onward_routing"
+          ],
+          "evidence": [
+            "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "v_onward_routing",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: i_kyc_gate_all_transfers other_mismatch: The invariant requires all transfers be KYC-gated, but the predicate only constrains the batch path and permits non-KYC destinations via onward routing.; P/I/V relation other_mismatch: V negates I's consequent while asserting I's antecedent, so V directly contradicts I under P, but I itself weakens the stated all-transfers KYC gate."
+        }
+      ],
+      "scope": "validator-only batch settlement (batchTransfers/rBatchTransfers) versus KYC-gated standard transfer flows in WERC7575ShareToken",
+      "modality": "potential",
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: i_kyc_gate_all_transfers other_mismatch: The invariant requires all transfers be KYC-gated, but the predicate only constrains the batch path and permits non-KYC destinations via onward routing.; P/I/V relation other_mismatch: V negates I's consequent while asserting I's antecedent, so V directly contradicts I under P, but I itself weakens the stated all-transfers KYC gate."
+      ]
+    },
+    {
+      "id": "impact_claim_v_pause_bypass_05686103",
+      "formalization_status": "not_formalized",
+      "structural_formalization_status": "not_formalized",
+      "validation": {
+        "formalization_status": "not_formalized",
+        "checks": {
+          "precondition_feasibility": "not_extracted"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "incomplete_check",
+        "queries": {},
+        "warnings": [
+          "I or V absent; effect/safety relationship not checked"
+        ],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true
+      },
+      "review_reasons": [
+        "I or V absent; effect/safety relationship not checked"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The caller of batchTransfers/rBatchTransfers holds the validator role.; Funds to be moved are held at KYC-verified addresses.; The destination address is not marked isKycVerified (non-KYC or sanctioned).; Standard transfer/transferFrom/mint/burn revert when the recipient (and for mint/burn the holder) is not isKycVerified, and standard transfer requires whenNotPaused.",
+          "expression": null,
+          "derivation": "未能生成忠实的形式化前提。",
+          "source_ids": [
+            "p_validator_role",
+            "p_kyc_verified_source",
+            "p_non_kyc_destination",
+            "p_standard_flow_kyc_gate"
+          ],
+          "evidence": [
+            "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+            "This vulnerability is a KYC enforcement and access control logic flaw in the `WERC7575ShareToken` contract’s validator-only batch transfer mechanisms. The token enforces KYC checks via the isKycVerified mapping in its standard `transfer`, `transferFrom`, `mint`, and `burn` functions, but the `batchTransfers` and `rBatchTransfers` functions, which are restricted to the validator role, directly mutate `_balances` and `_rBalances` without consulting isKycVerified. As a result, these privileged batch operations bypass the on-chain KYC gating applied to normal user flows.",
+            "- The `batchTransfers` validator-only function directly debits and credits `_balances` for multiple accounts without any `isKycVerified` checks and without `whenNotPaused`. A compromised/malicious validator can use this to move balances between arbitrary addresses, including non‑KYCed ones, bypassing the KYC restrictions applied in `transfer`/`transferFrom`.",
+            "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+            "- **KYC bypass by a single key**: Validator can route funds to unverified/sanctioned destinations in one call, nullifying the compliance invariant.",
+            "- [`src/WERC7575ShareToken.sol:472-491`](https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L472-L491)  Standard `transfer` enforces `isKycVerified[to]` under `whenNotPaused`.",
+            "- This standard transfer function enforces the KYC policy: it requires `whenNotPaused` and explicitly reverts if the recipient `to` is not marked `isKycVerified`. This establishes the intended invariant that all token transfers must be KYC-gated, which the validator batch functions later violate."
+          ]
+        },
+        "safety": {
+          "text": "All token transfers, including validator batch settlement paths, must be KYC-gated so funds cannot be moved to a non-isKycVerified recipient.; While the token is paused, no fund movement should occur, including via validator batch paths.",
+          "expression": null,
+          "derivation": "未能为该影响生成忠实的安全关系。",
+          "source_ids": [
+            "i_kyc_gate_all_transfers",
+            "i_pause_blocks_movement"
+          ],
+          "evidence": [
+            "- This standard transfer function enforces the KYC policy: it requires `whenNotPaused` and explicitly reverts if the recipient `to` is not marked `isKycVerified`. This establishes the intended invariant that all token transfers must be KYC-gated, which the validator batch functions later violate.",
+            "This vulnerability is a KYC enforcement and access control logic flaw in the `WERC7575ShareToken` contract’s validator-only batch transfer mechanisms. The token enforces KYC checks via the isKycVerified mapping in its standard `transfer`, `transferFrom`, `mint`, and `burn` functions, but the `batchTransfers` and `rBatchTransfers` functions, which are restricted to the validator role, directly mutate `_balances` and `_rBalances` without consulting isKycVerified. As a result, these privileged batch operations bypass the on-chain KYC gating applied to normal user flows.",
+            "- **Pause bypass**: `batchTransfers`/`rBatchTransfers` ignore `whenNotPaused`, allowing fund movement even while the token is paused."
+          ]
+        },
+        "effects": {
+          "text": "batchTransfers/rBatchTransfers allow fund movement even while the token is paused.",
+          "expression": null,
+          "derivation": "该影响保留在覆盖清单中，但未生成形式化谓词。",
+          "source_ids": [
+            "v_pause_bypass"
+          ],
+          "evidence": [
+            "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+            "- **Pause bypass**: `batchTransfers`/`rBatchTransfers` ignore `whenNotPaused`, allowing fund movement even while the token is paused."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {},
+        "safety": {},
+        "effects": {}
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "v_pause_bypass",
+          "status": "unformalized",
+          "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: p_standard_flow_kyc_gate other_mismatch: The statement is about KYC gating and whenNotPaused on standard flows, but the predicate adds an unrelated conjunct about the token being paused before batch."
+        }
+      ],
+      "scope": "validator-only batch settlement (batchTransfers/rBatchTransfers) versus KYC-gated standard transfer flows in WERC7575ShareToken",
+      "modality": "potential",
+      "assumptions": [],
+      "unresolved": [
+        "No faithful claim generated after bounded retries: semantic faithfulness mismatch: p_standard_flow_kyc_gate other_mismatch: The statement is about KYC gating and whenNotPaused on standard flows, but the predicate adds an unrelated conjunct about the token being paused before batch."
+      ]
+    },
+    {
+      "id": "impact_claim_v_regulatory_risk_38f8e108",
+      "formalization_status": "formalized_candidate",
+      "structural_formalization_status": "formalized_candidate",
+      "validation": {
+        "formalization_status": "formalized_candidate",
+        "checks": {
+          "precondition_feasibility": "sat",
+          "safety_feasibility": "sat",
+          "effects_feasibility": "sat",
+          "safety_negation_feasibility": "sat"
+        },
+        "warnings": [],
+        "human_semantic_review_required": true,
+        "code_alignment_status": "not_attempted",
+        "consistency_verdict": "not_evaluated"
+      },
+      "semantic_relationship": {
+        "review_status": "no_relationship_warning",
+        "queries": {
+          "P_and_V": "sat",
+          "P_and_V_and_not_I": "sat",
+          "P_and_V_and_I": "unsat"
+        },
+        "warnings": [],
+        "eligible_for_stage3": false,
+        "human_semantic_review_required": true,
+        "limitation": "No code transition T. A SAT witness is not semantic correctness or report validity.",
+        "direct_counterexample_status": "passed"
+      },
+      "review_reasons": [],
+      "properties": {
+        "preconditions": {
+          "text": "The caller of batchTransfers/rBatchTransfers holds the validator role.; Funds to be moved are held at KYC-verified addresses.; The destination address is not marked isKycVerified (non-KYC or sanctioned).",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "cb5a83a3a_caller_has_validator_role"
+              },
+              {
+                "var": "cb5a83a3a_source_is_kyc_verified"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "cb5a83a3a_destination_is_kyc_verified"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_validator_role",
+            "p_kyc_verified_source",
+            "p_non_kyc_destination"
+          ],
+          "evidence": [
+            "`WERC7575ShareToken` enforces KYC on the standard user flows (`transfer`, `transferFrom`, `mint`, `burn`) by reverting when the recipient (and for mint/burn the holder) is not marked `isKycVerified`. The validator-only settlement helpers `batchTransfers` and `rBatchTransfers` bypass this gate: they directly mutate `_balances` (and `_rBalances` for rBatch) for arbitrary debtor/creditor pairs without checking `isKycVerified` and without `whenNotPaused`.",
+            "This vulnerability is a KYC enforcement and access control logic flaw in the `WERC7575ShareToken` contract’s validator-only batch transfer mechanisms. The token enforces KYC checks via the isKycVerified mapping in its standard `transfer`, `transferFrom`, `mint`, and `burn` functions, but the `batchTransfers` and `rBatchTransfers` functions, which are restricted to the validator role, directly mutate `_balances` and `_rBalances` without consulting isKycVerified. As a result, these privileged batch operations bypass the on-chain KYC gating applied to normal user flows.",
+            "- The `batchTransfers` validator-only function directly debits and credits `_balances` for multiple accounts without any `isKycVerified` checks and without `whenNotPaused`. A compromised/malicious validator can use this to move balances between arbitrary addresses, including non‑KYCed ones, bypassing the KYC restrictions applied in `transfer`/`transferFrom`.",
+            "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+            "- **KYC bypass by a single key**: Validator can route funds to unverified/sanctioned destinations in one call, nullifying the compliance invariant."
+          ]
+        },
+        "safety": {
+          "text": "All token transfers, including validator batch settlement paths, must be KYC-gated so funds cannot be moved to a non-isKycVerified recipient.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "cb5a83a3a_caller_has_validator_role"
+                  },
+                  {
+                    "var": "cb5a83a3a_source_is_kyc_verified"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "cb5a83a3a_destination_is_kyc_verified"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "var": "cb5a83a3a_kyc_guarantee_reliable"
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "i_kyc_gate_all_transfers"
+          ],
+          "evidence": [
+            "- This standard transfer function enforces the KYC policy: it requires `whenNotPaused` and explicitly reverts if the recipient `to` is not marked `isKycVerified`. This establishes the intended invariant that all token transfers must be KYC-gated, which the validator batch functions later violate.",
+            "This vulnerability is a KYC enforcement and access control logic flaw in the `WERC7575ShareToken` contract’s validator-only batch transfer mechanisms. The token enforces KYC checks via the isKycVerified mapping in its standard `transfer`, `transferFrom`, `mint`, and `burn` functions, but the `batchTransfers` and `rBatchTransfers` functions, which are restricted to the validator role, directly mutate `_balances` and `_rBalances` without consulting isKycVerified. As a result, these privileged batch operations bypass the on-chain KYC gating applied to normal user flows."
+          ]
+        },
+        "effects": {
+          "text": "On-chain KYC guarantees become unreliable, exposing downstream integrators that rely on transfer gating.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "cb5a83a3a_caller_has_validator_role"
+                  },
+                  {
+                    "var": "cb5a83a3a_source_is_kyc_verified"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "cb5a83a3a_destination_is_kyc_verified"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "cb5a83a3a_kyc_guarantee_reliable"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "v_regulatory_risk"
+          ],
+          "evidence": [
+            "- **Regulatory/operational risk**: On-chain KYC guarantees become unreliable; downstream integrators relying on transfer gating are exposed."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_validator_role",
+            "p_kyc_verified_source",
+            "p_non_kyc_destination"
+          ],
+          "args.2": [
+            "p_validator_role",
+            "p_kyc_verified_source",
+            "p_non_kyc_destination"
+          ]
+        },
+        "safety": {
+          "": [
+            "i_kyc_gate_all_transfers"
+          ],
+          "args.0": [
+            "i_kyc_gate_all_transfers"
+          ],
+          "args.0.args.2": [
+            "i_kyc_gate_all_transfers"
+          ]
+        },
+        "effects": {
+          "": [
+            "v_regulatory_risk"
+          ],
+          "args.0": [
+            "v_regulatory_risk"
+          ],
+          "args.0.args.2": [
+            "v_regulatory_risk"
+          ],
+          "args.1": [
+            "v_regulatory_risk"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "v_regulatory_risk",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "scope": "validator-only batch settlement (batchTransfers/rBatchTransfers) versus KYC-gated standard transfer flows in WERC7575ShareToken",
+      "modality": "potential",
+      "assumptions": [
+        "The batch transfer helper (batchTransfers or rBatchTransfers) is the checked action; either path alone suffices for the bypass.",
+        "Funds are debited from the KYC-verified source and credited to the non-KYC destination within the same batch call.",
+        "The validator is treated as the privileged caller whose batch path is the scenario under analysis."
+      ],
+      "unresolved": []
+    }
+  ],
+  "report_impact_coverage": [
+    {
+      "impact_id": "v_kyc_bypass_single_call",
+      "evidence": [
+        "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+        "- **KYC bypass by a single key**: Validator can route funds to unverified/sanctioned destinations in one call, nullifying the compliance invariant."
+      ],
+      "claim_ids": [
+        "impact_claim_v_kyc_bypass_single_call_ee8c0561"
+      ],
+      "status": "formalized",
+      "reason": "Program-generated exact coverage for selected direct impact."
+    },
+    {
+      "impact_id": "v_onward_routing",
+      "evidence": [
+        "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`."
+      ],
+      "claim_ids": [
+        "impact_claim_v_onward_routing_e3542db7"
+      ],
+      "status": "unformalized",
+      "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: i_kyc_gate_all_transfers other_mismatch: The invariant requires all transfers be KYC-gated, but the predicate only constrains the batch path and permits non-KYC destinations via onward routing.; P/I/V relation other_mismatch: V negates I's consequent while asserting I's antecedent, so V directly contradicts I under P, but I itself weakens the stated all-transfers KYC gate."
+    },
+    {
+      "impact_id": "v_pause_bypass",
+      "evidence": [
+        "A validator can therefore move funds from KYC-verified addresses to any non-KYC (or sanctioned) address in one call, defeating the on-chain compliance guarantee. Once received, those non-KYC addresses can route funds onward to KYC accounts using normal transfers (which only check the recipient), making this a practical, single key compliance bypass rather than a theoretical edge case. Pausing is also ineffective against the validator batch paths because they omit `whenNotPaused`.",
+        "- **Pause bypass**: `batchTransfers`/`rBatchTransfers` ignore `whenNotPaused`, allowing fund movement even while the token is paused."
+      ],
+      "claim_ids": [
+        "impact_claim_v_pause_bypass_05686103"
+      ],
+      "status": "unformalized",
+      "reason": "No faithful claim generated after bounded retries: semantic faithfulness mismatch: p_standard_flow_kyc_gate other_mismatch: The statement is about KYC gating and whenNotPaused on standard flows, but the predicate adds an unrelated conjunct about the token being paused before batch."
+    },
+    {
+      "impact_id": "v_regulatory_risk",
+      "evidence": [
+        "- **Regulatory/operational risk**: On-chain KYC guarantees become unreliable; downstream integrators relying on transfer gating are exposed."
+      ],
+      "claim_ids": [
+        "impact_claim_v_regulatory_risk_38f8e108"
+      ],
+      "status": "formalized",
+      "reason": "Program-generated exact coverage for selected direct impact."
+    }
+  ],
+  "coverage_is_model_declared_not_semantically_verified": true,
+  "human_semantic_review_required": true,
+  "code_alignment_status": "not_attempted",
+  "execution_ready": false,
+  "consistency_verdict": "not_evaluated",
+  "verdict_policy": "signals-v2",
+  "report_ambiguities_declared": [
+    "Report does not state whether the validator is malicious/compromised in an observed transaction or only hypothetically; bypass is described as possible via a privileged key.",
+    "No concrete amounts, token quantities, or specific addresses are given for the moved funds.",
+    "Whether the token was actually paused at the time of a batch transfer is not established; pause bypass is stated as a capability.",
+    "Report does not specify whether batchTransfers and rBatchTransfers are both required or either alone suffices for the bypass."
+  ],
+  "formalization_limitations_declared": [
+    "Pause-bypass (i_pause_blocks_movement / v_pause_bypass) is a separate impact handled in another claim-generation pass and is not formalized here.",
+    "Onward routing and regulatory-risk impacts are downstream consequences not covered by this plan.",
+    "The KYC-gate relation is bound at the occurrence level because the report supplies no numeric amounts or address constants.",
+    "Formalizes only the KYC-gating reliability impact (v_regulatory_risk); pause bypass and onward routing are handled in separate passes.",
+    "The reliability observable is a qualitative Boolean because the report states no numeric definition for downstream integrator reliance.",
+    "Whether the validator is malicious in an observed transaction versus hypothetically capable is not resolved by the report.",
+    "v_pause_bypass: No faithful claim generated after bounded retries: semantic faithfulness mismatch: p_standard_flow_kyc_gate other_mismatch: The statement is about KYC gating and whenNotPaused on standard flows, but the predicate adds an unrelated conjunct about the token being paused before batch.",
+    "v_onward_routing: No faithful claim generated after bounded retries: semantic faithfulness mismatch: i_kyc_gate_all_transfers other_mismatch: The invariant requires all transfers be KYC-gated, but the predicate only constrains the batch path and permits non-KYC destinations via onward routing.; P/I/V relation other_mismatch: V negates I's consequent while asserting I's antecedent, so V directly contradicts I under P, but I itself weakens the stated all-transfers KYC gate."
+  ],
+  "coverage_status": "partial",
+  "coverage_gaps": [
+    "effect_coverage_partial"
+  ],
+  "unassigned_precondition_ids": [],
+  "precondition_coverage_is_structural_not_semantic": true,
+  "piv_completeness_gate": {
+    "claims_present": true,
+    "all_claims_have_p_i_v": false,
+    "relationship_checks_are_structural_only": true,
+    "semantic_fidelity_verified": false
+  },
+  "observability_review": {
+    "schema_version": "observability-review/1",
+    "claims": [
+      {
+        "claim_id": "impact_claim_v_kyc_bypass_single_call_ee8c0561",
+        "safety_variables": [
+          "c5338751c_caller_has_validator_role",
+          "c5338751c_destination_is_kyc_verified",
+          "c5338751c_funds_moved_to_non_kyc_destination",
+          "c5338751c_source_is_kyc_verified"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      },
+      {
+        "claim_id": "impact_claim_v_onward_routing_e3542db7",
+        "safety_variables": [],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "incomplete_check",
+        "warnings": []
+      },
+      {
+        "claim_id": "impact_claim_v_pause_bypass_05686103",
+        "safety_variables": [],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "incomplete_check",
+        "warnings": []
+      },
+      {
+        "claim_id": "impact_claim_v_regulatory_risk_38f8e108",
+        "safety_variables": [
+          "cb5a83a3a_caller_has_validator_role",
+          "cb5a83a3a_destination_is_kyc_verified",
+          "cb5a83a3a_kyc_guarantee_reliable",
+          "cb5a83a3a_source_is_kyc_verified"
+        ],
+        "safety_only_booleans": [],
+        "effects_allow_both_safety_values": false,
+        "review_status": "no_structural_warning",
+        "warnings": []
+      }
+    ],
+    "review_status": "incomplete_check",
+    "observability_established": false,
+    "human_semantic_review_required": true,
+    "limitations": [
+      "I-only Boolean may be a legitimate observation; hints are not automatic errors",
+      "No code binding, predicate-name interpretation or report truth assessment",
+      "Both SAT is a review hint, not a universal UNSAT requirement"
+    ],
+    "model_calls": 0
+  },
+  "provenance": {
+    "code_provided_to_model": false,
+    "contract_file_read": false,
+    "paired_case_checked": true,
+    "case_id": "SukukFi_syLyTBz5KNA__6N4VUdiTEaa__TMDvtLmaeYU",
+    "submission_uid": "TMDvtLmaeYU",
+    "finding_uid": "6N4VUdiTEaa",
+    "target_test": "testBatchTransfersBypassesKYC",
+    "declared_code_sha256": "b799e6aebb969b21631df2dfabc2e03ae1c4f77e9256f25c1aa14d8cd12bcf96",
+    "report_path": "/root/poc_repro_work/verified_flatten_pass_1568_exact_cases/SukukFi_syLyTBz5KNA__6N4VUdiTEaa__TMDvtLmaeYU/report.json",
+    "report_sha256": "94458ac9a31aaf9468216af22b93db99713478893f6963df92b984f74c348c5b",
+    "report_input_sha256": "fa33db6810ffe40459184a1e65d7f1493e20a8213f5fabc4e8aa1150c1717f73",
+    "report_input_policy": {
+      "source_format": "report.json",
+      "selected_fields": [
+        "title",
+        "body.description_and_impact"
+      ],
+      "excluded_fields": [
+        "proof_of_concept",
+        "recommended_mitigation",
+        "source_record",
+        "pairing",
+        "contract_code"
+      ],
+      "policy_version": "report-json-input/4",
+      "title_deduplicated": false
+    },
+    "candidate_origin": "external_model",
+    "elements_source": null,
+    "formalization_source": null,
+    "prompt_version": "semantic-live",
+    "prompt_features": {
+      "strict_piv": true,
+      "plan_synthesis": true,
+      "structured_unresolved": true,
+      "numeric_guard": true,
+      "address_guard": true,
+      "lean_formal_input": true,
+      "step_normalization": true,
+      "core_count": true,
+      "id_normalization": true,
+      "relation_alignment": true,
+      "local_repair": true,
+      "referenced_catalog": true,
+      "allowed_statement_ids": true,
+      "protocol_identifier_exclusion": false,
+      "assumption_numeric_relief": true,
+      "duplicate_predicate_gate": true,
+      "requirement_source_review": false,
+      "intent_scope_review": false,
+      "partial_formalization": true,
+      "example_pinning_review": false,
+      "placeholder_predicate_review": false,
+      "semantic_faithfulness_audit": true,
+      "mixed_unit_scaling_review": false,
+      "symbol_table_review": false,
+      "impact_level_claims": true
+    },
+    "requested_formalization_scope": "core",
+    "formal_retries_allowed": 1,
+    "element_retries_allowed": 1,
+    "lean_formal_input": true,
+    "mechanical_salvage": false,
+    "model_catalog_view": "exact_id_text_without_offsets",
+    "neural_mode": "two_step",
+    "formalization_generation": "deterministic_from_plan",
+    "reference_answers_provided_to_model": false,
+    "audit_provider": "deepseek",
+    "audit_model": "deepseek-flash",
+    "model_provider": "deepseek",
+    "model_name": "deepseek-flash",
+    "deepseek_proxy_policy": "environment",
+    "prompt_resolution": "prompts.active/1",
+    "requested_evidence_mode": "ids",
+    "element_prompt_sha256": "f6d671ef59dd177a4291721f22731b4dfa7e0ec9ebfbd696573c5a83e8c7ceca",
+    "formal_prompt_sha256": "a615bb0af049c0e0f6b9db95b2ed8b07a7511c22ca109acce6bc5e4c10576e3e",
+    "claim_verdict_policy": "signals-v2",
+    "acceptance_policy_version": "complete-piv-v1",
+    "external_model_invocations": 14,
+    "input_screening": "deepseek-report-readiness-v1"
+  },
+  "external_model_invocations": 14
+}

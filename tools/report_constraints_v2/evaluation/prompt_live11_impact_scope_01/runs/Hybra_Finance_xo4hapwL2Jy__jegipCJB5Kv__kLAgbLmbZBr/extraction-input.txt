@@ -1,0 +1,44 @@
+Gauges rewards can be erroneously deleted due to missing Epoch-Based weight snapshots
+
+## Finding description and impact
+
+  The `GaugeManager._updateForAfterDistribution()` function uses current voting weights instead of epoch-snapshot weights when calculating reward distributions. This creates a serious timing vulnerability between `update_period()` and `distribute()` calls.
+
+
+ based commented-out line (`weightsPerEpoch[_time][_pool]`) tells me the development team was aware of the need for epoch-based weight tracking, but this functionality was never implemented. The codebase lacks any `weightsPerEpoch` mapping or snapshot mechanism.
+
+To be more specific consider the following attack permissionless sequence scenario:
+
+Epoch N, Gauge A has significant voting weight (e.g., 50,000 weight)
+Epoch N+1 begins, Attacker (or any user) calls `Minter.update_period()`
+    This function is publicly callable with no access control 
+    Increases `GaugeManager.index` based on current `totalWeight`
+    Transfers emission tokens to `GaugeManager`
+Before `distribute()` is called Voters call `VoterV3.reset()` to remove votes
+    `reset()` has `onlyNewEpoch` modifier, allowing calls in new epochs (line 122)
+    Reduces gauge weight to 0 or near-0
+`distribute()` is called Uses current weight (0) instead of epoch weight
+    Line 376 `_supplied = 0`
+    Line 378 `if (_supplied > 0)` evaluates to FALSE
+    Line 393 `supplyIndex[_gauge] = index` updates without accumulating rewards
+Result Epoch rewards permanently locked in `GaugeManager`
+
+
+### the impact can be critical as it leads to
+
+ Complete Loss of Epoch Rewards, Gauges with modified weights between `update_period()` and `distribute()` receive zero rewards despite having weight during the reward period
+Permanent Fund Lockup, Rewards become permanently stuck in `GaugeManager` contract with no recovery mechanism
+Protocol Insolvency Risk, Over multiple epochs, substantial emission tokens can accumulate as stuck funds
+Voter Disincentivization, veNFT holders lose rewards through no fault of their own, breaking protocol incentive mechanism
+
+An attacker can also exploit this in reverse for Reward Theft:
+ Epoch N Minimal votes on gauge B
+ `update_period()` called (low totalWeight, high index increase per gauge)
+ Attacker front-runs `distribute()` and votes heavily for gauge B
+ Gauge B receives disproportionate rewards meant for other gauges
+
+this also violated some invariants:
+ Proportionality: "Emissions allocated to gauges must be strictly proportional to their effective weight snapshots"
+ Epoch Boundary Consistency: "Weight snapshots take effect strictly at epoch boundaries. Updates in one epoch must not retroactively affect settled allocations"
+ Balance Conservation: "On-chain balances must always be greater than or equal to the sum of all accrued/claimable balances"
+ Non-negative Claimables: Claimables become zero when they should be positive

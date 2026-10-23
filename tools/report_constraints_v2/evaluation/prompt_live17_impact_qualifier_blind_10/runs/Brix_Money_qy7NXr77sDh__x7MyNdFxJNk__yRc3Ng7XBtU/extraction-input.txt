@@ -1,0 +1,17 @@
+Cross-chain Minting Bypasses Whitelist Restriction Causing Fund Lock in iTryTokenOFT
+
+## Finding description and impact
+
+In `iTryTokenOFT.sol`, the `_beforeTokenTransfer` function enforces access control based on the `transferState`. When the system is in `TransferState.WHITELIST_ENABLED` mode, the logic for handling incoming cross-chain transfers (minting) is flawed.
+
+Specifically, when a mint operation occurs (triggered by the LayerZero endpoint via `lzReceive` -\> `_credit` -\> `_mint`), the condition checks if the recipient is blacklisted but **fails to check if the recipient is whitelisted**.
+
+
+**Impact:**
+
+1. **Compliance Invariant Violation:**  The protocol explicitly states:  *&quot;Only whitelisted user can send/receive/burn iTry tokens in a WHITELIST_ENABLED transfer state.&quot;*  This bug allows non-whitelisted users to receive tokens on the Spoke chain via cross-chain bridging, bypassing KYC/compliance requirements.
+2. **Fund Lock (Honeypot Risk):**  This is the most severe impact. While a non-whitelisted user can *receive* tokens due to this bug, they **cannot transfer or bridge them back**.
+
+    * Standard transfers require `whitelisted[from] && whitelisted[to]`.
+    * Bridging back (burning) requires `whitelisted[from]`.
+    * Since the user successfully received tokens but is not whitelisted, any attempt to move these funds will revert. The user's funds are effectively frozen until an admin manually intervenes.

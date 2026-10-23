@@ -1,0 +1,208 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Deposit request fulfillment and claiming in ERC7575VaultUpgradeable",
+    "environment": "ERC7575VaultUpgradeable.sol vault with Investment Manager activeDepositRequesters tracking",
+    "evidence": [
+      "Users who have both pending and claimable deposits can become permanently invisible to the Investment Manager after claiming their fulfilled shares, causing their still-pending deposits to be ignored and potentially stuck forever.",
+      "The vault removes a user from the activeDepositRequesters set as soon as they fully claim their claimable shares, without checking whether they still have pending deposits waiting to be fulfilled. If a user has both claimable and pending deposits, claiming the claimable portion makes them disappear from the active list → the investment manager may skip fulfilling their remaining pending assets → funds get stuck forever.",
+      "Alice calls requestDeposit(100). (Status: Pending: 100, ActiveSet: Yes)",
+      "Manager calls fulfillDeposit(Alice). (Status: Pending: 0, Claimable: 100, ActiveSet: Yes)",
+      "Alice calls requestDeposit(50). (Status: Pending: 50, Claimable: 100, ActiveSet: Yes)",
+      "Alice calls deposit(100) to claim her shares.",
+      "Result: The contract sees availableAssets == assets (100 == 100) and removes Alice from activeDepositRequesters.",
+      "Consequence: Alice still has 50 pending assets, but she is no longer in the activeDepositRequesters list. The Investment Manager will not see her in the active set when looking for requests to fulfill.",
+      "Users with both pending and claimable deposits risk having their pending requests ignored or stuck indefinitely because claiming the claimable part removes them from the active tracking set used by the Investment Manager for fulfillment"
+    ]
+  },
+  "entities": [
+    {
+      "id": "alice",
+      "name": "Alice (depositor)",
+      "role": "victim",
+      "evidence": [
+        "Alice calls requestDeposit(100). (Status: Pending: 100, ActiveSet: Yes)",
+        "Alice calls requestDeposit(50). (Status: Pending: 50, Claimable: 100, ActiveSet: Yes)",
+        "Alice calls deposit(100) to claim her shares."
+      ]
+    },
+    {
+      "id": "vault",
+      "name": "ERC7575VaultUpgradeable contract",
+      "role": "contract",
+      "evidence": [
+        "In the ERC7575VaultUpgradeable.sol:",
+        "The vault removes a user from the activeDepositRequesters set as soon as they fully claim their claimable shares, without checking whether they still have pending deposits waiting to be fulfilled. If a user has both claimable and pending deposits, claiming the claimable portion makes them disappear from the active list → the investment manager may skip fulfilling their remaining pending assets → funds get stuck forever.",
+        "Result: The contract sees availableAssets == assets (100 == 100) and removes Alice from activeDepositRequesters."
+      ]
+    },
+    {
+      "id": "investment_manager",
+      "name": "Investment Manager",
+      "role": "authority",
+      "evidence": [
+        "Manager calls fulfillDeposit(Alice). (Status: Pending: 0, Claimable: 100, ActiveSet: Yes)",
+        "Consequence: Alice still has 50 pending assets, but she is no longer in the activeDepositRequesters list. The Investment Manager will not see her in the active set when looking for requests to fulfill."
+      ]
+    },
+    {
+      "id": "active_set",
+      "name": "activeDepositRequesters set",
+      "role": "asset",
+      "evidence": [
+        "The vault removes a user from the activeDepositRequesters set as soon as they fully claim their claimable shares, without checking whether they still have pending deposits waiting to be fulfilled. If a user has both claimable and pending deposits, claiming the claimable portion makes them disappear from the active list → the investment manager may skip fulfilling their remaining pending assets → funds get stuck forever.",
+        "Result: The contract sees availableAssets == assets (100 == 100) and removes Alice from activeDepositRequesters.",
+        "Consequence: Alice still has 50 pending assets, but she is no longer in the activeDepositRequesters list. The Investment Manager will not see her in the active set when looking for requests to fulfill."
+      ]
+    },
+    {
+      "id": "pending_deposits",
+      "name": "Pending deposit assets",
+      "role": "asset",
+      "evidence": [
+        "Users who have both pending and claimable deposits can become permanently invisible to the Investment Manager after claiming their fulfilled shares, causing their still-pending deposits to be ignored and potentially stuck forever.",
+        "Alice calls requestDeposit(50). (Status: Pending: 50, Claimable: 100, ActiveSet: Yes)",
+        "Consequence: Alice still has 50 pending assets, but she is no longer in the activeDepositRequesters list. The Investment Manager will not see her in the active set when looking for requests to fulfill."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_alice_pending_100",
+      "kind": "precondition",
+      "text": "Alice calls requestDeposit(100), leaving 100 assets pending and Alice in the active set.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "vault",
+        "active_set"
+      ],
+      "evidence": [
+        "Alice calls requestDeposit(100). (Status: Pending: 100, ActiveSet: Yes)"
+      ]
+    },
+    {
+      "id": "p_fulfilled_claimable_100",
+      "kind": "precondition",
+      "text": "The manager calls fulfillDeposit(Alice), making 100 assets claimable for Alice while she remains in the active set.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "investment_manager",
+        "vault"
+      ],
+      "evidence": [
+        "Manager calls fulfillDeposit(Alice). (Status: Pending: 0, Claimable: 100, ActiveSet: Yes)"
+      ]
+    },
+    {
+      "id": "p_alice_pending_50",
+      "kind": "precondition",
+      "text": "Alice calls requestDeposit(50), so she has 50 pending assets alongside 100 claimable assets and remains in the active set.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "vault",
+        "pending_deposits",
+        "active_set"
+      ],
+      "evidence": [
+        "Alice calls requestDeposit(50). (Status: Pending: 50, Claimable: 100, ActiveSet: Yes)"
+      ]
+    },
+    {
+      "id": "a_claim_100",
+      "kind": "action",
+      "text": "Alice calls deposit(100) to claim her 100 claimable shares.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "vault"
+      ],
+      "evidence": [
+        "Alice calls deposit(100) to claim her shares."
+      ]
+    },
+    {
+      "id": "rc_remove_on_full_claim",
+      "kind": "root_cause",
+      "text": "The vault removes a user from activeDepositRequesters as soon as they fully claim claimable shares, without checking whether they still have pending deposits; here availableAssets == assets (100 == 100) triggers removal.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "active_set"
+      ],
+      "evidence": [
+        "The vault removes a user from the activeDepositRequesters set as soon as they fully claim their claimable shares, without checking whether they still have pending deposits waiting to be fulfilled. If a user has both claimable and pending deposits, claiming the claimable portion makes them disappear from the active list → the investment manager may skip fulfilling their remaining pending assets → funds get stuck forever.",
+        "Result: The contract sees availableAssets == assets (100 == 100) and removes Alice from activeDepositRequesters."
+      ]
+    },
+    {
+      "id": "i_removed_with_pending",
+      "kind": "impact",
+      "text": "After claiming, Alice still has 50 pending assets but is no longer in activeDepositRequesters.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "active_set",
+        "pending_deposits"
+      ],
+      "evidence": [
+        "Result: The contract sees availableAssets == assets (100 == 100) and removes Alice from activeDepositRequesters.",
+        "Consequence: Alice still has 50 pending assets, but she is no longer in the activeDepositRequesters list. The Investment Manager will not see her in the active set when looking for requests to fulfill."
+      ]
+    },
+    {
+      "id": "i_manager_skips",
+      "kind": "impact",
+      "text": "The Investment Manager will not see Alice in the active set when looking for requests to fulfill, so her remaining pending assets may be skipped.",
+      "modality": "potential",
+      "entity_ids": [
+        "investment_manager",
+        "alice",
+        "active_set"
+      ],
+      "evidence": [
+        "The vault removes a user from the activeDepositRequesters set as soon as they fully claim their claimable shares, without checking whether they still have pending deposits waiting to be fulfilled. If a user has both claimable and pending deposits, claiming the claimable portion makes them disappear from the active list → the investment manager may skip fulfilling their remaining pending assets → funds get stuck forever.",
+        "Consequence: Alice still has 50 pending assets, but she is no longer in the activeDepositRequesters list. The Investment Manager will not see her in the active set when looking for requests to fulfill."
+      ]
+    },
+    {
+      "id": "i_funds_stuck",
+      "kind": "impact",
+      "text": "Users with both pending and claimable deposits risk having their pending requests ignored or stuck indefinitely.",
+      "modality": "potential",
+      "entity_ids": [
+        "alice",
+        "pending_deposits"
+      ],
+      "evidence": [
+        "Users who have both pending and claimable deposits can become permanently invisible to the Investment Manager after claiming their fulfilled shares, causing their still-pending deposits to be ignored and potentially stuck forever.",
+        "Users with both pending and claimable deposits risk having their pending requests ignored or stuck indefinitely because claiming the claimable part removes them from the active tracking set used by the Investment Manager for fulfillment"
+      ]
+    },
+    {
+      "id": "si_keep_active_while_pending",
+      "kind": "security_intent",
+      "text": "A user with pending deposits should remain in the activeDepositRequesters set so the Investment Manager can still fulfill their pending assets.",
+      "modality": "inferred",
+      "entity_ids": [
+        "vault",
+        "active_set",
+        "investment_manager"
+      ],
+      "evidence": [
+        "The vault removes a user from the activeDepositRequesters set as soon as they fully claim their claimable shares, without checking whether they still have pending deposits waiting to be fulfilled. If a user has both claimable and pending deposits, claiming the claimable portion makes them disappear from the active list → the investment manager may skip fulfilling their remaining pending assets → funds get stuck forever.",
+        "Consequence: Alice still has 50 pending assets, but she is no longer in the activeDepositRequesters list. The Investment Manager will not see her in the active set when looking for requests to fulfill."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_claim_100"
+  ],
+  "ambiguities": [
+    "Report does not state who may call deposit or whether removal is permissionless.",
+    "Same issue is noted for deposit(uint256 assets, ...) but no separate scenario is given.",
+    "Whether pending funds are actually stuck depends on the Investment Manager's fulfillment behavior, which is not specified."
+  ]
+}

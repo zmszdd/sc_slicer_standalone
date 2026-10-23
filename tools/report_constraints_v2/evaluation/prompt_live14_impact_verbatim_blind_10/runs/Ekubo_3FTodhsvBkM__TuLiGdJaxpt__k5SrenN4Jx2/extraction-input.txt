@@ -1,0 +1,33 @@
+Oracle Extension storage collision allows data corruption via crafted token addresses
+
+## 1. Summary
+
+The Oracle extension uses raw assembly `sstore` to save `Counts` (metadata) and `Snapshot` (price history) data. The storage key generation logic does not cryptographically hash the keys (e.g., using `keccak256`). Instead, it uses simple bitwise operations on the token address.
+
+This deterministic mapping allows an attacker to generate a specific token address (TokenA with leading zeros) and a derived token address (TokenB), such that the storage slot for TokenB's `Counts` collides exactly with the storage slot for TokenA's `Snapshot` (at index 0).
+
+## 2. Vulnerability Details
+
+The vulnerability is located in the `maybeInsertSnapshot` function within `src/extensions/Oracle.sol` (lines 139-142). The function uses inline assembly to store the `Counts` struct using the raw token address as the key, and the `Snapshot` struct using `(token << 32) | index` as the key. This deterministic mapping without hashing allows for storage collisions.
+
+**Code:**
+
+### The Collision
+
+- Let `TokenA = 0x00000000...01`.
+- Let `TokenB = TokenA << 32` (Left shift by 32 bits).
+- **Counts Key for TokenB:** `TokenB`.
+- **Snapshot Key for TokenA (Index 0):** `(TokenA << 32) | 0 = TokenB`.
+- **Result:** The storage key is identical. Writing `Counts` for TokenB overwrites the `Snapshot` for TokenA. Conversely, writing a `Snapshot` for TokenA corrupts the `Counts` metadata for TokenB.
+
+## 3. Impact
+
+- **Data Corruption:** An attacker can permanently corrupt the price history of a pool using TokenA by initializing a pool for TokenB.
+- **Oracle Manipulation:** If TokenA is a legitimate token (but happens to have leading zeros), a malicious actor can deploy TokenB to manipulate the oracle data used by other protocols.
+- **Denial of Service:** Corrupting the `Counts` struct (which tracks capacity and count) can permanently break the oracle for TokenB.
+
+## 4. Recommended Mitigation
+
+Replace the deterministic inline assembly key generation with standard `keccak256` hashing. This ensures that the storage slots are uniformly distributed and resistant to collision attacks, regardless of the token address pattern.
+
+**Fix:**

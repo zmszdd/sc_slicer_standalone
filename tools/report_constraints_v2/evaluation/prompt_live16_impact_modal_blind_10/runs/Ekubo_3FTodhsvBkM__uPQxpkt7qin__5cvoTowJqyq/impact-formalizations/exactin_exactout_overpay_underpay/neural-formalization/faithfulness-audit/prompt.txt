@@ -1,0 +1,38 @@
+You are a semantic faithfulness auditor. For each
+listed source you get its role (P, I, or V), the report statement text, the
+generated predicate that claims to encode it, and the meanings of the symbols
+the predicate uses. You also receive the full P/I/V relation. Judge
+ONLY whether the predicate faithfully encodes its report source, and whether V
+is a direct, distinguishable violation of I under P. Style, optimality and
+code truth are out of scope; never rewrite or propose predicates.
+
+A predicate is unfaithful when any of the following holds:
+- inverted: the predicate asserts the opposite direction or polarity of the
+  statement's claim, e.g. the statement says a fee accrues / an amount exists /
+  a balance is held (so a faithful encoding implies a positive or nonzero
+  quantity) and the predicate checks equality against zero, or the statement
+  says "at most N" and the predicate demands strictly less than N, or the
+  statement says "exceeds N" and the predicate accepts N itself.
+- wrong_constant: a numeric literal in the predicate is not the statement's
+  own quantity -- it belongs to a different statement, a different quantity,
+  or to nothing in the statement at all.
+- wrong_symbol: a symbol the predicate uses does not carry the meaning the
+  statement's fact requires (e.g. the statement is about the fee amount while
+  the predicate's symbol means elapsed time).
+- other_mismatch: the predicate encodes a different fact than the statement
+  states.
+Otherwise the source encoding is consistent. A tautologically weak but
+direction-correct bound (e.g. >= 0) is consistent, NOT inverted; the report's
+own semantics set the standard, not mathematical strength. For the relation
+check, mark weakened if a material condition, scope, subject, state, direction,
+or direct impact is missing; mark mismatch if I/V has the wrong polarity or V
+does not contradict I under P. Do not call an unsupported but explicitly
+unformalized claim faithful.
+
+Return JSON only, exactly:
+{"checks":[{"source_id":ID,"role":"P|I|V","verdict":"consistent"|"inverted"|"wrong_constant"|
+"wrong_symbol"|"other_mismatch","reason":ONE_SHORT_SENTENCE}],
+ "piv_relation":{"verdict":"consistent"|"weakened"|"mismatch","reason":ONE_SHORT_SENTENCE}}
+Cover every listed source_id exactly once, with its role, and only listed ones. The relation
+check must assess the supplied P/I/V formulas together, not merely their syntax.
+{"schema_version":"faithfulness-audit-input/2","relation_class":"proportional_fairness","sources":[{"source_id":"pool_at_tick_x_at_block_start","role":"P","statement_text":"At the beginning of the block, the pool is at tick X.","predicate":{"kind":"comparison","left":"begin_block_tick","operator":"ge","right":{"const":0}},"symbol_meanings":{"begin_block_tick":{"sort":"int","unit":"tick","meaning":"pool tick X recorded at the beginning of the block"}}},{"source_id":"mev_capture_records_block_start_tick","role":"P","statement_text":"MevCapture records the pool tick at the beginning of the block and charges additional fee proportional to the distance between the post-swap tick and that beginning-of-block tick.","predicate":{"kind":"comparison","left":"fee_per_tick","operator":"gt","right":{"const":0}},"symbol_meanings":{"fee_per_tick":{"sort":"int","unit":"token amount per tick","meaning":"MevCapture fee rate applied per unit of tick distance"}}},{"source_id":"intent_equal_fee_for_equal_output","role":"I","statement_text":"For the same received output amount, the MevCapture additional fee charged should be equal across the exactIn and exactOut swap paths, so neither path overpays or underpays relative to the other.","predicate":{"op":"implies","args":[{"op":"and","args":[{"op":"ge","args":[{"var":"begin_block_tick"},{"const":0}]},{"op":"gt","args":[{"var":"fee_per_tick"},{"const":0}]}]},{"op":"or","args":[{"op":"eq","args":[{"var":"exactin_fee"},{"var":"exactout_fee"}]},{"op":"not","args":[{"var":"paths_fee_mismatch"}]}]}]},"symbol_meanings":{"begin_block_tick":{"sort":"int","unit":"tick","meaning":"pool tick X recorded at the beginning of the block"},"exactin_fee":{"sort":"int","unit":"token amount","meaning":"MevCapture additional fee charged on the exactIn swap path for the received output amount"},"exactout_fee":{"sort":"int","unit":"token amount","meaning":"MevCapture additional fee charged on the exactOut swap path for the same received output amount"},"fee_per_tick":{"sort":"int","unit":"token amount per tick","meaning":"MevCapture fee rate applied per unit of tick distance"},"paths_fee_mismatch":{"sort":"bool","unit":null,"meaning":"the exactIn and exactOut paths charge unequal MevCapture additional fees for the same received output amount, so one path overpays or underpays relative to the other"}}},{"source_id":"exactin_exactout_overpay_underpay","role":"V","statement_text":"most of the time one of the paths (ExactIn swap, ExactOut swap) overpays/underpays in comparison to the other","predicate":{"op":"and","args":[{"op":"and","args":[{"op":"ge","args":[{"var":"begin_block_tick"},{"const":0}]},{"op":"gt","args":[{"var":"fee_per_tick"},{"const":0}]}]},{"op":"not","args":[{"op":"or","args":[{"op":"eq","args":[{"var":"exactin_fee"},{"var":"exactout_fee"}]},{"op":"not","args":[{"var":"paths_fee_mismatch"}]}]}]}]},"symbol_meanings":{"begin_block_tick":{"sort":"int","unit":"tick","meaning":"pool tick X recorded at the beginning of the block"},"exactin_fee":{"sort":"int","unit":"token amount","meaning":"MevCapture additional fee charged on the exactIn swap path for the received output amount"},"exactout_fee":{"sort":"int","unit":"token amount","meaning":"MevCapture additional fee charged on the exactOut swap path for the same received output amount"},"fee_per_tick":{"sort":"int","unit":"token amount per tick","meaning":"MevCapture fee rate applied per unit of tick distance"},"paths_fee_mismatch":{"sort":"bool","unit":null,"meaning":"the exactIn and exactOut paths charge unequal MevCapture additional fees for the same received output amount, so one path overpays or underpays relative to the other"}}}],"piv_relation":{"P":{"op":"and","args":[{"op":"ge","args":[{"var":"begin_block_tick"},{"const":0}]},{"op":"gt","args":[{"var":"fee_per_tick"},{"const":0}]}]},"I":{"op":"implies","args":[{"op":"and","args":[{"op":"ge","args":[{"var":"begin_block_tick"},{"const":0}]},{"op":"gt","args":[{"var":"fee_per_tick"},{"const":0}]}]},{"op":"or","args":[{"op":"eq","args":[{"var":"exactin_fee"},{"var":"exactout_fee"}]},{"op":"not","args":[{"var":"paths_fee_mismatch"}]}]}]},"V":{"op":"and","args":[{"op":"and","args":[{"op":"ge","args":[{"var":"begin_block_tick"},{"const":0}]},{"op":"gt","args":[{"var":"fee_per_tick"},{"const":0}]}]},{"op":"not","args":[{"op":"or","args":[{"op":"eq","args":[{"var":"exactin_fee"},{"var":"exactout_fee"}]},{"op":"not","args":[{"var":"paths_fee_mismatch"}]}]}]}]}}}

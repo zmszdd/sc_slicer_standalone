@@ -1,0 +1,543 @@
+{
+  "case_id": "Ekubo_3FTodhsvBkM__BnhskdXG9L2__LWJzDBLXHCX",
+  "impact_id": "automatic_trigger_by_legitimate_swaps",
+  "intent_id": "noop_with_value_should_revert",
+  "precondition_ids": [
+    "pool_initialized_with_liquidity",
+    "victim_sets_sqrt_ratio_limit_near_price"
+  ],
+  "prompt_version": "semantic-live-22",
+  "relation_context_statement_count": 3,
+  "generated": true,
+  "fidelity_passed": false,
+  "fidelity_status": "needs_review",
+  "audit": {
+    "schema_version": "semantic-faithfulness-audit/3",
+    "status": "completed",
+    "verdict_consistent": false,
+    "fidelity_status": "needs_review",
+    "checks": [
+      {
+        "source_id": "pool_initialized_with_liquidity",
+        "role": "P",
+        "verdict": "consistent",
+        "reason": "Predicate asserts the pool is initialized at tick 0 with liquidity, matching the statement."
+      },
+      {
+        "source_id": "victim_sets_sqrt_ratio_limit_near_price",
+        "role": "P",
+        "verdict": "consistent",
+        "reason": "Predicate captures both the near-price sqrtRatioLimit and the 10 ether msg.value."
+      },
+      {
+        "source_id": "noop_with_value_should_revert",
+        "role": "I",
+        "verdict": "consistent",
+        "reason": "Predicate encodes that a no-op swap with positive msg.value implies revert, matching the statement."
+      },
+      {
+        "source_id": "automatic_trigger_by_legitimate_swaps",
+        "role": "V",
+        "verdict": "consistent",
+        "reason": "Predicate symbol directly encodes triggering by legitimate swaps' price movements."
+      }
+    ],
+    "piv_relation": {
+      "verdict": "weakened",
+      "reason": "Relation context shows attacker front-running to the victim's limit, but no explicit evidence bridges legitimate-swap price movements to the no-op revert condition."
+    },
+    "relation_context": [
+      {
+        "statement_id": "attacker_moves_price_to_limit",
+        "role": "action",
+        "evidence": [
+          {
+            "evidence_id": "e_be7fd2bc7865_0023",
+            "text": "3. Attacker front-runs the victim's transaction and moves the price down to exactly the victim's `sqrtRatioLimit`."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0009",
+            "text": "3. **Exploitable by Attackers**: Attackers can front-run victim transactions to manipulate the pool price to exactly match the victim's `sqrtRatioLimit`, guaranteeing the exploit succeeds."
+          }
+        ]
+      },
+      {
+        "statement_id": "victim_swap_executes_sending_eth",
+        "role": "action",
+        "evidence": [
+          {
+            "evidence_id": "e_be7fd2bc7865_0024",
+            "text": "4. Victim's transaction executes:"
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0025",
+            "text": "- Router calculates `value = 10 ether` and calls `CoreLib::swap()`."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0026",
+            "text": "- `CoreLib::swap()` sends 10 ETH to Core via `call(gas(), core, value, ...)`."
+          }
+        ]
+      },
+      {
+        "statement_id": "noop_condition_skips_swap_block",
+        "role": "root_cause",
+        "evidence": [
+          {
+            "evidence_id": "e_be7fd2bc7865_0003",
+            "text": "In `Core::swap_6269342730()`, when the current `sqrtRatio` equals the `sqrtRatioLimit`, the swap is treated as a no-op, and the entire swap block is skipped. This includes the critical `_updatePairDebtWithNative()` call, which means ETH sent via `msg.value` is never accounted for in the debt system. The ETH becomes permanently stuck in the Core contract with no recovery mechanism."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0019",
+            "text": "The vulnerability exists in `Core::swap_6269342730()` where the `_updatePairDebtWithNative()` function is placed inside a conditional block that gets skipped when `sqrtRatio == sqrtRatioLimit`."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0027",
+            "text": "- In `Core::swap_6269342730()`, the condition `stateAfter.sqrtRatio() != sqrtRatioLimit` is FALSE."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0028",
+            "text": "- The entire swap block (lines 542-843) is skipped, including `_updatePairDebtWithNative()`."
+          }
+        ]
+      }
+    ],
+    "mismatch_count": 1,
+    "repair_finding_count": 0
+  },
+  "formal_plan": {
+    "schema_version": "report-formal-plan/8",
+    "relation_class": "progress_or_liveness",
+    "precondition_ids": [
+      "pool_initialized_with_liquidity",
+      "victim_sets_sqrt_ratio_limit_near_price"
+    ],
+    "intent_id": "noop_with_value_should_revert",
+    "impact_ids": [
+      "automatic_trigger_by_legitimate_swaps"
+    ],
+    "symbols": {
+      "pool_initialized_at_tick_zero": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "pool is initialized at tick 0 with liquidity",
+        "checkpoint": "before swap",
+        "entity_ids": [
+          "core_contract"
+        ],
+        "source_ids": [
+          "pool_initialized_with_liquidity"
+        ]
+      },
+      "victim_swap_sqrt_ratio_limit_near_price": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "victim submits swap with sqrtRatioLimit set near current price for slippage protection",
+        "checkpoint": "before swap",
+        "entity_ids": [
+          "victim",
+          "router"
+        ],
+        "source_ids": [
+          "victim_sets_sqrt_ratio_limit_near_price"
+        ]
+      },
+      "victim_msg_value_ether": {
+        "sort": "int",
+        "unit": "ether",
+        "meaning": "native ETH sent by victim via msg.value",
+        "checkpoint": "before swap",
+        "entity_ids": [
+          "victim",
+          "eth_asset"
+        ],
+        "source_ids": [
+          "victim_sets_sqrt_ratio_limit_near_price"
+        ]
+      },
+      "sqrt_ratio_equals_sqrt_ratio_limit": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "swap is a no-op because sqrtRatio == sqrtRatioLimit",
+        "checkpoint": "at swap evaluation",
+        "entity_ids": [
+          "core_contract"
+        ],
+        "source_ids": [
+          "noop_with_value_should_revert"
+        ]
+      },
+      "msg_value_positive": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "msg.value > 0 for the swap",
+        "checkpoint": "at swap evaluation",
+        "entity_ids": [
+          "core_contract",
+          "eth_asset"
+        ],
+        "source_ids": [
+          "noop_with_value_should_revert"
+        ]
+      },
+      "swap_reverts": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the swap reverts instead of silently accepting the ETH",
+        "checkpoint": "swap execution outcome",
+        "entity_ids": [
+          "core_contract"
+        ],
+        "source_ids": [
+          "noop_with_value_should_revert"
+        ]
+      },
+      "triggered_by_legitimate_swaps": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the vulnerability can potentially be triggered by price movements from legitimate swaps, not just attackers",
+        "checkpoint": "potential trigger scenario",
+        "entity_ids": [
+          "core_contract",
+          "router",
+          "victim",
+          "eth_asset"
+        ],
+        "source_ids": [
+          "automatic_trigger_by_legitimate_swaps"
+        ]
+      }
+    },
+    "precondition_terms": [
+      {
+        "source_id": "pool_initialized_with_liquidity",
+        "predicate": {
+          "kind": "truth",
+          "symbol": "pool_initialized_at_tick_zero",
+          "value": true
+        }
+      },
+      {
+        "source_id": "victim_sets_sqrt_ratio_limit_near_price",
+        "predicate": {
+          "kind": "all_of",
+          "terms": [
+            {
+              "kind": "truth",
+              "symbol": "victim_swap_sqrt_ratio_limit_near_price",
+              "value": true
+            },
+            {
+              "kind": "comparison",
+              "left": "victim_msg_value_ether",
+              "operator": "eq",
+              "right": {
+                "const": 10
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "impact_outcome": {
+      "source_id": "automatic_trigger_by_legitimate_swaps",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "triggered_by_legitimate_swaps",
+        "value": true
+      }
+    },
+    "impact_context_terms": [],
+    "derived_definitions": [],
+    "pattern": {
+      "kind": "required_effect",
+      "condition": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "truth",
+            "symbol": "sqrt_ratio_equals_sqrt_ratio_limit",
+            "value": true
+          },
+          {
+            "kind": "truth",
+            "symbol": "msg_value_positive",
+            "value": true
+          }
+        ]
+      },
+      "effect": {
+        "kind": "truth",
+        "symbol": "swap_reverts",
+        "value": true
+      }
+    },
+    "assumptions": [
+      "sqrtRatio and sqrtRatioLimit are observable at swap evaluation time.",
+      "msg.value > 0 is represented by a grounded Boolean because the report states the condition qualitatively."
+    ],
+    "unresolved": [
+      {
+        "category": "ambiguous_condition",
+        "description": "Report does not give a concrete prior state showing the no-op path is reachable without an attacker; the automatic-trigger claim is only potential.",
+        "source_ids": [
+          "automatic_trigger_by_legitimate_swaps"
+        ],
+        "blocks_formalization": false
+      },
+      {
+        "category": "missing_report_definition",
+        "description": "Exact numeric sqrtRatioLimit value is described only via tickToSqrtRatio(0-500); precise comparison operands are not fully specified.",
+        "source_ids": [
+          "victim_sets_sqrt_ratio_limit_near_price",
+          "noop_with_value_should_revert"
+        ],
+        "blocks_formalization": false
+      }
+    ],
+    "limitations": [
+      "The impact is encoded as a potential Boolean trigger because the report provides no more specific observable for the legitimate-swap trigger.",
+      "The no-op equality sqrtRatio == sqrtRatioLimit is represented as a grounded Boolean since the report does not supply numeric operands."
+    ]
+  },
+  "formalization": {
+    "schema_version": "report-formalization/2",
+    "symbols": {
+      "pool_initialized_at_tick_zero": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "pool is initialized at tick 0 with liquidity",
+        "checkpoint": "before swap",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0021"
+        ],
+        "entity_ids": [
+          "core_contract"
+        ]
+      },
+      "victim_swap_sqrt_ratio_limit_near_price": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "victim submits swap with sqrtRatioLimit set near current price for slippage protection",
+        "checkpoint": "before swap",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0022",
+          "e_be7fd2bc7865_0015"
+        ],
+        "entity_ids": [
+          "victim",
+          "router"
+        ]
+      },
+      "victim_msg_value_ether": {
+        "sort": "int",
+        "unit": "ether",
+        "meaning": "native ETH sent by victim via msg.value",
+        "checkpoint": "before swap",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0022",
+          "e_be7fd2bc7865_0015"
+        ],
+        "entity_ids": [
+          "victim",
+          "eth_asset"
+        ]
+      },
+      "sqrt_ratio_equals_sqrt_ratio_limit": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "swap is a no-op because sqrtRatio == sqrtRatioLimit",
+        "checkpoint": "at swap evaluation",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0035",
+          "e_be7fd2bc7865_0036"
+        ],
+        "entity_ids": [
+          "core_contract"
+        ]
+      },
+      "msg_value_positive": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "msg.value > 0 for the swap",
+        "checkpoint": "at swap evaluation",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0035",
+          "e_be7fd2bc7865_0036"
+        ],
+        "entity_ids": [
+          "core_contract",
+          "eth_asset"
+        ]
+      },
+      "swap_reverts": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the swap reverts instead of silently accepting the ETH",
+        "checkpoint": "swap execution outcome",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0035",
+          "e_be7fd2bc7865_0036"
+        ],
+        "entity_ids": [
+          "core_contract"
+        ]
+      },
+      "triggered_by_legitimate_swaps": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the vulnerability can potentially be triggered by price movements from legitimate swaps, not just attackers",
+        "checkpoint": "potential trigger scenario",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0010"
+        ],
+        "entity_ids": [
+          "core_contract",
+          "router",
+          "victim",
+          "eth_asset"
+        ]
+      }
+    },
+    "claims": [
+      {
+        "id": "impact_claim_automatic_trigger_by_legitimate_swaps_noop_with_value_should_revert",
+        "scope": "The vulnerability can be triggered even by price movements from legitimate swaps (not just by attackers).",
+        "modality": "potential",
+        "impact_ids": [
+          "automatic_trigger_by_legitimate_swaps"
+        ],
+        "properties": {
+          "preconditions": {
+            "text": "The pool is initialized at tick 0 with liquidity.; The victim submits a swap with a sqrtRatioLimit set near the current price for slippage protection, sending 10 ether via msg.value.",
+            "expression": {
+              "op": "and",
+              "args": [
+                {
+                  "var": "pool_initialized_at_tick_zero"
+                },
+                {
+                  "op": "and",
+                  "args": [
+                    {
+                      "var": "victim_swap_sqrt_ratio_limit_near_price"
+                    },
+                    {
+                      "op": "eq",
+                      "args": [
+                        {
+                          "var": "victim_msg_value_ether"
+                        },
+                        {
+                          "const": 10
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "evidence_ids": [
+              "e_be7fd2bc7865_0021",
+              "e_be7fd2bc7865_0022",
+              "e_be7fd2bc7865_0015"
+            ],
+            "derivation": "Program conjunction of selected report preconditions.",
+            "source_ids": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price"
+            ]
+          },
+          "safety": {
+            "text": "A swap that would be a no-op (sqrtRatio == sqrtRatioLimit) with msg.value > 0 must revert rather than silently accept the ETH.",
+            "expression": {
+              "op": "implies",
+              "args": [
+                {
+                  "op": "and",
+                  "args": [
+                    {
+                      "var": "sqrt_ratio_equals_sqrt_ratio_limit"
+                    },
+                    {
+                      "var": "msg_value_positive"
+                    }
+                  ]
+                },
+                {
+                  "var": "swap_reverts"
+                }
+              ]
+            },
+            "evidence_ids": [
+              "e_be7fd2bc7865_0035",
+              "e_be7fd2bc7865_0036"
+            ],
+            "derivation": "Program synthesis from the selected intent and logical pattern.",
+            "source_ids": [
+              "noop_with_value_should_revert"
+            ]
+          },
+          "effects": {
+            "text": "The vulnerability can be triggered even by price movements from legitimate swaps (not just by attackers).",
+            "expression": {
+              "var": "triggered_by_legitimate_swaps"
+            },
+            "evidence_ids": [
+              "e_be7fd2bc7865_0010"
+            ],
+            "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+            "source_ids": [
+              "automatic_trigger_by_legitimate_swaps"
+            ]
+          }
+        },
+        "formula_sources": {
+          "preconditions": {
+            "": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price"
+            ],
+            "args.1": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price"
+            ],
+            "args.1.args.1": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price"
+            ]
+          },
+          "safety": {
+            "": [
+              "noop_with_value_should_revert"
+            ],
+            "args.0": [
+              "noop_with_value_should_revert"
+            ]
+          },
+          "effects": {
+            "": [
+              "automatic_trigger_by_legitimate_swaps"
+            ]
+          }
+        },
+        "effect_coverage": [
+          {
+            "statement_id": "automatic_trigger_by_legitimate_swaps",
+            "status": "formalized",
+            "reason": "Program-generated exact coverage for selected direct impact."
+          }
+        ],
+        "assumptions": [
+          "sqrtRatio and sqrtRatioLimit are observable at swap evaluation time.",
+          "msg.value > 0 is represented by a grounded Boolean because the report states the condition qualitatively."
+        ],
+        "unresolved": []
+      }
+    ],
+    "limitations": [
+      "The impact is encoded as a potential Boolean trigger because the report provides no more specific observable for the legitimate-swap trigger.",
+      "The no-op equality sqrtRatio == sqrtRatioLimit is represented as a grounded Boolean since the report does not supply numeric operands."
+    ]
+  }
+}

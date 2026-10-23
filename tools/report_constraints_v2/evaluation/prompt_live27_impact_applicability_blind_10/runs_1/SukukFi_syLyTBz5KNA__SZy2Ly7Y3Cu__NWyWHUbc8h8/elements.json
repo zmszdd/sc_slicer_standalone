@@ -1,0 +1,276 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "WERC7575Vault.withdraw/redeem authorization via ShareToken self-allowance",
+    "environment": "WERC7575Vault and WERC7575ShareToken (ERC-7575 style vault with KYC-gated share token)",
+    "evidence": [
+      "`WERC7575Vault` allows any third party to withdraw funds from a user's account if the user has set a self-allowance on the ShareToken.",
+      "Since the `WERC7575ShareToken` forces users to set a self-allowance to perform basic transfers, this creates a vulnerability where enabling standard functionality inadvertently exposes all user funds to theft by any attacker, regardless of KYC status.",
+      "The `WERC7575ShareToken` implements a non-standard transfer mechanism where `transfer` and `transferFrom` both require the sender to have a self-allowance (allowance from `owner` to `owner`).",
+      "To use the token, users must sign a `permit` granting themselves an allowance.",
+      "However, the `WERC7575Vault.withdraw` function uses this same self-allowance as the *sole* authorization check for withdrawals, without verifying if the caller is the owner or an authorized operator.",
+      "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob.",
+      "Crucially, Bob **does not need to be KYC verified** to receive the underlying assets, as the vault transfers the asset directly without checking the ShareToken's KYC registry.",
+      "Any user who enables transfers (a core token functionality) immediately exposes their entire vault balance to theft by **any attacker**.",
+      "- **Passive Monitoring:** Attackers can monitor the blockchain for users with self-allowances and steal their funds at any time.",
+      "- **Mempool Front-Running (Most Severe):** When a user submits a `permit` transaction to set their self-allowance (required before any transfer), attackers monitoring the mempool can:",
+      "1. See the pending `permit` transaction that will set `allowance[user][user] = amount`",
+      "5. The attacker **immediately submits another** `withdraw()` transaction (or includes it in the same block)",
+      "- The window of vulnerability is **permanent** once self-allowance is set",
+      "- Users must set self-allowance for **every transfer**, creating repeated attack opportunities",
+      "If the `WERC7575Vault` is used as an \"Investment Vault\" (where the `ShareToken` contract itself holds shares), the `ShareToken` must maintain a self-allowance to manage these investments. This vulnerability allows **any attacker to drain the entire investment portfolio** of the protocol by calling `redeem` on the Investment Vault with `owner = ShareToken`. This bypasses all investment manager controls."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "Attacker (Bob)",
+      "role": "attacker",
+      "evidence": [
+        "`WERC7575Vault` allows any third party to withdraw funds from a user's account if the user has set a self-allowance on the ShareToken.",
+        "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob.",
+        "Any user who enables transfers (a core token functionality) immediately exposes their entire vault balance to theft by **any attacker**."
+      ]
+    },
+    {
+      "id": "victim_user",
+      "name": "User (Alice) with vault balance and self-allowance",
+      "role": "victim",
+      "evidence": [
+        "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob.",
+        "Any user who enables transfers (a core token functionality) immediately exposes their entire vault balance to theft by **any attacker**."
+      ]
+    },
+    {
+      "id": "share_token",
+      "name": "WERC7575ShareToken",
+      "role": "contract",
+      "evidence": [
+        "Since the `WERC7575ShareToken` forces users to set a self-allowance to perform basic transfers, this creates a vulnerability where enabling standard functionality inadvertently exposes all user funds to theft by any attacker, regardless of KYC status.",
+        "The `WERC7575ShareToken` implements a non-standard transfer mechanism where `transfer` and `transferFrom` both require the sender to have a self-allowance (allowance from `owner` to `owner`).",
+        "To use the token, users must sign a `permit` granting themselves an allowance."
+      ]
+    },
+    {
+      "id": "vault",
+      "name": "WERC7575Vault",
+      "role": "contract",
+      "evidence": [
+        "`WERC7575Vault` allows any third party to withdraw funds from a user's account if the user has set a self-allowance on the ShareToken.",
+        "However, the `WERC7575Vault.withdraw` function uses this same self-allowance as the *sole* authorization check for withdrawals, without verifying if the caller is the owner or an authorized operator.",
+        "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob."
+      ]
+    },
+    {
+      "id": "underlying_assets",
+      "name": "Underlying vault assets",
+      "role": "asset",
+      "evidence": [
+        "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob.",
+        "Crucially, Bob **does not need to be KYC verified** to receive the underlying assets, as the vault transfers the asset directly without checking the ShareToken's KYC registry."
+      ]
+    },
+    {
+      "id": "kyc_registry",
+      "name": "ShareToken KYC registry",
+      "role": "authority",
+      "evidence": [
+        "Crucially, Bob **does not need to be KYC verified** to receive the underlying assets, as the vault transfers the asset directly without checking the ShareToken's KYC registry."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "victim_holds_vault_balance",
+      "kind": "precondition",
+      "text": "The victim user holds a balance of shares in the WERC7575Vault.",
+      "modality": "asserted",
+      "entity_ids": [
+        "victim_user",
+        "vault"
+      ],
+      "evidence": [
+        "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob.",
+        "Any user who enables transfers (a core token functionality) immediately exposes their entire vault balance to theft by **any attacker**."
+      ]
+    },
+    {
+      "id": "victim_self_allowance_set",
+      "kind": "precondition",
+      "text": "The victim user has set a self-allowance allowance[user][user] on the ShareToken sufficient for the withdrawal.",
+      "modality": "asserted",
+      "entity_ids": [
+        "victim_user",
+        "share_token"
+      ],
+      "evidence": [
+        "To use the token, users must sign a `permit` granting themselves an allowance.",
+        "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob.",
+        "1. See the pending `permit` transaction that will set `allowance[user][user] = amount`"
+      ]
+    },
+    {
+      "id": "attacker_not_owner_or_operator",
+      "kind": "precondition",
+      "text": "The attacker is neither the owner of the shares nor an authorized operator of the victim.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "victim_user"
+      ],
+      "evidence": [
+        "However, the `WERC7575Vault.withdraw` function uses this same self-allowance as the *sole* authorization check for withdrawals, without verifying if the caller is the owner or an authorized operator.",
+        "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob."
+      ]
+    },
+    {
+      "id": "attacker_not_kyc_verified",
+      "kind": "precondition",
+      "text": "The attacker is not KYC verified in the ShareToken's KYC registry.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "kyc_registry"
+      ],
+      "evidence": [
+        "Crucially, Bob **does not need to be KYC verified** to receive the underlying assets, as the vault transfers the asset directly without checking the ShareToken's KYC registry."
+      ]
+    },
+    {
+      "id": "attacker_calls_withdraw",
+      "kind": "action",
+      "text": "The attacker calls WERC7575Vault.withdraw with receiver set to the attacker and owner set to the victim.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "vault",
+        "victim_user"
+      ],
+      "evidence": [
+        "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob."
+      ]
+    },
+    {
+      "id": "attacker_calls_redeem_investment_vault",
+      "kind": "action",
+      "text": "The attacker calls redeem on the Investment Vault with owner set to the ShareToken contract.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "vault",
+        "share_token"
+      ],
+      "evidence": [
+        "If the `WERC7575Vault` is used as an \"Investment Vault\" (where the `ShareToken` contract itself holds shares), the `ShareToken` must maintain a self-allowance to manage these investments. This vulnerability allows **any attacker to drain the entire investment portfolio** of the protocol by calling `redeem` on the Investment Vault with `owner = ShareToken`. This bypasses all investment manager controls."
+      ]
+    },
+    {
+      "id": "withdraw_uses_self_allowance_as_sole_check",
+      "kind": "root_cause",
+      "text": "WERC7575Vault.withdraw uses the owner-to-owner self-allowance as the sole authorization check and does not verify that msg.sender is the owner or an authorized operator.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "share_token"
+      ],
+      "evidence": [
+        "However, the `WERC7575Vault.withdraw` function uses this same self-allowance as the *sole* authorization check for withdrawals, without verifying if the caller is the owner or an authorized operator.",
+        "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob."
+      ]
+    },
+    {
+      "id": "intent_caller_authorization",
+      "kind": "security_intent",
+      "text": "A vault withdrawal or redemption against an owner's shares should only succeed when the caller is that owner or an authorized operator of that owner.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "victim_user",
+        "attacker"
+      ],
+      "evidence": [
+        "However, the `WERC7575Vault.withdraw` function uses this same self-allowance as the *sole* authorization check for withdrawals, without verifying if the caller is the owner or an authorized operator.",
+        "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob."
+      ]
+    },
+    {
+      "id": "intent_kyc_enforced_on_receiver",
+      "kind": "security_intent",
+      "text": "Receiving underlying assets from the vault should require the receiver to be KYC verified in the ShareToken's KYC registry.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "kyc_registry",
+        "attacker"
+      ],
+      "evidence": [
+        "Crucially, Bob **does not need to be KYC verified** to receive the underlying assets, as the vault transfers the asset directly without checking the ShareToken's KYC registry."
+      ]
+    },
+    {
+      "id": "intent_self_allowance_not_third_party_authorization",
+      "kind": "security_intent",
+      "text": "A user's self-allowance on the ShareToken should not by itself authorize a third party to withdraw or redeem that user's vault funds.",
+      "modality": "asserted",
+      "entity_ids": [
+        "share_token",
+        "victim_user",
+        "attacker"
+      ],
+      "evidence": [
+        "`WERC7575Vault` allows any third party to withdraw funds from a user's account if the user has set a self-allowance on the ShareToken.",
+        "Since the `WERC7575ShareToken` forces users to set a self-allowance to perform basic transfers, this creates a vulnerability where enabling standard functionality inadvertently exposes all user funds to theft by any attacker, regardless of KYC status.",
+        "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob."
+      ]
+    },
+    {
+      "id": "user_fund_theft",
+      "kind": "impact",
+      "text": "enabling standard functionality inadvertently exposes all user funds to theft by any attacker, regardless of KYC status",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "Since the `WERC7575ShareToken` forces users to set a self-allowance to perform basic transfers, this creates a vulnerability where enabling standard functionality inadvertently exposes all user funds to theft by any attacker, regardless of KYC status."
+      ]
+    },
+    {
+      "id": "unauthorized_withdrawal_to_attacker",
+      "kind": "impact",
+      "text": "Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob."
+      ]
+    },
+    {
+      "id": "kyc_bypass_receipt",
+      "kind": "impact",
+      "text": "Bob **does not need to be KYC verified** to receive the underlying assets",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "Crucially, Bob **does not need to be KYC verified** to receive the underlying assets, as the vault transfers the asset directly without checking the ShareToken's KYC registry."
+      ]
+    },
+    {
+      "id": "entire_vault_balance_exposed",
+      "kind": "impact",
+      "text": "Any user who enables transfers (a core token functionality) immediately exposes their entire vault balance to theft by **any attacker**",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "Any user who enables transfers (a core token functionality) immediately exposes their entire vault balance to theft by **any attacker**."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "attacker_calls_withdraw"
+  ],
+  "ambiguities": [
+    "Report does not state whether the attacker's withdraw call is observed in a real transaction or only as a described scenario.",
+    "The mempool front-running sequence includes an initial reverted withdraw; whether that reverted call is a required precondition or just narrative is unclear.",
+    "The Investment Vault redeem scenario is described conditionally ('If the WERC7575Vault is used as an Investment Vault') and is not established as an existing deployment state.",
+    "Heading 'User Fund Theft' (e_2061247c63f3_0010) restates the theft outcome already captured and adds no distinct harm."
+  ]
+}

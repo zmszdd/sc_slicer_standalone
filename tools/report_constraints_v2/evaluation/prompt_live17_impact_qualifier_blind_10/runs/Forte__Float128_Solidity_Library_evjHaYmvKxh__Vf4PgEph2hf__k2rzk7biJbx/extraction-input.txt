@@ -1,0 +1,28 @@
+Float128.sqrt(0) incorrectly uses stop() instead of returning 0, halting execution
+
+## Finding description and impact
+
+The `Float128.sqrt` function calculates the square root of a `packedFloat`. Mathematically, `sqrt(0)` should return `0`.
+
+The function includes an explicit check for the zero input case within its assembly block:
+
+
+Instead of returning the correct result `packedFloat.wrap(0)`, the code executes the `stop()` opcode when the input `a` is zero. The `stop()` opcode unconditionally stops execution of the code without returning a value or indicating an error through a revert. This is the only place in the library where the `stop()` opcode is used!
+
+**Existing Test (`testEncoded_sqrt_0`)**
+
+The protocol includes a test specifically for this case (`testEncoded_sqrt_0` in `FloatCommon.sol`).
+
+
+Trace output:
+
+
+This test calls `Float128.sqrt(0)`, and includes assertions intended to verify that the result is zero. However, because the `sqrt(0)` call executes the `stop()` opcode, the test function's execution halts immediately within that call. Consequently, the subsequent lines of code containing the `decode` call and the `assertEq` checks for the zero result are **never reached**.
+
+The test passes because `stop()` is considered a successful execution halt by the EVM and the Foundry test runner. This creates a misleading situation where the test appears to validate the correct behavior (`sqrt(0) == 0`, as indicated by the comment and assertions) while, in reality, it only confirms that `sqrt(0)` doesn't revert but fails to verify the return value due to the execution halt. The test comment `// sqrt of 0 = 0` correctly states the mathematical expectation, but the test itself doesn't actually ensure the code implements it.
+
+**Impact:**
+
+1. **Incorrect Behavior & Mathematical Violation:** The function fails to return the mathematically correct result (`0`) for the valid input `0`. While the existing test *intends* to check this, the `stop()` prevents the verification.
+2. **Abnormal Transaction Halt / Silent Failure:** Calling `Float128.sqrt(packedFloat.wrap(0))` causes the transaction to halt immediately and silently. Unlike `revert()`, `stop()` does not unwind state changes made earlier in the transaction and does not return error data. This masks the point of failure and can lead to inconsistent states. Off-chain services might misinterpret the transaction's outcome.
+3. **Denial of Service (DoS):** Any contract or protocol logic that relies on `Float128.sqrt` will halt if it encounters a zero input. If calculating `sqrt(0)` is a necessary step for a function to complete, this bug effectively creates a DoS condition for that functionality, impacting protocol availability. The misleading passing test further hides this potential DoS from developers relying on the test suite.

@@ -1,0 +1,36 @@
+Killed and Revived Gauges Retroactively Claim Rewards from Inactive Periods
+
+## Finding description and impact
+
+[GaugeManager.killGauge()](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeManager.sol#L408-L423) and [GaugeManager.reviveGauge()](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeManager.sol#L428-L433) functions fail to synchronize the gauge-specific `supplyIndex[_gauge]` with the global `index` accumulator. When a gauge is killed, its `supplyIndex` remains frozen at the pre-kill value. Upon revival, this stale checkpoint allows the gauge to retroactively claim all rewards that accrued during its inactive period through the [_updateForAfterDistribution()](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeManager.sol#L373-L395) calculation. 
+
+[Critical State Variables](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeManager.sol#L35-L40)
+Neither `killGauge()` nor `reviveGauge()` updates the per-gauge checkpoint that tracks reward distribution eligibility
+
+When a gauge is killed without updating `supplyIndex`, the gap between `supplyIndex[gauge]` and index continues to grow with each `notifyRewardAmount`. If the gauge is later revived, `_updateForAfterDistribution` will calculate a delta that includes all those epochs.
+
+Without resetting `supplyIndex` to the current `index`, a revived gauge inherits the stale checkpoint from before it was killed, making it eligible to claim rewards it never earned.
+
+The exploitation occurs in [_updateForAfterDistribution()](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GaugeManager.sol#L373-L395), which calculates rewards using the delta between current `index` and stale `supplyIndex[_gauge]`
+
+**The flaw**: The function calculates rewards based on the difference between current index and stored `supplyIndex`. For a revived gauge with a stale `supplyIndex`, this delta incorrectly spans epochs when the gauge was dead or shouldn't have been accruing.
+
+**Mathematical Proof of Exploit**
+
+**Given:**
+
+`index_initial` = index when gauge created
+`index_kill` = index when gauge killed
+`index_revive` = index when gauge revived
+`index_distribute` = index when distribution occurs
+`supplyIndex[gauge]` = never updated in kill/revive
+
+**Vulnerability Math:**
+
+**In the counterexample:**
+
+The gauge received rewards for 2 epochs that occurred before it was killed, which it should never be able to claim after revival.
+
+_Worst-Case Scenario:_
+
+If `index` has grown significantly and `_supplied` (weight) is large, the stolen amount can be substantial.

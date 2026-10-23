@@ -1,0 +1,39 @@
+Comparison functions fail on unnormalized inputs, enabling logic exploits
+
+## Finding description and impact
+
+The library's comparison functions (`eq`, `lt`, etc.) incorrectly operate on the raw bit or representation of `packedFloat` inputs, rather than their mathematical value. For example this is the eq() function that does not check if inputs are normalized or not.
+
+
+Because the type system allows creating `packedFloat` values that are not normalized (e.g., representing `1e7` as `100e5`), comparisons between mathematically equal but differently represented numbers fail. This violates fundamental mathematical expectations and enables critical logic failures in dependent contracts.
+
+The core issue is that `packedFloat` is an alias for `uint256` (is it defined as `type packedFloat is uint256`), allowing `packedFloat.wrap(any_uint256)`. While the library *intends* usage via `toPackedFloat` which normalizes, it **doesn't enforce** this. The comparison functions skip normalization for gas efficiency but consequently compare internal exponents/mantissas directly. If two inputs, `A` and `B`, represent the same number (e.g., `A = 100e5`, `B = 1e7`) but differ in representation, the comparison yields mathematically wrong results based on the differing raw exponent/mantissa bits.
+
+**IMPACT / HACKER SCENARIO:**
+
+Let's assume a lending protocol liquidates a user's position when their collateral value drops below a required threshold. This vulnerability allows an attacker to trigger wrong liquidations by manipulating the representation of the collateral value, even when its mathematical value is above the threshold.
+
+**Example setup:**
+
+- **Protocol Check:** `if (Float128.lt(pfCollateral, pfThreshold)) { liquidate(); }`
+- **Liquidation Threshold:** `10`
+- **Actual Collateral Value:** `1000` (`1000 > 10`, so no liquidation should occur).
+
+**Representations:**
+
+1. **`pfThreshold` (Value = 10):** Stored normalized value by the protocol. Mantissa: `1e37` | Exponent: `-36`
+  
+2. **`pfCollateral` (Value = 1000):** Attacker influences an oracle to provide `1000` in a specific non-normalized format, which the protocol wraps directly. Mantissa: `1e40` | Exponent: `-37`
+  
+
+
+**Exploitation:**
+
+1. The protocol performs the check: `Float128.lt(pfCollateral, pfThreshold)`.
+2. The `lt` function compares the representations:
+  - Signs match (both positive).
+  - It compares the raw exponents: `pfCollateral`'s (`-37`) vs `pfThreshold`'s (`-36`).
+3. Since `-37 < -36`, the `lt` function incorrectly returns `true`.
+4. **Outcome:** Liquidation is **wrongfully triggered** even though the collateral's mathematical value (`1000`) was much greater than the threshold (`10`). The attacker exploited the comparison function by providing an unnormalized representation with a misleadingly low raw exponent.
+
+Basically the issue is unnormalized inputs are permited by library, and the lack of validation/normalization in the comparison functions is a functional vulnerability with significant potential impact.

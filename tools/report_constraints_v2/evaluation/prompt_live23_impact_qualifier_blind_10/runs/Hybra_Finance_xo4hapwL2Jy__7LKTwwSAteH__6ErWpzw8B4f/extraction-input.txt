@@ -1,0 +1,26 @@
+Lost `CLPool` rewards when `stakedLiquidity == 0`
+
+## Finding Summary
+
+When the CL pool’s rewards are updated during periods with zero staked liquidity, the contract consumes time and reduces reserves into a `rollover` bucket, but later `syncReward()` deletes `rollover`. The consequence is rewards streamed in such empty windows are lost.
+
+
+In `_updateRewardsGrowthGlobal()` , when `timeDelta != 0` and `rewardReserve > 0`, it calculates rewards: `reward = rewardRate * timeDelta` and deducts them from the `rewardReserve`
+
+When stakedLiquidity == 0, it adds the reward to rollover.
+It always updates `lastUpdated = timestamp` regardless of whether there's `stakedLiquidity`
+
+
+In `syncReward()`, rollover is deleted after setting new reward parameters.
+
+So the rewards streamed during periods with zero staked liquidity get tracked in rollover, but `syncReward()` deletes this rollover, causing those rewards to be lost forever.
+
+
+
+## Impact
+
+Loss of matured yield: Users cannot claim rewards corresponding to empty windows.
+
+This also violates two invariants:
+[G-2] Balance Conservation: "On-chain balances must always be greater than or equal to the sum of all accrued/claimable balances (rewards, bribes, fees)"
+[R-2] Monotone Accrual: rewards should accrue monotonically - as here they disappear

@@ -1,0 +1,202 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "2061247c63f345db07440f94763b3f9605d6dd1917577f43ae2b7d3a045815dd",
+  "fragments": [
+    {
+      "id": "e_2061247c63f3_0001",
+      "text": "`WERC7575Vault` allows any third party to withdraw funds from a user's account if the user has set a self-allowance on the ShareToken.",
+      "start": 0,
+      "end": 134,
+      "line": 1
+    },
+    {
+      "id": "e_2061247c63f3_0002",
+      "text": "## Finding description and impact",
+      "start": 136,
+      "end": 169,
+      "line": 3
+    },
+    {
+      "id": "e_2061247c63f3_0003",
+      "text": "Since the `WERC7575ShareToken` forces users to set a self-allowance to perform basic transfers, this creates a vulnerability where enabling standard functionality inadvertently exposes all user funds to theft by any attacker, regardless of KYC status.",
+      "start": 172,
+      "end": 423,
+      "line": 5
+    },
+    {
+      "id": "e_2061247c63f3_0004",
+      "text": "The `WERC7575ShareToken` implements a non-standard transfer mechanism where `transfer` and `transferFrom` both require the sender to have a self-allowance (allowance from `owner` to `owner`).",
+      "start": 424,
+      "end": 615,
+      "line": 6
+    },
+    {
+      "id": "e_2061247c63f3_0005",
+      "text": "To use the token, users must sign a `permit` granting themselves an allowance.",
+      "start": 618,
+      "end": 696,
+      "line": 9
+    },
+    {
+      "id": "e_2061247c63f3_0006",
+      "text": "However, the `WERC7575Vault.withdraw` function uses this same self-allowance as the *sole* authorization check for withdrawals, without verifying if the caller is the owner or an authorized operator.",
+      "start": 698,
+      "end": 897,
+      "line": 11
+    },
+    {
+      "id": "e_2061247c63f3_0007",
+      "text": "Because `withdraw` does not check `msg.sender`, **anyone** can call it. If Alice has set a self-allowance (to transfer shares), Bob can call `withdraw(..., receiver=Bob, owner=Alice)`. The vault sees that `allowance[Alice][Alice]` is sufficient, burns Alice's shares, and sends the assets to Bob.",
+      "start": 900,
+      "end": 1196,
+      "line": 14
+    },
+    {
+      "id": "e_2061247c63f3_0008",
+      "text": "Crucially, Bob **does not need to be KYC verified** to receive the underlying assets, as the vault transfers the asset directly without checking the ShareToken's KYC registry.",
+      "start": 1198,
+      "end": 1373,
+      "line": 16
+    },
+    {
+      "id": "e_2061247c63f3_0009",
+      "text": "## Impact",
+      "start": 1375,
+      "end": 1384,
+      "line": 18
+    },
+    {
+      "id": "e_2061247c63f3_0010",
+      "text": "### 1. User Fund Theft",
+      "start": 1386,
+      "end": 1408,
+      "line": 19
+    },
+    {
+      "id": "e_2061247c63f3_0011",
+      "text": "Any user who enables transfers (a core token functionality) immediately exposes their entire vault balance to theft by **any attacker**.",
+      "start": 1409,
+      "end": 1545,
+      "line": 20
+    },
+    {
+      "id": "e_2061247c63f3_0012",
+      "text": "**Attack Vectors:**",
+      "start": 1547,
+      "end": 1566,
+      "line": 22
+    },
+    {
+      "id": "e_2061247c63f3_0013",
+      "text": "- **Passive Monitoring:** Attackers can monitor the blockchain for users with self-allowances and steal their funds at any time.",
+      "start": 1567,
+      "end": 1695,
+      "line": 23
+    },
+    {
+      "id": "e_2061247c63f3_0014",
+      "text": "- **Mempool Front-Running (Most Severe):** When a user submits a `permit` transaction to set their self-allowance (required before any transfer), attackers monitoring the mempool can:",
+      "start": 1696,
+      "end": 1879,
+      "line": 24
+    },
+    {
+      "id": "e_2061247c63f3_0015",
+      "text": "1. See the pending `permit` transaction that will set `allowance[user][user] = amount`",
+      "start": 1882,
+      "end": 1968,
+      "line": 25
+    },
+    {
+      "id": "e_2061247c63f3_0016",
+      "text": "2. Submit a `withdraw()` transaction with higher gas to front-run",
+      "start": 1971,
+      "end": 2036,
+      "line": 26
+    },
+    {
+      "id": "e_2061247c63f3_0017",
+      "text": "3. The attacker's `withdraw()` gets mined first, but **reverts** because the self-allowance isn't set yet",
+      "start": 2039,
+      "end": 2144,
+      "line": 27
+    },
+    {
+      "id": "e_2061247c63f3_0018",
+      "text": "4. The user's `permit` transaction then executes, setting the self-allowance",
+      "start": 2147,
+      "end": 2223,
+      "line": 28
+    },
+    {
+      "id": "e_2061247c63f3_0019",
+      "text": "5. The attacker **immediately submits another** `withdraw()` transaction (or includes it in the same block)",
+      "start": 2226,
+      "end": 2333,
+      "line": 29
+    },
+    {
+      "id": "e_2061247c63f3_0020",
+      "text": "6. User's funds are stolen **before they can even execute their intended transfer**",
+      "start": 2336,
+      "end": 2419,
+      "line": 30
+    },
+    {
+      "id": "e_2061247c63f3_0021",
+      "text": "**Why This is Devastating:**",
+      "start": 2421,
+      "end": 2449,
+      "line": 32
+    },
+    {
+      "id": "e_2061247c63f3_0022",
+      "text": "- Users **cannot safely use the token** even with proper understanding of the system",
+      "start": 2450,
+      "end": 2534,
+      "line": 33
+    },
+    {
+      "id": "e_2061247c63f3_0023",
+      "text": "- The window of vulnerability is **permanent** once self-allowance is set",
+      "start": 2535,
+      "end": 2608,
+      "line": 34
+    },
+    {
+      "id": "e_2061247c63f3_0024",
+      "text": "- Users must set self-allowance for **every transfer**, creating repeated attack opportunities",
+      "start": 2609,
+      "end": 2703,
+      "line": 35
+    },
+    {
+      "id": "e_2061247c63f3_0025",
+      "text": "- Even sophisticated users cannot defend against mempool monitoring",
+      "start": 2704,
+      "end": 2771,
+      "line": 36
+    },
+    {
+      "id": "e_2061247c63f3_0026",
+      "text": "### 2. Protocol Treasury Theft (Investment Layer)",
+      "start": 2773,
+      "end": 2822,
+      "line": 38
+    },
+    {
+      "id": "e_2061247c63f3_0027",
+      "text": "If the `WERC7575Vault` is used as an \"Investment Vault\" (where the `ShareToken` contract itself holds shares), the `ShareToken` must maintain a self-allowance to manage these investments. This vulnerability allows **any attacker to drain the entire investment portfolio** of the protocol by calling `redeem` on the Investment Vault with `owner = ShareToken`. This bypasses all investment manager controls.",
+      "start": 2823,
+      "end": 3228,
+      "line": 39
+    },
+    {
+      "id": "e_2061247c63f3_0028",
+      "text": "**Attack Scenario:**",
+      "start": 3230,
+      "end": 3250,
+      "line": 41
+    }
+  ]
+}

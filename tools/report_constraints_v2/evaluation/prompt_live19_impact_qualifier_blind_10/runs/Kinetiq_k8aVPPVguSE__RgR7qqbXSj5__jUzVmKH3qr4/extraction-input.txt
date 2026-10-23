@@ -1,0 +1,26 @@
+Attacker can steal users' rewards by front-running oracle rewards transaction
+
+## Vulnerability Details
+
+The current distribution of rewards does not consider the staking duration. This allows a malicious user to simply call [StakingManager.stake()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L242) right before the rewards are increased through [OracleManager.generatePerformance()](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/OracleManager.sol#L274). Once the rewards are increased, nothing prevents the malicious user to withdraw the funds with yield. 
+
+Take a look on how the [current exchange ratio](https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingAccountant.sol#L216-L219) is calculated when queueing a withdrawal:
+
+Even though there are some mechanisms in place that "delay" the withdraw, this do not prevent the attack to happen. For instance: 
+
+- To confirm a withdrawal, the user must wait the withdrawal delay which currently is 7 days. 
+- `MANAGER_ROLE` can call `cancelWithdrawal` **but this does not change the fact that the malicious user deposited with a lower rate** than the current exchange rate. 
+- The max staking amount per user can be bypassed by making minimal deposits from several accounts. I.e: smart contract A delegate smart contract B ~ Z the task to make the deposit. 
+
+Basically a malicious user can: 
+- Deposit HYPE right before rewards are increased.
+- Once the rewards are increased, the malicious user can queue withdrawal
+- Execute the withdraw process(queue, wait for the delay and confirm withdrawal)
+- Profit. Attacker stole the rewards from the users's staking.
+
+Notice that is not necessary to be a "sandwich" transaction, even if the attacker queues the withdrawal 1 hour later, he is already benefiting from the new ratio caused by the rewards.
+## Impact
+
+- Malicious user that do not have funds in the protocol, can steal protocol rewards by making a deposit right before rewards are increased.
+- User rewards are stolen permanently. 
+- Protocol yield is lost and users with committed stakes will not receive their yield.

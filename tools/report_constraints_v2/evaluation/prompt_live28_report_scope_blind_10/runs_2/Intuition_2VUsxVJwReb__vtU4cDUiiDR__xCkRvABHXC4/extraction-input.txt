@@ -1,0 +1,40 @@
+ProgressiveCurve previewWithdraw Always Reverts with Underflow on Full Withdrawal
+
+## Finding description and impact
+
+
+##Description
+
+
+In ProgressiveCurve.sol, an arithmetic underflow guarantees that users can never withdraw their entire deposit.
+
+
+When converting from shares to assets during a generic withdrawal, the _convertToAssets calculation explicitly rounds down the asset representation of the area under the curve to protect the system. However, the requirement to pass the MultiVault's full-balance checkout leads the system to calculate the necessary reduction in shares via previewWithdraw.
+
+
+
+Due to the fundamental math of ProgressiveCurve:
+
+
+Minting shares (deposit) correctly rounds down: shares = ⌊√(2 × assets)⌋
+
+At full withdrawal, previewWithdraw calculates inner = ⌈assets * SLOPE / 1e18⌉.
+
+It then squares the total shares to find the outer bound squaredShares = square(totalShares).
+
+It finally subtracts shares = squaredShares - inner.
+
+Because square(shares) is strictly less than 2 × assets for any non-perfect square, this implies squaredShares < inner. When attempting to withdraw 100% of the assets in an isolated state, squaredShares - inner produces an unavoidable PANIC(0x11) arithmetic underflow.
+
+
+
+
+##Impact
+
+No user can ever fully withdraw their deposited assets from any ProgressiveCurve market. Whenever a user requests a full withdrawal of their maxAssets, the preview calculation hard reverts, permanently trapping dust and preventing position liquidations.
+
+
+
+## Recommended mitigation steps
+
+Update the share subtraction methodology explicitly. If squaredShares < inner, default to transferring totalShares rather than reverting or strictly enforce a non-100% ceiling on withdrawals.

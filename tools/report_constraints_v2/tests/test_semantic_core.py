@@ -86,6 +86,16 @@ class SemanticTests(unittest.TestCase):
         self.assertFalse(result['execution_ready'])
         self.assertEqual(result['claims'][0]['semantic_relationship']['queries']['P_and_V_and_not_I'], 'sat')
 
+    def test_empty_formalization_cannot_pass_candidate_checks(self):
+        elements, formal = inputs()
+        formal['symbols'] = {}
+        formal['claims'] = []
+        result = s.compile_bundle(elements, formal, TEXT, strict_piv=True,
+                                  verdict_v2=True, require_complete_piv=True)
+        self.assertEqual(result['core_formalization_status'], 'partial')
+        self.assertEqual(result['acceptance_status'], 'needs_review')
+        self.assertFalse(result['piv_completeness_gate']['claims_present'])
+
     def test_inverted_safety_gated_automatically(self):
         elements, formal = inputs()
         claim = formal['claims'][0]
@@ -138,13 +148,15 @@ class SemanticTests(unittest.TestCase):
             report = Path(work) / 'report.json'
             report.write_text(json.dumps({
                 'title': 'Report title',
-                'body': '## Finding description and impact\nLOSS\n## Mitigation\nSECRET_FIX',
+                'body': ('## Finding description and impact\nLOSS\n## Mitigation\n'
+                         'The expected safety behavior is to preserve the minimum buffer.'),
                 'proof_of_concept': 'SECRET_POC',
                 'raw': 'SECRET_RAW',
             }))
             text, _, provenance = p.load_report(report_path=report)
-            self.assertEqual(text, 'Report title\n\n## Finding description and impact\nLOSS')
-            self.assertNotIn('SECRET_', text)
+            self.assertIn('Report title\n\n## Finding description and impact\nLOSS', text)
+            self.assertIn('preserve the minimum buffer', text)
+            self.assertNotIn('SECRET_POC', text)
             self.assertEqual(provenance['report_input_policy']['source_format'], 'report.json')
             self.assertFalse(provenance['contract_file_read'])
 

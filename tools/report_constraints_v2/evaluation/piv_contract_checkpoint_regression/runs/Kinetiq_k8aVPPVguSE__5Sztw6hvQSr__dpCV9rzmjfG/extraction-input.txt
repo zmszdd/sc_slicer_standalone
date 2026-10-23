@@ -1,0 +1,40 @@
+L1 queue poison: Permanent fund loss via tiny withdrawal attacks
+
+## Summary
+- `StakingManager's` L1 operations queue contains no recovery mechanism. When an L1 bridge fails, subsequent operations become irreversibly locked, permanently blocking user funds. Any normal user can exploit this with minimal cost `10 gwei`, causing `ALL` users with pending withdrawals to `permanently` lose their funds. 
+
+- This attack requires minimal investment (just 10 gwei), affects all users, and cannot be resolved without contract upgrade or admin queue reset, which causes permanent fund loss.
+
+## Vulnerability Details
+
+**Root Cause:**
+- When transactions in [_processL1Withdrawals()](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L673) or [_processL1Deposits()](https://github.com/code-423n4/2025-04-kinetiq/blob/main/src/StakingManager.sol#L721) fail, the contract cannot skip failed operations, reset the queue selectively, retry operations, or override failures.
+
+**Any normal user can exploit this purposely or without no intent**:
+- Staking the minimum allowed amount (10 gwei) => Queuing a withdrawal that creates a tiny L1 operation (1 in 8 decimals) => Permanently blocking all subsequent operations when the bridge rejects the tiny amount
+- Even without a user doing this maliciously, normal operations with tiny amounts cause identical devastating failures. Worsening this issue. 
+
+**Fund loss happens because**: 
+- When users queue withdrawals, their kHYPE tokens are immediately burned => When the L1 queue gets blocked, the admin's only option is to reset the entire queue => After reset, all pending operations are deleted with no record of them => Users' `ETH` remains trapped in the contract with no standard recovery mechanism => ALL users who had pending withdrawals in the queue `PERMANENTLY LOSE THEIR FUNDS`
+
+### Code Snippet
+
+When a call to `l1Write.sendTokenDelegate()` fails, the operation reverts and the processing index remains unchanged. Since operations process sequentially, all subsequent operations become permanently stuck.
+
+## Attack (Verified by included POC)
+1. A normal user stakes the minimum amount (10 gwei) and receives kHYPE tokens
+2. User queues a withdrawal, creating a tiny L1 operation (1 in 8 decimals)
+3. L1 bridge rejects the tiny amount (realistic behavior in production bridges)
+4. All subsequent operations are blocked, affecting all users
+5. When admins reset the queue, ALL pending user withdrawal requests lose their funds permanently
+6. There is no built-in mechanism to recover these lost funds
+
+## Impact
+This vulnerability:
+1. Causes PERMANENT LOSS OF USER FUNDS when the queue is reset
+2. Can be exploited by any normal user with just 10 gwei
+3. Affects ALL users with pending withdrawals
+4. Forces admins to choose between a permanently blocked queue or resetting and losing user funds
+5. Has no built-in recovery mechanism without contract upgrade
+
+Severity: HIGH - causes permanent fund loss with minimal cost to attacker, affects multiple users, and provides no recovery mechanism.

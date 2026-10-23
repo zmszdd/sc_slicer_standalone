@@ -1,0 +1,37 @@
+Reentrancy in `withdraw` allows erasing debt via `updateDebt` inside the same lock, enabling free token withdrawal
+
+##  **Summary**
+
+`FlashAccountant` relies on lock‑scoped debt accounting and expects that any debt added inside a lock must be fully settled before the lock closes.  
+However, a malicious ERC20 token can **re-enter during `withdraw()`** and call:
+
+
+inside **the same lock ID**, effectively erasing the debt added by `withdraw`.
+
+The lock finishes successfully (no `DebtsNotZeroed` revert) while the accountant **has already transferred tokens to the attacker**.
+
+This results in **free withdrawal of funds**.
+
+---
+
+##  **Root Cause**
+
+1. `withdraw()` adds debt:
+2. Then attempts:
+3. A malicious token can re-enter in `transfer()` and execute:
+4. `updateDebt`:
+   - lacks caller authorization  
+   - applies deltas to **the current lock**  
+   - allows **negative deltas**
+
+5. Debt becomes zero.  
+6. Lock closes with no detection.  
+7. Attacker keeps the tokens.
+
+**Scope Consideration (IMPORTANT)**
+
+Ekubo is a **permissionless AMM**:
+
+- Any ERC20 token can be listed.
+- The contracts **do not whitelist tokens**.
+- Arbitrary token behavior is allowed unless explicitly excluded in `scope.txt`.

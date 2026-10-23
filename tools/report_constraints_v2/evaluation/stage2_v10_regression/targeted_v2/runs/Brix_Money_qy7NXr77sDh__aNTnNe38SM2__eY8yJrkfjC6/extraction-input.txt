@@ -1,0 +1,67 @@
+Hardcoded Zero Slippage in wiTryVaultComposer Causes DoS Due to LayerZero Dust Removal
+
+Summary
+
+I found that wiTryVaultComposer sets minAmountLD equal to assets (amount sent) in both _fastRedeem() and _handleUnstake() functions. This configuration fails to account for LayerZero's mandatory dust removal mechanism, which truncates amounts to fit cross-chain decimal precision.
+
+Since iTryTokenOFT inherits the default sharedDecimals of 6, any transfer amount not perfectly divisible by 10^12 will fail with SlippageExceeded. This results in a Denial of Service (DoS) for users attempting to redeem or unstake uneven amounts (which is extremely common due to yield accrual).
+
+This exact issue was previously identified and fixed in LayerZero's OVault audit by Cantina, where it was rated as Medium severity.
+
+Vulnerability Details
+Looking at wiTryVaultComposer.sol, slippage is hardcoded to zero in two critical functions:
+
+1. _fastRedeem (Lines 116-117)
+
+Solidity
+
+_sendParam.amountLD = assets;
+_sendParam.minAmountLD = assets; // <--- Vulnerability: 0% slippage
+2. _handleUnstake (Lines 267-268)
+
+Solidity
+
+amountLD: assets,
+minAmountLD: assets, // <--- Vulnerability: 0% slippage
+The Root Cause: LayerZero Dust Removal
+The LayerZero OFT standard forces dust removal before checking slippage. According to OFTCore.sol:
+
+Solidity
+
+function _debitView(uint256 _amountLD, uint256 _minAmountLD, uint32) 
+    internal view virtual returns (uint256 amountSentLD, uint256 amountReceivedLD) 
+{
+    // @dev Remove the dust so nothing is lost on the conversion between chains
+    amountSentLD = _removeDust(_amountLD);
+    amountReceivedLD = amountSentLD;
+
+    // @dev Check for slippage.
+    if (amountReceivedLD < _minAmountLD) {
+        revert SlippageExceeded(amountReceivedLD, _minAmountLD); // <--- Reverts here
+    }
+}
+Since iTryTokenOFT.sol uses the default shared decimals of 6 and local decimals of 18, the conversion rate is 10^12.
+
+Example: A user redeems 100.000000000000000001 tokens (1 wei of dust from yield).
+
+Dust Removal: 100.0...01 becomes 100.0...00.
+
+Check: 100.0...00 (received) < 100.0...01 (minAmount).
+
+Result: Transaction Reverts.
+
+Impact
+
+Denial of Service: Users cannot use Fast Redeem or Unstake features if their balance includes any dust (which is almost guaranteed due to yield calculations).
+
+Wasted Assets: Users pay for source chain execution and LayerZero messaging fees, only for the transaction to revert on the destination chain.
+
+No Workaround: Since the slippage is hardcoded in the contract, users cannot manually adjust it to make their transactions succeed.
+
+Prior Art
+
+This is a known integration issue with LayerZero V2. Cantina identified this exact bug in LayerZero's own OVault implementation:
+
+"Different slippage checks can lead to stuck funds - executeOVaultAction() has a minAmount check, but LayerZeroEndpoint::send() has a slightly different minAmount check in _debitView(). With specific amounts, it could pass the first check but fail the second."
+
+Source: Cantina Audit - LayerZero OVault

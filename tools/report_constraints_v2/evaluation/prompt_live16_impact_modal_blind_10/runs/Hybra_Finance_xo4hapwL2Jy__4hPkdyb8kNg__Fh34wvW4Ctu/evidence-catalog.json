@@ -1,0 +1,139 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "2d17492f12376da3188e966be660854e2cb48f38b91c122bf387d5dc81583c62",
+  "fragments": [
+    {
+      "id": "e_2d17492f1237_0001",
+      "text": "Complete Fund Freeze via Low-Cost Array Griefing Attack",
+      "start": 0,
+      "end": 55,
+      "line": 1
+    },
+    {
+      "id": "e_2d17492f1237_0002",
+      "text": "## Overview",
+      "start": 57,
+      "end": 68,
+      "line": 3
+    },
+    {
+      "id": "e_2d17492f1237_0003",
+      "text": "The `GrowthHYBR.deposit()` function allows any address to deposit tokens on behalf of any recipient, creating an unbounded array of lock entries in `userLocks[recipient]`. An attacker can exploit this by making thousands of 1-wei deposits for a victim, causing the victim's token transfers to trigger expensive array cleanup operations in `_cleanExpired()` that exceed Hyperliquid's 30M gas block limit ([source](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/dual-block-architecture)), effectively freezing the victim's tokens at minimal cost to the attacker.",
+      "start": 70,
+      "end": 655,
+      "line": 5
+    },
+    {
+      "id": "e_2d17492f1237_0004",
+      "text": "## Vulnerability Description",
+      "start": 657,
+      "end": 685,
+      "line": 7
+    },
+    {
+      "id": "e_2d17492f1237_0005",
+      "text": "The GrowthHYBR contract (in GovernanceHYBR.sol) implements time-locked tokens where deposits create lock entries expiring after 24 hours. The vulnerability combines unrestricted third-party deposits with unbounded array growth, causing expensive cleanup operations during transfers.",
+      "start": 687,
+      "end": 969,
+      "line": 9
+    },
+    {
+      "id": "e_2d17492f1237_0006",
+      "text": "Line 126 of `deposit()` allows anyone to deposit for any recipient without access control:",
+      "start": 971,
+      "end": 1061,
+      "line": 11
+    },
+    {
+      "id": "e_2d17492f1237_0007",
+      "text": "Each deposit appends to `userLocks[recipient]` with no minimum amount requirement (line 271), enabling attackers to create thousands of 1-wei locks. The DoS occurs during token transfers when `_beforeTokenTransfer()` calls `_cleanExpired()` to remove expired locks:",
+      "start": 1064,
+      "end": 1329,
+      "line": 14
+    },
+    {
+      "id": "e_2d17492f1237_0008",
+      "text": "The `_cleanExpired()` function (lines 303-326) iterates through the ENTIRE `userLocks` array to compact it, reading all storage slots, writing to reorder non-expired entries, and popping expired entries:",
+      "start": 1332,
+      "end": 1535,
+      "line": 17
+    },
+    {
+      "id": "e_2d17492f1237_0009",
+      "text": "With 4,000+ locks, this cleanup consumes 30-40M gas (reading 4,000 slots + array compaction + storage deletions), exceeding Hyperliquid's 30M gas slow block limit ([source](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/dual-block-architecture)) and reverting all transfer attempts. An attacker spends 4,000 wei HYBR (~$0.000000001) plus ~$100 gas to freeze millions in victim assets.",
+      "start": 1538,
+      "end": 1947,
+      "line": 20
+    },
+    {
+      "id": "e_2d17492f1237_0010",
+      "text": "## Code Location",
+      "start": 1949,
+      "end": 1965,
+      "line": 22
+    },
+    {
+      "id": "e_2d17492f1237_0011",
+      "text": "**GovernanceHYBR.sol (GrowthHYBR contract)**",
+      "start": 1967,
+      "end": 2011,
+      "line": 24
+    },
+    {
+      "id": "e_2d17492f1237_0012",
+      "text": "- [`deposit()` function (L124-L153)](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GovernanceHYBR.sol#L124-L153) - Allows unrestricted third-party deposits",
+      "start": 2012,
+      "end": 2234,
+      "line": 25
+    },
+    {
+      "id": "e_2d17492f1237_0013",
+      "text": "- [`_addTransferLock()` function (L269-L276)](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GovernanceHYBR.sol#L269-L276) - Unbounded array append",
+      "start": 2235,
+      "end": 2448,
+      "line": 26
+    },
+    {
+      "id": "e_2d17492f1237_0014",
+      "text": "- [`_cleanExpired()` function (L303-L326)](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GovernanceHYBR.sol#L303-L326) - Gas-intensive full array iteration",
+      "start": 2449,
+      "end": 2671,
+      "line": 27
+    },
+    {
+      "id": "e_2d17492f1237_0015",
+      "text": "- [`_beforeTokenTransfer()` hook (L332-L357)](https://github.com/code-423n4/2025-10-hybra-finance/blob/66c42f3c9754f1b38942c69ebc0d3e4c0f8fdeb2/ve33/contracts/GovernanceHYBR.sol#L332-L357) - Triggers cleanup on transfers",
+      "start": 2672,
+      "end": 2892,
+      "line": 28
+    },
+    {
+      "id": "e_2d17492f1237_0016",
+      "text": "## Impact",
+      "start": 2894,
+      "end": 2903,
+      "line": 30
+    },
+    {
+      "id": "e_2d17492f1237_0017",
+      "text": "This vulnerability enables griefing where an attacker spending ~$100 can freeze millions in victim assets. The attack causes complete DoS on token transfers and withdrawals via 30-40M gas cleanup that exceeds Hyperliquid's 30M gas slow block limit ([source](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/dual-block-architecture)).",
+      "start": 2905,
+      "end": 3261,
+      "line": 32
+    },
+    {
+      "id": "e_2d17492f1237_0018",
+      "text": "The attack sustains indefinitely—while individual locks expire after 24 hours, attackers continuously deposit new locks before expiry, maintaining permanent DoS for ~$100/day. Victims cannot transfer, withdraw, or rebalance positions during market volatility, creating direct financial losses.",
+      "start": 3263,
+      "end": 3556,
+      "line": 34
+    },
+    {
+      "id": "e_2d17492f1237_0019",
+      "text": "Any user holding gHYBR tokens can be targeted. DeFi integrations (pools, lending, vaults) face particularly severe risk since smart contracts cannot manually clean up or migrate to new addresses, enabling permanent griefing.",
+      "start": 3558,
+      "end": 3782,
+      "line": 36
+    }
+  ]
+}

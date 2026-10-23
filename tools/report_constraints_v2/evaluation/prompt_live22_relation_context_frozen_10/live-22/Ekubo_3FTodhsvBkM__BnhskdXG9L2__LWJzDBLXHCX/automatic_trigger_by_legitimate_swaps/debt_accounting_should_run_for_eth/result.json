@@ -1,0 +1,488 @@
+{
+  "case_id": "Ekubo_3FTodhsvBkM__BnhskdXG9L2__LWJzDBLXHCX",
+  "impact_id": "automatic_trigger_by_legitimate_swaps",
+  "intent_id": "debt_accounting_should_run_for_eth",
+  "precondition_ids": [
+    "pool_initialized_with_liquidity",
+    "victim_sets_sqrt_ratio_limit_near_price"
+  ],
+  "prompt_version": "semantic-live-22",
+  "relation_context_statement_count": 3,
+  "generated": true,
+  "fidelity_passed": false,
+  "fidelity_status": "needs_review",
+  "audit": {
+    "schema_version": "semantic-faithfulness-audit/3",
+    "status": "completed",
+    "verdict_consistent": false,
+    "fidelity_status": "needs_review",
+    "checks": [
+      {
+        "source_id": "pool_initialized_with_liquidity",
+        "role": "P",
+        "verdict": "consistent",
+        "reason": "The predicate asserts the pool is initialized at tick 0 with liquidity, matching the statement."
+      },
+      {
+        "source_id": "victim_sets_sqrt_ratio_limit_near_price",
+        "role": "P",
+        "verdict": "consistent",
+        "reason": "The predicate captures both the swap submission with near-price sqrtRatioLimit and msg.value of 10 ether."
+      },
+      {
+        "source_id": "debt_accounting_should_run_for_eth",
+        "role": "I",
+        "verdict": "consistent",
+        "reason": "The implication msg_value_ether > 0 implies debt_accounting_performed matches the required debt accounting for sent ETH."
+      },
+      {
+        "source_id": "automatic_trigger_by_legitimate_swaps",
+        "role": "V",
+        "verdict": "consistent",
+        "reason": "The predicate directly encodes that the vulnerability is triggered by legitimate swaps."
+      }
+    ],
+    "piv_relation": {
+      "verdict": "weakened",
+      "reason": "The excerpts show attacker front-running to the victim's sqrtRatioLimit and the skipped debt accounting, but do not explicitly establish that legitimate swaps alone trigger the vulnerability."
+    },
+    "relation_context": [
+      {
+        "statement_id": "attacker_moves_price_to_limit",
+        "role": "action",
+        "evidence": [
+          {
+            "evidence_id": "e_be7fd2bc7865_0023",
+            "text": "3. Attacker front-runs the victim's transaction and moves the price down to exactly the victim's `sqrtRatioLimit`."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0009",
+            "text": "3. **Exploitable by Attackers**: Attackers can front-run victim transactions to manipulate the pool price to exactly match the victim's `sqrtRatioLimit`, guaranteeing the exploit succeeds."
+          }
+        ]
+      },
+      {
+        "statement_id": "victim_swap_executes_sending_eth",
+        "role": "action",
+        "evidence": [
+          {
+            "evidence_id": "e_be7fd2bc7865_0024",
+            "text": "4. Victim's transaction executes:"
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0025",
+            "text": "- Router calculates `value = 10 ether` and calls `CoreLib::swap()`."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0026",
+            "text": "- `CoreLib::swap()` sends 10 ETH to Core via `call(gas(), core, value, ...)`."
+          }
+        ]
+      },
+      {
+        "statement_id": "noop_condition_skips_swap_block",
+        "role": "root_cause",
+        "evidence": [
+          {
+            "evidence_id": "e_be7fd2bc7865_0003",
+            "text": "In `Core::swap_6269342730()`, when the current `sqrtRatio` equals the `sqrtRatioLimit`, the swap is treated as a no-op, and the entire swap block is skipped. This includes the critical `_updatePairDebtWithNative()` call, which means ETH sent via `msg.value` is never accounted for in the debt system. The ETH becomes permanently stuck in the Core contract with no recovery mechanism."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0019",
+            "text": "The vulnerability exists in `Core::swap_6269342730()` where the `_updatePairDebtWithNative()` function is placed inside a conditional block that gets skipped when `sqrtRatio == sqrtRatioLimit`."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0027",
+            "text": "- In `Core::swap_6269342730()`, the condition `stateAfter.sqrtRatio() != sqrtRatioLimit` is FALSE."
+          },
+          {
+            "evidence_id": "e_be7fd2bc7865_0028",
+            "text": "- The entire swap block (lines 542-843) is skipped, including `_updatePairDebtWithNative()`."
+          }
+        ]
+      }
+    ],
+    "mismatch_count": 1,
+    "repair_finding_count": 0
+  },
+  "formal_plan": {
+    "schema_version": "report-formal-plan/8",
+    "relation_class": "progress_or_liveness",
+    "precondition_ids": [
+      "pool_initialized_with_liquidity",
+      "victim_sets_sqrt_ratio_limit_near_price"
+    ],
+    "intent_id": "debt_accounting_should_run_for_eth",
+    "impact_ids": [
+      "automatic_trigger_by_legitimate_swaps"
+    ],
+    "symbols": {
+      "pool_initialized_at_tick_zero": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the pool is initialized at tick 0 with liquidity",
+        "checkpoint": "before the victim swap",
+        "entity_ids": [
+          "core_contract"
+        ],
+        "source_ids": [
+          "pool_initialized_with_liquidity"
+        ]
+      },
+      "victim_swap_submitted": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the victim submits a swap with a sqrtRatioLimit set near the current price for slippage protection",
+        "checkpoint": "before the victim swap executes",
+        "entity_ids": [
+          "victim",
+          "router"
+        ],
+        "source_ids": [
+          "victim_sets_sqrt_ratio_limit_near_price"
+        ]
+      },
+      "msg_value_ether": {
+        "sort": "int",
+        "unit": "ether",
+        "meaning": "native ETH sent with the swap via msg.value, in ether",
+        "checkpoint": "at swap execution",
+        "entity_ids": [
+          "eth_asset",
+          "router"
+        ],
+        "source_ids": [
+          "victim_sets_sqrt_ratio_limit_near_price",
+          "debt_accounting_should_run_for_eth"
+        ]
+      },
+      "debt_accounting_performed": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the native ETH debt accounting (_updatePairDebtWithNative) is performed for the swap",
+        "checkpoint": "during swap execution",
+        "entity_ids": [
+          "core_contract",
+          "debt_system"
+        ],
+        "source_ids": [
+          "debt_accounting_should_run_for_eth"
+        ]
+      },
+      "triggered_by_legitimate_swaps": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the vulnerability is triggered by price movements from legitimate swaps rather than only by attackers",
+        "checkpoint": "after legitimate swap price movements",
+        "entity_ids": [
+          "core_contract"
+        ],
+        "source_ids": [
+          "automatic_trigger_by_legitimate_swaps"
+        ]
+      }
+    },
+    "precondition_terms": [
+      {
+        "source_id": "pool_initialized_with_liquidity",
+        "predicate": {
+          "kind": "truth",
+          "symbol": "pool_initialized_at_tick_zero",
+          "value": true
+        }
+      },
+      {
+        "source_id": "victim_sets_sqrt_ratio_limit_near_price",
+        "predicate": {
+          "kind": "all_of",
+          "terms": [
+            {
+              "kind": "truth",
+              "symbol": "victim_swap_submitted",
+              "value": true
+            },
+            {
+              "kind": "comparison",
+              "left": "msg_value_ether",
+              "operator": "eq",
+              "right": {
+                "const": 10
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "impact_outcome": {
+      "source_id": "automatic_trigger_by_legitimate_swaps",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "triggered_by_legitimate_swaps",
+        "value": true
+      }
+    },
+    "impact_context_terms": [],
+    "derived_definitions": [],
+    "pattern": {
+      "kind": "required_effect",
+      "condition": {
+        "kind": "comparison",
+        "left": "msg_value_ether",
+        "operator": "gt",
+        "right": {
+          "const": 0
+        }
+      },
+      "effect": {
+        "kind": "truth",
+        "symbol": "debt_accounting_performed",
+        "value": true
+      }
+    },
+    "assumptions": [
+      "The swap execution path is the Core::swap flow with Router forwarding native ETH via CoreLib::swap().",
+      "The victim's swap is a legitimate swap, not an attacker-crafted transaction."
+    ],
+    "unresolved": [
+      {
+        "category": "ambiguous_condition",
+        "description": "Report does not specify the concrete prior state or price-movement sequence by which legitimate swaps alone reach the no-op path; the automatic-trigger claim is stated only as potential.",
+        "source_ids": [
+          "automatic_trigger_by_legitimate_swaps"
+        ],
+        "blocks_formalization": false
+      },
+      {
+        "category": "missing_report_definition",
+        "description": "The exact sqrtRatioLimit value is described only via tickToSqrtRatio(0-500); precise comparison operands of the no-op check are not fully specified.",
+        "source_ids": [
+          "victim_sets_sqrt_ratio_limit_near_price"
+        ],
+        "blocks_formalization": false
+      }
+    ],
+    "limitations": [
+      "The impact is encoded as a potential Boolean outcome; the report does not give a numeric or state-level definition of the legitimate-swap trigger.",
+      "The intent's msg.value > 0 guard is preserved; the report does not state whether the no-op check occurs before or after msg.value accounting within the transaction."
+    ]
+  },
+  "formalization": {
+    "schema_version": "report-formalization/2",
+    "symbols": {
+      "pool_initialized_at_tick_zero": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the pool is initialized at tick 0 with liquidity",
+        "checkpoint": "before the victim swap",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0021"
+        ],
+        "entity_ids": [
+          "core_contract"
+        ]
+      },
+      "victim_swap_submitted": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the victim submits a swap with a sqrtRatioLimit set near the current price for slippage protection",
+        "checkpoint": "before the victim swap executes",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0022",
+          "e_be7fd2bc7865_0015"
+        ],
+        "entity_ids": [
+          "victim",
+          "router"
+        ]
+      },
+      "msg_value_ether": {
+        "sort": "int",
+        "unit": "ether",
+        "meaning": "native ETH sent with the swap via msg.value, in ether",
+        "checkpoint": "at swap execution",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0022",
+          "e_be7fd2bc7865_0015",
+          "e_be7fd2bc7865_0003",
+          "e_be7fd2bc7865_0019",
+          "e_be7fd2bc7865_0034",
+          "e_be7fd2bc7865_0038"
+        ],
+        "entity_ids": [
+          "eth_asset",
+          "router"
+        ]
+      },
+      "debt_accounting_performed": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the native ETH debt accounting (_updatePairDebtWithNative) is performed for the swap",
+        "checkpoint": "during swap execution",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0003",
+          "e_be7fd2bc7865_0019",
+          "e_be7fd2bc7865_0034",
+          "e_be7fd2bc7865_0038"
+        ],
+        "entity_ids": [
+          "core_contract",
+          "debt_system"
+        ]
+      },
+      "triggered_by_legitimate_swaps": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the vulnerability is triggered by price movements from legitimate swaps rather than only by attackers",
+        "checkpoint": "after legitimate swap price movements",
+        "evidence_ids": [
+          "e_be7fd2bc7865_0010"
+        ],
+        "entity_ids": [
+          "core_contract"
+        ]
+      }
+    },
+    "claims": [
+      {
+        "id": "impact_claim_automatic_trigger_by_legitimate_swaps_debt_accounting_should_run_for_eth",
+        "scope": "The vulnerability can be triggered even by price movements from legitimate swaps (not just by attackers).",
+        "modality": "potential",
+        "impact_ids": [
+          "automatic_trigger_by_legitimate_swaps"
+        ],
+        "properties": {
+          "preconditions": {
+            "text": "The pool is initialized at tick 0 with liquidity.; The victim submits a swap with a sqrtRatioLimit set near the current price for slippage protection, sending 10 ether via msg.value.",
+            "expression": {
+              "op": "and",
+              "args": [
+                {
+                  "var": "pool_initialized_at_tick_zero"
+                },
+                {
+                  "op": "and",
+                  "args": [
+                    {
+                      "var": "victim_swap_submitted"
+                    },
+                    {
+                      "op": "eq",
+                      "args": [
+                        {
+                          "var": "msg_value_ether"
+                        },
+                        {
+                          "const": 10
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "evidence_ids": [
+              "e_be7fd2bc7865_0021",
+              "e_be7fd2bc7865_0022",
+              "e_be7fd2bc7865_0015"
+            ],
+            "derivation": "Program conjunction of selected report preconditions.",
+            "source_ids": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price"
+            ]
+          },
+          "safety": {
+            "text": "When a swap is executed with msg.value > 0, the native ETH debt accounting (_updatePairDebtWithNative) must be performed so the sent ETH is accounted for in the debt system.",
+            "expression": {
+              "op": "implies",
+              "args": [
+                {
+                  "op": "gt",
+                  "args": [
+                    {
+                      "var": "msg_value_ether"
+                    },
+                    {
+                      "const": 0
+                    }
+                  ]
+                },
+                {
+                  "var": "debt_accounting_performed"
+                }
+              ]
+            },
+            "evidence_ids": [
+              "e_be7fd2bc7865_0003",
+              "e_be7fd2bc7865_0019",
+              "e_be7fd2bc7865_0034",
+              "e_be7fd2bc7865_0038"
+            ],
+            "derivation": "Program synthesis from the selected intent and logical pattern.",
+            "source_ids": [
+              "debt_accounting_should_run_for_eth"
+            ]
+          },
+          "effects": {
+            "text": "The vulnerability can be triggered even by price movements from legitimate swaps (not just by attackers).",
+            "expression": {
+              "var": "triggered_by_legitimate_swaps"
+            },
+            "evidence_ids": [
+              "e_be7fd2bc7865_0010"
+            ],
+            "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+            "source_ids": [
+              "automatic_trigger_by_legitimate_swaps"
+            ]
+          }
+        },
+        "formula_sources": {
+          "preconditions": {
+            "": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price"
+            ],
+            "args.1": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price"
+            ],
+            "args.1.args.1": [
+              "pool_initialized_with_liquidity",
+              "victim_sets_sqrt_ratio_limit_near_price"
+            ]
+          },
+          "safety": {
+            "": [
+              "debt_accounting_should_run_for_eth"
+            ],
+            "args.0": [
+              "debt_accounting_should_run_for_eth"
+            ]
+          },
+          "effects": {
+            "": [
+              "automatic_trigger_by_legitimate_swaps"
+            ]
+          }
+        },
+        "effect_coverage": [
+          {
+            "statement_id": "automatic_trigger_by_legitimate_swaps",
+            "status": "formalized",
+            "reason": "Program-generated exact coverage for selected direct impact."
+          }
+        ],
+        "assumptions": [
+          "The swap execution path is the Core::swap flow with Router forwarding native ETH via CoreLib::swap().",
+          "The victim's swap is a legitimate swap, not an attacker-crafted transaction."
+        ],
+        "unresolved": []
+      }
+    ],
+    "limitations": [
+      "The impact is encoded as a potential Boolean outcome; the report does not give a numeric or state-level definition of the legitimate-swap trigger.",
+      "The intent's msg.value > 0 guard is preserved; the report does not state whether the no-op check occurs before or after msg.value accounting within the transaction."
+    ]
+  }
+}

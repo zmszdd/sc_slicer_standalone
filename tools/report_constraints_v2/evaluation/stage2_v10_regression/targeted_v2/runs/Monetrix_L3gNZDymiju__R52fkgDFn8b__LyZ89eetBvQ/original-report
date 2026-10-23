@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Monetrix_L3gNZDymiju",
+    "audit_uid": "L3gNZDymiju",
+    "requested_submission_uid": "LyZ89eetBvQ",
+    "requested_finding_uid": "R52fkgDFn8b",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Monetrix_L3gNZDymiju/20260618_131702/findings.json",
+    "source_submission_uid": "LyZ89eetBvQ",
+    "source_finding_uid": "R52fkgDFn8b",
+    "original_report_path": "Monetrix_L3gNZDymiju\\low_valid_LyZ89eetBvQ.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "LyZ89eetBvQ",
+  "finding_uid": "R52fkgDFn8b",
+  "finding_number": "137",
+  "title": "executeHedge Optimistically Registers Unsupported BLP Tokens, Bricking Protocol Accounting",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "Luc1jan",
+  "body": "## Finding description and impact\n\nWhen [`executeHedge()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L276) is called with PM active, it buys the spot asset on L1 and immediately registers it in the accountant's [`vaultSupplied`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L70) registry via `notifyVaultSupply`:\n\n```solidity\nif (pmEnabled && accountant != address(0)) {\n    uint64 spotToken = uint64(config.perpToSpot(params.perpAsset));\n    MonetrixAccountant(accountant).notifyVaultSupply(spotToken, params.perpAsset);\n}\n```\n\nThe registration is unconditional. There is no check that BLP actually has an active reserve for this token. Under PM, HyperLiquid auto-supplies spot assets to BLP only if a BLP reserve exists for that token. If no reserve exists, the auto-supply silently does nothing on L1, but the EVM state still records the token as supplied.\n\n[`_readL1Backing()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L138-L172) later iterates `vaultSupplied` and calls [`suppliedBalance()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L85-L91) for each entry, which queries the 0x811 precompile. The function enforces a hard requirement on the response:\n\n```solidity\nrequire(ok && res.length >= 128, \"PrecompileReader: supplied balance read failed\");\n```\n\nOn HyperEVM, querying 0x811 for a token that was never actually supplied to BLP produces a failure response. This causes `suppliedBalance` to revert. The revert propagates through the entire call stack:\n\n- [`totalBackingSigned()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L135) calls `_readL1Backing`, reverts.\n- [`surplus()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L180-L182) calls `totalBackingSigned`, reverts.\n- [`distributableSurplus()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L187-L192) calls `surplus`, reverts.\n- [`settleDailyPnL`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L213-L214) gate 3 calls `distributableSurplus`, reverts.\n\nEvery accounting read and yield settlement call is permanently bricked. The only recovery path is for an operator to call `removeSuppliedEntry` to remove the bad registry entry.\n\n---\n\n## Mitigation\n\nBefore calling `notifyVaultSupply` in `executeHedge`, verify that BLP has an active reserve for the token. The BLP reserve precompile at 0x0812 on HyperEVM returns per-token reserve data. Querying this precompile for the spot token before registration tells the contract whether a reserve exists. If the precompile returns an empty or zero-supply reserve for that token, the `notifyVaultSupply` call should be skipped. This ensures `vaultSupplied` only contains tokens that 0x811 can successfully answer for, keeping the fail-loud revert behavior as a true error signal rather than a normal execution path.",
+  "proof_of_concept": "```\nforge test --match-path \"test/c4/C4Submission.t.sol\" -vvv\n```\n\n```solidity\n// test/c4/C4Submission.t.sol\n\nfunction test_submissionValidity() public {\n    // Simulate 1M USDM outstanding (deposits made and bridged to L1).\n    vm.prank(address(vault));\n    usdm.mint(user1, 1_000_000e6);\n\n    // executeHedge registers the hedge spot token in vaultSupplied via\n    // notifyVaultSupply whenever pmEnabled is true, with no check that BLP\n    // actually has an active reserve for the token. Simulate that registration\n    // directly (this is exactly what executeHedge does at MonetrixVault.sol:272).\n    uint64 unsupportedToken = 150; // token index with no BLP reserve\n    vm.prank(address(vault));\n    accountant.notifyVaultSupply(unsupportedToken, 1);\n\n    // On real HyperEVM, 0x811 fails for tokens never supplied to BLP.\n    // Simulate: return a response shorter than the 128 bytes suppliedBalance requires.\n    _PoCMockPrecompile(payable(HyperCoreConstants.PRECOMPILE_SUPPLIED_BALANCE)).setResponse(\n        abi.encode(address(vault), unsupportedToken),\n        new bytes(64)\n    );\n\n    // _readL1Backing iterates vaultSupplied, hits the unsupported token,\n    // calls suppliedBalance, and reverts.\n    vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n    accountant.totalBackingSigned();\n\n    // surplus() and distributableSurplus() propagate the same revert.\n    vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n    accountant.surplus();\n\n    // Gate 3 of settleDailyPnL calls distributableSurplus() which reverts.\n    // Yield settlement is permanently bricked.\n    vm.warp(block.timestamp + 21 hours);\n    vm.prank(address(vault));\n    vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n    accountant.settleDailyPnL(1e6);\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L270-L273"
+  ],
+  "source_record": {
+    "project_id": "L3gNZDymiju",
+    "submission_index": "1447",
+    "api_submission_id": "",
+    "uid": "LyZ89eetBvQ",
+    "number": "1447",
+    "title": "executeHedge Optimistically Registers Unsupported BLP Tokens, Bricking Protocol Accounting",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "",
+    "handle": "Luc1jan",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L270-L273"
+    ],
+    "body": "## Finding description and impact\n\nWhen [`executeHedge()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L276) is called with PM active, it buys the spot asset on L1 and immediately registers it in the accountant's [`vaultSupplied`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L70) registry via `notifyVaultSupply`:\n\n```solidity\nif (pmEnabled && accountant != address(0)) {\n    uint64 spotToken = uint64(config.perpToSpot(params.perpAsset));\n    MonetrixAccountant(accountant).notifyVaultSupply(spotToken, params.perpAsset);\n}\n```\n\nThe registration is unconditional. There is no check that BLP actually has an active reserve for this token. Under PM, HyperLiquid auto-supplies spot assets to BLP only if a BLP reserve exists for that token. If no reserve exists, the auto-supply silently does nothing on L1, but the EVM state still records the token as supplied.\n\n[`_readL1Backing()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L138-L172) later iterates `vaultSupplied` and calls [`suppliedBalance()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L85-L91) for each entry, which queries the 0x811 precompile. The function enforces a hard requirement on the response:\n\n```solidity\nrequire(ok && res.length >= 128, \"PrecompileReader: supplied balance read failed\");\n```\n\nOn HyperEVM, querying 0x811 for a token that was never actually supplied to BLP produces a failure response. This causes `suppliedBalance` to revert. The revert propagates through the entire call stack:\n\n- [`totalBackingSigned()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L135) calls `_readL1Backing`, reverts.\n- [`surplus()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L180-L182) calls `totalBackingSigned`, reverts.\n- [`distributableSurplus()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L187-L192) calls `surplus`, reverts.\n- [`settleDailyPnL`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L213-L214) gate 3 calls `distributableSurplus`, reverts.\n\nEvery accounting read and yield settlement call is permanently bricked. The only recovery path is for an operator to call `removeSuppliedEntry` to remove the bad registry entry.\n\n---\n\n## Mitigation\n\nBefore calling `notifyVaultSupply` in `executeHedge`, verify that BLP has an active reserve for the token. The BLP reserve precompile at 0x0812 on HyperEVM returns per-token reserve data. Querying this precompile for the spot token before registration tells the contract whether a reserve exists. If the precompile returns an empty or zero-supply reserve for that token, the `notifyVaultSupply` call should be skipped. This ensures `vaultSupplied` only contains tokens that 0x811 can successfully answer for, keeping the fail-loud revert behavior as a true error signal rather than a normal execution path.",
+    "proof_of_concept": "```\nforge test --match-path \"test/c4/C4Submission.t.sol\" -vvv\n```\n\n```solidity\n// test/c4/C4Submission.t.sol\n\nfunction test_submissionValidity() public {\n    // Simulate 1M USDM outstanding (deposits made and bridged to L1).\n    vm.prank(address(vault));\n    usdm.mint(user1, 1_000_000e6);\n\n    // executeHedge registers the hedge spot token in vaultSupplied via\n    // notifyVaultSupply whenever pmEnabled is true, with no check that BLP\n    // actually has an active reserve for the token. Simulate that registration\n    // directly (this is exactly what executeHedge does at MonetrixVault.sol:272).\n    uint64 unsupportedToken = 150; // token index with no BLP reserve\n    vm.prank(address(vault));\n    accountant.notifyVaultSupply(unsupportedToken, 1);\n\n    // On real HyperEVM, 0x811 fails for tokens never supplied to BLP.\n    // Simulate: return a response shorter than the 128 bytes suppliedBalance requires.\n    _PoCMockPrecompile(payable(HyperCoreConstants.PRECOMPILE_SUPPLIED_BALANCE)).setResponse(\n        abi.encode(address(vault), unsupportedToken),\n        new bytes(64)\n    );\n\n    // _readL1Backing iterates vaultSupplied, hits the unsupported token,\n    // calls suppliedBalance, and reverts.\n    vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n    accountant.totalBackingSigned();\n\n    // surplus() and distributableSurplus() propagate the same revert.\n    vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n    accountant.surplus();\n\n    // Gate 3 of settleDailyPnL calls distributableSurplus() which reverts.\n    // Yield settlement is permanently bricked.\n    vm.warp(block.timestamp + 21 hours);\n    vm.prank(address(vault));\n    vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n    accountant.settleDailyPnL(1e6);\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/L3gNZDymiju/submissions/1447",
+    "raw": {
+      "auditUid": "L3gNZDymiju",
+      "createdAt": "2026-05-04T10:42:06.860Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "dhZMspLpG2x",
+          "userUid": "LBbWumddX2j",
+          "userAuditRole": "judge",
+          "createdAt": "2026-05-07T20:36:34.258Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "R52fkgDFn8b"
+        },
+        {
+          "uid": "cK8ZHaj55nV",
+          "userUid": "LBbWumddX2j",
+          "userAuditRole": "judge",
+          "createdAt": "2026-05-08T18:26:53.877Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "R52fkgDFn8b"
+        },
+        {
+          "uid": "4kvfVAN5ERF",
+          "userUid": "YLWDmmwfFr3",
+          "userAuditRole": "sponsor",
+          "createdAt": "2026-05-26T09:19:41.246Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "R52fkgDFn8b"
+        }
+      ],
+      "finding": {
+        "uid": "R52fkgDFn8b",
+        "number": 137,
+        "duplicates": 43
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2026-05-26T09:19:41.246Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "executeHedge Optimistically Registers Unsupported BLP Tokens, Bricking Protocol Accounting",
+      "uid": "LyZ89eetBvQ",
+      "updatedAt": "2026-05-04T10:50:33.554Z",
+      "user": {
+        "uid": "jsi9JszLm9Z",
+        "handle": "Luc1jan"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nWhen [`executeHedge()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L256-L276) is called with PM active, it buys the spot asset on L1 and immediately registers it in the accountant's [`vaultSupplied`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L70) registry via `notifyVaultSupply`:\n\n```solidity\nif (pmEnabled && accountant != address(0)) {\n    uint64 spotToken = uint64(config.perpToSpot(params.perpAsset));\n    MonetrixAccountant(accountant).notifyVaultSupply(spotToken, params.perpAsset);\n}\n```\n\nThe registration is unconditional. There is no check that BLP actually has an active reserve for this token. Under PM, HyperLiquid auto-supplies spot assets to BLP only if a BLP reserve exists for that token. If no reserve exists, the auto-supply silently does nothing on L1, but the EVM state still records the token as supplied.\n\n[`_readL1Backing()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L138-L172) later iterates `vaultSupplied` and calls [`suppliedBalance()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/PrecompileReader.sol#L85-L91) for each entry, which queries the 0x811 precompile. The function enforces a hard requirement on the response:\n\n```solidity\nrequire(ok && res.length >= 128, \"PrecompileReader: supplied balance read failed\");\n```\n\nOn HyperEVM, querying 0x811 for a token that was never actually supplied to BLP produces a failure response. This causes `suppliedBalance` to revert. The revert propagates through the entire call stack:\n\n- [`totalBackingSigned()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L117-L135) calls `_readL1Backing`, reverts.\n- [`surplus()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L180-L182) calls `totalBackingSigned`, reverts.\n- [`distributableSurplus()`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L187-L192) calls `surplus`, reverts.\n- [`settleDailyPnL`](https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixAccountant.sol#L213-L214) gate 3 calls `distributableSurplus`, reverts.\n\nEvery accounting read and yield settlement call is permanently bricked. The only recovery path is for an operator to call `removeSuppliedEntry` to remove the bad registry entry.\n\n---\n\n## Mitigation\n\nBefore calling `notifyVaultSupply` in `executeHedge`, verify that BLP has an active reserve for the token. The BLP reserve precompile at 0x0812 on HyperEVM returns per-token reserve data. Querying this precompile for the spot token before registration tells the contract whether a reserve exists. If the precompile returns an empty or zero-supply reserve for that token, the `notifyVaultSupply` call should be skipped. This ensures `vaultSupplied` only contains tokens that 0x811 can successfully answer for, keeping the fail-loud revert behavior as a true error signal rather than a normal execution path.",
+      "proofOfConcept": "```\nforge test --match-path \"test/c4/C4Submission.t.sol\" -vvv\n```\n\n```solidity\n// test/c4/C4Submission.t.sol\n\nfunction test_submissionValidity() public {\n    // Simulate 1M USDM outstanding (deposits made and bridged to L1).\n    vm.prank(address(vault));\n    usdm.mint(user1, 1_000_000e6);\n\n    // executeHedge registers the hedge spot token in vaultSupplied via\n    // notifyVaultSupply whenever pmEnabled is true, with no check that BLP\n    // actually has an active reserve for the token. Simulate that registration\n    // directly (this is exactly what executeHedge does at MonetrixVault.sol:272).\n    uint64 unsupportedToken = 150; // token index with no BLP reserve\n    vm.prank(address(vault));\n    accountant.notifyVaultSupply(unsupportedToken, 1);\n\n    // On real HyperEVM, 0x811 fails for tokens never supplied to BLP.\n    // Simulate: return a response shorter than the 128 bytes suppliedBalance requires.\n    _PoCMockPrecompile(payable(HyperCoreConstants.PRECOMPILE_SUPPLIED_BALANCE)).setResponse(\n        abi.encode(address(vault), unsupportedToken),\n        new bytes(64)\n    );\n\n    // _readL1Backing iterates vaultSupplied, hits the unsupported token,\n    // calls suppliedBalance, and reverts.\n    vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n    accountant.totalBackingSigned();\n\n    // surplus() and distributableSurplus() propagate the same revert.\n    vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n    accountant.surplus();\n\n    // Gate 3 of settleDailyPnL calls distributableSurplus() which reverts.\n    // Yield settlement is permanently bricked.\n    vm.warp(block.timestamp + 21 hours);\n    vm.prank(address(vault));\n    vm.expectRevert(\"PrecompileReader: supplied balance read failed\");\n    accountant.settleDailyPnL(1e6);\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2026-04-monetrix/blob/main/src/core/MonetrixVault.sol#L270-L273",
+      "number": 1447,
+      "aiExplanation": null,
+      "_index": 1447
+    }
+  }
+}

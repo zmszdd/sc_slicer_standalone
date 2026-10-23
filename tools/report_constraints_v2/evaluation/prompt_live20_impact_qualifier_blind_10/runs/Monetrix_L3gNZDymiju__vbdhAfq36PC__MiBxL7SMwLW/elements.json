@@ -1,0 +1,336 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "PM collateral supply and borrow-lend state read via HyperCore precompile 0x811 feeding backing/surplus computation, yield settlement and distribution",
+    "environment": "Monetrix protocol on HyperEVM using HyperCore precompile 0x811",
+    "evidence": [
+      "`0x811` borrow fields are ignored, so PM liabilities overstate backing and admit unbacked yield",
+      "Monetrix treats HyperCore precompile `0x811` as a supply-only balance source, but Hyperliquid's official `L1Read.sol` defines `0x811` as a borrow-lend user-state object containing **both** `borrow` and `supply` values for a token.",
+      "`PrecompileReader.suppliedBalance()` decodes the four `uint64` words returned by `0x811` and keeps only the last one. As a result:",
+      "This lets `totalBackingSigned()` and `surplus()` become positive even when the true PM net state is negative. Once that happens, `settle()` can admit yield that should have been blocked by Gate 3, and `distributeYield()` can route that unbacked value to stakers / insurance / foundation.",
+      "This becomes exploitable in normal PM flows:",
+      "This is not an offchain monitoring issue. The onchain safety gate itself is reading the borrow-lend state incorrectly."
+    ]
+  },
+  "entities": [
+    {
+      "id": "monetrix_protocol",
+      "name": "Monetrix protocol",
+      "role": "contract",
+      "evidence": [
+        "Monetrix treats HyperCore precompile `0x811` as a supply-only balance source, but Hyperliquid's official `L1Read.sol` defines `0x811` as a borrow-lend user-state object containing **both** `borrow` and `supply` values for a token.",
+        "This lets `totalBackingSigned()` and `surplus()` become positive even when the true PM net state is negative. Once that happens, `settle()` can admit yield that should have been blocked by Gate 3, and `distributeYield()` can route that unbacked value to stakers / insurance / foundation."
+      ]
+    },
+    {
+      "id": "precompile_0x811",
+      "name": "HyperCore precompile 0x811 borrow-lend user-state",
+      "role": "contract",
+      "evidence": [
+        "Monetrix treats HyperCore precompile `0x811` as a supply-only balance source, but Hyperliquid's official `L1Read.sol` defines `0x811` as a borrow-lend user-state object containing **both** `borrow` and `supply` values for a token.",
+        "So the `0x811` payload is not \"supplied amount only.\" It is:",
+        "1. `borrow.basis`",
+        "2. `borrow.value`",
+        "3. `supply.basis`",
+        "4. `supply.value`"
+      ]
+    },
+    {
+      "id": "precompile_reader",
+      "name": "PrecompileReader.suppliedBalance()",
+      "role": "contract",
+      "evidence": [
+        "`PrecompileReader.suppliedBalance()` decodes the four `uint64` words returned by `0x811` and keeps only the last one. As a result:",
+        "But Monetrix reads it like this:",
+        "That drops the entire borrow side by construction."
+      ]
+    },
+    {
+      "id": "pm_account",
+      "name": "PM account with supplied collateral and borrow liability",
+      "role": "other",
+      "evidence": [
+        "1. the Vault supplies collateral under PM, e.g. through `executeHedge()` or `supplyToBlp()`",
+        "2. PM auto-borrow / borrow-lend state creates a negative quote liability"
+      ]
+    },
+    {
+      "id": "vault",
+      "name": "Vault",
+      "role": "victim",
+      "evidence": [
+        "1. the Vault supplies collateral under PM, e.g. through `executeHedge()` or `supplyToBlp()`"
+      ]
+    },
+    {
+      "id": "settle_gate",
+      "name": "settle()/settleDailyPnL() distributable-surplus gate (Gate 3)",
+      "role": "authority",
+      "evidence": [
+        "This lets `totalBackingSigned()` and `surplus()` become positive even when the true PM net state is negative. Once that happens, `settle()` can admit yield that should have been blocked by Gate 3, and `distributeYield()` can route that unbacked value to stakers / insurance / foundation.",
+        "6. `settle()` accepts yield that should have failed the distributable-surplus gate",
+        "- `settleDailyPnL()` therefore accepts a `proposedYield`"
+      ]
+    },
+    {
+      "id": "distribute_yield",
+      "name": "distributeYield()",
+      "role": "contract",
+      "evidence": [
+        "This lets `totalBackingSigned()` and `surplus()` become positive even when the true PM net state is negative. Once that happens, `settle()` can admit yield that should have been blocked by Gate 3, and `distributeYield()` can route that unbacked value to stakers / insurance / foundation.",
+        "7. `distributeYield()` routes real value out based on that phantom surplus",
+        "- `distributeYield()` then:"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "pm_supplies_collateral",
+      "kind": "precondition",
+      "text": "The Vault supplies collateral under PM, e.g. through executeHedge() or supplyToBlp().",
+      "modality": "potential",
+      "entity_ids": [
+        "vault",
+        "pm_account"
+      ],
+      "evidence": [
+        "1. the Vault supplies collateral under PM, e.g. through `executeHedge()` or `supplyToBlp()`"
+      ]
+    },
+    {
+      "id": "pm_borrow_liability_exists",
+      "kind": "precondition",
+      "text": "PM auto-borrow / borrow-lend state creates a negative quote liability for the account.",
+      "modality": "potential",
+      "entity_ids": [
+        "pm_account"
+      ],
+      "evidence": [
+        "2. PM auto-borrow / borrow-lend state creates a negative quote liability"
+      ]
+    },
+    {
+      "id": "precompile_has_borrow_and_supply",
+      "kind": "precondition",
+      "text": "The 0x811 payload contains borrow.basis, borrow.value, supply.basis and supply.value for a token.",
+      "modality": "asserted",
+      "entity_ids": [
+        "precompile_0x811"
+      ],
+      "evidence": [
+        "Monetrix treats HyperCore precompile `0x811` as a supply-only balance source, but Hyperliquid's official `L1Read.sol` defines `0x811` as a borrow-lend user-state object containing **both** `borrow` and `supply` values for a token.",
+        "So the `0x811` payload is not \"supplied amount only.\" It is:",
+        "1. `borrow.basis`",
+        "2. `borrow.value`",
+        "3. `supply.basis`",
+        "4. `supply.value`"
+      ]
+    },
+    {
+      "id": "reader_keeps_only_last_word",
+      "kind": "root_cause",
+      "text": "PrecompileReader.suppliedBalance() decodes the four uint64 words returned by 0x811 and keeps only the last one, dropping the entire borrow side by construction.",
+      "modality": "asserted",
+      "entity_ids": [
+        "precompile_reader",
+        "precompile_0x811"
+      ],
+      "evidence": [
+        "`PrecompileReader.suppliedBalance()` decodes the four `uint64` words returned by `0x811` and keeps only the last one. As a result:",
+        "But Monetrix reads it like this:",
+        "That drops the entire borrow side by construction."
+      ]
+    },
+    {
+      "id": "backing_adds_supply_no_borrow_subtraction",
+      "kind": "root_cause",
+      "text": "_readL1Backing() adds the interpreted supply values with no corresponding subtraction of borrow.value.",
+      "modality": "asserted",
+      "entity_ids": [
+        "monetrix_protocol",
+        "precompile_reader"
+      ],
+      "evidence": [
+        "Then `_readL1Backing()` adds the interpreted supply values:",
+        "There is no corresponding subtraction of `borrow.value`."
+      ]
+    },
+    {
+      "id": "count_supplied_collateral",
+      "kind": "action",
+      "text": "Monetrix counts the supplied collateral through 0x811.",
+      "modality": "asserted",
+      "entity_ids": [
+        "monetrix_protocol",
+        "precompile_0x811"
+      ],
+      "evidence": [
+        "3. Monetrix counts the supplied collateral through `0x811`"
+      ]
+    },
+    {
+      "id": "omit_borrow_subtraction",
+      "kind": "action",
+      "text": "Monetrix does not subtract the PM borrow side from the same official precompile state.",
+      "modality": "asserted",
+      "entity_ids": [
+        "monetrix_protocol",
+        "precompile_0x811"
+      ],
+      "evidence": [
+        "4. Monetrix does **not** subtract the PM borrow side from the same official precompile state"
+      ]
+    },
+    {
+      "id": "settle_accepts_yield",
+      "kind": "action",
+      "text": "settle() accepts yield that should have failed the distributable-surplus gate.",
+      "modality": "potential",
+      "entity_ids": [
+        "settle_gate",
+        "monetrix_protocol"
+      ],
+      "evidence": [
+        "6. `settle()` accepts yield that should have failed the distributable-surplus gate",
+        "- `settleDailyPnL()` therefore accepts a `proposedYield`"
+      ]
+    },
+    {
+      "id": "intent_backing_net_of_borrow",
+      "kind": "security_intent",
+      "text": "For PM accounts, backing must reflect the true net borrow-lend state, subtracting PM borrow liabilities from supplied collateral, so totalBackingSigned() and surplus() are not positive when the true PM net state is negative.",
+      "modality": "inferred",
+      "entity_ids": [
+        "monetrix_protocol",
+        "precompile_0x811",
+        "pm_account"
+      ],
+      "evidence": [
+        "- PM borrow liabilities are never subtracted",
+        "This lets `totalBackingSigned()` and `surplus()` become positive even when the true PM net state is negative. Once that happens, `settle()` can admit yield that should have been blocked by Gate 3, and `distributeYield()` can route that unbacked value to stakers / insurance / foundation.",
+        "This breaks the protocol's core backing invariant for PM accounts."
+      ]
+    },
+    {
+      "id": "intent_gate_blocks_unbacked_yield",
+      "kind": "security_intent",
+      "text": "The onchain distributable-surplus gate must block yield settlement when backing does not exceed liabilities.",
+      "modality": "inferred",
+      "entity_ids": [
+        "settle_gate",
+        "monetrix_protocol"
+      ],
+      "evidence": [
+        "This lets `totalBackingSigned()` and `surplus()` become positive even when the true PM net state is negative. Once that happens, `settle()` can admit yield that should have been blocked by Gate 3, and `distributeYield()` can route that unbacked value to stakers / insurance / foundation.",
+        "6. `settle()` accepts yield that should have failed the distributable-surplus gate",
+        "- It admits value distribution that should have been blocked by the onchain settlement guard"
+      ]
+    },
+    {
+      "id": "intent_no_distribution_on_phantom_surplus",
+      "kind": "security_intent",
+      "text": "distributeYield() must not route value out based on phantom surplus that ignores PM borrow liabilities.",
+      "modality": "inferred",
+      "entity_ids": [
+        "distribute_yield",
+        "monetrix_protocol"
+      ],
+      "evidence": [
+        "This lets `totalBackingSigned()` and `surplus()` become positive even when the true PM net state is negative. Once that happens, `settle()` can admit yield that should have been blocked by Gate 3, and `distributeYield()` can route that unbacked value to stakers / insurance / foundation.",
+        "7. `distributeYield()` routes real value out based on that phantom surplus"
+      ]
+    },
+    {
+      "id": "broken_backing_invariant",
+      "kind": "impact",
+      "text": "This breaks the protocol's core backing invariant for PM accounts.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "This breaks the protocol's core backing invariant for PM accounts."
+      ]
+    },
+    {
+      "id": "false_positive_yield_settlement",
+      "kind": "impact",
+      "text": "The concrete sink is false-positive yield settlement:",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "The concrete sink is false-positive yield settlement:"
+      ]
+    },
+    {
+      "id": "protocol_believes_backing_exceeds_liabilities",
+      "kind": "impact",
+      "text": "the protocol believes backing exceeds liabilities",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- the protocol believes backing exceeds liabilities"
+      ]
+    },
+    {
+      "id": "real_usdc_moved_into_yieldescrow",
+      "kind": "impact",
+      "text": "`settle()` moves real USDC into `YieldEscrow`",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- `settle()` moves real USDC into `YieldEscrow`"
+      ]
+    },
+    {
+      "id": "fresh_usdm_minted_into_susdm",
+      "kind": "impact",
+      "text": "mints fresh `USDM` into `sUSDM` for the user share",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- mints fresh `USDM` into `sUSDM` for the user share"
+      ]
+    },
+    {
+      "id": "insurance_share_routed_to_insurancefund",
+      "kind": "impact",
+      "text": "routes the insurance share into `InsuranceFund`",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- routes the insurance share into `InsuranceFund`"
+      ]
+    },
+    {
+      "id": "foundation_share_routed_to_foundation",
+      "kind": "impact",
+      "text": "routes the foundation share to the foundation",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- routes the foundation share to the foundation"
+      ]
+    },
+    {
+      "id": "pm_borrow_ignored_yield_distributed_as_if_solvent",
+      "kind": "impact",
+      "text": "So a PM borrow that should have reduced backing can instead be ignored while yield is distributed as if the protocol were solvent.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "So a PM borrow that should have reduced backing can instead be ignored while yield is distributed as if the protocol were solvent."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "count_supplied_collateral",
+    "omit_borrow_subtraction",
+    "settle_accepts_yield"
+  ],
+  "ambiguities": [
+    "Report does not state who triggers the PM supply/borrow flow or whether any caller is unauthorized.",
+    "Whether the scenario was observed in a real transaction or is only a described normal-flow possibility is not established.",
+    "Exact numeric values of borrow.value, supply.value, surplus and proposedYield are not given.",
+    "Whether settle() and distributeYield() are separate transactions and their ordering is not specified.",
+    "Omitted outcome: value distribution that should have been blocked by the onchain settlement guard (e_047f381899ce_0040)"
+  ]
+}

@@ -1,0 +1,35 @@
+You are a conservative REPORT-NARRATIVE-SUFFICIENCY gate for vulnerability reports.
+Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
+whether the supplied numbered report fragments explain the affected subject, trigger,
+direct effect, and safety-relation basis well enough to attempt P/I/V formalization.
+"ready" means only that the narrative is sufficient to try. It does not mean the
+current rule grammar can express the relation, that numeric variables and units are
+available, or that a model will successfully generate complete formulas. Those are
+judged separately from the subsequent per-impact formalization results.
+
+Required dimensions:
+1. affected_subject: identifiable affected component, function, state, asset, or actor.
+2. trigger_or_action: a concrete triggering condition, operation, call, or state transition.
+3. direct_effect: an immediate unauthorized behavior, state/value change, failed guarantee,
+   or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
+4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
+   numeric, temporal, conservation, or state-transition safety relationship can be derived.
+   The report need not explicitly say "invariant", but the relation must not be invented.
+
+Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
+Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
+dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
+list every dimension whose status is missing OR uncertain, in the required dimension
+order. decision is ready only when all four dimensions are present; otherwise decision
+is insufficient. Do not treat
+PoC availability, code availability, severity labels, or a proposed fix as substitutes.
+Return JSON only with exactly:
+{"schema_version":"report-readiness/1","decision":"ready|insufficient",
+ "dimensions":{
+  "affected_subject":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "trigger_or_action":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "direct_effect":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "safety_relation_basis":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"}},
+ "missing_dimensions":[],"summary":"short explanation"}
+REPORT FRAGMENTS:
+{"schema_version":"report-evidence/1","source_sha256":"a0365cdd6fadc019814e8b8e705a5304e55d9882034c45a1304cb2216ea87c6c","fragments":[{"id":"e_a0365cdd6fad_0001","text":"FOK fill orders WILL REVERT if only the amount rounded off is left unfilled"},{"id":"e_a0365cdd6fad_0002","text":"## Finding description and impact"},{"id":"e_a0365cdd6fad_0003","text":"From ReadMe : \"On CLOB fill, filled amounts are rounded down to the nearest lot. FOK fill orders should not revert if only the amount rounded off is left unfilled, and the user is not charged for the dust.\" [link](https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/README.md?plain=1#L31)"},{"id":"e_a0365cdd6fad_0004","text":"But right now, code enforce this instruction only if amountIsBase is false. If it is true the FOK fill Orders will get revert."},{"id":"e_a0365cdd6fad_0005","text":"https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L817"},{"id":"e_a0365cdd6fad_0006","text":"Lets say for `price = 1 ether`, there is only 1 Buy Order of `size = 10 ether` in the order book."},{"id":"e_a0365cdd6fad_0007","text":"Now the incoming Fill Ask Order has been executed with the same price and `baseAmount = 10 ether - 9` and the `lotSize = 10` , `amountIsBase = true`"},{"id":"e_a0365cdd6fad_0008","text":"the execution reaches, [@1](https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L819)  => `matchData.baseDelta =  10 ether - 10`"},{"id":"e_a0365cdd6fad_0009","text":"[@2](https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L821) => `matchData.matchedAmount = 10 ether - 10`"},{"id":"e_a0365cdd6fad_0010","text":"Function exits and reaches [here](https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L797),"},{"id":"e_a0365cdd6fad_0011","text":"`incomingOrder.amount = (10 ether - 9) - (10 ether - 10)  = 1`"},{"id":"e_a0365cdd6fad_0012","text":"And it will exit this [loop](https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L779) since there are no other matching Order. (Even if there is one more matching Order, the loop is exited from [here](https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L795) in the next iteration since `currMatch.baseDelta =  (1 /10 )* 10 = 0` without updating incomingOrder.amount. So the `incomingOrder.amount stays 1` in this case too )"},{"id":"e_a0365cdd6fad_0013","text":"Since the `1` is the remaining value that has been rounded off while dividing with the lotSize(10) , the transaction should not revert."},{"id":"e_a0365cdd6fad_0014","text":"But, inside the _processFillAskOrder() , this [condition](https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L469) checks `newOrder.amount > 0` and will revert with `FOKOrderNotFilled()` message."}]}

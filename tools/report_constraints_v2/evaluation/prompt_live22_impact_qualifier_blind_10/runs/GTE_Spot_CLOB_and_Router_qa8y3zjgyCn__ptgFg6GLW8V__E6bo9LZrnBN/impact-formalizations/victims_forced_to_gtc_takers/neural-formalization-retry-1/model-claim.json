@@ -1,0 +1,178 @@
+{
+  "schema_version": "report-formal-plan/6",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "order_placement_free",
+    "fees_only_on_matching",
+    "expiring_orders_supported"
+  ],
+  "intent_id": "intent_post_only_maker_guarantee",
+  "impact_ids": [
+    "victims_forced_to_gtc_takers"
+  ],
+  "symbols": {
+    "order_placement_fee_charged": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a fee is charged for submitting an order to the book",
+      "checkpoint": "before victim order placement",
+      "entity_ids": [
+        "clob"
+      ],
+      "source_ids": [
+        "order_placement_free"
+      ]
+    },
+    "fee_applied_only_on_match": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "trading fees are applied only when orders are actually matched and executed",
+      "checkpoint": "before victim order placement",
+      "entity_ids": [
+        "clob"
+      ],
+      "source_ids": [
+        "fees_only_on_matching"
+      ]
+    },
+    "expiring_orders_removed_with_full_refund": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "expired orders are removed from the book with a full refund to the maker without fees",
+      "checkpoint": "before victim order placement",
+      "entity_ids": [
+        "clob",
+        "expiring_order"
+      ],
+      "source_ids": [
+        "expiring_orders_supported"
+      ]
+    },
+    "victim_post_only_placed_as_maker": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the victim's POST_ONLY order is accepted and rests as a maker order (not a taker) and pays the lower maker fee",
+      "checkpoint": "after victim POST_ONLY placement attempt",
+      "entity_ids": [
+        "victim",
+        "post_only_order"
+      ],
+      "source_ids": [
+        "intent_post_only_maker_guarantee",
+        "victims_forced_to_gtc_takers"
+      ]
+    },
+    "victim_forced_to_gtc_taker": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the victim is forced to use a GTC order that immediately matches and becomes a taker",
+      "checkpoint": "after victim POST_ONLY placement attempt",
+      "entity_ids": [
+        "victim",
+        "clob"
+      ],
+      "source_ids": [
+        "victims_forced_to_gtc_takers"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "order_placement_free",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "order_placement_fee_charged",
+        "value": false
+      }
+    },
+    {
+      "source_id": "fees_only_on_matching",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "fee_applied_only_on_match",
+        "value": true
+      }
+    },
+    {
+      "source_id": "expiring_orders_supported",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "expiring_orders_removed_with_full_refund",
+        "value": true
+      }
+    }
+  ],
+  "impact_context_terms": [
+    {
+      "source_id": "victims_forced_to_gtc_takers",
+      "qualifier_types": [
+        "trigger",
+        "state"
+      ],
+      "predicate": {
+        "kind": "truth",
+        "symbol": "victim_forced_to_gtc_taker",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "required_effect",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "order_placement_fee_charged",
+          "value": false
+        },
+        {
+          "kind": "truth",
+          "symbol": "fee_applied_only_on_match",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "expiring_orders_removed_with_full_refund",
+          "value": true
+        }
+      ]
+    },
+    "effect": {
+      "kind": "truth",
+      "symbol": "victim_post_only_placed_as_maker",
+      "value": true
+    }
+  },
+  "assumptions": [
+    "Victims attempt to place POST_ONLY orders at the same price as the attacker's short-expiration orders.",
+    "The attacker's expiring orders temporarily set the best bid/ask prices, blocking legitimate POST_ONLY orders.",
+    "Expiring orders are removed shortly after placement with a full refund to the maker."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "Report does not state whether the attacker's expiring orders are themselves POST_ONLY or another order type, which affects the exact blocking mechanism.",
+      "source_ids": [
+        "attacker_places_short_expiry_orders",
+        "post_only_validation_blocks"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "missing_checkpoint",
+      "description": "Whether the attacker's orders are fully refunded before or after the victim's POST_ONLY attempt is not explicitly ordered in time.",
+      "source_ids": [
+        "expiring_orders_supported",
+        "victim_places_post_only"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Formalizes only the victims_forced_to_gtc_takers impact; other impacts are handled in separate claim-generation passes.",
+    "The fee differential (0.05% vs 0.03%) is not encoded as a numeric predicate because the selected impact is the forced taker transition, not the fee magnitude.",
+    "The POST_ONLY validation logic (getBestAskPrice() <= newOrder.price or getBestBidPrice() >= newOrder.price) is treated as root cause, not as a precondition or the selected impact."
+  ]
+}

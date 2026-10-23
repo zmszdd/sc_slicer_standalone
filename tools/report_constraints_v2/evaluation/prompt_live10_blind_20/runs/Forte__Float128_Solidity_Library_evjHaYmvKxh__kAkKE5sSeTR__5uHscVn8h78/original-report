@@ -1,0 +1,168 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Forte_ Float128 Solidity Library_evjHaYmvKxh",
+    "audit_uid": "evjHaYmvKxh",
+    "requested_submission_uid": "5uHscVn8h78",
+    "requested_finding_uid": "kAkKE5sSeTR",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Forte_Float128_Solidity_Library_evjHaYmvKxh/20260618_143618/findings.json",
+    "source_submission_uid": "5uHscVn8h78",
+    "source_finding_uid": "kAkKE5sSeTR",
+    "original_report_path": "Forte_ Float128 Solidity Library_evjHaYmvKxh\\high_valid_5uHscVn8h78.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "5uHscVn8h78",
+  "finding_uid": "kAkKE5sSeTR",
+  "finding_number": "5",
+  "title": "calculating logs of negative numbers without reverting",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "0x23r0",
+  "body": "## Finding description and impact\n\n\nThe `Ln` library does not properly account for the sign bit (`MANTISSA_SIGN_MASK`) when processing inputs. Specifically, the masks used to extract the mantissa and exponent (e.g., `MANTISSA_MASK | MANTISSA_L_FLAG_MASK`) do not include the sign bit, leading to incorrect handling of negative values. This allows users to pass negative numbers to the `ln()` function, which mathematically should revert since the logarithm of a negative number is undefined. Instead, the function silently processes the input, returning an invalid result.\n\n### Root Cause\n- The `ln()` function does not check if the input's sign bit (`MANTISSA_SIGN_MASK`) is set. This omission allows negative values to bypass validation.\n- Masks used during bitwise operations exclude the sign bit, leading to incorrect assumptions about the input's positivity.\n\n### Impact\n- **Incorrect Calculations**: The function returns invalid results for negative inputs,the natural log function is only defined for positive real numbers. Allowing negative inputs breaks mathematical correctness.\n\n\n\n## Recommended mitigation steps\n\n\n1. **Define the Sign Bit Mask:** Ensure `MANTISSA_SIGN_MASK` is properly defined in the `Ln` library to isolate the sign bit.\n2. **Check for Negative Input:** In the `ln()` function, immediately check if the input's sign bit is set. If so, revert with a descriptive error.\n\n```solidity\n// In the Ln library's constants:\nuint constant MANTISSA_SIGN_MASK = 0x1000000000000000000000000000000000000000000000000000000000000; // Isolates sign bit\n\nfunction ln(packedFloat input) public pure returns (packedFloat result) {\n    uint mantissa;\n    int exponent;\n    bool inputL;\n    assembly {\n        // Revert if sign bit is set (input is negative)\n        if and(input, MANTISSA_SIGN_MASK) {\n            let ptr := mload(0x40)\n            mstore(ptr, 0x08c379a000000000000000000000000000000000000000000000000000000000) // Error selector\n            mstore(add(ptr, 0x04), 0x20) // String offset\n            mstore(add(ptr, 0x24), 21) // Error message length: \"float128: ln of negative\"\n            mstore(add(ptr, 0x44), \"float128: ln of negative\") // Human-readable error\n            revert(ptr, 0x64) // Revert with data length (4 + 32 + 32 + 32 = 100 bytes)\n        }\n        // Proceed with original logic if check passes\n        inputL := gt(and(input, MANTISSA_L_FLAG_MASK), 0)\n        mantissa := and(input, MANTISSA_MASK)\n        exponent := sub(shr(EXPONENT_BIT, and(input, EXPONENT_MASK)), ZERO_OFFSET)\n    }\n    // Rest of the function remains unchanged...\n}\n```",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.13;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Ln} from \"../src/Ln.sol\";\nimport {Float128,packedFloat} from \"../src/Float128.sol\";\n\ncontract FloatTest2 is Test {\n\n    function testSingleValue() public {\n\n        packedFloat positivR = Float128.toPackedFloat(2, 0);\n        packedFloat negativeR = Float128.toPackedFloat(-2, 0);\n\n        packedFloat pResult = Ln.ln(positivR);\n        packedFloat nResult = Ln.ln(negativeR);\n\n        (int mantissa, int exponent)= Float128.decode(pResult);\n        console.log(\"_DECODE_Positive_Value\");\n        console.logInt(mantissa);\n        console.logInt(exponent);\n        \n        (int mantissa1, int exponent2)= Float128.decode(nResult);\n        console.log(\"_DECODE_Negative_Value\");\n        console.logInt(mantissa1);\n        console.logInt(exponent2);\n    }\n}\n```\n\nThe `Ln` library **does not revert for negative inputs** and instead returns the **same result as if the input were positive**, which is mathematically invalid.\n\n```soldity\n[PASS] testSingleValue() (gas: 81695)\nLogs:\n  _DECODE_Positive_Value\n  69314718055994530941723212145817656807\n  -38\n  _DECODE_Negative_Value\n  69314718055994530941723212145817656807\n  -38\n\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 1.92ms (907.33µs CPU time)\n\nRan 1 test suite in 11.82ms (1.92ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-04-forte/blob/main/src/Ln.sol#L63-L77"
+  ],
+  "source_record": {
+    "project_id": "evjHaYmvKxh",
+    "submission_index": "334",
+    "api_submission_id": "",
+    "uid": "5uHscVn8h78",
+    "number": "334",
+    "title": "calculating logs of negative numbers without reverting",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "0x23r0",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-04-forte/blob/main/src/Ln.sol#L63-L77"
+    ],
+    "body": "## Finding description and impact\n\n\nThe `Ln` library does not properly account for the sign bit (`MANTISSA_SIGN_MASK`) when processing inputs. Specifically, the masks used to extract the mantissa and exponent (e.g., `MANTISSA_MASK | MANTISSA_L_FLAG_MASK`) do not include the sign bit, leading to incorrect handling of negative values. This allows users to pass negative numbers to the `ln()` function, which mathematically should revert since the logarithm of a negative number is undefined. Instead, the function silently processes the input, returning an invalid result.\n\n### Root Cause\n- The `ln()` function does not check if the input's sign bit (`MANTISSA_SIGN_MASK`) is set. This omission allows negative values to bypass validation.\n- Masks used during bitwise operations exclude the sign bit, leading to incorrect assumptions about the input's positivity.\n\n### Impact\n- **Incorrect Calculations**: The function returns invalid results for negative inputs,the natural log function is only defined for positive real numbers. Allowing negative inputs breaks mathematical correctness.\n\n\n\n## Recommended mitigation steps\n\n\n1. **Define the Sign Bit Mask:** Ensure `MANTISSA_SIGN_MASK` is properly defined in the `Ln` library to isolate the sign bit.\n2. **Check for Negative Input:** In the `ln()` function, immediately check if the input's sign bit is set. If so, revert with a descriptive error.\n\n```solidity\n// In the Ln library's constants:\nuint constant MANTISSA_SIGN_MASK = 0x1000000000000000000000000000000000000000000000000000000000000; // Isolates sign bit\n\nfunction ln(packedFloat input) public pure returns (packedFloat result) {\n    uint mantissa;\n    int exponent;\n    bool inputL;\n    assembly {\n        // Revert if sign bit is set (input is negative)\n        if and(input, MANTISSA_SIGN_MASK) {\n            let ptr := mload(0x40)\n            mstore(ptr, 0x08c379a000000000000000000000000000000000000000000000000000000000) // Error selector\n            mstore(add(ptr, 0x04), 0x20) // String offset\n            mstore(add(ptr, 0x24), 21) // Error message length: \"float128: ln of negative\"\n            mstore(add(ptr, 0x44), \"float128: ln of negative\") // Human-readable error\n            revert(ptr, 0x64) // Revert with data length (4 + 32 + 32 + 32 = 100 bytes)\n        }\n        // Proceed with original logic if check passes\n        inputL := gt(and(input, MANTISSA_L_FLAG_MASK), 0)\n        mantissa := and(input, MANTISSA_MASK)\n        exponent := sub(shr(EXPONENT_BIT, and(input, EXPONENT_MASK)), ZERO_OFFSET)\n    }\n    // Rest of the function remains unchanged...\n}\n```",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.13;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Ln} from \"../src/Ln.sol\";\nimport {Float128,packedFloat} from \"../src/Float128.sol\";\n\ncontract FloatTest2 is Test {\n\n    function testSingleValue() public {\n\n        packedFloat positivR = Float128.toPackedFloat(2, 0);\n        packedFloat negativeR = Float128.toPackedFloat(-2, 0);\n\n        packedFloat pResult = Ln.ln(positivR);\n        packedFloat nResult = Ln.ln(negativeR);\n\n        (int mantissa, int exponent)= Float128.decode(pResult);\n        console.log(\"_DECODE_Positive_Value\");\n        console.logInt(mantissa);\n        console.logInt(exponent);\n        \n        (int mantissa1, int exponent2)= Float128.decode(nResult);\n        console.log(\"_DECODE_Negative_Value\");\n        console.logInt(mantissa1);\n        console.logInt(exponent2);\n    }\n}\n```\n\nThe `Ln` library **does not revert for negative inputs** and instead returns the **same result as if the input were positive**, which is mathematically invalid.\n\n```soldity\n[PASS] testSingleValue() (gas: 81695)\nLogs:\n  _DECODE_Positive_Value\n  69314718055994530941723212145817656807\n  -38\n  _DECODE_Negative_Value\n  69314718055994530941723212145817656807\n  -38\n\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 1.92ms (907.33µs CPU time)\n\nRan 1 test suite in 11.82ms (1.92ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/evjHaYmvKxh/submissions/334",
+    "raw": {
+      "auditUid": "evjHaYmvKxh",
+      "createdAt": "2025-04-10T17:42:48.313Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "s9LdDVktfZE",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-12T17:20:35.661Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "kAkKE5sSeTR"
+        },
+        {
+          "uid": "KRGa7FFutau",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-12T17:20:35.661Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "kAkKE5sSeTR"
+        },
+        {
+          "uid": "EkLBGxr8F7N",
+          "userUid": "eqSvLRBe3jX",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-04-15T17:49:57.575Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "kAkKE5sSeTR"
+        },
+        {
+          "uid": "GFomVrTSgk9",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-16T01:34:48.862Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "5uHscVn8h78",
+          "findingUid": null
+        },
+        {
+          "uid": "2agmbB7oQjv",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:08:51.342Z",
+          "type": "credit",
+          "value": "75%",
+          "submissionUid": "5uHscVn8h78",
+          "findingUid": null
+        },
+        {
+          "uid": "6xA2Apciut6",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:15:33.993Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "kAkKE5sSeTR"
+        },
+        {
+          "uid": "UQyDTawD7gt",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:15:34.805Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "kAkKE5sSeTR"
+        },
+        {
+          "uid": "3ReG8oEravw",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:47:40.720Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "5uHscVn8h78",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "kAkKE5sSeTR",
+        "number": 5,
+        "duplicates": 39
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": "75%",
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-05-07T15:00:47.683Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "calculating logs of negative numbers without reverting",
+      "uid": "5uHscVn8h78",
+      "updatedAt": "2025-04-10T17:42:48.313Z",
+      "user": {
+        "uid": "fQfzoN59St2",
+        "handle": "0x23r0"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\n\nThe `Ln` library does not properly account for the sign bit (`MANTISSA_SIGN_MASK`) when processing inputs. Specifically, the masks used to extract the mantissa and exponent (e.g., `MANTISSA_MASK | MANTISSA_L_FLAG_MASK`) do not include the sign bit, leading to incorrect handling of negative values. This allows users to pass negative numbers to the `ln()` function, which mathematically should revert since the logarithm of a negative number is undefined. Instead, the function silently processes the input, returning an invalid result.\n\n### Root Cause\n- The `ln()` function does not check if the input's sign bit (`MANTISSA_SIGN_MASK`) is set. This omission allows negative values to bypass validation.\n- Masks used during bitwise operations exclude the sign bit, leading to incorrect assumptions about the input's positivity.\n\n### Impact\n- **Incorrect Calculations**: The function returns invalid results for negative inputs,the natural log function is only defined for positive real numbers. Allowing negative inputs breaks mathematical correctness.\n\n\n\n## Recommended mitigation steps\n\n\n1. **Define the Sign Bit Mask:** Ensure `MANTISSA_SIGN_MASK` is properly defined in the `Ln` library to isolate the sign bit.\n2. **Check for Negative Input:** In the `ln()` function, immediately check if the input's sign bit is set. If so, revert with a descriptive error.\n\n```solidity\n// In the Ln library's constants:\nuint constant MANTISSA_SIGN_MASK = 0x1000000000000000000000000000000000000000000000000000000000000; // Isolates sign bit\n\nfunction ln(packedFloat input) public pure returns (packedFloat result) {\n    uint mantissa;\n    int exponent;\n    bool inputL;\n    assembly {\n        // Revert if sign bit is set (input is negative)\n        if and(input, MANTISSA_SIGN_MASK) {\n            let ptr := mload(0x40)\n            mstore(ptr, 0x08c379a000000000000000000000000000000000000000000000000000000000) // Error selector\n            mstore(add(ptr, 0x04), 0x20) // String offset\n            mstore(add(ptr, 0x24), 21) // Error message length: \"float128: ln of negative\"\n            mstore(add(ptr, 0x44), \"float128: ln of negative\") // Human-readable error\n            revert(ptr, 0x64) // Revert with data length (4 + 32 + 32 + 32 = 100 bytes)\n        }\n        // Proceed with original logic if check passes\n        inputL := gt(and(input, MANTISSA_L_FLAG_MASK), 0)\n        mantissa := and(input, MANTISSA_MASK)\n        exponent := sub(shr(EXPONENT_BIT, and(input, EXPONENT_MASK)), ZERO_OFFSET)\n    }\n    // Rest of the function remains unchanged...\n}\n```",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.13;\n\nimport {Test, console} from \"forge-std/Test.sol\";\nimport {Ln} from \"../src/Ln.sol\";\nimport {Float128,packedFloat} from \"../src/Float128.sol\";\n\ncontract FloatTest2 is Test {\n\n    function testSingleValue() public {\n\n        packedFloat positivR = Float128.toPackedFloat(2, 0);\n        packedFloat negativeR = Float128.toPackedFloat(-2, 0);\n\n        packedFloat pResult = Ln.ln(positivR);\n        packedFloat nResult = Ln.ln(negativeR);\n\n        (int mantissa, int exponent)= Float128.decode(pResult);\n        console.log(\"_DECODE_Positive_Value\");\n        console.logInt(mantissa);\n        console.logInt(exponent);\n        \n        (int mantissa1, int exponent2)= Float128.decode(nResult);\n        console.log(\"_DECODE_Negative_Value\");\n        console.logInt(mantissa1);\n        console.logInt(exponent2);\n    }\n}\n```\n\nThe `Ln` library **does not revert for negative inputs** and instead returns the **same result as if the input were positive**, which is mathematically invalid.\n\n```soldity\n[PASS] testSingleValue() (gas: 81695)\nLogs:\n  _DECODE_Positive_Value\n  69314718055994530941723212145817656807\n  -38\n  _DECODE_Negative_Value\n  69314718055994530941723212145817656807\n  -38\n\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 1.92ms (907.33µs CPU time)\n\nRan 1 test suite in 11.82ms (1.92ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-04-forte/blob/main/src/Ln.sol#L63-L77",
+      "number": 334,
+      "aiExplanation": null,
+      "_index": 334
+    }
+  }
+}

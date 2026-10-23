@@ -1,0 +1,158 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "progress_or_liveness",
+  "precondition_ids": [
+    "spot_ema_moves_first",
+    "twap_used_in_liquidation"
+  ],
+  "intent_id": "intent_stale_gate",
+  "impact_ids": [
+    "stale_gate_misbehavior"
+  ],
+  "symbols": {
+    "spot_ema_moves_first": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "short-horizon price movement has propagated into spotEMA faster than into longer-horizon EMAs",
+      "checkpoint": "before the StaleOracle gate evaluation",
+      "entity_ids": [
+        "twap_value"
+      ],
+      "source_ids": [
+        "spot_ema_moves_first"
+      ]
+    },
+    "twap_used_in_liquidation": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the TWAP returned via PanopticPool.getTWAP() is the value consumed by the liquidation solvency check and the StaleOracle gate",
+      "checkpoint": "before the StaleOracle gate evaluation",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_value"
+      ],
+      "source_ids": [
+        "twap_used_in_liquidation"
+      ]
+    },
+    "tick_delta_liquidation": {
+      "sort": "int",
+      "unit": "ticks",
+      "meaning": "the StaleOracle staleness threshold tickDeltaLiquidation",
+      "checkpoint": "gate configuration, before evaluation",
+      "entity_ids": [
+        "panoptic_pool"
+      ],
+      "source_ids": [
+        "intent_stale_gate"
+      ]
+    },
+    "tick_distance": {
+      "sort": "int",
+      "unit": "ticks",
+      "meaning": "|currentTick - twapTick|, the absolute tick distance between current tick and the TWAP tick used by the gate",
+      "checkpoint": "at StaleOracle gate evaluation",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_value"
+      ],
+      "source_ids": [
+        "intent_stale_gate"
+      ]
+    },
+    "stale_gate_misbehavior": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the StaleOracle gate outcome is altered: it proceeds when it should revert as stale, or reverts when it should proceed",
+      "checkpoint": "at StaleOracle gate evaluation",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_value"
+      ],
+      "source_ids": [
+        "intent_stale_gate",
+        "stale_gate_misbehavior"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "spot_ema_moves_first",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "spot_ema_moves_first",
+        "value": true
+      }
+    },
+    {
+      "source_id": "twap_used_in_liquidation",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "twap_used_in_liquidation",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "spot_ema_moves_first",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "twap_used_in_liquidation",
+          "value": true
+        },
+        {
+          "kind": "comparison",
+          "left": "tick_distance",
+          "operator": "gt",
+          "right": {
+            "symbol": "tick_delta_liquidation"
+          }
+        }
+      ]
+    },
+    "relation": {
+      "kind": "truth",
+      "symbol": "stale_gate_misbehavior",
+      "value": false
+    }
+  },
+  "assumptions": [
+    "The StaleOracle gate is evaluated on the TWAP returned by PanopticPool.getTWAP(), which is derived from RiskEngine.twapEMA().",
+    "tickDeltaLiquidation is a fixed positive threshold configured on the pool; its concrete value is not needed for the symbolic plan.",
+    "The gate's correct behavior is to revert when the tick distance exceeds tickDeltaLiquidation and to proceed otherwise."
+  ],
+  "unresolved": [
+    {
+      "category": "missing_report_definition",
+      "description": "The report does not give the numeric value of tickDeltaLiquidation nor a concrete currentTick/twapTick pair, so whether the misweighted TWAP actually crosses the boundary is not quantified; the plan keeps the threshold and distance symbolic.",
+      "source_ids": [
+        "intent_stale_gate",
+        "stale_gate_misbehavior"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "The report does not state who triggers the liquidation/stale-gate check or any authorization condition; the gate condition is modeled without a caller qualifier.",
+      "source_ids": [
+        "twap_used_in_liquidation",
+        "intent_stale_gate"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The plan formalizes only the stale_gate_misbehavior impact; the spot-weighted TWAP, blocked-liquidation bad debt and incorrect-liquidation impacts are handled in separate claim-generation passes and are not covered here.",
+    "The relation is stated as absence of the misbehavior under the stale condition; the exact revert/proceed encoding is deferred to code binding of the gate.",
+    "The spotEMA propagation precondition is represented as a report-grounded Boolean occurrence because the report gives no numeric EMA values."
+  ]
+}

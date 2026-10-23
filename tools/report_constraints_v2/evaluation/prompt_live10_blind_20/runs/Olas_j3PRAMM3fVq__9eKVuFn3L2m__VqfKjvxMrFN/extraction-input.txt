@@ -1,0 +1,49 @@
+UniswapPriceOracle.validatePrice() TWAP calculation is broken
+
+## Summary
+The validatePrice() function in UniswapPriceOracle.sol contains a mathematical error 
+where the calculated TWAP always equals the current spot price, rendering the 
+slippage protection completely ineffective.
+
+## Vulnerability Details
+
+The function attempts to calculate a Time-Weighted Average Price (TWAP) to compare 
+against the current spot price:
+
+solidity
+uint256 cumulativePrice = cumulativePriceLast + (tradePrice * elapsedTime);
+uint256 timeWeightedAverage = (cumulativePrice - cumulativePriceLast) / elapsedTime;
+
+
+Mathematical simplification:
+timeWeightedAverage = (cumulativePriceLast + tradePrice * elapsedTime - cumulativePriceLast) / elapsedTime
+                    = (tradePrice * elapsedTime) / elapsedTime
+                    = tradePrice
+
+
+Since timeWeightedAverage == tradePrice, the derivation calculation always returns 0:
+solidity
+uint256 derivation = (tradePrice > timeWeightedAverage)
+    ? ((tradePrice - timeWeightedAverage) * 1e16) / timeWeightedAverage
+    : ((timeWeightedAverage - tradePrice) * 1e16) / timeWeightedAverage;
+// derivation = 0 always
+
+
+This means validatePrice() always returns true regardless of price manipulation.
+
+## Impact
+
+HIGH - The slippage protection in BuyBackBurner._buyOLAS() is ineffective:
+
+1. Attacker flash loans tokens and manipulates Uniswap V2 pool price
+2. Calls buyBack() on BuyBackBurner
+3. validatePrice(maxSlippage) passes (TWAP = manipulated spot price)
+4. previousPrice captures the manipulated price
+5. Swap executes at unfavorable rate
+6. Post-swap check compares against already-manipulated previousPrice, so it passes
+7. Protocol loses funds to sandwich attack
+
+Affected functions:
+- BuyBackBurner.sol:185 - pre-swap validation
+- LiquidityManagerETH.sol:170
+- LiquidityManagerOptimism.sol:232

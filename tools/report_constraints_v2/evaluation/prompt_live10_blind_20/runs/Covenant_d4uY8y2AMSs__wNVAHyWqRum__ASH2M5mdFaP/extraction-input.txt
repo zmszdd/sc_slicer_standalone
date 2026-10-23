@@ -1,0 +1,60 @@
+# CrossAdapter doesn't handle inverse direction in updatePriceFeeds
+
+## Summary
+
+The CrossAdapter contract supports both forward and inverse direction for price queries (like getQuote), but it forgot to add the same direction logic in updatePriceFeeds. This causes price updates to fail when called in the inverse direction.
+
+## Vulnerability Details
+
+CrossAdapter is designed to chain two oracles together. For example, to price wstETH/USD, it goes through stETH as a middle token:
+- Forward: wstETH → stETH → USD
+- Inverse: USD → stETH → wstETH
+
+The contract has a function called `getQuote` that correctly handles both directions:
+
+
+But when we look at `updatePriceFeeds`, it's missing this direction check:
+
+
+### What goes wrong
+
+Let's say we have CrossAdapter set up like this:
+- base = wstETH
+- cross = stETH
+- quote = USD
+- oracleBaseCross = handles wstETH/stETH
+- oracleCrossQuote = handles stETH/USD
+
+**Forward direction (BASE, QUOTE) - Works fine:**
+
+**Inverse direction (QUOTE, BASE) - Breaks:**
+
+The oracles return wrong fees (likely 0) because they're being asked about token pairs they don't know about. Then the transaction reverts because the total fee doesn't match what was sent.
+
+## Impact
+
+1. **Price updates fail in inverse direction** - Any call to updatePriceFeeds with inverse parameters will revert
+2. **Prices become stale** - If a market needs inverse direction pricing, it can't update prices
+3. **Users get bad rates** - Stale prices mean users trade at worse rates than they should
+4. **Inconsistent behavior** - getQuote works both ways, but updatePriceFeeds only works one way
+
+This is clearly a bug and not how it's supposed to work because:
+- The contract documentation explicitly mentions "inverse direction" 
+- There's a test that checks inverse direction for getQuote
+- getQuote and previewGetQuote both handle inverse correctly
+- Only updatePriceFeeds is missing this logic
+
+
+The test proves:
+1. Inverse direction is supposed to work (it works for getQuote)
+2. Inverse direction fails for updatePriceFeeds (missing direction check)
+
+## Recommended Fix
+
+Add the same direction check that getQuote uses to updatePriceFeeds:
+
+
+Do the same fix for `_getUpdateFee`:
+
+
+This makes updatePriceFeeds work the same way as getQuote - checking direction and calling the right oracles in the right order.

@@ -1,0 +1,120 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Spot CLOB and Router_qa8y3zjgyCn",
+    "audit_uid": "qa8y3zjgyCn",
+    "requested_submission_uid": "Ws5DsjdSLkG",
+    "requested_finding_uid": "LDE4mUbttzn",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Spot_CLOB_and_Router_qa8y3zjgyCn/20260618_143057/findings.json",
+    "source_submission_uid": "Ws5DsjdSLkG",
+    "source_finding_uid": "LDE4mUbttzn",
+    "original_report_path": "GTE Spot CLOB and Router_qa8y3zjgyCn\\medium_valid_Ws5DsjdSLkG.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "Ws5DsjdSLkG",
+  "finding_uid": "LDE4mUbttzn",
+  "finding_number": "15",
+  "title": "FOK fill orders revert when not a multiple of lotSize",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "Soosh",
+  "body": "### Summary\nUnder CLOB Fill Rounding of the documentation: \n> \"On CLOB fill, filled amounts are rounded down to the nearest lot. FOK fill orders _should_ not revert if only the amount rounded off is left unfilled\"\n\nHowever, it is the case that FOK fill orders **will revert** even if only the amount rounded off is left unfilled.\n\n### Details\nThe `currMatch.matchedAmount` is a multiple of lot size as it is derived from\n```solidity\nmatchData.baseDelta = (matchedBase.min(takerOrder.amount) / lotSize) * lotSize;\nmatchData.quoteDelta = ds.getQuoteTokenAmount(matchedPrice, matchData.baseDelta);\nmatchData.matchedAmount = matchData.baseDelta;\n```\n\nIf the incoming order has amount that is not a multiple of lot size, the line `incomingOrder.amount -= currMatch.matchedAmount;` will return a non-zero amount and therefore revert with `FOKOrderNotFilled()`.\n\n`if (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount > 0) revert FOKOrderNotFilled();`\n\nTherefore, the FOK order is reverted even though only the amount rounded off is left unfilled.\n\n### Remediation\nRound the incoming order down to the nearest lot size",
+  "proof_of_concept": "### PoC\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PoCTestBase} from \"./PoCTestBase.t.sol\";\nimport {Side, Order} from \"../../contracts/clob/types/Order.sol\";\nimport {ICLOB} from \"../../contracts/clob/ICLOB.sol\";\n\ncontract PoC is PoCTestBase {\n    function test_submissionValidity() external {\n        address maker = users[0];\n        address taker = users[1];\n        vm.label(maker, \"maker\");\n        vm.label(taker, \"taker\");\n\n        uint256 amountInBase = 1 ether;\n        uint256 price = 100 ether;\n\n        // Change Lot Size to 10\n        vm.prank(address(clobManager));\n        clob.setLotSizeInBase(10);\n        \n        // Maker looking to sell\n        setupOrder(Side.SELL, maker, amountInBase, price);\n    \n        // Fill order does not have any checks\n        uint256 takerAmount = amountInBase - 5; // not a multiple of lotSize\n        setupTokens(Side.BUY, taker, takerAmount, price, true);\n\n        ICLOB.PostFillOrderArgs memory fillArgs = ICLOB.PostFillOrderArgs({\n            amount: takerAmount,\n            priceLimit: price ,\n            side: Side.BUY,\n            amountIsBase: true,\n            fillOrderType: ICLOB.FillOrderType.FILL_OR_KILL\n        });\n\n        vm.expectRevert(\"FOKOrderNotFilled()\");\n        vm.prank(taker);\n        clob.postFillOrder(taker, fillArgs);\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L763",
+    "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L797"
+  ],
+  "source_record": {
+    "project_id": "qa8y3zjgyCn",
+    "submission_index": "573",
+    "api_submission_id": "",
+    "uid": "Ws5DsjdSLkG",
+    "number": "573",
+    "title": "FOK fill orders revert when not a multiple of lotSize",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "Soosh",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L763",
+      "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L797"
+    ],
+    "body": "### Summary\nUnder CLOB Fill Rounding of the documentation: \n> \"On CLOB fill, filled amounts are rounded down to the nearest lot. FOK fill orders _should_ not revert if only the amount rounded off is left unfilled\"\n\nHowever, it is the case that FOK fill orders **will revert** even if only the amount rounded off is left unfilled.\n\n### Details\nThe `currMatch.matchedAmount` is a multiple of lot size as it is derived from\n```solidity\nmatchData.baseDelta = (matchedBase.min(takerOrder.amount) / lotSize) * lotSize;\nmatchData.quoteDelta = ds.getQuoteTokenAmount(matchedPrice, matchData.baseDelta);\nmatchData.matchedAmount = matchData.baseDelta;\n```\n\nIf the incoming order has amount that is not a multiple of lot size, the line `incomingOrder.amount -= currMatch.matchedAmount;` will return a non-zero amount and therefore revert with `FOKOrderNotFilled()`.\n\n`if (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount > 0) revert FOKOrderNotFilled();`\n\nTherefore, the FOK order is reverted even though only the amount rounded off is left unfilled.\n\n### Remediation\nRound the incoming order down to the nearest lot size",
+    "proof_of_concept": "### PoC\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PoCTestBase} from \"./PoCTestBase.t.sol\";\nimport {Side, Order} from \"../../contracts/clob/types/Order.sol\";\nimport {ICLOB} from \"../../contracts/clob/ICLOB.sol\";\n\ncontract PoC is PoCTestBase {\n    function test_submissionValidity() external {\n        address maker = users[0];\n        address taker = users[1];\n        vm.label(maker, \"maker\");\n        vm.label(taker, \"taker\");\n\n        uint256 amountInBase = 1 ether;\n        uint256 price = 100 ether;\n\n        // Change Lot Size to 10\n        vm.prank(address(clobManager));\n        clob.setLotSizeInBase(10);\n        \n        // Maker looking to sell\n        setupOrder(Side.SELL, maker, amountInBase, price);\n    \n        // Fill order does not have any checks\n        uint256 takerAmount = amountInBase - 5; // not a multiple of lotSize\n        setupTokens(Side.BUY, taker, takerAmount, price, true);\n\n        ICLOB.PostFillOrderArgs memory fillArgs = ICLOB.PostFillOrderArgs({\n            amount: takerAmount,\n            priceLimit: price ,\n            side: Side.BUY,\n            amountIsBase: true,\n            fillOrderType: ICLOB.FillOrderType.FILL_OR_KILL\n        });\n\n        vm.expectRevert(\"FOKOrderNotFilled()\");\n        vm.prank(taker);\n        clob.postFillOrder(taker, fillArgs);\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/qa8y3zjgyCn/submissions/573",
+    "raw": {
+      "auditUid": "qa8y3zjgyCn",
+      "createdAt": "2025-08-05T09:09:53.072Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "97SqpgAyp6T",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-25T12:15:37.059Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "LDE4mUbttzn"
+        },
+        {
+          "uid": "t5TjExe5bRs",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-25T12:15:38.547Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "LDE4mUbttzn"
+        },
+        {
+          "uid": "XLow9Daxgz5",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-08-12T10:54:33.276Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "Ws5DsjdSLkG",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "LDE4mUbttzn",
+        "number": 15,
+        "duplicates": 31
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-08-12T10:54:33.276Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "FOK fill orders revert when not a multiple of lotSize",
+      "uid": "Ws5DsjdSLkG",
+      "updatedAt": "2025-08-05T09:09:53.072Z",
+      "user": {
+        "uid": "R5nCBahcARS",
+        "handle": "Soosh"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Summary\nUnder CLOB Fill Rounding of the documentation: \n> \"On CLOB fill, filled amounts are rounded down to the nearest lot. FOK fill orders _should_ not revert if only the amount rounded off is left unfilled\"\n\nHowever, it is the case that FOK fill orders **will revert** even if only the amount rounded off is left unfilled.\n\n### Details\nThe `currMatch.matchedAmount` is a multiple of lot size as it is derived from\n```solidity\nmatchData.baseDelta = (matchedBase.min(takerOrder.amount) / lotSize) * lotSize;\nmatchData.quoteDelta = ds.getQuoteTokenAmount(matchedPrice, matchData.baseDelta);\nmatchData.matchedAmount = matchData.baseDelta;\n```\n\nIf the incoming order has amount that is not a multiple of lot size, the line `incomingOrder.amount -= currMatch.matchedAmount;` will return a non-zero amount and therefore revert with `FOKOrderNotFilled()`.\n\n`if (args.fillOrderType == FillOrderType.FILL_OR_KILL && newOrder.amount > 0) revert FOKOrderNotFilled();`\n\nTherefore, the FOK order is reverted even though only the amount rounded off is left unfilled.\n\n### Remediation\nRound the incoming order down to the nearest lot size",
+      "proofOfConcept": "### PoC\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PoCTestBase} from \"./PoCTestBase.t.sol\";\nimport {Side, Order} from \"../../contracts/clob/types/Order.sol\";\nimport {ICLOB} from \"../../contracts/clob/ICLOB.sol\";\n\ncontract PoC is PoCTestBase {\n    function test_submissionValidity() external {\n        address maker = users[0];\n        address taker = users[1];\n        vm.label(maker, \"maker\");\n        vm.label(taker, \"taker\");\n\n        uint256 amountInBase = 1 ether;\n        uint256 price = 100 ether;\n\n        // Change Lot Size to 10\n        vm.prank(address(clobManager));\n        clob.setLotSizeInBase(10);\n        \n        // Maker looking to sell\n        setupOrder(Side.SELL, maker, amountInBase, price);\n    \n        // Fill order does not have any checks\n        uint256 takerAmount = amountInBase - 5; // not a multiple of lotSize\n        setupTokens(Side.BUY, taker, takerAmount, price, true);\n\n        ICLOB.PostFillOrderArgs memory fillArgs = ICLOB.PostFillOrderArgs({\n            amount: takerAmount,\n            priceLimit: price ,\n            side: Side.BUY,\n            amountIsBase: true,\n            fillOrderType: ICLOB.FillOrderType.FILL_OR_KILL\n        });\n\n        vm.expectRevert(\"FOKOrderNotFilled()\");\n        vm.prank(taker);\n        clob.postFillOrder(taker, fillArgs);\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L763,https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L797",
+      "number": 573,
+      "aiExplanation": null,
+      "_index": 573
+    }
+  }
+}

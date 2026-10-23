@@ -1,0 +1,231 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "GaugeV2 reward accrual and distribution when total staked supply is zero",
+    "environment": "GaugeV2 contract (ve33/contracts/GaugeV2.sol)",
+    "evidence": [
+      "The GaugeV2 contract's reward accrual mechanism fails to properly account for emissions when the total supply of staked tokens is zero, resulting in reward tokens being transferred to the contract but never becoming claimable by users. The issue arises in the reward distribution logic where rewards are accrued proportionally to the total supply. Specifically, in the [`rewardPerToken`](https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GaugeV2.sol#L180-L186) function, if _totalSupply == 0, it returns the stored value without adding the time-based accrual (lastTimeRewardApplicable() - lastUpdateTime) * rewardRate * 1e18 / _totalSupp",
+      "ly. Meanwhile, the updateReward modifier, called during user interactions or notifications, advances lastUpdateTime to the current applicable time regardless of supply. This skips reward accumulation for empty periods, and subsequent notifyRewardAmount calls only consider leftovers from the remaining time after the advanced lastUpdateTime, leaving previously skipped rewards unaccounted for and trapped in the contract's balance. The highest impact scenario occurs when the gauge remains empty for an entire reward duration (one week), causing the full epoch's emissions to become permanently unclaimable.",
+      "In the[ `rewardPerToken`](https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GaugeV2.sol#L180-L186) function of GaugeV2, when _totalSupply == 0, the function skips the addition of new accrued rewards and returns only the stored value, while `lastUpdateTime` is still updated forward in the updateReward modifier, preventing retroactive accrual of skipped periods.",
+      "1. Users call withdraw or withdrawAll to remove all staked tokens from the gauge, setting _totalSupply to zero.",
+      "2. Time passes without any deposits, and during this period, notifyRewardAmount",
+      "may be called by the distribution contract to add new rewards, but accrual is skipped in rewardPerToken",
+      "due to zero supply while lastUpdateTime advances.",
+      "3. Even after new deposits occur and users interact (e.g., via `deposit`), the skipped rewards remain unaccrued and unclaimable, as future calculations do not retroactively include the empty period's emissions.",
+      "Entire epochs of reward emissions can become permanently stuck in the contract, leading to protocol fund loss without recovery, with higher impact in low-liquidity gauges that frequently empty, potentially wasting significant token allocations over time."
+    ]
+  },
+  "entities": [
+    {
+      "id": "gauge_v2",
+      "name": "GaugeV2 contract",
+      "role": "contract",
+      "evidence": [
+        "The GaugeV2 contract's reward accrual mechanism fails to properly account for emissions when the total supply of staked tokens is zero, resulting in reward tokens being transferred to the contract but never becoming claimable by users. The issue arises in the reward distribution logic where rewards are accrued proportionally to the total supply. Specifically, in the [`rewardPerToken`](https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GaugeV2.sol#L180-L186) function, if _totalSupply == 0, it returns the stored value without adding the time-based accrual (lastTimeRewardApplicable() - lastUpdateTime) * rewardRate * 1e18 / _totalSupp",
+        "In the[ `rewardPerToken`](https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GaugeV2.sol#L180-L186) function of GaugeV2, when _totalSupply == 0, the function skips the addition of new accrued rewards and returns only the stored value, while `lastUpdateTime` is still updated forward in the updateReward modifier, preventing retroactive accrual of skipped periods."
+      ]
+    },
+    {
+      "id": "users",
+      "name": "Stakers/users",
+      "role": "victim",
+      "evidence": [
+        "1. Users call withdraw or withdrawAll to remove all staked tokens from the gauge, setting _totalSupply to zero.",
+        "3. Even after new deposits occur and users interact (e.g., via `deposit`), the skipped rewards remain unaccrued and unclaimable, as future calculations do not retroactively include the empty period's emissions."
+      ]
+    },
+    {
+      "id": "distribution_contract",
+      "name": "Reward distribution contract",
+      "role": "authority",
+      "evidence": [
+        "2. Time passes without any deposits, and during this period, notifyRewardAmount",
+        "may be called by the distribution contract to add new rewards, but accrual is skipped in rewardPerToken"
+      ]
+    },
+    {
+      "id": "reward_tokens",
+      "name": "Reward tokens",
+      "role": "asset",
+      "evidence": [
+        "The GaugeV2 contract's reward accrual mechanism fails to properly account for emissions when the total supply of staked tokens is zero, resulting in reward tokens being transferred to the contract but never becoming claimable by users. The issue arises in the reward distribution logic where rewards are accrued proportionally to the total supply. Specifically, in the [`rewardPerToken`](https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GaugeV2.sol#L180-L186) function, if _totalSupply == 0, it returns the stored value without adding the time-based accrual (lastTimeRewardApplicable() - lastUpdateTime) * rewardRate * 1e18 / _totalSupp",
+        "Entire epochs of reward emissions can become permanently stuck in the contract, leading to protocol fund loss without recovery, with higher impact in low-liquidity gauges that frequently empty, potentially wasting significant token allocations over time."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_total_supply_zero",
+      "kind": "precondition",
+      "text": "Users call withdraw or withdrawAll to remove all staked tokens from the gauge, setting _totalSupply to zero.",
+      "modality": "asserted",
+      "entity_ids": [
+        "users",
+        "gauge_v2"
+      ],
+      "evidence": [
+        "1. Users call withdraw or withdrawAll to remove all staked tokens from the gauge, setting _totalSupply to zero."
+      ]
+    },
+    {
+      "id": "p_time_passes_no_deposits",
+      "kind": "precondition",
+      "text": "Time passes without any deposits while the gauge total supply is zero.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_v2"
+      ],
+      "evidence": [
+        "2. Time passes without any deposits, and during this period, notifyRewardAmount"
+      ]
+    },
+    {
+      "id": "p_notify_reward_amount",
+      "kind": "precondition",
+      "text": "During the empty period, notifyRewardAmount may be called by the distribution contract to add new rewards.",
+      "modality": "potential",
+      "entity_ids": [
+        "distribution_contract",
+        "gauge_v2"
+      ],
+      "evidence": [
+        "2. Time passes without any deposits, and during this period, notifyRewardAmount",
+        "may be called by the distribution contract to add new rewards, but accrual is skipped in rewardPerToken"
+      ]
+    },
+    {
+      "id": "a_accrual_skipped",
+      "kind": "action",
+      "text": "rewardPerToken is invoked while _totalSupply == 0 and skips adding time-based accrual, returning only the stored value.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_v2"
+      ],
+      "evidence": [
+        "The GaugeV2 contract's reward accrual mechanism fails to properly account for emissions when the total supply of staked tokens is zero, resulting in reward tokens being transferred to the contract but never becoming claimable by users. The issue arises in the reward distribution logic where rewards are accrued proportionally to the total supply. Specifically, in the [`rewardPerToken`](https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GaugeV2.sol#L180-L186) function, if _totalSupply == 0, it returns the stored value without adding the time-based accrual (lastTimeRewardApplicable() - lastUpdateTime) * rewardRate * 1e18 / _totalSupp",
+        "In the[ `rewardPerToken`](https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GaugeV2.sol#L180-L186) function of GaugeV2, when _totalSupply == 0, the function skips the addition of new accrued rewards and returns only the stored value, while `lastUpdateTime` is still updated forward in the updateReward modifier, preventing retroactive accrual of skipped periods.",
+        "may be called by the distribution contract to add new rewards, but accrual is skipped in rewardPerToken"
+      ]
+    },
+    {
+      "id": "a_last_update_advances",
+      "kind": "action",
+      "text": "The updateReward modifier advances lastUpdateTime to the current applicable time regardless of supply.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_v2"
+      ],
+      "evidence": [
+        "ly. Meanwhile, the updateReward modifier, called during user interactions or notifications, advances lastUpdateTime to the current applicable time regardless of supply. This skips reward accumulation for empty periods, and subsequent notifyRewardAmount calls only consider leftovers from the remaining time after the advanced lastUpdateTime, leaving previously skipped rewards unaccounted for and trapped in the contract's balance. The highest impact scenario occurs when the gauge remains empty for an entire reward duration (one week), causing the full epoch's emissions to become permanently unclaimable.",
+        "due to zero supply while lastUpdateTime advances."
+      ]
+    },
+    {
+      "id": "a_new_deposits",
+      "kind": "action",
+      "text": "New deposits occur and users interact (e.g., via deposit) after the empty period.",
+      "modality": "asserted",
+      "entity_ids": [
+        "users",
+        "gauge_v2"
+      ],
+      "evidence": [
+        "3. Even after new deposits occur and users interact (e.g., via `deposit`), the skipped rewards remain unaccrued and unclaimable, as future calculations do not retroactively include the empty period's emissions."
+      ]
+    },
+    {
+      "id": "rc_skipped_rewards_unaccounted",
+      "kind": "root_cause",
+      "text": "Because lastUpdateTime advances during zero-supply periods while rewardPerToken adds no accrual, subsequent notifyRewardAmount calls only consider leftovers from the remaining time after the advanced lastUpdateTime, leaving previously skipped rewards unaccounted for and trapped in the contract's balance.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gauge_v2",
+        "reward_tokens"
+      ],
+      "evidence": [
+        "ly. Meanwhile, the updateReward modifier, called during user interactions or notifications, advances lastUpdateTime to the current applicable time regardless of supply. This skips reward accumulation for empty periods, and subsequent notifyRewardAmount calls only consider leftovers from the remaining time after the advanced lastUpdateTime, leaving previously skipped rewards unaccounted for and trapped in the contract's balance. The highest impact scenario occurs when the gauge remains empty for an entire reward duration (one week), causing the full epoch's emissions to become permanently unclaimable.",
+        "In the[ `rewardPerToken`](https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GaugeV2.sol#L180-L186) function of GaugeV2, when _totalSupply == 0, the function skips the addition of new accrued rewards and returns only the stored value, while `lastUpdateTime` is still updated forward in the updateReward modifier, preventing retroactive accrual of skipped periods.",
+        "due to zero supply while lastUpdateTime advances."
+      ]
+    },
+    {
+      "id": "i_epoch_stuck",
+      "kind": "impact",
+      "text": "Entire epochs of reward emissions can become permanently stuck in the contract, leading to protocol fund loss without recovery.",
+      "modality": "potential",
+      "entity_ids": [
+        "gauge_v2",
+        "reward_tokens"
+      ],
+      "evidence": [
+        "Entire epochs of reward emissions can become permanently stuck in the contract, leading to protocol fund loss without recovery, with higher impact in low-liquidity gauges that frequently empty, potentially wasting significant token allocations over time."
+      ]
+    },
+    {
+      "id": "i_full_epoch_unclaimable",
+      "kind": "impact",
+      "text": "When the gauge remains empty for an entire reward duration (one week), the full epoch's emissions become permanently unclaimable.",
+      "modality": "potential",
+      "entity_ids": [
+        "gauge_v2",
+        "reward_tokens"
+      ],
+      "evidence": [
+        "ly. Meanwhile, the updateReward modifier, called during user interactions or notifications, advances lastUpdateTime to the current applicable time regardless of supply. This skips reward accumulation for empty periods, and subsequent notifyRewardAmount calls only consider leftovers from the remaining time after the advanced lastUpdateTime, leaving previously skipped rewards unaccounted for and trapped in the contract's balance. The highest impact scenario occurs when the gauge remains empty for an entire reward duration (one week), causing the full epoch's emissions to become permanently unclaimable."
+      ]
+    },
+    {
+      "id": "i_skipped_unclaimable_after_deposit",
+      "kind": "impact",
+      "text": "Even after new deposits and user interactions, the skipped rewards remain unaccrued and unclaimable, as future calculations do not retroactively include the empty period's emissions.",
+      "modality": "asserted",
+      "entity_ids": [
+        "users",
+        "gauge_v2",
+        "reward_tokens"
+      ],
+      "evidence": [
+        "3. Even after new deposits occur and users interact (e.g., via `deposit`), the skipped rewards remain unaccrued and unclaimable, as future calculations do not retroactively include the empty period's emissions."
+      ]
+    },
+    {
+      "id": "i_low_liquidity_waste",
+      "kind": "impact",
+      "text": "Higher impact occurs in low-liquidity gauges that frequently empty, potentially wasting significant token allocations over time.",
+      "modality": "potential",
+      "entity_ids": [
+        "gauge_v2",
+        "reward_tokens"
+      ],
+      "evidence": [
+        "Entire epochs of reward emissions can become permanently stuck in the contract, leading to protocol fund loss without recovery, with higher impact in low-liquidity gauges that frequently empty, potentially wasting significant token allocations over time."
+      ]
+    },
+    {
+      "id": "si_accrue_or_preserve",
+      "kind": "security_intent",
+      "text": "Reward emissions distributed during a period should either be accrued proportionally to total supply or remain claimable later; advancing lastUpdateTime must not permanently discard emissions for zero-supply periods.",
+      "modality": "inferred",
+      "entity_ids": [
+        "gauge_v2",
+        "reward_tokens"
+      ],
+      "evidence": [
+        "The GaugeV2 contract's reward accrual mechanism fails to properly account for emissions when the total supply of staked tokens is zero, resulting in reward tokens being transferred to the contract but never becoming claimable by users. The issue arises in the reward distribution logic where rewards are accrued proportionally to the total supply. Specifically, in the [`rewardPerToken`](https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GaugeV2.sol#L180-L186) function, if _totalSupply == 0, it returns the stored value without adding the time-based accrual (lastTimeRewardApplicable() - lastUpdateTime) * rewardRate * 1e18 / _totalSupp",
+        "ly. Meanwhile, the updateReward modifier, called during user interactions or notifications, advances lastUpdateTime to the current applicable time regardless of supply. This skips reward accumulation for empty periods, and subsequent notifyRewardAmount calls only consider leftovers from the remaining time after the advanced lastUpdateTime, leaving previously skipped rewards unaccounted for and trapped in the contract's balance. The highest impact scenario occurs when the gauge remains empty for an entire reward duration (one week), causing the full epoch's emissions to become permanently unclaimable.",
+        "In the[ `rewardPerToken`](https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GaugeV2.sol#L180-L186) function of GaugeV2, when _totalSupply == 0, the function skips the addition of new accrued rewards and returns only the stored value, while `lastUpdateTime` is still updated forward in the updateReward modifier, preventing retroactive accrual of skipped periods."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_accrual_skipped",
+    "a_last_update_advances",
+    "a_new_deposits"
+  ],
+  "ambiguities": [
+    "Report does not state who triggers the updateReward modifier during the empty period or the exact transaction ordering.",
+    "Whether notifyRewardAmount is actually called during the empty period is conditional ('may be called').",
+    "No concrete numeric amounts or specific epoch values are given for the stuck emissions.",
+    "The claim that skipped rewards are 'permanently' unclaimable is asserted by the report but no recovery-attempt evidence is provided."
+  ]
+}

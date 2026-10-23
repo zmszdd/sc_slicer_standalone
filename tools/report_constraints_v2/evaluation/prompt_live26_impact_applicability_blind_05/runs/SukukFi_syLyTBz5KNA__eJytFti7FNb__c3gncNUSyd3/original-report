@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "c3gncNUSyd3",
+    "requested_finding_uid": "eJytFti7FNb",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "c3gncNUSyd3",
+    "source_finding_uid": "eJytFti7FNb",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\medium_valid_c3gncNUSyd3.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "c3gncNUSyd3",
+  "finding_uid": "eJytFti7FNb",
+  "finding_number": "2",
+  "title": "Assets Can Be Permanently Stuck in `WERC7575Vault` Prevent Vault Unregistration (DoS)",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "Sneks",
+  "body": "## Finding description and impact\n\nThe `WERC7575Vault` is designed for, 1:1 asset-to-share conversion (with decimal scaling). It relies on the dedicated functions `deposit()` or `mint()` to receive the underlying asset. \n\nThe vulnerability arises because the vault contract does not prevent direct asset transfers to its address. Increases the vault's `totalAssets()` without minting any shares.\n\nWhen the `WERC7575ShareToken.unregisterVault(asset)` function is called, it performs a crucial safety check:\n```solidity\nif (totalAssets != 0) revert CannotUnregisterVaultAssetBalance();\n```\nThe stuck assets have no matching shares, meaning no one can call `redeem()` or `withdraw()` to clear them out. The vault has no mechanism to recover these funds, leading to unrecoverable fund and DoS for `unregisterVault()` function\n\n## Recommended mitigation steps\n\nImplement a function to allow the contract owner to safely transfer any excess assets out of the vault. This function must be strictly controlled to ensure it only removes funds that do not correspond to shares",
+  "proof_of_concept": "In `test/VaultDeactivation.t.sol` run `forge test --mt testAssetTokenStuckInVault`\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {ERC20Faucet} from \"../src/ERC20Faucet.sol\";\nimport {WERC7575ShareToken} from \"../src/WERC7575ShareToken.sol\";\nimport {WERC7575Vault} from \"../src/WERC7575Vault.sol\";\n\nimport {IERC7575Errors} from \"../src/interfaces/IERC7575Errors.sol\";\n\nimport {Ownable} from \"@openzeppelin/contracts/access/Ownable.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\nimport {Test} from \"forge-std/Test.sol\";\nimport {console} from \"forge-std/console.sol\";\n\ncontract VaultDeactivationTest is Test {\n    WERC7575ShareToken public shareToken;\n    WERC7575Vault public usdcVault;\n    ERC20Faucet public usdc;\n\n    address public owner = address(this);\n    address public user1 = address(0x1);\n    address public user2 = address(0x2);\n\n    function setUp() public {\n        // Deploy faucet token\n        usdc = new ERC20Faucet(\"USD Coin\", \"USDC\", 1_000_000 * 10 ** 6);\n\n        // Override decimals for testing\n        vm.mockCall(address(usdc), abi.encodeWithSignature(\"decimals()\"), abi.encode(uint8(6)));\n\n        // Deploy share token\n        shareToken = new WERC7575ShareToken(\"Multi-Asset Share Token\", \"MAST\");\n\n        // Deploy vault\n        usdcVault = new WERC7575Vault(address(usdc), shareToken);\n\n        // Register vault with share token\n        shareToken.registerVault(address(usdc), address(usdcVault));\n\n        // KYC users\n        shareToken.setKycVerified(user1, true);\n        shareToken.setKycVerified(user2, true);\n\n        // Setup user balances\n        usdc.transfer(user1, 1000 * 10 ** 6); // 1000 USDC\n        usdc.transfer(user2, 1000 * 10 ** 6); // 1000 USDC\n    }\n\n    /**\n     * @dev Test vault can be deactivated before removal\n     */\n    function testAssetTokenStuckInVault() public {\n        // Setup: user transfer to vault\n        vm.startPrank(user1);\n        usdc.transfer(address(usdcVault), 100 * 10 ** 6);\n        vm.stopPrank();\n\n        // Deactivate vault\n        usdcVault.setVaultActive(false);\n\n        // Cannot remove vault yet (has outstanding assets)\n        vm.expectRevert(IERC7575Errors.CannotUnregisterVaultAssetBalance.selector);\n        shareToken.unregisterVault(address(usdc));\n\n        // Verify vault is deactivated and still has outstanding assets and no one can remove it\n        assertFalse(usdcVault.isVaultActive());\n        assertEq(usdcVault.totalAssets(), 100 * 10 ** 6);\n        assertEq(shareToken.totalSupply(), 0);\n        assertEq(shareToken.balanceOf(user1), 0);\n    }\n}\n```\nresult:\n```\nRan 1 test for test/VaultDeactivation.t.sol:VaultDeactivationTest\n[PASS] testAssetTokenStuckInVault() (gas: 78767)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 7.11ms (4.71ms CPU time)\n\nRan 1 test suite in 72.96ms (7.11ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L256-L285"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "661",
+    "api_submission_id": "",
+    "uid": "c3gncNUSyd3",
+    "number": "661",
+    "title": "Assets Can Be Permanently Stuck in `WERC7575Vault` Prevent Vault Unregistration (DoS)",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "Sneks",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L256-L285"
+    ],
+    "body": "## Finding description and impact\n\nThe `WERC7575Vault` is designed for, 1:1 asset-to-share conversion (with decimal scaling). It relies on the dedicated functions `deposit()` or `mint()` to receive the underlying asset. \n\nThe vulnerability arises because the vault contract does not prevent direct asset transfers to its address. Increases the vault's `totalAssets()` without minting any shares.\n\nWhen the `WERC7575ShareToken.unregisterVault(asset)` function is called, it performs a crucial safety check:\n```solidity\nif (totalAssets != 0) revert CannotUnregisterVaultAssetBalance();\n```\nThe stuck assets have no matching shares, meaning no one can call `redeem()` or `withdraw()` to clear them out. The vault has no mechanism to recover these funds, leading to unrecoverable fund and DoS for `unregisterVault()` function\n\n## Recommended mitigation steps\n\nImplement a function to allow the contract owner to safely transfer any excess assets out of the vault. This function must be strictly controlled to ensure it only removes funds that do not correspond to shares",
+    "proof_of_concept": "In `test/VaultDeactivation.t.sol` run `forge test --mt testAssetTokenStuckInVault`\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {ERC20Faucet} from \"../src/ERC20Faucet.sol\";\nimport {WERC7575ShareToken} from \"../src/WERC7575ShareToken.sol\";\nimport {WERC7575Vault} from \"../src/WERC7575Vault.sol\";\n\nimport {IERC7575Errors} from \"../src/interfaces/IERC7575Errors.sol\";\n\nimport {Ownable} from \"@openzeppelin/contracts/access/Ownable.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\nimport {Test} from \"forge-std/Test.sol\";\nimport {console} from \"forge-std/console.sol\";\n\ncontract VaultDeactivationTest is Test {\n    WERC7575ShareToken public shareToken;\n    WERC7575Vault public usdcVault;\n    ERC20Faucet public usdc;\n\n    address public owner = address(this);\n    address public user1 = address(0x1);\n    address public user2 = address(0x2);\n\n    function setUp() public {\n        // Deploy faucet token\n        usdc = new ERC20Faucet(\"USD Coin\", \"USDC\", 1_000_000 * 10 ** 6);\n\n        // Override decimals for testing\n        vm.mockCall(address(usdc), abi.encodeWithSignature(\"decimals()\"), abi.encode(uint8(6)));\n\n        // Deploy share token\n        shareToken = new WERC7575ShareToken(\"Multi-Asset Share Token\", \"MAST\");\n\n        // Deploy vault\n        usdcVault = new WERC7575Vault(address(usdc), shareToken);\n\n        // Register vault with share token\n        shareToken.registerVault(address(usdc), address(usdcVault));\n\n        // KYC users\n        shareToken.setKycVerified(user1, true);\n        shareToken.setKycVerified(user2, true);\n\n        // Setup user balances\n        usdc.transfer(user1, 1000 * 10 ** 6); // 1000 USDC\n        usdc.transfer(user2, 1000 * 10 ** 6); // 1000 USDC\n    }\n\n    /**\n     * @dev Test vault can be deactivated before removal\n     */\n    function testAssetTokenStuckInVault() public {\n        // Setup: user transfer to vault\n        vm.startPrank(user1);\n        usdc.transfer(address(usdcVault), 100 * 10 ** 6);\n        vm.stopPrank();\n\n        // Deactivate vault\n        usdcVault.setVaultActive(false);\n\n        // Cannot remove vault yet (has outstanding assets)\n        vm.expectRevert(IERC7575Errors.CannotUnregisterVaultAssetBalance.selector);\n        shareToken.unregisterVault(address(usdc));\n\n        // Verify vault is deactivated and still has outstanding assets and no one can remove it\n        assertFalse(usdcVault.isVaultActive());\n        assertEq(usdcVault.totalAssets(), 100 * 10 ** 6);\n        assertEq(shareToken.totalSupply(), 0);\n        assertEq(shareToken.balanceOf(user1), 0);\n    }\n}\n```\nresult:\n```\nRan 1 test for test/VaultDeactivation.t.sol:VaultDeactivationTest\n[PASS] testAssetTokenStuckInVault() (gas: 78767)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 7.11ms (4.71ms CPU time)\n\nRan 1 test suite in 72.96ms (7.11ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/661",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-12-04T16:52:16.351Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "Qm9iThgo7xg",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T06:34:35.865Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "eJytFti7FNb"
+        },
+        {
+          "uid": "AtSSRti82zm",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T06:34:38.709Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "eJytFti7FNb"
+        },
+        {
+          "uid": "Qzef3rSXPg3",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-09T22:59:09.324Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "c3gncNUSyd3",
+          "findingUid": null
+        },
+        {
+          "uid": "LhCRWDAg8gt",
+          "userUid": "iTTPZ9u8kg9",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-12-22T13:45:56.706Z",
+          "type": "validity",
+          "value": "invalid",
+          "submissionUid": null,
+          "findingUid": "eJytFti7FNb"
+        }
+      ],
+      "finding": {
+        "uid": "eJytFti7FNb",
+        "number": 2,
+        "duplicates": 103
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-12-22T13:45:56.706Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Assets Can Be Permanently Stuck in `WERC7575Vault` Prevent Vault Unregistration (DoS)",
+      "uid": "c3gncNUSyd3",
+      "updatedAt": "2025-12-04T16:52:16.351Z",
+      "user": {
+        "uid": "RrPNGqC3hW2",
+        "handle": "Sneks"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe `WERC7575Vault` is designed for, 1:1 asset-to-share conversion (with decimal scaling). It relies on the dedicated functions `deposit()` or `mint()` to receive the underlying asset. \n\nThe vulnerability arises because the vault contract does not prevent direct asset transfers to its address. Increases the vault's `totalAssets()` without minting any shares.\n\nWhen the `WERC7575ShareToken.unregisterVault(asset)` function is called, it performs a crucial safety check:\n```solidity\nif (totalAssets != 0) revert CannotUnregisterVaultAssetBalance();\n```\nThe stuck assets have no matching shares, meaning no one can call `redeem()` or `withdraw()` to clear them out. The vault has no mechanism to recover these funds, leading to unrecoverable fund and DoS for `unregisterVault()` function\n\n## Recommended mitigation steps\n\nImplement a function to allow the contract owner to safely transfer any excess assets out of the vault. This function must be strictly controlled to ensure it only removes funds that do not correspond to shares",
+      "proofOfConcept": "In `test/VaultDeactivation.t.sol` run `forge test --mt testAssetTokenStuckInVault`\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {ERC20Faucet} from \"../src/ERC20Faucet.sol\";\nimport {WERC7575ShareToken} from \"../src/WERC7575ShareToken.sol\";\nimport {WERC7575Vault} from \"../src/WERC7575Vault.sol\";\n\nimport {IERC7575Errors} from \"../src/interfaces/IERC7575Errors.sol\";\n\nimport {Ownable} from \"@openzeppelin/contracts/access/Ownable.sol\";\nimport {IERC20} from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\nimport {Test} from \"forge-std/Test.sol\";\nimport {console} from \"forge-std/console.sol\";\n\ncontract VaultDeactivationTest is Test {\n    WERC7575ShareToken public shareToken;\n    WERC7575Vault public usdcVault;\n    ERC20Faucet public usdc;\n\n    address public owner = address(this);\n    address public user1 = address(0x1);\n    address public user2 = address(0x2);\n\n    function setUp() public {\n        // Deploy faucet token\n        usdc = new ERC20Faucet(\"USD Coin\", \"USDC\", 1_000_000 * 10 ** 6);\n\n        // Override decimals for testing\n        vm.mockCall(address(usdc), abi.encodeWithSignature(\"decimals()\"), abi.encode(uint8(6)));\n\n        // Deploy share token\n        shareToken = new WERC7575ShareToken(\"Multi-Asset Share Token\", \"MAST\");\n\n        // Deploy vault\n        usdcVault = new WERC7575Vault(address(usdc), shareToken);\n\n        // Register vault with share token\n        shareToken.registerVault(address(usdc), address(usdcVault));\n\n        // KYC users\n        shareToken.setKycVerified(user1, true);\n        shareToken.setKycVerified(user2, true);\n\n        // Setup user balances\n        usdc.transfer(user1, 1000 * 10 ** 6); // 1000 USDC\n        usdc.transfer(user2, 1000 * 10 ** 6); // 1000 USDC\n    }\n\n    /**\n     * @dev Test vault can be deactivated before removal\n     */\n    function testAssetTokenStuckInVault() public {\n        // Setup: user transfer to vault\n        vm.startPrank(user1);\n        usdc.transfer(address(usdcVault), 100 * 10 ** 6);\n        vm.stopPrank();\n\n        // Deactivate vault\n        usdcVault.setVaultActive(false);\n\n        // Cannot remove vault yet (has outstanding assets)\n        vm.expectRevert(IERC7575Errors.CannotUnregisterVaultAssetBalance.selector);\n        shareToken.unregisterVault(address(usdc));\n\n        // Verify vault is deactivated and still has outstanding assets and no one can remove it\n        assertFalse(usdcVault.isVaultActive());\n        assertEq(usdcVault.totalAssets(), 100 * 10 ** 6);\n        assertEq(shareToken.totalSupply(), 0);\n        assertEq(shareToken.balanceOf(user1), 0);\n    }\n}\n```\nresult:\n```\nRan 1 test for test/VaultDeactivation.t.sol:VaultDeactivationTest\n[PASS] testAssetTokenStuckInVault() (gas: 78767)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 7.11ms (4.71ms CPU time)\n\nRan 1 test suite in 72.96ms (7.11ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L256-L285",
+      "number": 661,
+      "aiExplanation": null,
+      "_index": 661
+    }
+  }
+}

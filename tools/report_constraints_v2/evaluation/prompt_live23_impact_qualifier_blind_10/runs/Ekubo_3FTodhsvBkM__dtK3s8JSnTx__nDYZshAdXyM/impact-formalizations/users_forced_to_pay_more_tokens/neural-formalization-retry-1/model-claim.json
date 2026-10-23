@@ -1,0 +1,220 @@
+{
+  "schema_version": "report-formal-plan/6",
+  "relation_class": "bounded_value",
+  "precondition_ids": [
+    "user_sets_max_amounts",
+    "liquidity_from_current_price",
+    "extension_registered"
+  ],
+  "intent_id": "intent_deducted_within_max",
+  "impact_ids": [
+    "users_forced_to_pay_more_tokens"
+  ],
+  "symbols": {
+    "max_amount0_limit": {
+      "sort": "int",
+      "unit": "token0 amount",
+      "meaning": "user-specified maxAmount0 slippage limit for the deposit",
+      "checkpoint": "before deposit",
+      "entity_ids": [
+        "user",
+        "max_amounts"
+      ],
+      "source_ids": [
+        "user_sets_max_amounts"
+      ]
+    },
+    "max_amount1_limit": {
+      "sort": "int",
+      "unit": "token1 amount",
+      "meaning": "user-specified maxAmount1 slippage limit for the deposit",
+      "checkpoint": "before deposit",
+      "entity_ids": [
+        "user",
+        "max_amounts"
+      ],
+      "source_ids": [
+        "user_sets_max_amounts"
+      ]
+    },
+    "liquidity_minted": {
+      "sort": "int",
+      "unit": "liquidity units",
+      "meaning": "liquidity computed from the pool's current price before any state changes",
+      "checkpoint": "before deposit state changes",
+      "entity_ids": [
+        "base_positions"
+      ],
+      "source_ids": [
+        "liquidity_from_current_price"
+      ]
+    },
+    "extension_hook_registered": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "an extension such as TWAMM is registered and its beforeUpdatePosition hook is triggered by CORE.updatePosition",
+      "checkpoint": "before deposit",
+      "entity_ids": [
+        "extension",
+        "core"
+      ],
+      "source_ids": [
+        "extension_registered"
+      ]
+    },
+    "final_deducted_amount0": {
+      "sort": "int",
+      "unit": "token0 amount",
+      "meaning": "final token0 amount actually deducted by deposit after the lock callback returns",
+      "checkpoint": "after deposit lock callback",
+      "entity_ids": [
+        "base_positions",
+        "max_amounts"
+      ],
+      "source_ids": [
+        "users_forced_to_pay_more_tokens"
+      ]
+    },
+    "final_deducted_amount1": {
+      "sort": "int",
+      "unit": "token1 amount",
+      "meaning": "final token1 amount actually deducted by deposit after the lock callback returns",
+      "checkpoint": "after deposit lock callback",
+      "entity_ids": [
+        "base_positions",
+        "max_amounts"
+      ],
+      "source_ids": [
+        "users_forced_to_pay_more_tokens"
+      ]
+    },
+    "excess_deduction_occurred": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the final deducted token amounts exceed the user's authorized maxAmount0/maxAmount1 limits, forcing the user to pay more tokens than authorized",
+      "checkpoint": "after deposit lock callback",
+      "entity_ids": [
+        "base_positions",
+        "max_amounts",
+        "user"
+      ],
+      "source_ids": [
+        "users_forced_to_pay_more_tokens"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "user_sets_max_amounts",
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "comparison",
+            "left": "max_amount0_limit",
+            "operator": "ge",
+            "right": {
+              "const": 0
+            }
+          },
+          {
+            "kind": "comparison",
+            "left": "max_amount1_limit",
+            "operator": "ge",
+            "right": {
+              "const": 0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "source_id": "liquidity_from_current_price",
+      "predicate": {
+        "kind": "comparison",
+        "left": "liquidity_minted",
+        "operator": "ge",
+        "right": {
+          "const": 0
+        }
+      }
+    },
+    {
+      "source_id": "extension_registered",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "extension_hook_registered",
+        "value": true
+      }
+    }
+  ],
+  "impact_context_terms": [
+    {
+      "source_id": "users_forced_to_pay_more_tokens",
+      "qualifier_types": [
+        "threshold",
+        "comparison_direction",
+        "state"
+      ],
+      "predicate": {
+        "kind": "truth",
+        "symbol": "excess_deduction_occurred",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "bounded_relation",
+    "condition": {
+      "kind": "truth",
+      "symbol": "extension_hook_registered",
+      "value": true
+    },
+    "value": {
+      "symbol": "final_deducted_amount0"
+    },
+    "operator": "le",
+    "bound": {
+      "symbol": "max_amount0_limit"
+    }
+  },
+  "assumptions": [
+    "The depositing user is the actor who supplied maxAmount0 and maxAmount1.",
+    "The extension price change is treated as a possible scenario, not a guaranteed one.",
+    "Token amounts are compared in their own token units without conversion."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "Report does not state whether the extension price change is guaranteed or only possible for a given deposit, so the potential modality is preserved via the extension_hook_registered condition rather than an inevitability claim.",
+      "source_ids": [
+        "extension_changes_price",
+        "users_forced_to_pay_more_tokens"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "missing_report_definition",
+      "description": "No explicit numeric bound or concrete before/after amounts are given for the excess deduction; the excess is represented symbolically against the user limits.",
+      "source_ids": [
+        "users_forced_to_pay_more_tokens"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_actor",
+      "description": "Whether the user is the caller and any authorization details are not specified.",
+      "source_ids": [
+        "user_sets_max_amounts"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Only the token0 bound relation is encoded in the pattern; the token1 bound is captured in impact_context_terms and would need a separate claim pass.",
+    "The potential modality of the impact is preserved by conditioning on the extension hook being registered and triggered; the report does not guarantee the price shift.",
+    "No concrete numeric amounts are available, so the violation is symbolic.",
+    "Code-level binding of the extension hook behavior is deferred."
+  ]
+}

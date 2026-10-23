@@ -1,0 +1,39 @@
+Broken back-link in `Book._updateLimitPostOrder` corrupts every new price-level list & lets attackers hide liquidity, desync open-interest, and brick order-matching
+
+## Finding description and impact
+
+The limit-order book stores all orders for a given price in a doubly linked list:
+
+
+When a new order is appended, the contract must update both links:
+
+* `tail.next = newOrder`               (forward link)
+* `newOrder.prev = tail`               (back link)
+
+However, only the forward link is saved to storage; the back-link is written to a **memory copy** and discarded:
+[Book._updateLimitPostOrder](https://github.com/code-423n4/2025-07-gte-clob/blob/main/contracts/clob/types/Book.sol#L281):
+
+As a result, every non-head order has `prevOrderId == 0` when later read from
+storage.
+
+**Consequences**
+
+* Cancelling or matching a non-head order makes the removal routine believe it is the head, so it blindly moves `limit.headOrder` past the real head.
+  The earlier orders become **orphaned**:
+  – invisible to traversal, matching and user cancels
+  – still counted in `numBids/Asks`, `*_OpenInterest`
+* Attackers can repeatedly orphan liquidity to:
+  - hide rival orders and front-run flow
+  - leave corrupted price levels with `numOrders > 0` but `headOrder = 0`.
+    Once the last phantom order is deleted, `getBestBid/Ask` flips to the
+    `MAX_UINT` sentinel, breaking taker fills and freezing that side
+    of the book.
+  - inflate / deflate open-interest, leading to wrong fee accrual and possible
+  withdrawal failures.
+* The corruption persists forever because every operation is wrapped in a successful transaction;
+* After the final orphaned order is deleted (e.g. via expiry or a user-initiated cancel that happens to succeed), the RB-tree node is removed and `getBestBid/Ask` returns the `MAX_UINT` sentinel, effectively disabling taker fills for that side of the book.
+
+This violates the intended invariant documented by the surrounding logic:
+- every order should be addressable via the limit’s `headOrder`/`tailOrder` chain, and open-interest counters must reflect *reachable* orders only.
+
+Scenario based PoC(coded below):

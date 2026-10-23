@@ -1,0 +1,242 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "value_relation",
+  "precondition_ids": [
+    "get_emas_returns_order",
+    "twap_feeds_liquidation_checks",
+    "short_horizon_movement_condition"
+  ],
+  "intent_id": "intent_twap_uses_correct_ema_blend",
+  "impact_ids": [
+    "stale_oracle_outcome_altered"
+  ],
+  "symbols": {
+    "spot_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "spotEMA value returned by OraclePack.getEMAs()",
+      "checkpoint": "before twapEMA computation",
+      "entity_ids": [
+        "oracle_pack",
+        "twap_value"
+      ],
+      "source_ids": [
+        "get_emas_returns_order",
+        "short_horizon_movement_condition"
+      ]
+    },
+    "fast_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "fastEMA value returned by OraclePack.getEMAs()",
+      "checkpoint": "before twapEMA computation",
+      "entity_ids": [
+        "oracle_pack",
+        "twap_value"
+      ],
+      "source_ids": [
+        "get_emas_returns_order",
+        "short_horizon_movement_condition"
+      ]
+    },
+    "slow_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "slowEMA value returned by OraclePack.getEMAs()",
+      "checkpoint": "before twapEMA computation",
+      "entity_ids": [
+        "oracle_pack",
+        "twap_value"
+      ],
+      "source_ids": [
+        "get_emas_returns_order"
+      ]
+    },
+    "eons_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "eonsEMA value returned by OraclePack.getEMAs()",
+      "checkpoint": "before twapEMA computation",
+      "entity_ids": [
+        "oracle_pack",
+        "twap_value"
+      ],
+      "source_ids": [
+        "get_emas_returns_order"
+      ]
+    },
+    "computed_twap": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "TWAP value produced by RiskEngine.twapEMA() and consumed by PanopticPool.getTWAP() for liquidation/pricing checks",
+      "checkpoint": "after twapEMA computation, before solvency/StaleOracle evaluation",
+      "entity_ids": [
+        "twap_value",
+        "risk_engine",
+        "panoptic_pool"
+      ],
+      "source_ids": [
+        "twap_feeds_liquidation_checks",
+        "stale_oracle_outcome_altered",
+        "intent_twap_uses_correct_ema_blend"
+      ]
+    },
+    "stale_oracle_outcome_altered_flag": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the altered TWAP changes the StaleOracle safety boundary and solvency evaluation outcome (proceeds when it should revert as stale, or reverts when it should proceed)",
+      "checkpoint": "at StaleOracle gate and solvency evaluation",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_value"
+      ],
+      "source_ids": [
+        "stale_oracle_outcome_altered",
+        "twap_feeds_liquidation_checks"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "get_emas_returns_order",
+      "predicate": {
+        "kind": "comparison",
+        "left": "spot_ema",
+        "operator": "ne",
+        "right": {
+          "symbol": "eons_ema"
+        }
+      }
+    },
+    {
+      "source_id": "twap_feeds_liquidation_checks",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "stale_oracle_outcome_altered_flag",
+        "value": false
+      }
+    },
+    {
+      "source_id": "short_horizon_movement_condition",
+      "predicate": {
+        "kind": "comparison",
+        "left": "spot_ema",
+        "operator": "ne",
+        "right": {
+          "symbol": "slow_ema"
+        }
+      }
+    }
+  ],
+  "derived_definitions": [
+    {
+      "symbol": "computed_twap",
+      "expression": {
+        "op": "mul",
+        "args": [
+          {
+            "op": "add",
+            "args": [
+              {
+                "op": "add",
+                "args": [
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "symbol": "slow_ema"
+                      },
+                      {
+                        "const": 6
+                      }
+                    ]
+                  },
+                  {
+                    "op": "mul",
+                    "args": [
+                      {
+                        "symbol": "fast_ema"
+                      },
+                      {
+                        "const": 3
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "symbol": "spot_ema"
+              }
+            ]
+          },
+          {
+            "const": 1
+          }
+        ]
+      },
+      "source_ids": [
+        "actual_formula_wrong_weights",
+        "intent_twap_uses_correct_ema_blend"
+      ]
+    }
+  ],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "comparison",
+          "left": "spot_ema",
+          "operator": "ne",
+          "right": {
+            "symbol": "eons_ema"
+          }
+        },
+        {
+          "kind": "comparison",
+          "left": "spot_ema",
+          "operator": "ne",
+          "right": {
+            "symbol": "slow_ema"
+          }
+        }
+      ]
+    },
+    "relation": {
+      "kind": "comparison",
+      "left": "computed_twap",
+      "operator": "eq",
+      "right": {
+        "symbol": "computed_twap"
+      }
+    }
+  },
+  "assumptions": [
+    "The intended smoothed TWAP is assumed to be highly manipulation-resistant and a robust feed for solvency checks.",
+    "Short-horizon price movement propagates into spotEMA faster than into longer-horizon EMAs, so the misordered blend diverges from the intended blend."
+  ],
+  "unresolved": [
+    {
+      "category": "unsupported_relation",
+      "description": "The report states the intended blend (6*fastEMA + 3*slowEMA + eonsEMA)/10 but the predicate grammar has no division; the intended-TWAP reference quantity cannot be defined as a QEXPR without a divisor, so the equality between computed_twap and the intended blend cannot be faithfully encoded.",
+      "source_ids": [
+        "intent_twap_uses_correct_ema_blend",
+        "actual_formula_wrong_weights"
+      ],
+      "blocks_formalization": true
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "Whether the StaleOracle gate actually proceeds or reverts incorrectly is stated as may, not observed; the altered-outcome flag is a qualitative Boolean without a numeric boundary definition.",
+      "source_ids": [
+        "stale_oracle_outcome_altered"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Only the stale_oracle_outcome_altered impact is formalized; blocked liquidations/bad debt and misflagging of solvent accounts are separate impacts not covered by this plan.",
+    "The intended-TWAP reference blend requires division by 10, which the predicate grammar cannot express; the relation is left as a self-equality placeholder pending a faithful encoding."
+  ]
+}

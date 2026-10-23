@@ -1,0 +1,164 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "state_correspondence",
+  "precondition_ids": [
+    "user_stakes",
+    "first_withdrawal_queued",
+    "cancel_before_processing"
+  ],
+  "intent_id": "cancel_must_clear_l1",
+  "impact_ids": [
+    "l1_l2_desync"
+  ],
+  "symbols": {
+    "l2_withdrawal_request_exists": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "an L2 withdrawal request for the user is present in StakingManager state",
+      "checkpoint": "before cancellation",
+      "entity_ids": [
+        "staking_manager",
+        "user"
+      ],
+      "source_ids": [
+        "first_withdrawal_queued"
+      ]
+    },
+    "l1_undelegate_operation_queued": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the corresponding L1 undelegate operation remains present in the L1 operations queue",
+      "checkpoint": "after cancellation, before processL1Operations",
+      "entity_ids": [
+        "l1_queue",
+        "staking_manager"
+      ],
+      "source_ids": [
+        "cancel_must_clear_l1",
+        "l1_l2_desync"
+      ]
+    },
+    "l2_l1_state_desynced": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "L2 withdrawal state and L1 operations queue state disagree about the cancelled withdrawal",
+      "checkpoint": "after cancellation",
+      "entity_ids": [
+        "staking_manager",
+        "l1_queue"
+      ],
+      "source_ids": [
+        "l1_l2_desync",
+        "cancel_must_clear_l1"
+      ]
+    },
+    "staked_amount": {
+      "sort": "int",
+      "unit": "ETH",
+      "meaning": "amount the user originally staked",
+      "checkpoint": "before first withdrawal",
+      "entity_ids": [
+        "user",
+        "khype"
+      ],
+      "source_ids": [
+        "user_stakes"
+      ]
+    },
+    "cancelled_before_processing": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the withdrawal is cancelled before pending withdrawals are processed via processL1Withdrawals",
+      "checkpoint": "at cancellation time",
+      "entity_ids": [
+        "staking_manager",
+        "l1_queue"
+      ],
+      "source_ids": [
+        "cancel_before_processing"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "user_stakes",
+      "predicate": {
+        "kind": "comparison",
+        "left": "staked_amount",
+        "operator": "eq",
+        "right": {
+          "const": 1
+        }
+      }
+    },
+    {
+      "source_id": "first_withdrawal_queued",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "l2_withdrawal_request_exists",
+        "value": true
+      }
+    },
+    {
+      "source_id": "cancel_before_processing",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "cancelled_before_processing",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "l2_withdrawal_request_exists",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "cancelled_before_processing",
+          "value": true
+        }
+      ]
+    },
+    "relation": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "l1_undelegate_operation_queued",
+          "value": false
+        },
+        {
+          "kind": "truth",
+          "symbol": "l2_l1_state_desynced",
+          "value": false
+        }
+      ]
+    }
+  },
+  "assumptions": [
+    "The cancellation occurs before pending withdrawals are processed via processL1Withdrawals.",
+    "The L1 undelegate operation corresponding to the cancelled withdrawal is identifiable in the L1 operations queue.",
+    "The user's stake and withdrawal amounts are equal (1 ETH / 1 kHYPE) as stated."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_condition",
+      "description": "Report does not specify who cancels the withdrawal or whether cancellation is intentional, only that it happens before processing.",
+      "source_ids": [
+        "cancel_before_processing"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Formalizes only the L2/L1 state desynchronization impact; the double-withdrawal and excess-HYPE impacts are handled in separate passes.",
+    "The correspondence is expressed at the level of presence/absence of the L2 request and the L1 undelegate operation, not concrete queue indices."
+  ]
+}

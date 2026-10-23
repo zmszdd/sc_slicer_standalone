@@ -1,0 +1,53 @@
+AtomWallet _validateSignature reverts on invalid S-values instead of returning SIG_VALIDATION_FAILED, violating ERC-4337 and breaking bundler compatibility
+
+## Finding description and impact
+
+
+Description
+
+
+The ERC-4337 specification strictly mandates that an account's validateUserOp function MUST NOT revert on signature mismatch. Instead, it must return SIG_VALIDATION_FAILED (which evaluates to the magic value 1). This rule exists so that bundlers can accurately simulate and reject operations without penalizing the underlying account or factory for producing undocumented reverts during the validation phase.
+
+
+
+
+
+In AtomWallet.sol, the overridden _validateSignature function explicitly intercepts ECDSA.RecoverError.InvalidSignatureS (malleable S-values where s > secp256k1.n/2) and ECDSA.RecoverError.InvalidSignatureLength, and triggers a hard revert with custom errors (AtomWallet_InvalidSignatureS, AtomWallet_InvalidSignatureLength).
+
+
+
+
+function _validateSignature(
+        PackedUserOperation calldata userOp,
+        bytes32 userOpHash
+    )
+        internal
+        virtual
+        override
+        returns (uint256 validationData)
+    {
+        // ...
+        (address recovered, ECDSA.RecoverError recoverError, bytes32 errorArg) = 
+
+ECDSA.tryRecover(hash, signature);
+
+        if (recoverError == ECDSA.RecoverError.InvalidSignatureLength) {
+            revert AtomWallet_InvalidSignatureLength(uint256(errorArg));
+        } else if (recoverError == ECDSA.RecoverError.InvalidSignatureS) {
+            revert AtomWallet_InvalidSignatureS(errorArg);
+        } else if (recoverError == ECDSA.RecoverError.InvalidSignature) {
+            return _packValidationData(true, validUntil, validAfter);
+        }
+        // ...
+
+
+
+By reverting, the wallet violates the core EIP-4337 specification. If a user, bundler, or malicious actor submits a UserOperation with an invalid-length or high-S malleable signature, the transaction reverts entirely. The bundler treats this as an internal account failure rather than a clean signature rejection, leading to the Account or Factory being penalized, throttled, or outright banned by mempool validators.
+
+
+
+
+Impact
+
+
+This enables a trivial Denial-of-Service (DoS) and griefing vector. Any actor observing a valid UserOperation in the open mempool can broadcast an identical UserOp with a flipped, malleable S-value (s' = n - s). When the bundler simulates this bad signature, the AtomWallet reverts. The bundler's reputation scoring will penalize the wallet, effectively blocking legitimate operations from being processed by the standard ERC-4337 infrastructure.

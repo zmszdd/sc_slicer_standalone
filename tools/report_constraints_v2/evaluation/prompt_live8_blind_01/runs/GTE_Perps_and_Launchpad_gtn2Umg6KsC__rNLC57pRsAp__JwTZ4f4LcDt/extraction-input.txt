@@ -1,0 +1,46 @@
+Launchpad : Reward fee calculation / distribution failure when `launchpadLPVault` is updated
+
+## Finding description 
+
+Protocol : Launchpad 
+
+The Launchpad system is designed to launch several new tokens/pairs,
+and so it has an `updateLaunchpadLPVault()` function to flexibly modify its LP vaults.
+Every time a new pair is graduated, the LP tokens are minted to the latest modified LP vault,   
+while adding initial liquidity. [here](https://github.com/code-423n4/2025-08-gte-perps/blob/main/contracts/launchpad/Launchpad.sol#L500-L509)
+
+
+However it has an architectural issue.    
+The `LaunchpadLPVault` address is immutable in the Factory contract. 
+Every time a new pair is created from the Factory , the pairs are initialized with the original `_launchpadLp`address.
+
+
+
+So every time a swap is made while rewards are active, the `_getLaunchpadFees` function uses the original LPvault `launchpadLp` which has 0 LP tokens. 
+
+
+In Summary, the LP tokens are sent to the new vault, while new Pairs continue using the old LPvault's address for fee calculations. This completely breaks the fee calculation / distribution mechanism.
+
+The calculated fees (dust amounts or 0) are either extremely lower than the expected fees, or 0 for most cases.
+
+## Vulnerable Path
+
+1. Factory deployed with immutable LPvault1
+2. Pairs created → all use LPvault1 for fee calculations
+3. Launchpad updates to LPvault2
+4. New LP tokens minted to LPvault2
+5. But further new pairs are still initialized with LPvault1
+6. Pairs still check LPvault1's balance for fee calculations →  returns 0
+7. REWARD SYSTEM BROKEN
+
+## Impact and Likelihood
+
+
+Impact : High
+
+1. `GTELaunchpadV2Pair`'s Fee calculations are completely broken.
+2. No Reward fees are distributed to users.
+3. Sell pressure on the token as users don't get rewards from holding.
+
+Likelihood : Medium
+1. All newly graduated pairs are affected after an LPvault update

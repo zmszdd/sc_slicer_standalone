@@ -1,0 +1,158 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Kinetiq_k8aVPPVguSE",
+    "audit_uid": "k8aVPPVguSE",
+    "requested_submission_uid": "7tVr98jQuEc",
+    "requested_finding_uid": "6GBi6WQdSse",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Kinetiq_k8aVPPVguSE/20260618_143339/findings.json",
+    "source_submission_uid": "7tVr98jQuEc",
+    "source_finding_uid": "6GBi6WQdSse",
+    "original_report_path": "Kinetiq_k8aVPPVguSE\\high_valid_7tVr98jQuEc.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "7tVr98jQuEc",
+  "finding_uid": "6GBi6WQdSse",
+  "finding_number": "278",
+  "title": "Unable to Send Withdrawal Funds to StakingManager",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "IzuMan",
+  "body": "## Finding description and impact\n\nUnable to send the StakingManager contract the native token HYPE without triggering the stake() function. This makes it impossible `confirmWithdrawals` since the contract will automatically stake funds when they are withdrawn from the validator.\n\n```solidity\n   receive() external payable {\n        // Simply call the stake function\n        stake();\n    }\n```\n\nSIDE NOTE: This was undetected in the tests because the Foundry cheat code `deal` was used to transfer HYPE which did not trigger the `receive` function of the contract.\n\n## Recommended mitigation steps\n\nAn easy fix is to add a payable function like `depositWithdrawalFunds` that will accept funds withdrawn from a validator. No other logic changes need to be made.\n```solidity\n  function depositWithdrawalFunds() public payable {\n        //do nothing, just accept the funds\n    } \n```",
+  "proof_of_concept": "Place the following PoC inside the existing test file `StakingManager.t.sol` \n\nThis test will demonstrate that when the user tries to `confirmWithdrawal` it will revert with `Insufficient contract balance` even after sending the contract the withdraw amount.\n\n```solidity\n     function test_unable_to_receive_withdrawal_funds() public {\n        // Setup initial stake and withdrawal\n        uint256 stakeAmount = 1 ether;\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n        stakingManager.stake{value: stakeAmount}();\n\n        // Approve and queue withdrawal\n        vm.startPrank(user);\n        kHYPE.approve(address(stakingManager), stakeAmount);\n        // Store the withdrawalId (should be 0 for first withdrawal)\n        uint256 withdrawalId = 0;\n        stakingManager.queueWithdrawal(stakeAmount);\n        vm.stopPrank();\n\n        // below is the originally test method for sending the contract eth.\n        // This is not realistic, since it doesn't trigger the receive function\n        //vm.deal(address(stakingManager), stakeAmount);\n\n        // Set withdrawal delay to 0 to allow immediate confirmation\n        vm.prank(manager);\n        stakingManager.setWithdrawalDelay(0);\n\n        StakingManager.WithdrawalRequest memory request = stakingManager.withdrawalRequests(user, withdrawalId);\n        uint256 hypeAmount = request.hypeAmount;\n\n        //ensure the contract should have enough funds to process the withdrawal\n        //@audit this will trigger the receive function and be routed to stake the msg.value\n        //simulate sending the ETH to the contract after it is withdrawn from a validator\n        address withdrawFunder = makeAddr(\"withdrawFunder\");\n        vm.deal(withdrawFunder, hypeAmount);\n        vm.prank(withdrawFunder);\n        address(stakingManager).call{value: hypeAmount}(\"\");\n\n        // Attempt to confirm the withdrawal\n        vm.prank(user);\n        // This will revert since the transferred funds were automatically staked.\n        // The contract will  not have enough funds to process the withdrawal\n        vm.expectRevert(\"Insufficient contract balance\");\n        stakingManager.confirmWithdrawal(withdrawalId);\n    }\n\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L208-L211"
+  ],
+  "source_record": {
+    "project_id": "k8aVPPVguSE",
+    "submission_index": "471",
+    "api_submission_id": "",
+    "uid": "7tVr98jQuEc",
+    "number": "471",
+    "title": "Unable to Send Withdrawal Funds to StakingManager",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "IzuMan",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L208-L211"
+    ],
+    "body": "## Finding description and impact\n\nUnable to send the StakingManager contract the native token HYPE without triggering the stake() function. This makes it impossible `confirmWithdrawals` since the contract will automatically stake funds when they are withdrawn from the validator.\n\n```solidity\n   receive() external payable {\n        // Simply call the stake function\n        stake();\n    }\n```\n\nSIDE NOTE: This was undetected in the tests because the Foundry cheat code `deal` was used to transfer HYPE which did not trigger the `receive` function of the contract.\n\n## Recommended mitigation steps\n\nAn easy fix is to add a payable function like `depositWithdrawalFunds` that will accept funds withdrawn from a validator. No other logic changes need to be made.\n```solidity\n  function depositWithdrawalFunds() public payable {\n        //do nothing, just accept the funds\n    } \n```",
+    "proof_of_concept": "Place the following PoC inside the existing test file `StakingManager.t.sol` \n\nThis test will demonstrate that when the user tries to `confirmWithdrawal` it will revert with `Insufficient contract balance` even after sending the contract the withdraw amount.\n\n```solidity\n     function test_unable_to_receive_withdrawal_funds() public {\n        // Setup initial stake and withdrawal\n        uint256 stakeAmount = 1 ether;\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n        stakingManager.stake{value: stakeAmount}();\n\n        // Approve and queue withdrawal\n        vm.startPrank(user);\n        kHYPE.approve(address(stakingManager), stakeAmount);\n        // Store the withdrawalId (should be 0 for first withdrawal)\n        uint256 withdrawalId = 0;\n        stakingManager.queueWithdrawal(stakeAmount);\n        vm.stopPrank();\n\n        // below is the originally test method for sending the contract eth.\n        // This is not realistic, since it doesn't trigger the receive function\n        //vm.deal(address(stakingManager), stakeAmount);\n\n        // Set withdrawal delay to 0 to allow immediate confirmation\n        vm.prank(manager);\n        stakingManager.setWithdrawalDelay(0);\n\n        StakingManager.WithdrawalRequest memory request = stakingManager.withdrawalRequests(user, withdrawalId);\n        uint256 hypeAmount = request.hypeAmount;\n\n        //ensure the contract should have enough funds to process the withdrawal\n        //@audit this will trigger the receive function and be routed to stake the msg.value\n        //simulate sending the ETH to the contract after it is withdrawn from a validator\n        address withdrawFunder = makeAddr(\"withdrawFunder\");\n        vm.deal(withdrawFunder, hypeAmount);\n        vm.prank(withdrawFunder);\n        address(stakingManager).call{value: hypeAmount}(\"\");\n\n        // Attempt to confirm the withdrawal\n        vm.prank(user);\n        // This will revert since the transferred funds were automatically staked.\n        // The contract will  not have enough funds to process the withdrawal\n        vm.expectRevert(\"Insufficient contract balance\");\n        stakingManager.confirmWithdrawal(withdrawalId);\n    }\n\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/k8aVPPVguSE/submissions/471",
+    "raw": {
+      "auditUid": "k8aVPPVguSE",
+      "createdAt": "2025-04-15T05:24:05.820Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "kfwUnRBCRDn",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-22T12:52:18.423Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "7tVr98jQuEc",
+          "findingUid": null
+        },
+        {
+          "uid": "CLhnUaZAgXy",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-22T12:52:18.423Z",
+          "type": "rank",
+          "value": "1",
+          "submissionUid": "7tVr98jQuEc",
+          "findingUid": null
+        },
+        {
+          "uid": "pGtChM6ouuh",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-22T12:52:18.423Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "6GBi6WQdSse"
+        },
+        {
+          "uid": "XSTwtzomzTd",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-22T12:52:18.423Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "6GBi6WQdSse"
+        },
+        {
+          "uid": "ygb9sBqovTn",
+          "userUid": "tZ7iSgbTXG2",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-04-23T00:59:44.301Z",
+          "type": "validity",
+          "value": "wontfix",
+          "submissionUid": null,
+          "findingUid": "6GBi6WQdSse"
+        },
+        {
+          "uid": "gkRL8EexF2a",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-26T16:01:53.907Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "6GBi6WQdSse"
+        },
+        {
+          "uid": "pPyMSKrpZv3",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-26T16:10:23.106Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "7tVr98jQuEc",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "6GBi6WQdSse",
+        "number": 278,
+        "duplicates": 14
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": "1",
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-05-07T15:00:47.683Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Unable to Send Withdrawal Funds to StakingManager",
+      "uid": "7tVr98jQuEc",
+      "updatedAt": "2025-04-15T05:24:05.820Z",
+      "user": {
+        "uid": "KQU9qeViWBT",
+        "handle": "IzuMan"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nUnable to send the StakingManager contract the native token HYPE without triggering the stake() function. This makes it impossible `confirmWithdrawals` since the contract will automatically stake funds when they are withdrawn from the validator.\n\n```solidity\n   receive() external payable {\n        // Simply call the stake function\n        stake();\n    }\n```\n\nSIDE NOTE: This was undetected in the tests because the Foundry cheat code `deal` was used to transfer HYPE which did not trigger the `receive` function of the contract.\n\n## Recommended mitigation steps\n\nAn easy fix is to add a payable function like `depositWithdrawalFunds` that will accept funds withdrawn from a validator. No other logic changes need to be made.\n```solidity\n  function depositWithdrawalFunds() public payable {\n        //do nothing, just accept the funds\n    } \n```",
+      "proofOfConcept": "Place the following PoC inside the existing test file `StakingManager.t.sol` \n\nThis test will demonstrate that when the user tries to `confirmWithdrawal` it will revert with `Insufficient contract balance` even after sending the contract the withdraw amount.\n\n```solidity\n     function test_unable_to_receive_withdrawal_funds() public {\n        // Setup initial stake and withdrawal\n        uint256 stakeAmount = 1 ether;\n        vm.startPrank(manager);\n        validatorManager.activateValidator(validator);\n        validatorManager.setDelegation(address(stakingManager), validator);\n        vm.stopPrank();\n\n        vm.deal(user, stakeAmount);\n        vm.prank(user);\n        stakingManager.stake{value: stakeAmount}();\n\n        // Approve and queue withdrawal\n        vm.startPrank(user);\n        kHYPE.approve(address(stakingManager), stakeAmount);\n        // Store the withdrawalId (should be 0 for first withdrawal)\n        uint256 withdrawalId = 0;\n        stakingManager.queueWithdrawal(stakeAmount);\n        vm.stopPrank();\n\n        // below is the originally test method for sending the contract eth.\n        // This is not realistic, since it doesn't trigger the receive function\n        //vm.deal(address(stakingManager), stakeAmount);\n\n        // Set withdrawal delay to 0 to allow immediate confirmation\n        vm.prank(manager);\n        stakingManager.setWithdrawalDelay(0);\n\n        StakingManager.WithdrawalRequest memory request = stakingManager.withdrawalRequests(user, withdrawalId);\n        uint256 hypeAmount = request.hypeAmount;\n\n        //ensure the contract should have enough funds to process the withdrawal\n        //@audit this will trigger the receive function and be routed to stake the msg.value\n        //simulate sending the ETH to the contract after it is withdrawn from a validator\n        address withdrawFunder = makeAddr(\"withdrawFunder\");\n        vm.deal(withdrawFunder, hypeAmount);\n        vm.prank(withdrawFunder);\n        address(stakingManager).call{value: hypeAmount}(\"\");\n\n        // Attempt to confirm the withdrawal\n        vm.prank(user);\n        // This will revert since the transferred funds were automatically staked.\n        // The contract will  not have enough funds to process the withdrawal\n        vm.expectRevert(\"Insufficient contract balance\");\n        stakingManager.confirmWithdrawal(withdrawalId);\n    }\n\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-04-kinetiq/blob/7f29c917c09341672e73be2f7917edf920ea2adb/src/StakingManager.sol#L208-L211",
+      "number": 471,
+      "aiExplanation": null,
+      "_index": 471
+    }
+  }
+}

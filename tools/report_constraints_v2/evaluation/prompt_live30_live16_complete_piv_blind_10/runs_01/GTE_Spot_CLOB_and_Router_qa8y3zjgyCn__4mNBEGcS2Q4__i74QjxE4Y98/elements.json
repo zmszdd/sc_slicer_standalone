@@ -1,0 +1,210 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "CLOB limit order matching (_processLimitBidOrder and _processLimitAskOrder) zero-cost trade validation",
+    "environment": "CLOB.sol smart contract",
+    "evidence": [
+      "Using Bitwise AND in `CLOB::_processLimitBidOrder` and `CLOB::_processLimitAskOrder` Causes False Reverts",
+      "In `CLOB.sol` lines 503-504 and 544-545, the code uses a bitwise AND operator (`&`) instead of logical OR (`||`):",
+      "The intent is to prevent zero-cost trades where one side receives tokens without sending any. However, the bitwise `&` operator causes false positives when legitimate trade amounts have no overlapping bits (e.g., 256 & 255 = 0).",
+      "The condition treats any two matched amounts with disjoint 1-bits as zero-cost trades. This affects ALL limit order matching (both partial and full matches), while fill orders remain unaffected as they use different validation logic.",
+      "The bug is deterministically reproducible. When matched base amount is a power-of-two (2^k) and matched quote is any value < 2^k, the bitwise AND equals zero by construction, triggering a false `ZeroCostTrade()` revert. Examples include:"
+    ]
+  },
+  "entities": [
+    {
+      "id": "clob_contract",
+      "name": "CLOB contract",
+      "role": "contract",
+      "evidence": [
+        "Using Bitwise AND in `CLOB::_processLimitBidOrder` and `CLOB::_processLimitAskOrder` Causes False Reverts",
+        "In `CLOB.sol` lines 503-504 and 544-545, the code uses a bitwise AND operator (`&`) instead of logical OR (`||`):"
+      ]
+    },
+    {
+      "id": "limit_order_matching",
+      "name": "Limit order matching (bid/ask)",
+      "role": "other",
+      "evidence": [
+        "Using Bitwise AND in `CLOB::_processLimitBidOrder` and `CLOB::_processLimitAskOrder` Causes False Reverts",
+        "The condition treats any two matched amounts with disjoint 1-bits as zero-cost trades. This affects ALL limit order matching (both partial and full matches), while fill orders remain unaffected as they use different validation logic."
+      ]
+    },
+    {
+      "id": "matched_base_amount",
+      "name": "Matched base amount",
+      "role": "asset",
+      "evidence": [
+        "The bug is deterministically reproducible. When matched base amount is a power-of-two (2^k) and matched quote is any value < 2^k, the bitwise AND equals zero by construction, triggering a false `ZeroCostTrade()` revert. Examples include:",
+        "- base = 256, quote ∈ {1..255} → all revert"
+      ]
+    },
+    {
+      "id": "matched_quote_amount",
+      "name": "Matched quote amount",
+      "role": "asset",
+      "evidence": [
+        "The bug is deterministically reproducible. When matched base amount is a power-of-two (2^k) and matched quote is any value < 2^k, the bitwise AND equals zero by construction, triggering a false `ZeroCostTrade()` revert. Examples include:",
+        "- base = 256, quote ∈ {1..255} → all revert"
+      ]
+    },
+    {
+      "id": "trader",
+      "name": "Trader",
+      "role": "victim",
+      "evidence": [
+        "This causes legitimate trades to fail with a misleading error, damaging user experience and market efficiency. Traders, especially algorithmic ones using round numbers, will encounter unexplained failures."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "limit_order_match_attempted",
+      "kind": "precondition",
+      "text": "A limit order matching (partial or full) is being processed in _processLimitBidOrder or _processLimitAskOrder.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract",
+        "limit_order_matching"
+      ],
+      "evidence": [
+        "Using Bitwise AND in `CLOB::_processLimitBidOrder` and `CLOB::_processLimitAskOrder` Causes False Reverts",
+        "In `CLOB.sol` lines 503-504 and 544-545, the code uses a bitwise AND operator (`&`) instead of logical OR (`||`):",
+        "The condition treats any two matched amounts with disjoint 1-bits as zero-cost trades. This affects ALL limit order matching (both partial and full matches), while fill orders remain unaffected as they use different validation logic."
+      ]
+    },
+    {
+      "id": "matched_base_power_of_two",
+      "kind": "precondition",
+      "text": "The matched base amount is a power-of-two value 2^k.",
+      "modality": "potential",
+      "entity_ids": [
+        "matched_base_amount"
+      ],
+      "evidence": [
+        "The bug is deterministically reproducible. When matched base amount is a power-of-two (2^k) and matched quote is any value < 2^k, the bitwise AND equals zero by construction, triggering a false `ZeroCostTrade()` revert. Examples include:",
+        "- base = 256, quote ∈ {1..255} → all revert"
+      ]
+    },
+    {
+      "id": "matched_quote_less_than_base",
+      "kind": "precondition",
+      "text": "The matched quote amount is any value less than 2^k (e.g., base = 256, quote in 1..255).",
+      "modality": "potential",
+      "entity_ids": [
+        "matched_quote_amount",
+        "matched_base_amount"
+      ],
+      "evidence": [
+        "The bug is deterministically reproducible. When matched base amount is a power-of-two (2^k) and matched quote is any value < 2^k, the bitwise AND equals zero by construction, triggering a false `ZeroCostTrade()` revert. Examples include:",
+        "- base = 256, quote ∈ {1..255} → all revert"
+      ]
+    },
+    {
+      "id": "amounts_disjoint_bits",
+      "kind": "precondition",
+      "text": "The two matched amounts have no overlapping 1-bits (bitwise AND equals zero).",
+      "modality": "potential",
+      "entity_ids": [
+        "matched_base_amount",
+        "matched_quote_amount"
+      ],
+      "evidence": [
+        "The intent is to prevent zero-cost trades where one side receives tokens without sending any. However, the bitwise `&` operator causes false positives when legitimate trade amounts have no overlapping bits (e.g., 256 & 255 = 0).",
+        "The bug is deterministically reproducible. When matched base amount is a power-of-two (2^k) and matched quote is any value < 2^k, the bitwise AND equals zero by construction, triggering a false `ZeroCostTrade()` revert. Examples include:",
+        "Beyond power-of-two cases, any amounts with no overlapping bits trigger the bug (e.g., 40 & 21 = 0b101000 & 0b010101 = 0)."
+      ]
+    },
+    {
+      "id": "bitwise_and_used",
+      "kind": "root_cause",
+      "text": "The zero-cost trade check uses bitwise AND (&) instead of logical OR (||), so disjoint-bit amounts are treated as zero-cost trades.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract",
+        "limit_order_matching"
+      ],
+      "evidence": [
+        "In `CLOB.sol` lines 503-504 and 544-545, the code uses a bitwise AND operator (`&`) instead of logical OR (`||`):",
+        "The intent is to prevent zero-cost trades where one side receives tokens without sending any. However, the bitwise `&` operator causes false positives when legitimate trade amounts have no overlapping bits (e.g., 256 & 255 = 0)."
+      ]
+    },
+    {
+      "id": "intent_prevent_zero_cost_trades",
+      "kind": "security_intent",
+      "text": "The zero-cost trade check must only reject trades where one side receives tokens without sending any, not legitimate trades whose amounts have disjoint bits.",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract",
+        "limit_order_matching"
+      ],
+      "evidence": [
+        "The intent is to prevent zero-cost trades where one side receives tokens without sending any. However, the bitwise `&` operator causes false positives when legitimate trade amounts have no overlapping bits (e.g., 256 & 255 = 0).",
+        "Replace the faulty condition with proper OR logic:"
+      ]
+    },
+    {
+      "id": "intent_legitimate_trades_succeed",
+      "kind": "security_intent",
+      "text": "Legitimate limit order matches with nonzero base and quote amounts must not revert with ZeroCostTrade().",
+      "modality": "asserted",
+      "entity_ids": [
+        "clob_contract",
+        "limit_order_matching",
+        "trader"
+      ],
+      "evidence": [
+        "The condition treats any two matched amounts with disjoint 1-bits as zero-cost trades. This affects ALL limit order matching (both partial and full matches), while fill orders remain unaffected as they use different validation logic.",
+        "The bug is deterministically reproducible. When matched base amount is a power-of-two (2^k) and matched quote is any value < 2^k, the bitwise AND equals zero by construction, triggering a false `ZeroCostTrade()` revert. Examples include:",
+        "This causes legitimate trades to fail with a misleading error, damaging user experience and market efficiency. Traders, especially algorithmic ones using round numbers, will encounter unexplained failures."
+      ]
+    },
+    {
+      "id": "legitimate_trades_fail",
+      "kind": "impact",
+      "text": "This causes legitimate trades to fail with a misleading error",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "This causes legitimate trades to fail with a misleading error, damaging user experience and market efficiency. Traders, especially algorithmic ones using round numbers, will encounter unexplained failures."
+      ]
+    },
+    {
+      "id": "damaging_user_experience",
+      "kind": "impact",
+      "text": "damaging user experience",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "This causes legitimate trades to fail with a misleading error, damaging user experience and market efficiency. Traders, especially algorithmic ones using round numbers, will encounter unexplained failures."
+      ]
+    },
+    {
+      "id": "damaging_market_efficiency",
+      "kind": "impact",
+      "text": "damaging user experience and market efficiency",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "This causes legitimate trades to fail with a misleading error, damaging user experience and market efficiency. Traders, especially algorithmic ones using round numbers, will encounter unexplained failures."
+      ]
+    },
+    {
+      "id": "algorithmic_traders_unexplained_failures",
+      "kind": "impact",
+      "text": "Traders, especially algorithmic ones using round numbers, will encounter unexplained failures.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "This causes legitimate trades to fail with a misleading error, damaging user experience and market efficiency. Traders, especially algorithmic ones using round numbers, will encounter unexplained failures."
+      ]
+    }
+  ],
+  "attack_steps": [],
+  "ambiguities": [
+    "Report does not state who submits the matching transaction or any authorization condition.",
+    "Whether the matched amounts are attacker-chosen or arise from normal order flow is not specified.",
+    "The exact ZeroCostTrade revert is described as an outcome, not a precondition.",
+    "The statement that the condition treats any two matched amounts with disjoint 1-bits as zero-cost trades describes a misclassification mechanism rather than a distinct harmful outcome."
+  ]
+}

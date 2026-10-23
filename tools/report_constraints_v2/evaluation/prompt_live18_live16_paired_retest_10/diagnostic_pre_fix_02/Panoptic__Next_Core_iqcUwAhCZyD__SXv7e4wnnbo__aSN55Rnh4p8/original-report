@@ -1,0 +1,134 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Panoptic_ Next Core_iqcUwAhCZyD",
+    "audit_uid": "iqcUwAhCZyD",
+    "requested_submission_uid": "aSN55Rnh4p8",
+    "requested_finding_uid": "SXv7e4wnnbo",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Panoptic_Next_Core_iqcUwAhCZyD/20260618_141146/findings.json",
+    "source_submission_uid": "aSN55Rnh4p8",
+    "source_finding_uid": "SXv7e4wnnbo",
+    "original_report_path": "Panoptic_ Next Core_iqcUwAhCZyD\\medium_valid_aSN55Rnh4p8.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "aSN55Rnh4p8",
+  "finding_uid": "SXv7e4wnnbo",
+  "finding_number": "59",
+  "title": "The function rebaseOraclePack always resets the lockMode to ‘0’",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "aster",
+  "body": "## Finding description and impact\nIn the OraclePackLibrary, UPPER_118BITS_MASK is wrongly defined as Upper 130 bits mask as it contains 130 ones and 126 zeroes. It is used in the ‘function rebaseOraclePack’ where it just affects the lockMode, which is reset to ‘0’, the corresponding 2 bits lockMode is always ‘00’ after the function rebaseOraclePack gets executed.\n\n```solidity\n    uint256 internal constant UPPER_118BITS_MASK =\n        0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC0000000000000000000000000000000;\n```\n\n```solidity\n            rebasedOraclePack = OraclePack.wrap(\n                (OraclePack.unwrap(oraclePack) & UPPER_118BITS_MASK) +\n                    (uint256(uint24(_newReferenceTick) & BITMASK_UINT22) << 96) + //@audit error in this line.\n                    uint96(_newResiduals)\n            );\n```\nThe portion “(uint24(_newReferenceTick) & BITMASK_UINT22) << 96)” corrupts the lockMode as the 22 bits referenceTick is typecasted to 24 bits whose upper 2 bits are always zero. \nIt’s luck that the lower 10 bits of eonsEMA are not getting modified, but were candidate for getting disturbed due to the wrong mask of 130 bits instead of required 118 bits. In short, rebaseOraclePack unintentionally clears lockMode, but does not corrupt EMA fields.\n\nIn the process, the ‘function rebaseOraclePack’ covertly and silently does the work of ‘function unlockPool’ which onlyGuardian is allowed to do, thereby exposing the pool for continual attack which the ‘onlyGuardian’ tried to prevent by setting the lockMode as ‘3’.\n\n## Recommended mitigation steps\nModification of https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/types/OraclePack.sol#L64-L65 to\n\n```solidity\n    uint256 internal constant UPPER_118BITS_MASK =\n        0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC0000000000000000000000000000000000;\n```\nwill solve the issue.",
+  "proof_of_concept": "## POC \nFollowing are added in TokenId.t.sol\n\n```solidity\nimport {OraclePack} from \"@types/OraclePack.sol\"; \nimport {OraclePackLibrary} from \"@types/OraclePack.sol\";\n\nfunction test_RebaseCorruptsLockMode() public {\n        OraclePack oraclePack = OraclePack.wrap(0);\n\n        // Enable lock mode\n        oraclePack = oraclePack.lock();\n\n        assertEq(oraclePack.lockMode(), 3, \"lock mode not initialised\"); // lockMode is set to 3.\n        (, OraclePack rebasedOraclePack) = OraclePackLibrary.rebaseOraclePack(oraclePack);\n\n        //  Confirms corruption\n        assertTrue(rebasedOraclePack.lockMode() != 3, \"lockMode is not reset\");\n        assertEq(rebasedOraclePack.lockMode(), 0, \"lockMode is not reset\");\n}\n```\n\nOUTPUT:\n```solidity\nk@10K:/mnt/d/bc/2025-12-panoptic-main$ forge test   --match-test test_RebaseCorruptsLockMode   --fork-url http://127.0.0.1:8545   --no-storage-caching   -vvv\n[⠆] Compiling...\nNo files changed, compilation skipped\n\nRan 1 test for test/foundry/types/TokenId.t.sol:TokenIdTest\n[PASS] test_RebaseCorruptsLockMode() (gas: 7824)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 19.59ms (2.27ms CPU time)\n\nRan 1 test suite in 110.83ms (19.59ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\nk@10K:/mnt/d/bc/2025-12-panoptic-main$\n```\n\nIn foundry.toml, modified [rpc_endpoints] as\n\n[rpc_endpoints]\nmainnet = \"http://127.0.0.1:8545\"\nsepolia = \"http://127.0.0.1:8545\"\n\nran on one terminal\nanvil\n\nOn the other terminal\nETH_RPC_URL=http://127.0.0.1:8545\nMAINNET_RPC_URL=http://127.0.0.1:8545\nSEPOLIA_RPC_URL=http://127.0.0.1:8545\n\nforge test   --match-test test_RebaseCorruptsLockModeAndEonsEMA   --fork-url http://127.0.0.1:8545   --no-storage-caching   -vvv",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/types/OraclePack.sol#L64-L65",
+    "https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/types/OraclePack.sol#L629-L633",
+    "https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/RiskEngine.sol#L242-L245",
+    "https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/PanopticPool.sol#L299-L301"
+  ],
+  "source_record": {
+    "project_id": "iqcUwAhCZyD",
+    "submission_index": "947",
+    "api_submission_id": "",
+    "uid": "aSN55Rnh4p8",
+    "number": "947",
+    "title": "The function rebaseOraclePack always resets the lockMode to ‘0’",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "aster",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/types/OraclePack.sol#L64-L65",
+      "https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/types/OraclePack.sol#L629-L633",
+      "https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/RiskEngine.sol#L242-L245",
+      "https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/PanopticPool.sol#L299-L301"
+    ],
+    "body": "## Finding description and impact\nIn the OraclePackLibrary, UPPER_118BITS_MASK is wrongly defined as Upper 130 bits mask as it contains 130 ones and 126 zeroes. It is used in the ‘function rebaseOraclePack’ where it just affects the lockMode, which is reset to ‘0’, the corresponding 2 bits lockMode is always ‘00’ after the function rebaseOraclePack gets executed.\n\n```solidity\n    uint256 internal constant UPPER_118BITS_MASK =\n        0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC0000000000000000000000000000000;\n```\n\n```solidity\n            rebasedOraclePack = OraclePack.wrap(\n                (OraclePack.unwrap(oraclePack) & UPPER_118BITS_MASK) +\n                    (uint256(uint24(_newReferenceTick) & BITMASK_UINT22) << 96) + //@audit error in this line.\n                    uint96(_newResiduals)\n            );\n```\nThe portion “(uint24(_newReferenceTick) & BITMASK_UINT22) << 96)” corrupts the lockMode as the 22 bits referenceTick is typecasted to 24 bits whose upper 2 bits are always zero. \nIt’s luck that the lower 10 bits of eonsEMA are not getting modified, but were candidate for getting disturbed due to the wrong mask of 130 bits instead of required 118 bits. In short, rebaseOraclePack unintentionally clears lockMode, but does not corrupt EMA fields.\n\nIn the process, the ‘function rebaseOraclePack’ covertly and silently does the work of ‘function unlockPool’ which onlyGuardian is allowed to do, thereby exposing the pool for continual attack which the ‘onlyGuardian’ tried to prevent by setting the lockMode as ‘3’.\n\n## Recommended mitigation steps\nModification of https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/types/OraclePack.sol#L64-L65 to\n\n```solidity\n    uint256 internal constant UPPER_118BITS_MASK =\n        0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC0000000000000000000000000000000000;\n```\nwill solve the issue.",
+    "proof_of_concept": "## POC \nFollowing are added in TokenId.t.sol\n\n```solidity\nimport {OraclePack} from \"@types/OraclePack.sol\"; \nimport {OraclePackLibrary} from \"@types/OraclePack.sol\";\n\nfunction test_RebaseCorruptsLockMode() public {\n        OraclePack oraclePack = OraclePack.wrap(0);\n\n        // Enable lock mode\n        oraclePack = oraclePack.lock();\n\n        assertEq(oraclePack.lockMode(), 3, \"lock mode not initialised\"); // lockMode is set to 3.\n        (, OraclePack rebasedOraclePack) = OraclePackLibrary.rebaseOraclePack(oraclePack);\n\n        //  Confirms corruption\n        assertTrue(rebasedOraclePack.lockMode() != 3, \"lockMode is not reset\");\n        assertEq(rebasedOraclePack.lockMode(), 0, \"lockMode is not reset\");\n}\n```\n\nOUTPUT:\n```solidity\nk@10K:/mnt/d/bc/2025-12-panoptic-main$ forge test   --match-test test_RebaseCorruptsLockMode   --fork-url http://127.0.0.1:8545   --no-storage-caching   -vvv\n[⠆] Compiling...\nNo files changed, compilation skipped\n\nRan 1 test for test/foundry/types/TokenId.t.sol:TokenIdTest\n[PASS] test_RebaseCorruptsLockMode() (gas: 7824)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 19.59ms (2.27ms CPU time)\n\nRan 1 test suite in 110.83ms (19.59ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\nk@10K:/mnt/d/bc/2025-12-panoptic-main$\n```\n\nIn foundry.toml, modified [rpc_endpoints] as\n\n[rpc_endpoints]\nmainnet = \"http://127.0.0.1:8545\"\nsepolia = \"http://127.0.0.1:8545\"\n\nran on one terminal\nanvil\n\nOn the other terminal\nETH_RPC_URL=http://127.0.0.1:8545\nMAINNET_RPC_URL=http://127.0.0.1:8545\nSEPOLIA_RPC_URL=http://127.0.0.1:8545\n\nforge test   --match-test test_RebaseCorruptsLockModeAndEonsEMA   --fork-url http://127.0.0.1:8545   --no-storage-caching   -vvv",
+    "detail_url": "https://code4rena.com/api/v1/audits/iqcUwAhCZyD/submissions/947",
+    "raw": {
+      "auditUid": "iqcUwAhCZyD",
+      "createdAt": "2026-01-05T16:55:07.220Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "SeKgDohnp8a",
+          "userUid": "q9yEBhoN6NN",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-26T08:31:18.522Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "SXv7e4wnnbo"
+        },
+        {
+          "uid": "X5WupwYeaVE",
+          "userUid": "q9yEBhoN6NN",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-06T07:00:52.671Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "aSN55Rnh4p8",
+          "findingUid": null
+        },
+        {
+          "uid": "s8LzcBxc68R",
+          "userUid": "drB5cYgMy5X",
+          "userAuditRole": "sponsor",
+          "createdAt": "2026-01-09T20:56:13.952Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "SXv7e4wnnbo"
+        },
+        {
+          "uid": "f6ttgTQ9Ef5",
+          "userUid": "q9yEBhoN6NN",
+          "userAuditRole": "judge",
+          "createdAt": "2026-02-10T19:57:13.321Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "SXv7e4wnnbo"
+        }
+      ],
+      "finding": {
+        "uid": "SXv7e4wnnbo",
+        "number": 59,
+        "duplicates": 15
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2026-02-10T19:57:13.321Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "The function rebaseOraclePack always resets the lockMode to ‘0’",
+      "uid": "aSN55Rnh4p8",
+      "updatedAt": "2026-01-05T16:55:07.220Z",
+      "user": {
+        "uid": "DQMD3BEPEVY",
+        "handle": "aster"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\nIn the OraclePackLibrary, UPPER_118BITS_MASK is wrongly defined as Upper 130 bits mask as it contains 130 ones and 126 zeroes. It is used in the ‘function rebaseOraclePack’ where it just affects the lockMode, which is reset to ‘0’, the corresponding 2 bits lockMode is always ‘00’ after the function rebaseOraclePack gets executed.\n\n```solidity\n    uint256 internal constant UPPER_118BITS_MASK =\n        0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC0000000000000000000000000000000;\n```\n\n```solidity\n            rebasedOraclePack = OraclePack.wrap(\n                (OraclePack.unwrap(oraclePack) & UPPER_118BITS_MASK) +\n                    (uint256(uint24(_newReferenceTick) & BITMASK_UINT22) << 96) + //@audit error in this line.\n                    uint96(_newResiduals)\n            );\n```\nThe portion “(uint24(_newReferenceTick) & BITMASK_UINT22) << 96)” corrupts the lockMode as the 22 bits referenceTick is typecasted to 24 bits whose upper 2 bits are always zero. \nIt’s luck that the lower 10 bits of eonsEMA are not getting modified, but were candidate for getting disturbed due to the wrong mask of 130 bits instead of required 118 bits. In short, rebaseOraclePack unintentionally clears lockMode, but does not corrupt EMA fields.\n\nIn the process, the ‘function rebaseOraclePack’ covertly and silently does the work of ‘function unlockPool’ which onlyGuardian is allowed to do, thereby exposing the pool for continual attack which the ‘onlyGuardian’ tried to prevent by setting the lockMode as ‘3’.\n\n## Recommended mitigation steps\nModification of https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/types/OraclePack.sol#L64-L65 to\n\n```solidity\n    uint256 internal constant UPPER_118BITS_MASK =\n        0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC0000000000000000000000000000000000;\n```\nwill solve the issue.",
+      "proofOfConcept": "## POC \nFollowing are added in TokenId.t.sol\n\n```solidity\nimport {OraclePack} from \"@types/OraclePack.sol\"; \nimport {OraclePackLibrary} from \"@types/OraclePack.sol\";\n\nfunction test_RebaseCorruptsLockMode() public {\n        OraclePack oraclePack = OraclePack.wrap(0);\n\n        // Enable lock mode\n        oraclePack = oraclePack.lock();\n\n        assertEq(oraclePack.lockMode(), 3, \"lock mode not initialised\"); // lockMode is set to 3.\n        (, OraclePack rebasedOraclePack) = OraclePackLibrary.rebaseOraclePack(oraclePack);\n\n        //  Confirms corruption\n        assertTrue(rebasedOraclePack.lockMode() != 3, \"lockMode is not reset\");\n        assertEq(rebasedOraclePack.lockMode(), 0, \"lockMode is not reset\");\n}\n```\n\nOUTPUT:\n```solidity\nk@10K:/mnt/d/bc/2025-12-panoptic-main$ forge test   --match-test test_RebaseCorruptsLockMode   --fork-url http://127.0.0.1:8545   --no-storage-caching   -vvv\n[⠆] Compiling...\nNo files changed, compilation skipped\n\nRan 1 test for test/foundry/types/TokenId.t.sol:TokenIdTest\n[PASS] test_RebaseCorruptsLockMode() (gas: 7824)\nSuite result: ok. 1 passed; 0 failed; 0 skipped; finished in 19.59ms (2.27ms CPU time)\n\nRan 1 test suite in 110.83ms (19.59ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)\nk@10K:/mnt/d/bc/2025-12-panoptic-main$\n```\n\nIn foundry.toml, modified [rpc_endpoints] as\n\n[rpc_endpoints]\nmainnet = \"http://127.0.0.1:8545\"\nsepolia = \"http://127.0.0.1:8545\"\n\nran on one terminal\nanvil\n\nOn the other terminal\nETH_RPC_URL=http://127.0.0.1:8545\nMAINNET_RPC_URL=http://127.0.0.1:8545\nSEPOLIA_RPC_URL=http://127.0.0.1:8545\n\nforge test   --match-test test_RebaseCorruptsLockModeAndEonsEMA   --fork-url http://127.0.0.1:8545   --no-storage-caching   -vvv",
+      "linesOfCode": "https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/types/OraclePack.sol#L64-L65,https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/types/OraclePack.sol#L629-L633,https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/RiskEngine.sol#L242-L245,https://github.com/code-423n4/2025-12-panoptic/blob/fe557748210a529ae414d7c487b6514be0d9e220/contracts/PanopticPool.sol#L299-L301",
+      "number": 947,
+      "aiExplanation": null,
+      "_index": 947
+    }
+  }
+}

@@ -1,0 +1,168 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Forte_ Float128 Solidity Library_evjHaYmvKxh",
+    "audit_uid": "evjHaYmvKxh",
+    "requested_submission_uid": "SDS9ufWpogs",
+    "requested_finding_uid": "b6UF5QhTTAR",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Forte_Float128_Solidity_Library_evjHaYmvKxh/20260618_143618/findings.json",
+    "source_submission_uid": "SDS9ufWpogs",
+    "source_finding_uid": "b6UF5QhTTAR",
+    "original_report_path": "Forte_ Float128 Solidity Library_evjHaYmvKxh\\high_valid_SDS9ufWpogs.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "SDS9ufWpogs",
+  "finding_uid": "b6UF5QhTTAR",
+  "finding_number": "186",
+  "title": "Precision Loss in Float128.toPackedFloat Encoding for Large Mantissas with Negative Exponents",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "hecker_trieu_tien",
+  "body": "Okay, here is the structured report based on the findings:\n\n***\n\n**Title:** Precision Loss in Float128.toPackedFloat Encoding for Large Mantissas with Negative Exponents\n\n**Summary:**\nThe `Float128.toPackedFloat` function incorrectly truncates large mantissas ( > 38 digits) when encoded with sufficiently negative exponents (e.g., <= -100). This results in significant precision loss during the encoding step itself, leading to inaccurate representation and calculations.\n\n**Finding description and impact:**\nThe root cause lies in the normalization logic within `toPackedFloat`. When deciding between the medium (38-digit) and large (72-digit) format, the function primarily checks if the *adjusted* exponent (`exponent + (input_digits - 38)`) exceeds `MAXIMUM_EXPONENT` (-18). If the input exponent is very negative, this check can incorrectly determine that the medium format is sufficient, even if the input mantissa has many more than 38 digits. Consequently, the code proceeds to truncate the large mantissa down to 38 digits using division (`div(mantissa, exp(BASE, mantissaMultiplier))`), discarding significant precision *before* the number is even stored.\n\n*Impact:*\n\n*   **Calculation Errors:** Any arithmetic operations performed using these incorrectly encoded numbers will produce inaccurate results.\n*   **Financial Risk:** In applications requiring accurate representation of large values or high precision across different magnitudes (e.g., DeFi), this can lead to incorrect balances, prices, or other critical calculations.\n\n**Recommended mitigation steps:**\nModify the normalization logic within the `Float128.toPackedFloat` function (around lines 1013-1036 in the provided `Float128.sol`) to prioritize the input mantissa's size when selecting the encoding format.\n\n **Prioritize Mantissa Size:** Explicitly check if the input mantissa requires the large format (`digitsMantissa > MAX_DIGITS_M`).",
+  "proof_of_concept": "```\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport \"forge-std/Test.sol\";\nimport \"forge-std/console.sol\";\nimport \"src/Float128.sol\";\nimport \"src/Types.sol\";\n\ncontract PackedFloatEncodingTest is Test {\n    using Float128 for int256;\n    using Float128 for packedFloat;\n\n    int constant ZERO_OFFSET = 8192;\n    int constant ZERO_OFFSET_NEG = -8192;\n    int constant MAXIMUM_EXPONENT = -18;\n    \n    // Helper function to check if a float has large mantissa\n    function hasLargeMantissa(packedFloat x) internal pure returns (bool) {\n        return packedFloat.unwrap(x) & Float128.MANTISSA_L_FLAG_MASK > 0;\n    }\n    \n    // Test to specifically identify precision loss in toPackedFloat\n    function testToPackedFloatPrecisionLoss() public {\n        console.log(\"Testing Precision Loss in toPackedFloat\");\n        \n        // Create a large mantissa that should require large format (70 digits)\n        int largeMantissa = 1000000000000000000000000000000000000000000000000000000000000000000000; // 70 digits\n        \n        // Test with a range of exponents\n        int[] memory exponents = new int[](8);\n        exponents[0] = 0;      // Normal case\n        exponents[1] = -100;   // Slightly negative\n        exponents[2] = -1000;  // Quite negative\n        exponents[3] = -3000;  // Very negative (at recommended limit)\n        exponents[4] = -5000;  // Extremely negative\n        exponents[5] = -7000;  // Approaching ZERO_OFFSET_NEG\n        exponents[6] = -8000;  // Almost at ZERO_OFFSET_NEG\n        exponents[7] = -8190;  // Just above ZERO_OFFSET_NEG\n        \n        bool foundIssue = false;\n        int firstProblemExponent = 0;\n        \n        for (uint i = 0; i < exponents.length; i++) {\n            // Encode with toPackedFloat\n            packedFloat number = Float128.toPackedFloat(largeMantissa, exponents[i]);\n            \n            // Check mantissa size\n            bool isLarge = hasLargeMantissa(number);\n            \n            // Decode to verify\n            (int decodedMan, int decodedExp) = Float128.decode(number);\n            \n            console.log(\"\");\n            console.log(\"Exponent:\", exponents[i]);\n            console.log(\"Is Large:\", isLarge);\n            console.log(\"Decoded mantissa:\", decodedMan);\n            console.log(\"Decoded exponent:\", decodedExp);\n            \n            // Track when we first lose precision\n            if (!isLarge && !foundIssue) {\n                foundIssue = true;\n                firstProblemExponent = exponents[i];\n                console.log(\"*** PRECISION LOSS DETECTED ***\");\n            }\n        }\n        \n        // Now check a control case with a medium mantissa\n        console.log(\"\");\n        console.log(\"Control Test - Medium Mantissa Number (38 digits):\");\n        int mediumMantissa = 10000000000000000000000000000000000000; // 38 digits\n        packedFloat mediumNumber = Float128.toPackedFloat(mediumMantissa, 0);\n        bool isMedium = !hasLargeMantissa(mediumNumber);\n        console.log(\"38-digit mantissa correctly encoded as medium:\", isMedium);\n        \n        // Final confirmation\n        if (foundIssue) {\n            console.log(\"\");\n            console.log(\"ISSUE CONFIRMED: toPackedFloat loses precision for large mantissas\");\n            console.log(\"with exponents below\", firstProblemExponent);\n            console.log(\"This means the precision loss begins at the encoding stage,\");\n            console.log(\"not just during arithmetic operations.\");\n        }\n    }\n} \n```\nResult\n```\n  Testing Precision Loss in toPackedFloat\n\n  Exponent: 0\n  Is Large: true\n  Decoded mantissa: 100000000000000000000000000000000000000000000000000000000000000000000000\n  Decoded exponent: -2\n\n  Exponent: -100\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -68\n  *** PRECISION LOSS DETECTED ***\n\n  Exponent: -1000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -968\n\n  Exponent: -3000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -2968\n\n  Exponent: -5000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -4968\n\n  Exponent: -7000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -6968\n\n  Exponent: -8000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -7968\n\n  Exponent: -8190\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -8158\n\n  Control Test - Medium Mantissa Number (38 digits):\n  38-digit mantissa correctly encoded as medium: false\n\n  ISSUE CONFIRMED: toPackedFloat loses precision for large mantissas\n  with exponents below -100\n  This means the precision loss begins at the encoding stage,\n  not just during arithmetic operations.\n\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-04-forte/blob/main/src/Float128.sol#L1083"
+  ],
+  "source_record": {
+    "project_id": "evjHaYmvKxh",
+    "submission_index": "39",
+    "api_submission_id": "",
+    "uid": "SDS9ufWpogs",
+    "number": "39",
+    "title": "Precision Loss in Float128.toPackedFloat Encoding for Large Mantissas with Negative Exponents",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "hecker_trieu_tien",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-04-forte/blob/main/src/Float128.sol#L1083"
+    ],
+    "body": "Okay, here is the structured report based on the findings:\n\n***\n\n**Title:** Precision Loss in Float128.toPackedFloat Encoding for Large Mantissas with Negative Exponents\n\n**Summary:**\nThe `Float128.toPackedFloat` function incorrectly truncates large mantissas ( > 38 digits) when encoded with sufficiently negative exponents (e.g., <= -100). This results in significant precision loss during the encoding step itself, leading to inaccurate representation and calculations.\n\n**Finding description and impact:**\nThe root cause lies in the normalization logic within `toPackedFloat`. When deciding between the medium (38-digit) and large (72-digit) format, the function primarily checks if the *adjusted* exponent (`exponent + (input_digits - 38)`) exceeds `MAXIMUM_EXPONENT` (-18). If the input exponent is very negative, this check can incorrectly determine that the medium format is sufficient, even if the input mantissa has many more than 38 digits. Consequently, the code proceeds to truncate the large mantissa down to 38 digits using division (`div(mantissa, exp(BASE, mantissaMultiplier))`), discarding significant precision *before* the number is even stored.\n\n*Impact:*\n\n*   **Calculation Errors:** Any arithmetic operations performed using these incorrectly encoded numbers will produce inaccurate results.\n*   **Financial Risk:** In applications requiring accurate representation of large values or high precision across different magnitudes (e.g., DeFi), this can lead to incorrect balances, prices, or other critical calculations.\n\n**Recommended mitigation steps:**\nModify the normalization logic within the `Float128.toPackedFloat` function (around lines 1013-1036 in the provided `Float128.sol`) to prioritize the input mantissa's size when selecting the encoding format.\n\n **Prioritize Mantissa Size:** Explicitly check if the input mantissa requires the large format (`digitsMantissa > MAX_DIGITS_M`).",
+    "proof_of_concept": "```\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport \"forge-std/Test.sol\";\nimport \"forge-std/console.sol\";\nimport \"src/Float128.sol\";\nimport \"src/Types.sol\";\n\ncontract PackedFloatEncodingTest is Test {\n    using Float128 for int256;\n    using Float128 for packedFloat;\n\n    int constant ZERO_OFFSET = 8192;\n    int constant ZERO_OFFSET_NEG = -8192;\n    int constant MAXIMUM_EXPONENT = -18;\n    \n    // Helper function to check if a float has large mantissa\n    function hasLargeMantissa(packedFloat x) internal pure returns (bool) {\n        return packedFloat.unwrap(x) & Float128.MANTISSA_L_FLAG_MASK > 0;\n    }\n    \n    // Test to specifically identify precision loss in toPackedFloat\n    function testToPackedFloatPrecisionLoss() public {\n        console.log(\"Testing Precision Loss in toPackedFloat\");\n        \n        // Create a large mantissa that should require large format (70 digits)\n        int largeMantissa = 1000000000000000000000000000000000000000000000000000000000000000000000; // 70 digits\n        \n        // Test with a range of exponents\n        int[] memory exponents = new int[](8);\n        exponents[0] = 0;      // Normal case\n        exponents[1] = -100;   // Slightly negative\n        exponents[2] = -1000;  // Quite negative\n        exponents[3] = -3000;  // Very negative (at recommended limit)\n        exponents[4] = -5000;  // Extremely negative\n        exponents[5] = -7000;  // Approaching ZERO_OFFSET_NEG\n        exponents[6] = -8000;  // Almost at ZERO_OFFSET_NEG\n        exponents[7] = -8190;  // Just above ZERO_OFFSET_NEG\n        \n        bool foundIssue = false;\n        int firstProblemExponent = 0;\n        \n        for (uint i = 0; i < exponents.length; i++) {\n            // Encode with toPackedFloat\n            packedFloat number = Float128.toPackedFloat(largeMantissa, exponents[i]);\n            \n            // Check mantissa size\n            bool isLarge = hasLargeMantissa(number);\n            \n            // Decode to verify\n            (int decodedMan, int decodedExp) = Float128.decode(number);\n            \n            console.log(\"\");\n            console.log(\"Exponent:\", exponents[i]);\n            console.log(\"Is Large:\", isLarge);\n            console.log(\"Decoded mantissa:\", decodedMan);\n            console.log(\"Decoded exponent:\", decodedExp);\n            \n            // Track when we first lose precision\n            if (!isLarge && !foundIssue) {\n                foundIssue = true;\n                firstProblemExponent = exponents[i];\n                console.log(\"*** PRECISION LOSS DETECTED ***\");\n            }\n        }\n        \n        // Now check a control case with a medium mantissa\n        console.log(\"\");\n        console.log(\"Control Test - Medium Mantissa Number (38 digits):\");\n        int mediumMantissa = 10000000000000000000000000000000000000; // 38 digits\n        packedFloat mediumNumber = Float128.toPackedFloat(mediumMantissa, 0);\n        bool isMedium = !hasLargeMantissa(mediumNumber);\n        console.log(\"38-digit mantissa correctly encoded as medium:\", isMedium);\n        \n        // Final confirmation\n        if (foundIssue) {\n            console.log(\"\");\n            console.log(\"ISSUE CONFIRMED: toPackedFloat loses precision for large mantissas\");\n            console.log(\"with exponents below\", firstProblemExponent);\n            console.log(\"This means the precision loss begins at the encoding stage,\");\n            console.log(\"not just during arithmetic operations.\");\n        }\n    }\n} \n```\nResult\n```\n  Testing Precision Loss in toPackedFloat\n\n  Exponent: 0\n  Is Large: true\n  Decoded mantissa: 100000000000000000000000000000000000000000000000000000000000000000000000\n  Decoded exponent: -2\n\n  Exponent: -100\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -68\n  *** PRECISION LOSS DETECTED ***\n\n  Exponent: -1000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -968\n\n  Exponent: -3000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -2968\n\n  Exponent: -5000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -4968\n\n  Exponent: -7000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -6968\n\n  Exponent: -8000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -7968\n\n  Exponent: -8190\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -8158\n\n  Control Test - Medium Mantissa Number (38 digits):\n  38-digit mantissa correctly encoded as medium: false\n\n  ISSUE CONFIRMED: toPackedFloat loses precision for large mantissas\n  with exponents below -100\n  This means the precision loss begins at the encoding stage,\n  not just during arithmetic operations.\n\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/evjHaYmvKxh/submissions/39",
+    "raw": {
+      "auditUid": "evjHaYmvKxh",
+      "createdAt": "2025-04-02T14:54:17.595Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "4GarhVSwnVN",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-16T01:34:48.862Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "SDS9ufWpogs",
+          "findingUid": null
+        },
+        {
+          "uid": "HyHuHexDC9y",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-16T01:34:48.862Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "b6UF5QhTTAR"
+        },
+        {
+          "uid": "e2tgZLk8rjh",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "validator",
+          "createdAt": "2025-04-16T01:34:48.862Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "b6UF5QhTTAR"
+        },
+        {
+          "uid": "N9PsgsVzqYm",
+          "userUid": "oDeW4FDmTKF",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-04-17T16:48:24.019Z",
+          "type": "validity",
+          "value": "wontfix",
+          "submissionUid": null,
+          "findingUid": "b6UF5QhTTAR"
+        },
+        {
+          "uid": "n9V46g2g5AQ",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:20:47.777Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "b6UF5QhTTAR"
+        },
+        {
+          "uid": "NoJPy3Gt9ZA",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:20:49.515Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "b6UF5QhTTAR"
+        },
+        {
+          "uid": "FKop6pKizaJ",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:49:36.287Z",
+          "type": "credit",
+          "value": "75%",
+          "submissionUid": "SDS9ufWpogs",
+          "findingUid": null
+        },
+        {
+          "uid": "qz7DCU2NaPG",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-04-21T11:49:49.019Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "SDS9ufWpogs",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "b6UF5QhTTAR",
+        "number": 186,
+        "duplicates": 6
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": "75%",
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-05-07T15:00:47.683Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Precision Loss in Float128.toPackedFloat Encoding for Large Mantissas with Negative Exponents",
+      "uid": "SDS9ufWpogs",
+      "updatedAt": "2025-04-02T14:54:17.595Z",
+      "user": {
+        "uid": "QzwZRpS2hz8",
+        "handle": "hecker_trieu_tien"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "Okay, here is the structured report based on the findings:\n\n***\n\n**Title:** Precision Loss in Float128.toPackedFloat Encoding for Large Mantissas with Negative Exponents\n\n**Summary:**\nThe `Float128.toPackedFloat` function incorrectly truncates large mantissas ( > 38 digits) when encoded with sufficiently negative exponents (e.g., <= -100). This results in significant precision loss during the encoding step itself, leading to inaccurate representation and calculations.\n\n**Finding description and impact:**\nThe root cause lies in the normalization logic within `toPackedFloat`. When deciding between the medium (38-digit) and large (72-digit) format, the function primarily checks if the *adjusted* exponent (`exponent + (input_digits - 38)`) exceeds `MAXIMUM_EXPONENT` (-18). If the input exponent is very negative, this check can incorrectly determine that the medium format is sufficient, even if the input mantissa has many more than 38 digits. Consequently, the code proceeds to truncate the large mantissa down to 38 digits using division (`div(mantissa, exp(BASE, mantissaMultiplier))`), discarding significant precision *before* the number is even stored.\n\n*Impact:*\n\n*   **Calculation Errors:** Any arithmetic operations performed using these incorrectly encoded numbers will produce inaccurate results.\n*   **Financial Risk:** In applications requiring accurate representation of large values or high precision across different magnitudes (e.g., DeFi), this can lead to incorrect balances, prices, or other critical calculations.\n\n**Recommended mitigation steps:**\nModify the normalization logic within the `Float128.toPackedFloat` function (around lines 1013-1036 in the provided `Float128.sol`) to prioritize the input mantissa's size when selecting the encoding format.\n\n **Prioritize Mantissa Size:** Explicitly check if the input mantissa requires the large format (`digitsMantissa > MAX_DIGITS_M`).",
+      "proofOfConcept": "```\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport \"forge-std/Test.sol\";\nimport \"forge-std/console.sol\";\nimport \"src/Float128.sol\";\nimport \"src/Types.sol\";\n\ncontract PackedFloatEncodingTest is Test {\n    using Float128 for int256;\n    using Float128 for packedFloat;\n\n    int constant ZERO_OFFSET = 8192;\n    int constant ZERO_OFFSET_NEG = -8192;\n    int constant MAXIMUM_EXPONENT = -18;\n    \n    // Helper function to check if a float has large mantissa\n    function hasLargeMantissa(packedFloat x) internal pure returns (bool) {\n        return packedFloat.unwrap(x) & Float128.MANTISSA_L_FLAG_MASK > 0;\n    }\n    \n    // Test to specifically identify precision loss in toPackedFloat\n    function testToPackedFloatPrecisionLoss() public {\n        console.log(\"Testing Precision Loss in toPackedFloat\");\n        \n        // Create a large mantissa that should require large format (70 digits)\n        int largeMantissa = 1000000000000000000000000000000000000000000000000000000000000000000000; // 70 digits\n        \n        // Test with a range of exponents\n        int[] memory exponents = new int[](8);\n        exponents[0] = 0;      // Normal case\n        exponents[1] = -100;   // Slightly negative\n        exponents[2] = -1000;  // Quite negative\n        exponents[3] = -3000;  // Very negative (at recommended limit)\n        exponents[4] = -5000;  // Extremely negative\n        exponents[5] = -7000;  // Approaching ZERO_OFFSET_NEG\n        exponents[6] = -8000;  // Almost at ZERO_OFFSET_NEG\n        exponents[7] = -8190;  // Just above ZERO_OFFSET_NEG\n        \n        bool foundIssue = false;\n        int firstProblemExponent = 0;\n        \n        for (uint i = 0; i < exponents.length; i++) {\n            // Encode with toPackedFloat\n            packedFloat number = Float128.toPackedFloat(largeMantissa, exponents[i]);\n            \n            // Check mantissa size\n            bool isLarge = hasLargeMantissa(number);\n            \n            // Decode to verify\n            (int decodedMan, int decodedExp) = Float128.decode(number);\n            \n            console.log(\"\");\n            console.log(\"Exponent:\", exponents[i]);\n            console.log(\"Is Large:\", isLarge);\n            console.log(\"Decoded mantissa:\", decodedMan);\n            console.log(\"Decoded exponent:\", decodedExp);\n            \n            // Track when we first lose precision\n            if (!isLarge && !foundIssue) {\n                foundIssue = true;\n                firstProblemExponent = exponents[i];\n                console.log(\"*** PRECISION LOSS DETECTED ***\");\n            }\n        }\n        \n        // Now check a control case with a medium mantissa\n        console.log(\"\");\n        console.log(\"Control Test - Medium Mantissa Number (38 digits):\");\n        int mediumMantissa = 10000000000000000000000000000000000000; // 38 digits\n        packedFloat mediumNumber = Float128.toPackedFloat(mediumMantissa, 0);\n        bool isMedium = !hasLargeMantissa(mediumNumber);\n        console.log(\"38-digit mantissa correctly encoded as medium:\", isMedium);\n        \n        // Final confirmation\n        if (foundIssue) {\n            console.log(\"\");\n            console.log(\"ISSUE CONFIRMED: toPackedFloat loses precision for large mantissas\");\n            console.log(\"with exponents below\", firstProblemExponent);\n            console.log(\"This means the precision loss begins at the encoding stage,\");\n            console.log(\"not just during arithmetic operations.\");\n        }\n    }\n} \n```\nResult\n```\n  Testing Precision Loss in toPackedFloat\n\n  Exponent: 0\n  Is Large: true\n  Decoded mantissa: 100000000000000000000000000000000000000000000000000000000000000000000000\n  Decoded exponent: -2\n\n  Exponent: -100\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -68\n  *** PRECISION LOSS DETECTED ***\n\n  Exponent: -1000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -968\n\n  Exponent: -3000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -2968\n\n  Exponent: -5000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -4968\n\n  Exponent: -7000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -6968\n\n  Exponent: -8000\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -7968\n\n  Exponent: -8190\n  Is Large: false\n  Decoded mantissa: 10000000000000000000000000000000000000\n  Decoded exponent: -8158\n\n  Control Test - Medium Mantissa Number (38 digits):\n  38-digit mantissa correctly encoded as medium: false\n\n  ISSUE CONFIRMED: toPackedFloat loses precision for large mantissas\n  with exponents below -100\n  This means the precision loss begins at the encoding stage,\n  not just during arithmetic operations.\n\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-04-forte/blob/main/src/Float128.sol#L1083",
+      "number": 39,
+      "aiExplanation": null,
+      "_index": 39
+    }
+  }
+}

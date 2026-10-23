@@ -1,0 +1,26 @@
+Double-Withdrawal Vulnerability in StakingManager
+
+## Finding description and impact
+
+Summary
+A vulnerability exists in the StakingManager contract if withdrawals are cancelled when they are still pending processing on L1. This introduces the possibility that a user can trigger multiple L1 withdrawal operations for the same stake, potentially withdrawing more HYPE than was originally deposited and breaking protocol accounting.
+
+Detailed Description
+When a user queues a withdrawal, the StakingManager queues an L1 operation to withdraw HYPE from validators. Critically, If this withdrawal is later cancelled BEFORE calling processL1Withdrawals, the withdrawal request is deleted on L2(StakingManager), but the corresponding L1 operation to undelegate to staker remains in the queue. This can lead to a desynchronization between L2 state and L1 states.
+
+To see how, let's examine the relevant code in the cancelWithdrawal function:
+
+
+Notice that this function only updates L2 state by removing the withdrawal request and returning kHYPE tokens to the user. However, it does not have a mechanism to know whether the undelegate request is still queued.
+
+Hence, When the operator later processes the L1 operations queue with processL1Operations, all operations including those from cancelled withdrawals will be executed.
+
+
+This vulnerability then can be demonstrated as follows:
+
+1. User stakes 1 ETH, receiving 1 kHYPE.
+2. User queues withdrawal (L1 Undelegate Command #1 added to queue).
+3. Withdrawal gets cancelled by manager for some reason (but L1 Command #1 remains in queue), but importantly, before all pending withdrawals(including the cancelled one) are processed via processL1Withdrawals.
+4. User instantly queues another withdrawal with the same kHYPE he got back from cancellation (L1 Command #2 added to queue).
+5. Both Command #1 and Command #2 finally get processed by calling processL1Operations.
+6. Result: 2 ETH withdrawn from validator when only 1 ETH was staked creating an accounting inconsistency.

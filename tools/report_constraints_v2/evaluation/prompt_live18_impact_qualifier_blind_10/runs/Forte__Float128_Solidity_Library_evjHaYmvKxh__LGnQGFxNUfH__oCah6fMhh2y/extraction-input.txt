@@ -1,0 +1,46 @@
+Attacker can flip L flag mask to get vastly different calculation result while keeping mantissa and exponent unchanged
+
+## Finding description and impact
+
+`packedFloat` is uint256-encoded bitmap to represent Float128 type.
+
+|Bit range| Reserved For|
+|--------|-------------|
+|255-242|EXPONENT|
+|241|L_MANTISSA_FLAG|
+|240|MANTISSA_SIGN|
+|239-0|L_MANTISSA|
+|128-0|M_MANTISSA|
+
+Depending on `L_MANTISSA_FLAG`, Float128 can have 72 digits (`L_MANTISSA`), or 38 digits (`M_MANTISSA`).
+
+Library extracts mantissa from `packedFloat` by applying `MANTISSA_MASK` to `packedFloat`:
+
+[**File: 2025-04-forte/src/Float128.sol**](https://github.com/code-423n4/2025-04-forte/blob/f3a4c51baf1dc11d6efdb20b675dfe1efb54be9b/src/Float128.sol#L14)
+
+`MANTISSA_MASK` is 60-bytes long (240-bits), so it is meant to be used for `L_MANTISSA`.
+
+However, the library applies `MANTISSA_MASK` even if `L_MANTISSA_FLAG` is 0.
+
+So basically it trusts `L_MANTISSA_FLAG` and assumes mantissa length will not exceed 128 bits if `L_MANTISSA_FLAG` is 0.
+
+This assumption not only happens in `decode` function, but it appears across all library calculations (add, sub, mul, div, sqrt, ln). Illustrated the following is `add` operation:
+
+[**File: /home/user/develop/code4rena/2025-04-forte/src/Float128.sol**](https://github.com/code-423n4/2025-04-forte/blob/f3a4c51baf1dc11d6efdb20b675dfe1efb54be9b/src/Float128.sol#L60-L74)
+
+Imagine a situation where an attacker flips `MANTISSA_L_FLAG` of a `packedFloat` with 72 digits, or vice versa.
+
+The new `packedFloat` will have 72 digits with 0 `MAINTISSA_L_FLAG`, and the library will happily decode the malformed number and accept it as an argument of operations.
+
+This can bring the following problems:
+
+- `decode` will return the same mantissa and exponent after flipping. So two `Float128` can have different uint256-encoding but have same mantissa and exponent decoding.
+- Calculation will output vastly different result due to wrong exp adjustment, as will be demonstrated in a POC
+
+One good attack vector is like the following:
+
+- A smart contract uses Float128 library for calculation
+- It accepts user input in `packedFloat` type for simplicity (i.e. a single uint256 for abi instead of using (int, int) for mantissa and exponent)
+- If the user input `packedFloat` is greater than a certain `packedFloat`, it is considered a good input
+- The attacker can pass a malformed input with `L_FLAG` flipping and can pass the sanity check of the smart contract
+- However, the calculation result will be vastly different and can fall outside of smart contract's intended usage

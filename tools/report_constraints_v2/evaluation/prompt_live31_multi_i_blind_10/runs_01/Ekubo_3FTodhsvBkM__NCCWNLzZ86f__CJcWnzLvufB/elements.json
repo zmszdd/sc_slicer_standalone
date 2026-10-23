@@ -1,0 +1,198 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "withdraw() debt accounting within a lock, re-entered via a malicious ERC20 token's transfer() calling updateDebt() with a negative delta in the same lock ID",
+    "environment": "FlashAccountant permissionless AMM with arbitrary ERC20 tokens (no whitelist)",
+    "evidence": [
+      "Reentrancy in `withdraw` allows erasing debt via `updateDebt` inside the same lock, enabling free token withdrawal",
+      "`FlashAccountant` relies on lock‑scoped debt accounting and expects that any debt added inside a lock must be fully settled before the lock closes.",
+      "However, a malicious ERC20 token can **re-enter during `withdraw()`** and call:",
+      "inside **the same lock ID**, effectively erasing the debt added by `withdraw`.",
+      "1. `withdraw()` adds debt:",
+      "3. A malicious token can re-enter in `transfer()` and execute:",
+      "4. `updateDebt`:",
+      "- lacks caller authorization",
+      "- applies deltas to **the current lock**",
+      "- allows **negative deltas**",
+      "Ekubo is a **permissionless AMM**:",
+      "- Any ERC20 token can be listed.",
+      "- The contracts **do not whitelist tokens**."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "malicious token deployer / attacker",
+      "role": "attacker",
+      "evidence": [
+        "However, a malicious ERC20 token can **re-enter during `withdraw()`** and call:",
+        "This results in **free withdrawal of funds**.",
+        "7. Attacker keeps the tokens."
+      ]
+    },
+    {
+      "id": "flash_accountant",
+      "name": "FlashAccountant contract",
+      "role": "contract",
+      "evidence": [
+        "`FlashAccountant` relies on lock‑scoped debt accounting and expects that any debt added inside a lock must be fully settled before the lock closes.",
+        "1. `withdraw()` adds debt:",
+        "4. `updateDebt`:"
+      ]
+    },
+    {
+      "id": "malicious_token",
+      "name": "malicious ERC20 token",
+      "role": "asset",
+      "evidence": [
+        "However, a malicious ERC20 token can **re-enter during `withdraw()`** and call:",
+        "3. A malicious token can re-enter in `transfer()` and execute:",
+        "- Any ERC20 token can be listed."
+      ]
+    },
+    {
+      "id": "lock",
+      "name": "lock with debt accounting",
+      "role": "other",
+      "evidence": [
+        "`FlashAccountant` relies on lock‑scoped debt accounting and expects that any debt added inside a lock must be fully settled before the lock closes.",
+        "inside **the same lock ID**, effectively erasing the debt added by `withdraw`.",
+        "- applies deltas to **the current lock**",
+        "6. Lock closes with no detection."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "malicious_token_listed",
+      "kind": "precondition",
+      "text": "Any ERC20 token can be listed and contracts do not whitelist tokens, so a malicious ERC20 token can be present.",
+      "modality": "asserted",
+      "entity_ids": [
+        "malicious_token",
+        "flash_accountant"
+      ],
+      "evidence": [
+        "Ekubo is a **permissionless AMM**:",
+        "- Any ERC20 token can be listed.",
+        "- The contracts **do not whitelist tokens**."
+      ]
+    },
+    {
+      "id": "withdraw_adds_debt",
+      "kind": "action",
+      "text": "withdraw() adds debt inside the lock.",
+      "modality": "asserted",
+      "entity_ids": [
+        "flash_accountant",
+        "lock"
+      ],
+      "evidence": [
+        "1. `withdraw()` adds debt:",
+        "`FlashAccountant` relies on lock‑scoped debt accounting and expects that any debt added inside a lock must be fully settled before the lock closes."
+      ]
+    },
+    {
+      "id": "withdraw_transfers_tokens",
+      "kind": "action",
+      "text": "withdraw() attempts a token transfer, invoking the token's transfer().",
+      "modality": "asserted",
+      "entity_ids": [
+        "flash_accountant",
+        "malicious_token"
+      ],
+      "evidence": [
+        "2. Then attempts:",
+        "3. A malicious token can re-enter in `transfer()` and execute:",
+        "The lock finishes successfully (no `DebtsNotZeroed` revert) while the accountant **has already transferred tokens to the attacker**."
+      ]
+    },
+    {
+      "id": "reenter_update_debt",
+      "kind": "action",
+      "text": "The malicious token re-enters during transfer() and calls updateDebt() with a negative delta in the same lock ID.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "malicious_token",
+        "flash_accountant",
+        "lock"
+      ],
+      "evidence": [
+        "However, a malicious ERC20 token can **re-enter during `withdraw()`** and call:",
+        "inside **the same lock ID**, effectively erasing the debt added by `withdraw`.",
+        "3. A malicious token can re-enter in `transfer()` and execute:",
+        "- allows **negative deltas**"
+      ]
+    },
+    {
+      "id": "update_debt_lacks_auth",
+      "kind": "root_cause",
+      "text": "updateDebt() lacks caller authorization, applies deltas to the current lock, and allows negative deltas, so re-entry can erase the debt added by withdraw.",
+      "modality": "asserted",
+      "entity_ids": [
+        "flash_accountant",
+        "lock"
+      ],
+      "evidence": [
+        "4. `updateDebt`:",
+        "- lacks caller authorization",
+        "- applies deltas to **the current lock**",
+        "- allows **negative deltas**",
+        "inside **the same lock ID**, effectively erasing the debt added by `withdraw`."
+      ]
+    },
+    {
+      "id": "debt_settled_before_lock_close",
+      "kind": "security_intent",
+      "text": "Any debt added inside a lock must be fully settled before the lock closes.",
+      "modality": "asserted",
+      "entity_ids": [
+        "flash_accountant",
+        "lock"
+      ],
+      "evidence": [
+        "`FlashAccountant` relies on lock‑scoped debt accounting and expects that any debt added inside a lock must be fully settled before the lock closes."
+      ]
+    },
+    {
+      "id": "no_debt_erasure_via_reentry",
+      "kind": "security_intent",
+      "text": "Re-entry during withdraw() must not erase the debt added by withdraw within the same lock.",
+      "modality": "asserted",
+      "entity_ids": [
+        "flash_accountant",
+        "lock",
+        "malicious_token"
+      ],
+      "evidence": [
+        "Reentrancy in `withdraw` allows erasing debt via `updateDebt` inside the same lock, enabling free token withdrawal",
+        "inside **the same lock ID**, effectively erasing the debt added by `withdraw`.",
+        "5. Debt becomes zero."
+      ]
+    },
+    {
+      "id": "update_debt_authorized",
+      "kind": "security_intent",
+      "text": "updateDebt() must require caller authorization before applying deltas.",
+      "modality": "inferred",
+      "entity_ids": [
+        "flash_accountant"
+      ],
+      "evidence": [
+        "- lacks caller authorization"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "withdraw_adds_debt",
+    "withdraw_transfers_tokens",
+    "reenter_update_debt"
+  ],
+  "ambiguities": [
+    "Report does not state who initiates withdraw() or whether the attacker is the caller; only the malicious token's re-entry is described.",
+    "The exact updateDebt() signature and delta value are not given in prose; negative delta is stated but magnitude is unspecified.",
+    "The authorization requirement for updateDebt() is inferred from the 'lacks caller authorization' root-cause statement, not from an explicit NatSpec/standard requirement.",
+    "No explicitly labeled Impact area; impacts were not inferred."
+  ]
+}

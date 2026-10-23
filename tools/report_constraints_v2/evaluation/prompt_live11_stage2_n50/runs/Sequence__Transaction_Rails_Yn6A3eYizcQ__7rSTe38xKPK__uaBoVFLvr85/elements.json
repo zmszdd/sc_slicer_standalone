@@ -1,0 +1,207 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "injectSweepAndCall direct external call on TrailsRouter",
+    "environment": "TrailsRouter contract intended for delegatecall from smart wallet/shim",
+    "evidence": [
+      "Missing Delegatecall-Only Guard on injectSweepAndCall Allows Direct Use of Router Balance and Unintended Asset Custody",
+      "The injectSweepAndCall function in TrailsRouter is designed to “sweep” a caller’s full balance in a given token (or ETH), inject that amount into a call’s calldata, and execute the call against a target contract. It is clearly written under the assumption that the router’s code runs in the context of a user wallet via delegatecall, where address(this) refers to the wallet, not the router itself.",
+      "However, the function is declared as a normal external function without any onlyDelegatecall or equivalent restriction. When called directly on the router contract, it transfers tokens from msg.sender into address(this) (the router), and subsequent internal logic uses the router’s own balance via _getSelfBalance / address(this).",
+      "This mismatch between intended execution context (delegatecall into a wallet/shim) and actual allowed execution context (direct external call on the router) causes the router to accumulate and control user funds. The core faulty assumption is that “this function will only ever execute in a context where address(this) is a wallet (or shim) owned by the user”; in reality, it is fully callable on the router implementation itself, turning a stateless routing component into a stateful asset custodian and significantly increasing blast radius for any other bug.",
+      "The router is meant to be used via delegatecall from a smart wallet or a shim contract.",
+      "address(this) inside the router code resolves to the wallet/shim address, not the router contract.",
+      "Token and ETH balances tracked by _getSelfBalance(token) are the wallet’s balances.",
+      "The router is effectively “pure logic” with no long-term funds; all balances belong to the calling wallet.",
+      "Asset Custody & Fund Loss:",
+      "Users may unknowingly send funds to ROUTER expecting a stateless routing behavior.",
+      "If TARGET is misconfigured, malicious, or fails:",
+      "Funds remain in ROUTER without a clear path to recovery.",
+      "Also the previous bug(injectAndCall Lets Anyone Spend Router-Held Funds due to missing  Delegatecall Guard) reported gets strong anyone can  withdraw tokens from ROUTER, the attacker can drain these accumulated balances."
+    ]
+  },
+  "entities": [
+    {
+      "id": "trails_router",
+      "name": "TrailsRouter",
+      "role": "contract",
+      "evidence": [
+        "Missing Delegatecall-Only Guard on injectSweepAndCall Allows Direct Use of Router Balance and Unintended Asset Custody",
+        "The injectSweepAndCall function in TrailsRouter is designed to “sweep” a caller’s full balance in a given token (or ETH), inject that amount into a call’s calldata, and execute the call against a target contract. It is clearly written under the assumption that the router’s code runs in the context of a user wallet via delegatecall, where address(this) refers to the wallet, not the router itself.",
+        "However, the function is declared as a normal external function without any onlyDelegatecall or equivalent restriction. When called directly on the router contract, it transfers tokens from msg.sender into address(this) (the router), and subsequent internal logic uses the router’s own balance via _getSelfBalance / address(this)."
+      ]
+    },
+    {
+      "id": "user",
+      "name": "User",
+      "role": "victim",
+      "evidence": [
+        "Users may unknowingly send funds to ROUTER expecting a stateless routing behavior."
+      ]
+    },
+    {
+      "id": "attacker",
+      "name": "Attacker",
+      "role": "attacker",
+      "evidence": [
+        "Also the previous bug(injectAndCall Lets Anyone Spend Router-Held Funds due to missing  Delegatecall Guard) reported gets strong anyone can  withdraw tokens from ROUTER, the attacker can drain these accumulated balances."
+      ]
+    },
+    {
+      "id": "target",
+      "name": "Target contract",
+      "role": "other",
+      "evidence": [
+        "If TARGET is misconfigured, malicious, or fails:"
+      ]
+    },
+    {
+      "id": "funds",
+      "name": "User funds/tokens",
+      "role": "asset",
+      "evidence": [
+        "However, the function is declared as a normal external function without any onlyDelegatecall or equivalent restriction. When called directly on the router contract, it transfers tokens from msg.sender into address(this) (the router), and subsequent internal logic uses the router’s own balance via _getSelfBalance / address(this).",
+        "Asset Custody & Fund Loss:",
+        "Funds remain in ROUTER without a clear path to recovery."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "router_intended_delegatecall_context",
+      "kind": "precondition",
+      "text": "TrailsRouter is intended to be used via delegatecall from a smart wallet or shim contract, so address(this) resolves to the wallet/shim.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router"
+      ],
+      "evidence": [
+        "The injectSweepAndCall function in TrailsRouter is designed to “sweep” a caller’s full balance in a given token (or ETH), inject that amount into a call’s calldata, and execute the call against a target contract. It is clearly written under the assumption that the router’s code runs in the context of a user wallet via delegatecall, where address(this) refers to the wallet, not the router itself.",
+        "The router is meant to be used via delegatecall from a smart wallet or a shim contract.",
+        "address(this) inside the router code resolves to the wallet/shim address, not the router contract.",
+        "The router is effectively “pure logic” with no long-term funds; all balances belong to the calling wallet."
+      ]
+    },
+    {
+      "id": "inject_sweep_no_delegatecall_guard",
+      "kind": "root_cause",
+      "text": "injectSweepAndCall is a normal external function without an onlyDelegatecall or equivalent restriction, so it can execute directly on the router contract.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router"
+      ],
+      "evidence": [
+        "Missing Delegatecall-Only Guard on injectSweepAndCall Allows Direct Use of Router Balance and Unintended Asset Custody",
+        "However, the function is declared as a normal external function without any onlyDelegatecall or equivalent restriction. When called directly on the router contract, it transfers tokens from msg.sender into address(this) (the router), and subsequent internal logic uses the router’s own balance via _getSelfBalance / address(this).",
+        "This mismatch between intended execution context (delegatecall into a wallet/shim) and actual allowed execution context (direct external call on the router) causes the router to accumulate and control user funds. The core faulty assumption is that “this function will only ever execute in a context where address(this) is a wallet (or shim) owned by the user”; in reality, it is fully callable on the router implementation itself, turning a stateless routing component into a stateful asset custodian and significantly increasing blast radius for any other bug."
+      ]
+    },
+    {
+      "id": "direct_call_transfers_to_router",
+      "kind": "action",
+      "text": "When called directly on the router, injectSweepAndCall transfers tokens from msg.sender into address(this), the router.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router",
+        "user",
+        "funds"
+      ],
+      "evidence": [
+        "However, the function is declared as a normal external function without any onlyDelegatecall or equivalent restriction. When called directly on the router contract, it transfers tokens from msg.sender into address(this) (the router), and subsequent internal logic uses the router’s own balance via _getSelfBalance / address(this)."
+      ]
+    },
+    {
+      "id": "internal_logic_uses_router_balance",
+      "kind": "action",
+      "text": "Subsequent internal logic uses the router's own balance via _getSelfBalance / address(this).",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router"
+      ],
+      "evidence": [
+        "However, the function is declared as a normal external function without any onlyDelegatecall or equivalent restriction. When called directly on the router contract, it transfers tokens from msg.sender into address(this) (the router), and subsequent internal logic uses the router’s own balance via _getSelfBalance / address(this).",
+        "Token and ETH balances tracked by _getSelfBalance(token) are the wallet’s balances."
+      ]
+    },
+    {
+      "id": "router_accumulates_user_funds",
+      "kind": "impact",
+      "text": "The router accumulates and controls user funds, turning a stateless routing component into a stateful asset custodian.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router",
+        "funds"
+      ],
+      "evidence": [
+        "This mismatch between intended execution context (delegatecall into a wallet/shim) and actual allowed execution context (direct external call on the router) causes the router to accumulate and control user funds. The core faulty assumption is that “this function will only ever execute in a context where address(this) is a wallet (or shim) owned by the user”; in reality, it is fully callable on the router implementation itself, turning a stateless routing component into a stateful asset custodian and significantly increasing blast radius for any other bug.",
+        "Asset Custody & Fund Loss:"
+      ]
+    },
+    {
+      "id": "funds_stuck_if_target_fails",
+      "kind": "impact",
+      "text": "If TARGET is misconfigured, malicious, or fails, funds remain in the router without a clear path to recovery.",
+      "modality": "potential",
+      "entity_ids": [
+        "trails_router",
+        "target",
+        "funds"
+      ],
+      "evidence": [
+        "If TARGET is misconfigured, malicious, or fails:",
+        "Funds remain in ROUTER without a clear path to recovery."
+      ]
+    },
+    {
+      "id": "attacker_drains_accumulated_balances",
+      "kind": "impact",
+      "text": "An attacker can drain the accumulated router balances via the previously reported missing delegatecall guard bug.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "trails_router",
+        "funds"
+      ],
+      "evidence": [
+        "Also the previous bug(injectAndCall Lets Anyone Spend Router-Held Funds due to missing  Delegatecall Guard) reported gets strong anyone can  withdraw tokens from ROUTER, the attacker can drain these accumulated balances."
+      ]
+    },
+    {
+      "id": "intent_delegatecall_only_execution",
+      "kind": "security_intent",
+      "text": "injectSweepAndCall should only execute in a delegatecall context where address(this) is the user's wallet/shim, not directly on the router.",
+      "modality": "inferred",
+      "entity_ids": [
+        "trails_router"
+      ],
+      "evidence": [
+        "The injectSweepAndCall function in TrailsRouter is designed to “sweep” a caller’s full balance in a given token (or ETH), inject that amount into a call’s calldata, and execute the call against a target contract. It is clearly written under the assumption that the router’s code runs in the context of a user wallet via delegatecall, where address(this) refers to the wallet, not the router itself.",
+        "This mismatch between intended execution context (delegatecall into a wallet/shim) and actual allowed execution context (direct external call on the router) causes the router to accumulate and control user funds. The core faulty assumption is that “this function will only ever execute in a context where address(this) is a wallet (or shim) owned by the user”; in reality, it is fully callable on the router implementation itself, turning a stateless routing component into a stateful asset custodian and significantly increasing blast radius for any other bug.",
+        "The router is meant to be used via delegatecall from a smart wallet or a shim contract."
+      ]
+    },
+    {
+      "id": "intent_router_stateless_no_custody",
+      "kind": "security_intent",
+      "text": "The router should remain stateless pure logic holding no long-term user funds.",
+      "modality": "inferred",
+      "entity_ids": [
+        "trails_router",
+        "funds"
+      ],
+      "evidence": [
+        "The router is effectively “pure logic” with no long-term funds; all balances belong to the calling wallet.",
+        "Asset Custody & Fund Loss:"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "direct_call_transfers_to_router",
+    "internal_logic_uses_router_balance"
+  ],
+  "ambiguities": [
+    "Report does not state whether a direct call was actually observed; scenario is conditional on direct invocation.",
+    "No explicit statement that anyone can call injectSweepAndCall; permissionlessness is not asserted for this function.",
+    "Drain impact relies on a separate previously reported bug, not established here.",
+    "No concrete amounts, target configuration, or recovery mechanism details provided."
+  ]
+}

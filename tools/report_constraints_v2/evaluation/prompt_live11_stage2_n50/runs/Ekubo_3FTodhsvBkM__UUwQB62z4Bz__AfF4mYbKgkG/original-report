@@ -1,0 +1,98 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Ekubo_3FTodhsvBkM",
+    "audit_uid": "3FTodhsvBkM",
+    "requested_submission_uid": "AfF4mYbKgkG",
+    "requested_finding_uid": "UUwQB62z4Bz",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Ekubo_3FTodhsvBkM/20260618_144948/findings.json",
+    "source_submission_uid": "AfF4mYbKgkG",
+    "source_finding_uid": "UUwQB62z4Bz",
+    "original_report_path": "Ekubo_3FTodhsvBkM\\low_unknown_AfF4mYbKgkG.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "AfF4mYbKgkG",
+  "finding_uid": "UUwQB62z4Bz",
+  "finding_number": "32",
+  "title": "Router lacks transaction deadline protection",
+  "severity": "medium",
+  "validity": "",
+  "quality": "",
+  "user_handle": "thimthor",
+  "body": "## Finding description and impact\nThe `Router` contract (and the underlying `Core` contract) does not allow users to specify a deadline for their swap transactions. In decentralized exchanges, it is standard practice to include a deadline parameter to prevent transactions from being executed after a significant delay. Without a deadline, a transaction can be held by a validator or remain in the mempool for an extended period and be executed when market conditions have changed unfavorably for the user.\n\nWhile the `Router` provides slippage protection via `calculatedAmountThreshold` and `sqrtRatioLimit`, these only protect against price movements relative to the execution time. They do not protect against the \"time value\" of the trade or external factors that might make the trade undesirable after a certain time (e.g., an arbitrage opportunity that is no longer valid, or a user changing their mind).\n\n**Impact:**\nUsers may have their transactions executed at unexpected times, potentially leading to unwanted trades or loss of opportunity. This is particularly risky during periods of high network congestion or volatility.\n\n## Recommended mitigation steps\nAdd a `deadline` parameter to the `swap` functions in Router.sol and verify that `block.timestamp <= deadline`. If the deadline has passed, the transaction should revert.\n\nAlternatively, implement a `checkDeadline(uint256 deadline)` function in the `Router` that reverts if `block.timestamp > deadline`. Users can then batch this call with their swap using `multicall`.",
+  "proof_of_concept": "## PoC\nThe following PoC demonstrates that a swap can be executed after a significant delay (1 year), confirming the lack of deadline protection.\n\nCreate a new file PoC_RouterDeadline.t.sol with the following content inside of the test folder:\n\n```solidity\n// SPDX-License-Identifier: ekubo-license-v1.eth\npragma solidity >=0.8.30;\n\nimport {FullTest} from \"./FullTest.sol\";\nimport {Router, RouteNode, TokenAmount} from \"../src/Router.sol\";\nimport {PoolKey} from \"../src/types/poolKey.sol\";\nimport {SqrtRatio} from \"../src/types/sqrtRatio.sol\";\n\ncontract PoC_RouterDeadlineTest is FullTest {\n    function test_swap_after_delay() public {\n        // 1. Setup pool\n        PoolKey memory poolKey = createPool({tick: 0, fee: 1 << 63, tickSpacing: 100});\n        createPosition(poolKey, -100, 100, 1000, 1000);\n\n        token0.approve(address(router), 100);\n\n        // 2. Warp time forward significantly (e.g. 1 year)\n        vm.warp(block.timestamp + 365 days);\n\n        // 3. Execute swap\n        // The swap should succeed despite the delay, proving lack of deadline check\n        router.swap(\n            RouteNode({poolKey: poolKey, sqrtRatioLimit: SqrtRatio.wrap(0), skipAhead: 0}),\n            TokenAmount({token: address(token0), amount: 100}),\n            type(int256).min\n        );\n    }\n}\n\n```\n\nRun the test with:\n```bash\nforge test --match-contract PoC_RouterDeadlineTest\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-ekubo/blob/bbc87eb26d73700cf886f1b3f06f8a348d9c6aef/src/Router.sol#L266-L404"
+  ],
+  "source_record": {
+    "project_id": "3FTodhsvBkM",
+    "submission_index": "1041",
+    "api_submission_id": "",
+    "uid": "AfF4mYbKgkG",
+    "number": "1041",
+    "title": "Router lacks transaction deadline protection",
+    "severity": "medium",
+    "validity": "",
+    "quality": "",
+    "handle": "thimthor",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-ekubo/blob/bbc87eb26d73700cf886f1b3f06f8a348d9c6aef/src/Router.sol#L266-L404"
+    ],
+    "body": "## Finding description and impact\nThe `Router` contract (and the underlying `Core` contract) does not allow users to specify a deadline for their swap transactions. In decentralized exchanges, it is standard practice to include a deadline parameter to prevent transactions from being executed after a significant delay. Without a deadline, a transaction can be held by a validator or remain in the mempool for an extended period and be executed when market conditions have changed unfavorably for the user.\n\nWhile the `Router` provides slippage protection via `calculatedAmountThreshold` and `sqrtRatioLimit`, these only protect against price movements relative to the execution time. They do not protect against the \"time value\" of the trade or external factors that might make the trade undesirable after a certain time (e.g., an arbitrage opportunity that is no longer valid, or a user changing their mind).\n\n**Impact:**\nUsers may have their transactions executed at unexpected times, potentially leading to unwanted trades or loss of opportunity. This is particularly risky during periods of high network congestion or volatility.\n\n## Recommended mitigation steps\nAdd a `deadline` parameter to the `swap` functions in Router.sol and verify that `block.timestamp <= deadline`. If the deadline has passed, the transaction should revert.\n\nAlternatively, implement a `checkDeadline(uint256 deadline)` function in the `Router` that reverts if `block.timestamp > deadline`. Users can then batch this call with their swap using `multicall`.",
+    "proof_of_concept": "## PoC\nThe following PoC demonstrates that a swap can be executed after a significant delay (1 year), confirming the lack of deadline protection.\n\nCreate a new file PoC_RouterDeadline.t.sol with the following content inside of the test folder:\n\n```solidity\n// SPDX-License-Identifier: ekubo-license-v1.eth\npragma solidity >=0.8.30;\n\nimport {FullTest} from \"./FullTest.sol\";\nimport {Router, RouteNode, TokenAmount} from \"../src/Router.sol\";\nimport {PoolKey} from \"../src/types/poolKey.sol\";\nimport {SqrtRatio} from \"../src/types/sqrtRatio.sol\";\n\ncontract PoC_RouterDeadlineTest is FullTest {\n    function test_swap_after_delay() public {\n        // 1. Setup pool\n        PoolKey memory poolKey = createPool({tick: 0, fee: 1 << 63, tickSpacing: 100});\n        createPosition(poolKey, -100, 100, 1000, 1000);\n\n        token0.approve(address(router), 100);\n\n        // 2. Warp time forward significantly (e.g. 1 year)\n        vm.warp(block.timestamp + 365 days);\n\n        // 3. Execute swap\n        // The swap should succeed despite the delay, proving lack of deadline check\n        router.swap(\n            RouteNode({poolKey: poolKey, sqrtRatioLimit: SqrtRatio.wrap(0), skipAhead: 0}),\n            TokenAmount({token: address(token0), amount: 100}),\n            type(int256).min\n        );\n    }\n}\n\n```\n\nRun the test with:\n```bash\nforge test --match-contract PoC_RouterDeadlineTest\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/3FTodhsvBkM/submissions/1041",
+    "raw": {
+      "auditUid": "3FTodhsvBkM",
+      "createdAt": "2025-12-10T18:46:29.773Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "pkGTKFQx7yU",
+          "userUid": "nj8chUpsBrG",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-07T13:40:20.703Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "UUwQB62z4Bz"
+        }
+      ],
+      "finding": {
+        "uid": "UUwQB62z4Bz",
+        "number": 32,
+        "duplicates": 13
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": null,
+        "updatedAt": "2025-12-23T16:44:49.238Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Router lacks transaction deadline protection",
+      "uid": "AfF4mYbKgkG",
+      "updatedAt": "2025-12-10T18:46:29.773Z",
+      "user": {
+        "uid": "mqqUR9zCYXr",
+        "handle": "thimthor"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\nThe `Router` contract (and the underlying `Core` contract) does not allow users to specify a deadline for their swap transactions. In decentralized exchanges, it is standard practice to include a deadline parameter to prevent transactions from being executed after a significant delay. Without a deadline, a transaction can be held by a validator or remain in the mempool for an extended period and be executed when market conditions have changed unfavorably for the user.\n\nWhile the `Router` provides slippage protection via `calculatedAmountThreshold` and `sqrtRatioLimit`, these only protect against price movements relative to the execution time. They do not protect against the \"time value\" of the trade or external factors that might make the trade undesirable after a certain time (e.g., an arbitrage opportunity that is no longer valid, or a user changing their mind).\n\n**Impact:**\nUsers may have their transactions executed at unexpected times, potentially leading to unwanted trades or loss of opportunity. This is particularly risky during periods of high network congestion or volatility.\n\n## Recommended mitigation steps\nAdd a `deadline` parameter to the `swap` functions in Router.sol and verify that `block.timestamp <= deadline`. If the deadline has passed, the transaction should revert.\n\nAlternatively, implement a `checkDeadline(uint256 deadline)` function in the `Router` that reverts if `block.timestamp > deadline`. Users can then batch this call with their swap using `multicall`.",
+      "proofOfConcept": "## PoC\nThe following PoC demonstrates that a swap can be executed after a significant delay (1 year), confirming the lack of deadline protection.\n\nCreate a new file PoC_RouterDeadline.t.sol with the following content inside of the test folder:\n\n```solidity\n// SPDX-License-Identifier: ekubo-license-v1.eth\npragma solidity >=0.8.30;\n\nimport {FullTest} from \"./FullTest.sol\";\nimport {Router, RouteNode, TokenAmount} from \"../src/Router.sol\";\nimport {PoolKey} from \"../src/types/poolKey.sol\";\nimport {SqrtRatio} from \"../src/types/sqrtRatio.sol\";\n\ncontract PoC_RouterDeadlineTest is FullTest {\n    function test_swap_after_delay() public {\n        // 1. Setup pool\n        PoolKey memory poolKey = createPool({tick: 0, fee: 1 << 63, tickSpacing: 100});\n        createPosition(poolKey, -100, 100, 1000, 1000);\n\n        token0.approve(address(router), 100);\n\n        // 2. Warp time forward significantly (e.g. 1 year)\n        vm.warp(block.timestamp + 365 days);\n\n        // 3. Execute swap\n        // The swap should succeed despite the delay, proving lack of deadline check\n        router.swap(\n            RouteNode({poolKey: poolKey, sqrtRatioLimit: SqrtRatio.wrap(0), skipAhead: 0}),\n            TokenAmount({token: address(token0), amount: 100}),\n            type(int256).min\n        );\n    }\n}\n\n```\n\nRun the test with:\n```bash\nforge test --match-contract PoC_RouterDeadlineTest\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-ekubo/blob/bbc87eb26d73700cf886f1b3f06f8a348d9c6aef/src/Router.sol#L266-L404",
+      "number": 1041,
+      "aiExplanation": null,
+      "_index": 1041
+    }
+  }
+}

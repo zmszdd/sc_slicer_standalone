@@ -1,0 +1,22 @@
+Dispute Mechanism Vulnerability: Inability to Update Dispute Fee During Active Attacks allows Permanent Griefing
+
+### Finding description and impact
+
+The `Distributor` contract implements a dispute mechanism allowing users to challenge a Merkle Root update by paying a fee (`disputeAmount`). This fee is intended to deter spam. To manage this fee, the Governor uses the `setDisputeAmount` function.
+
+However, a critical design flaw exists in `setDisputeAmount`:
+
+
+The function explicitly **reverts** if a dispute is currently active (`disputer != address(0)`). This restriction creates a vulnerability where an attacker can permanently lock the system in a dispute loop while preventing the Governor from increasing the cost of the attack.
+
+**The Attack Scenario:**
+1.  **Initial State:** `disputeAmount` is low (e.g., 0 or 1 token) or uninitialized.
+2.  **Attack Initiation:** An attacker calls `disputeTree`, paying the low fee. The system enters "Dispute Mode".
+3.  **Governor's Dilemma:** The Governor observes the spam and attempts to raise `disputeAmount` to make further attacks prohibitively expensive.
+4.  **The Lockout:** The Governor's call to `setDisputeAmount` **fails** because a dispute is active.
+5.  **Forced Resolution:** The Governor must first call `resolveDispute` to clear the current dispute.
+6.  **The Loop:** Immediately after resolution (in the same block or next), the attacker calls `disputeTree` again. Since the fee is *still low* (because the update failed), the attacker can repeat this indefinitely at negligible cost.
+
+**Impact:**
+*   **Permanent Denial of Service (DoS):** Merkle Roots cannot be updated or finalized, preventing reward distribution.
+*   **Governance Impotence:** The protocol's defense mechanism (raising fees) is disabled exactly when it is needed most.

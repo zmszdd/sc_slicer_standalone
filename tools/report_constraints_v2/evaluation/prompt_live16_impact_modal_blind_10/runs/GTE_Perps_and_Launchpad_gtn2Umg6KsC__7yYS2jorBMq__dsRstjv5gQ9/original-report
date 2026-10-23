@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "dsRstjv5gQ9",
+    "requested_finding_uid": "7yYS2jorBMq",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "dsRstjv5gQ9",
+    "source_finding_uid": "7yYS2jorBMq",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\high_valid_dsRstjv5gQ9.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "dsRstjv5gQ9",
+  "finding_uid": "7yYS2jorBMq",
+  "finding_number": "5",
+  "title": "Incorrect Pair Address Calculation in `endRewards` Function",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "mahdifa",
+  "body": "## Finding description and impact\n\nThe `endRewards` function in `Launchpad.sol` calculates the Uniswap V2 pair address using the `pairFor` function, which computes the address based on `token0`, `token1`, and `uniV2InitCodeHash`:\n\n```solidity\nfunction pairFor(address factory, address tokenA, address tokenB) internal view returns (IUniswapV2Pair pair) {\n    (address token0, address token1) = sortTokens(tokenA, tokenB);\n    pair = IUniswapV2Pair(\n        address(\n            uint160(\n                uint256(\n                    keccak256(\n                        abi.encodePacked(\n                            hex\"ff\",\n                            factory,\n                            keccak256(abi.encodePacked(token0, token1)),\n                            uniV2InitCodeHash\n                        )\n                    )\n                )\n            )\n        )\n    );\n}\n```\n\nHowever, the `createPair` function in `GTELaunchpadV2PairFactory.sol` uses a different `salt` that includes `_launchpadLp` and `_launchpadFeeDistributor`:\n\n```solidity\nbytes32 salt = keccak256(abi.encodePacked(token0, token1, _launchpadLp, _launchpadFeeDistributor));\nassembly {\n    pair := create2(0, add(bytecode, 32), mload(bytecode), salt)\n}\n```\n\nThis discrepancy in the `salt` calculation causes the pair address computed by `pairFor` to always differ from the actual pair address created by `createPair` during the `_createPairAndSwapRemaining` function in `Launchpad.sol` when a token launch graduates. As a result, the `endRewards` function, which calls `distributor.endRewards(pair)`:\n\n```solidity\nfunction endRewards() external onlyLaunchAsset {\n    address quote = _launches[msg.sender].quote;\n    IGTELaunchpadV2Pair pair = IGTELaunchpadV2Pair(address(pairFor(address(uniV2Factory), msg.sender, quote)));\n    distributor.endRewards(pair);\n}\n```\n\nalways reverts due to an invalid pair address, preventing the protocol from terminating the rewards accrual process for a launched token.\n\n**Impact**:  \nThis vulnerability causes a Denial of Service (DoS) for the `endRewards` function, a critical protocol feature intended to stop rewards accrual (e.g., when `totalFeeShare` reaches zero in `LaunchToken.sol`). The issue affects all token launches, as the incorrect pair address calculation is inherent to the `pairFor` function. This disrupts the protocol's ability to manage rewards, undermining its core functionality and reliability. According to Code4rena guidelines, this qualifies as a **High** severity issue due to its direct impact on a critical protocol function without requiring user error or specific conditions.\n\n## Recommended mitigation steps\n\n1. **Align `pairFor` with `createPair` Salt Calculation**:\n   Update the `pairFor` function in `Launchpad.sol` to include `_launchpadLp` and `_launchpadFeeDistributor` in the `salt` calculation, matching the logic in `GTELaunchpadV2PairFactory.createPair`",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IUniswapV2Factory} from \"@gte-univ2-core/interfaces/IUniswapV2Factory.sol\";\nimport {LaunchToken} from \"contracts/launchpad/LaunchToken.sol\";\nimport {Launchpad} from \"contracts/launchpad/Launchpad.sol\";\nimport {console} from \"forge-std/Test.sol\";\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    /**\n     * PoC demonstrating that endRewards reverts due to incorrect pair address calculation\n     */\n    function test_submissionValidity() external {\n        // Setup user\n        address user = makeAddr(\"user\");\n        deal(address(quoteToken), user, type(uint256).max);\n\n        // User buys all base tokens + 1 to trigger graduation\n        uint256 maxBase = launchpad.launches(token).curve.bondingSupply(token);\n        uint256 amountOutBase = maxBase + 1 ether; // Buy all + 1 to exhaust bonding supply\n        uint256 maxAmountInQuote = launchpad.quoteQuoteForBase(token, amountOutBase, true);\n        ILaunchpad.BuyData memory buyData = ILaunchpad.BuyData({\n            token: token,\n            recipient: user,\n            amountOutBase: amountOutBase,\n            maxAmountInQuote: maxAmountInQuote,\n            account: user\n        });\n\n        vm.prank(user);\n        launchpad.buy(buyData);\n\n        // Verify graduation occurred and pair was created\n        address factory = address(uniV2Router.factory());\n        address actualPair = IUniswapV2Factory(factory).getPair(token, address(quoteToken));\n        assertTrue(actualPair != address(0), \"Pair should exist after graduation\");\n        assertFalse(launchpad.launches(token).active, \"Bonding should be inactive after graduation\");\n\n        // Verify user's bonding share\n        uint256 userBondingShare = LaunchToken(token).bondingShare(user);\n        assertEq(userBondingShare, maxBase, \"User bonding share should match maxBase\");\n\n        // Directly call endRewards as LaunchToken to simulate _endRewards call\n        vm.prank(token); // Impersonate LaunchToken as msg.sender\n        vm.expectRevert(); // Expect revert due to incorrect pair address\n        Launchpad(address(launchpad)).endRewards();\n\n        // Verify bonding is still inactive (endRewards failed)\n        assertFalse(launchpad.launches(token).active, \"Bonding should remain inactive\");\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Launchpad.sol#L436"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "290",
+    "api_submission_id": "",
+    "uid": "dsRstjv5gQ9",
+    "number": "290",
+    "title": "Incorrect Pair Address Calculation in `endRewards` Function",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "mahdifa",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Launchpad.sol#L436"
+    ],
+    "body": "## Finding description and impact\n\nThe `endRewards` function in `Launchpad.sol` calculates the Uniswap V2 pair address using the `pairFor` function, which computes the address based on `token0`, `token1`, and `uniV2InitCodeHash`:\n\n```solidity\nfunction pairFor(address factory, address tokenA, address tokenB) internal view returns (IUniswapV2Pair pair) {\n    (address token0, address token1) = sortTokens(tokenA, tokenB);\n    pair = IUniswapV2Pair(\n        address(\n            uint160(\n                uint256(\n                    keccak256(\n                        abi.encodePacked(\n                            hex\"ff\",\n                            factory,\n                            keccak256(abi.encodePacked(token0, token1)),\n                            uniV2InitCodeHash\n                        )\n                    )\n                )\n            )\n        )\n    );\n}\n```\n\nHowever, the `createPair` function in `GTELaunchpadV2PairFactory.sol` uses a different `salt` that includes `_launchpadLp` and `_launchpadFeeDistributor`:\n\n```solidity\nbytes32 salt = keccak256(abi.encodePacked(token0, token1, _launchpadLp, _launchpadFeeDistributor));\nassembly {\n    pair := create2(0, add(bytecode, 32), mload(bytecode), salt)\n}\n```\n\nThis discrepancy in the `salt` calculation causes the pair address computed by `pairFor` to always differ from the actual pair address created by `createPair` during the `_createPairAndSwapRemaining` function in `Launchpad.sol` when a token launch graduates. As a result, the `endRewards` function, which calls `distributor.endRewards(pair)`:\n\n```solidity\nfunction endRewards() external onlyLaunchAsset {\n    address quote = _launches[msg.sender].quote;\n    IGTELaunchpadV2Pair pair = IGTELaunchpadV2Pair(address(pairFor(address(uniV2Factory), msg.sender, quote)));\n    distributor.endRewards(pair);\n}\n```\n\nalways reverts due to an invalid pair address, preventing the protocol from terminating the rewards accrual process for a launched token.\n\n**Impact**:  \nThis vulnerability causes a Denial of Service (DoS) for the `endRewards` function, a critical protocol feature intended to stop rewards accrual (e.g., when `totalFeeShare` reaches zero in `LaunchToken.sol`). The issue affects all token launches, as the incorrect pair address calculation is inherent to the `pairFor` function. This disrupts the protocol's ability to manage rewards, undermining its core functionality and reliability. According to Code4rena guidelines, this qualifies as a **High** severity issue due to its direct impact on a critical protocol function without requiring user error or specific conditions.\n\n## Recommended mitigation steps\n\n1. **Align `pairFor` with `createPair` Salt Calculation**:\n   Update the `pairFor` function in `Launchpad.sol` to include `_launchpadLp` and `_launchpadFeeDistributor` in the `salt` calculation, matching the logic in `GTELaunchpadV2PairFactory.createPair`",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IUniswapV2Factory} from \"@gte-univ2-core/interfaces/IUniswapV2Factory.sol\";\nimport {LaunchToken} from \"contracts/launchpad/LaunchToken.sol\";\nimport {Launchpad} from \"contracts/launchpad/Launchpad.sol\";\nimport {console} from \"forge-std/Test.sol\";\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    /**\n     * PoC demonstrating that endRewards reverts due to incorrect pair address calculation\n     */\n    function test_submissionValidity() external {\n        // Setup user\n        address user = makeAddr(\"user\");\n        deal(address(quoteToken), user, type(uint256).max);\n\n        // User buys all base tokens + 1 to trigger graduation\n        uint256 maxBase = launchpad.launches(token).curve.bondingSupply(token);\n        uint256 amountOutBase = maxBase + 1 ether; // Buy all + 1 to exhaust bonding supply\n        uint256 maxAmountInQuote = launchpad.quoteQuoteForBase(token, amountOutBase, true);\n        ILaunchpad.BuyData memory buyData = ILaunchpad.BuyData({\n            token: token,\n            recipient: user,\n            amountOutBase: amountOutBase,\n            maxAmountInQuote: maxAmountInQuote,\n            account: user\n        });\n\n        vm.prank(user);\n        launchpad.buy(buyData);\n\n        // Verify graduation occurred and pair was created\n        address factory = address(uniV2Router.factory());\n        address actualPair = IUniswapV2Factory(factory).getPair(token, address(quoteToken));\n        assertTrue(actualPair != address(0), \"Pair should exist after graduation\");\n        assertFalse(launchpad.launches(token).active, \"Bonding should be inactive after graduation\");\n\n        // Verify user's bonding share\n        uint256 userBondingShare = LaunchToken(token).bondingShare(user);\n        assertEq(userBondingShare, maxBase, \"User bonding share should match maxBase\");\n\n        // Directly call endRewards as LaunchToken to simulate _endRewards call\n        vm.prank(token); // Impersonate LaunchToken as msg.sender\n        vm.expectRevert(); // Expect revert due to incorrect pair address\n        Launchpad(address(launchpad)).endRewards();\n\n        // Verify bonding is still inactive (endRewards failed)\n        assertFalse(launchpad.launches(token).active, \"Bonding should remain inactive\");\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/290",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-10T14:15:46.934Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "pWC7GGbCrsz",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:50:11.283Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "srPK3PSSyxo",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:50:12.556Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "KtRtyEJyPRk",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-15T09:01:46.775Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "dsRstjv5gQ9",
+          "findingUid": null
+        },
+        {
+          "uid": "E8BRnzui3nm",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-06T20:50:08.519Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        }
+      ],
+      "finding": {
+        "uid": "7yYS2jorBMq",
+        "number": 5,
+        "duplicates": 72
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-12-02T14:58:14.114Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Incorrect Pair Address Calculation in `endRewards` Function",
+      "uid": "dsRstjv5gQ9",
+      "updatedAt": "2025-09-10T14:15:46.934Z",
+      "user": {
+        "uid": "2z2rdhHMazd",
+        "handle": "mahdifa"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe `endRewards` function in `Launchpad.sol` calculates the Uniswap V2 pair address using the `pairFor` function, which computes the address based on `token0`, `token1`, and `uniV2InitCodeHash`:\n\n```solidity\nfunction pairFor(address factory, address tokenA, address tokenB) internal view returns (IUniswapV2Pair pair) {\n    (address token0, address token1) = sortTokens(tokenA, tokenB);\n    pair = IUniswapV2Pair(\n        address(\n            uint160(\n                uint256(\n                    keccak256(\n                        abi.encodePacked(\n                            hex\"ff\",\n                            factory,\n                            keccak256(abi.encodePacked(token0, token1)),\n                            uniV2InitCodeHash\n                        )\n                    )\n                )\n            )\n        )\n    );\n}\n```\n\nHowever, the `createPair` function in `GTELaunchpadV2PairFactory.sol` uses a different `salt` that includes `_launchpadLp` and `_launchpadFeeDistributor`:\n\n```solidity\nbytes32 salt = keccak256(abi.encodePacked(token0, token1, _launchpadLp, _launchpadFeeDistributor));\nassembly {\n    pair := create2(0, add(bytecode, 32), mload(bytecode), salt)\n}\n```\n\nThis discrepancy in the `salt` calculation causes the pair address computed by `pairFor` to always differ from the actual pair address created by `createPair` during the `_createPairAndSwapRemaining` function in `Launchpad.sol` when a token launch graduates. As a result, the `endRewards` function, which calls `distributor.endRewards(pair)`:\n\n```solidity\nfunction endRewards() external onlyLaunchAsset {\n    address quote = _launches[msg.sender].quote;\n    IGTELaunchpadV2Pair pair = IGTELaunchpadV2Pair(address(pairFor(address(uniV2Factory), msg.sender, quote)));\n    distributor.endRewards(pair);\n}\n```\n\nalways reverts due to an invalid pair address, preventing the protocol from terminating the rewards accrual process for a launched token.\n\n**Impact**:  \nThis vulnerability causes a Denial of Service (DoS) for the `endRewards` function, a critical protocol feature intended to stop rewards accrual (e.g., when `totalFeeShare` reaches zero in `LaunchToken.sol`). The issue affects all token launches, as the incorrect pair address calculation is inherent to the `pairFor` function. This disrupts the protocol's ability to manage rewards, undermining its core functionality and reliability. According to Code4rena guidelines, this qualifies as a **High** severity issue due to its direct impact on a critical protocol function without requiring user error or specific conditions.\n\n## Recommended mitigation steps\n\n1. **Align `pairFor` with `createPair` Salt Calculation**:\n   Update the `pairFor` function in `Launchpad.sol` to include `_launchpadLp` and `_launchpadFeeDistributor` in the `salt` calculation, matching the logic in `GTELaunchpadV2PairFactory.createPair`",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IUniswapV2Factory} from \"@gte-univ2-core/interfaces/IUniswapV2Factory.sol\";\nimport {LaunchToken} from \"contracts/launchpad/LaunchToken.sol\";\nimport {Launchpad} from \"contracts/launchpad/Launchpad.sol\";\nimport {console} from \"forge-std/Test.sol\";\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    /**\n     * PoC demonstrating that endRewards reverts due to incorrect pair address calculation\n     */\n    function test_submissionValidity() external {\n        // Setup user\n        address user = makeAddr(\"user\");\n        deal(address(quoteToken), user, type(uint256).max);\n\n        // User buys all base tokens + 1 to trigger graduation\n        uint256 maxBase = launchpad.launches(token).curve.bondingSupply(token);\n        uint256 amountOutBase = maxBase + 1 ether; // Buy all + 1 to exhaust bonding supply\n        uint256 maxAmountInQuote = launchpad.quoteQuoteForBase(token, amountOutBase, true);\n        ILaunchpad.BuyData memory buyData = ILaunchpad.BuyData({\n            token: token,\n            recipient: user,\n            amountOutBase: amountOutBase,\n            maxAmountInQuote: maxAmountInQuote,\n            account: user\n        });\n\n        vm.prank(user);\n        launchpad.buy(buyData);\n\n        // Verify graduation occurred and pair was created\n        address factory = address(uniV2Router.factory());\n        address actualPair = IUniswapV2Factory(factory).getPair(token, address(quoteToken));\n        assertTrue(actualPair != address(0), \"Pair should exist after graduation\");\n        assertFalse(launchpad.launches(token).active, \"Bonding should be inactive after graduation\");\n\n        // Verify user's bonding share\n        uint256 userBondingShare = LaunchToken(token).bondingShare(user);\n        assertEq(userBondingShare, maxBase, \"User bonding share should match maxBase\");\n\n        // Directly call endRewards as LaunchToken to simulate _endRewards call\n        vm.prank(token); // Impersonate LaunchToken as msg.sender\n        vm.expectRevert(); // Expect revert due to incorrect pair address\n        Launchpad(address(launchpad)).endRewards();\n\n        // Verify bonding is still inactive (endRewards failed)\n        assertFalse(launchpad.launches(token).active, \"Bonding should remain inactive\");\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Launchpad.sol#L436",
+      "number": 290,
+      "aiExplanation": null,
+      "_index": 290
+    }
+  }
+}

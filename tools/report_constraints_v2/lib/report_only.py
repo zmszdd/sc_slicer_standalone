@@ -8,8 +8,11 @@ import re
 import subprocess
 import tempfile
 import time
+from contextvars import ContextVar
 
 import z3
+
+from lib.piv_contract import PIV_PROPERTY_NAMES
 
 ROOT = Path(__file__).resolve().parents[3]  # lib/ 迁移后深度 +1（S3）
 PROMPT = '''Derive candidate safety obligations from the vulnerability report's
@@ -49,9 +52,11 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def prose_only(body, resume_sections=True, plain_section_exclusion=False):
-    # Keep report description/impact even when a later sibling section follows
-    # a mitigation or PoC section. Neither excluded section is model input.
+def prose_only(body, resume_sections=True, plain_section_exclusion=False,
+               include_recommendations=False):
+    # Keep report description/impact even when later sibling sections follow a
+    # mitigation or PoC section. The current report-input policy may include
+    # prose recommendations as I evidence; PoC remains excluded.
     if not resume_sections:
         # Exact v2 behavior is retained for replaying immutable prior runs.
         kept, fenced = [], None
@@ -71,15 +76,25 @@ def prose_only(body, resume_sections=True, plain_section_exclusion=False):
             kept.append(line)
         return '\n'.join(kept).strip()
     excluded = re.compile(
-        r'^(?:recommended mitigation|mitigation|recommendations?|proof of concept|poc)\b', re.I)
-    resumed = re.compile(
-        r'^(?:finding description|vulnerability details|description|summary|impact\b|root cause\b)', re.I)
+        r'^(?:proof of concept|poc)\b' if include_recommendations else
+        r'^(?:recommended mitigation|mitigation|recommendations?|proof of concept|poc)\b',
+        re.I)
+    resumed_pattern = (
+        r'^(?:finding description|vulnerability details|description|summary|impact\b|'
+        r'root cause\b|recommended mitigation|mitigation|recommendations?)' if include_recommendations else
+        r'^(?:finding description|vulnerability details|description|summary|impact\b|root cause\b)')
+    resumed = re.compile(resumed_pattern, re.I)
     plain_excluded = re.compile(
-        r'(?:recommended mitigation(?: steps)?|mitigation|recommendations?|'
-        r'proof of concept(?: steps)?|poc)\s*:?', re.I)
-    plain_resumed = re.compile(
+        (r'(?:proof of concept(?: steps)?|poc)\s*:?' if include_recommendations else
+         r'(?:recommended mitigation(?: steps)?|mitigation|recommendations?|'
+         r'proof of concept(?: steps)?|poc)\s*:?' ), re.I)
+    plain_resumed_pattern = (
         r'(?:finding description(?: and impact)?|vulnerability details|description|'
-        r'summary|impact(?: assessment)?|root cause)\s*:?', re.I)
+        r'summary|impact(?: assessment)?|root cause|recommended mitigation(?: steps)?|'
+        r'mitigation|recommendations?)\s*:?' if include_recommendations else
+        r'(?:finding description(?: and impact)?|vulnerability details|description|'
+        r'summary|impact(?: assessment)?|root cause)\s*:?' )
+    plain_resumed = re.compile(plain_resumed_pattern, re.I)
     lines, kept, fenced, skip_level, skip_plain = body.splitlines(), [], None, None, False
     for line in lines:
         marker = re.match(r'^\s*(`{3,}|~{3,})([^`~]*)$', line)
@@ -121,8 +136,13 @@ def _normalized_report_title(value):
     return re.sub(r'\s+', ' ', value).strip().casefold()
 
 
-def report_json_input(report, deduplicate_title=True, input_policy_version=4):
-    """Build stage-2 text from an explicit report.json field allow-list."""
+def report_json_input(report, deduplicate_title=True, input_policy_version=5):
+    """Build stage-2 text from an explicit report.json field allow-list.
+
+    Policy 5 includes prose mitigation/recommendation sections as potential I
+    evidence while continuing to remove fenced code and PoC sections.
+    Policies 2-4 remain byte-replayable for historical runs.
+    """
     if not isinstance(report, dict):
         raise ValueError('report JSON must be an object')
     body = report.get('body')
@@ -131,26 +151,31 @@ def report_json_input(report, deduplicate_title=True, input_policy_version=4):
     title = report.get('title')
     if title is not None and (not isinstance(title, str) or not title.strip()):
         raise ValueError('report JSON title must be a nonempty string when present')
-    if input_policy_version not in (2, 3, 4):
+    if input_policy_version not in (2, 3, 4, 5):
         raise ValueError('unknown report input policy version')
-    description_impact = prose_only(
+    selected_prose = prose_only(
         body, resume_sections=input_policy_version >= 3,
-        plain_section_exclusion=input_policy_version >= 4)
-    if not description_impact:
-        raise ValueError('empty report description/impact after filtering')
-    first_nonempty = next((line for line in description_impact.splitlines() if line.strip()), '')
+        plain_section_exclusion=input_policy_version >= 4,
+        include_recommendations=input_policy_version >= 5)
+    if not selected_prose:
+        raise ValueError('empty report prose after filtering')
+    first_nonempty = next((line for line in selected_prose.splitlines() if line.strip()), '')
     first_heading = re.match(r'^\s*#{1,6}\s+(.+?)\s*$', first_nonempty)
     duplicate_title = bool(title and first_heading and
                            _normalized_report_title(title) ==
                            _normalized_report_title(first_heading.group(1)))
     parts = [title.strip()] if title and not (deduplicate_title and duplicate_title) else []
-    parts.append(description_impact)
+    parts.append(selected_prose)
+    body_field = ('body.description_impact_and_recommendations'
+                  if input_policy_version >= 5 else
+                  'body.description_and_impact')
     policy = {
         'source_format': 'report.json',
-        'selected_fields': ['title', 'body.description_and_impact'] if len(parts) == 2 else
-                           ['body.description_and_impact'],
-        'excluded_fields': ['proof_of_concept', 'recommended_mitigation',
-                            'source_record', 'pairing', 'contract_code'],
+        'selected_fields': ['title', body_field] if len(parts) == 2 else [body_field],
+        'excluded_fields': (['proof_of_concept', 'source_record', 'pairing', 'contract_code']
+                            if input_policy_version >= 5 else
+                            ['proof_of_concept', 'recommended_mitigation',
+                             'source_record', 'pairing', 'contract_code']),
     }
     if deduplicate_title:
         policy.update({'policy_version': f'report-json-input/{input_policy_version}',
@@ -158,7 +183,17 @@ def report_json_input(report, deduplicate_title=True, input_policy_version=4):
     return '\n\n'.join(parts), policy
 
 
-def expr_type(expr, symbols, depth=0):
+_ENFORCE_UNITS = ContextVar('report_only_enforce_units', default=True)
+
+
+def set_unit_guard(enabled):
+    """Set unit compatibility policy for plan synthesis in this run context."""
+    _ENFORCE_UNITS.set(bool(enabled))
+
+
+def expr_type(expr, symbols, depth=0, enforce_units=None):
+    if enforce_units is None:
+        enforce_units = _ENFORCE_UNITS.get()
     if depth > 16 or not isinstance(expr, dict):
         raise ValueError('invalid/deep AST')
     if set(expr) == {'var'}:
@@ -173,7 +208,7 @@ def expr_type(expr, symbols, depth=0):
     if set(expr) != {'op', 'args'} or not isinstance(expr['args'], list):
         raise ValueError('invalid AST fields')
     op, args = expr['op'], expr['args']
-    types = [expr_type(x, symbols, depth + 1) for x in args]
+    types = [expr_type(x, symbols, depth + 1, enforce_units) for x in args]
     boolean = ('bool', None)
     if op in ('and', 'or') and len(args) >= 2 and all(t == boolean for t in types):
         return boolean
@@ -195,7 +230,7 @@ def expr_type(expr, symbols, depth=0):
                          + ' '.join(map(str, (op, *a, *b))))
     if a[0] == 'literal' and b[0] == 'int': a = b
     if b[0] == 'literal' and a[0] == 'int': b = a
-    if a != b:
+    if a[0] != b[0] or (enforce_units and a[1] != b[1]):
         # Name the operator and BOTH operand types: a bare family name left
         # the repair model guessing which comparison to rewrite
         # (blind-batch_02 Kinetiq retry-1 changed symbols blindly and missed).
@@ -229,7 +264,7 @@ def lower(expr, variables):
             'gt': lambda: a > b, 'ge': lambda: a >= b}[op]()
 
 
-def validate(claim, text):
+def validate(claim, text, enforce_units=True):
     if set(claim) != {'symbols', 'properties', 'assumptions', 'unresolved'}:
         raise ValueError('unexpected claim fields')
     symbols = claim['symbols']
@@ -252,9 +287,9 @@ def validate(claim, text):
                 raise ValueError('missing symbol semantics')
         if item['evidence'] not in text:
             raise ValueError('symbol evidence absent from report')
-    if set(claim['properties']) != {'preconditions', 'safety', 'effects'}:
+    if set(claim['properties']) != set(PIV_PROPERTY_NAMES):
         raise ValueError('unexpected properties')
-    for prop in claim['properties'].values():
+    for name, prop in claim['properties'].items():
         if set(prop) != {'text', 'expression', 'evidence', 'derivation'}:
             raise ValueError('unexpected property fields')
         if not all(isinstance(prop[k], str) for k in ('text', 'derivation')):
@@ -262,33 +297,47 @@ def validate(claim, text):
         if not isinstance(prop['evidence'], list) or any(not isinstance(q, str) or not q.strip() or q not in text for q in prop['evidence']):
             raise ValueError('property evidence absent from report')
         if prop['expression'] is not None:
-            if not prop['evidence'] or not prop['text'].strip() or not prop['derivation'].strip():
+            explicit_unconditional_p = (
+                name == PIV_PROPERTY_NAMES[0] and
+                prop['expression'] == {'const': True} and not prop['evidence'])
+            if ((not prop['evidence'] and not explicit_unconditional_p) or
+                    (not prop['text'].strip() and not explicit_unconditional_p) or
+                    not prop['derivation'].strip()):
                 raise ValueError('formal property lacks evidence/derivation')
-            if expr_type(prop['expression'], symbols) != ('bool', None):
+            if expr_type(prop['expression'], symbols,
+                         enforce_units=enforce_units) != ('bool', None):
                 raise ValueError('property is not Boolean')
     for field in ('assumptions', 'unresolved'):
         if not isinstance(claim[field], list) or not all(isinstance(x, str) for x in claim[field]):
             raise ValueError('invalid caveat list')
 
 
-def compile_spec(claim, text, require_complete_piv=False):
-    validate(claim, text)
+def compile_spec(claim, text, require_complete_piv=False,
+                 enforce_units=True, run_checks=True):
+    validate(claim, text, enforce_units=enforce_units)
     address = z3.DeclareSort('ReportAddress')
     variables = {name: z3.Bool(name) if item['sort'] == 'bool' else
                  z3.Const(name, address) if item['sort'] == 'address' else z3.Int(name)
                  for name, item in claim['symbols'].items()}
     formulas = {name: lower(p['expression'], variables) for name, p in claim['properties'].items()
                 if p['expression'] is not None}
-    def check(*xs):
-        solver = z3.Solver(); solver.set(timeout=5000); solver.add(*xs)
-        return str(solver.check())
     pre = [formulas['preconditions']] if 'preconditions' in formulas else []
-    checks = {'precondition_feasibility': check(*pre) if pre else 'not_extracted'}
-    for name in ('safety', 'effects'):
-        if name in formulas: checks[name + '_feasibility'] = check(*pre, formulas[name])
-    if 'safety' in formulas: checks['safety_negation_feasibility'] = check(*pre, z3.Not(formulas['safety']))
-    warnings = [name for name, result in checks.items() if result in ('unsat', 'unknown')]
-    required = {'preconditions', 'safety', 'effects'} if require_complete_piv else {'safety'}
+    if run_checks:
+        def check(*xs):
+            solver = z3.Solver(); solver.set(timeout=5000); solver.add(*xs)
+            return str(solver.check())
+        checks = {'precondition_feasibility': check(*pre) if pre else 'not_extracted'}
+        for name in ('safety', 'effects'):
+            if name in formulas: checks[name + '_feasibility'] = check(*pre, formulas[name])
+        if 'safety' in formulas:
+            checks['safety_negation_feasibility'] = check(*pre, z3.Not(formulas['safety']))
+        warnings = [name for name, result in checks.items()
+                    if result in ('unsat', 'unknown')]
+    else:
+        checks = {'feasibility_checks': 'skipped_post_generation_fidelity_only'}
+        warnings = []
+    required = (set(PIV_PROPERTY_NAMES) if require_complete_piv else
+                {PIV_PROPERTY_NAMES[1]})
     status = ('not_formalized' if not required <= set(formulas) else
               'needs_review' if warnings else 'formalized_candidate')
     # Force declarations even for symbols not referenced in the extracted formula.

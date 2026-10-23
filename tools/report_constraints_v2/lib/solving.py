@@ -14,6 +14,7 @@ from pathlib import Path
 import z3
 
 from lib import report_only as r
+from lib.piv_contract import PIV_PROPERTY_BY_SYMBOL
 from lib.semantic_core import require
 
 
@@ -26,17 +27,20 @@ def setup(claim):
                  for name, item in claim['symbols'].items()}
     props = {name: r.lower(prop['expression'], variables) for name, prop in claim['properties'].items()
              if prop['expression'] is not None}
+    p_name = PIV_PROPERTY_BY_SYMBOL['P']
+    i_name = PIV_PROPERTY_BY_SYMBOL['I']
+    v_name = PIV_PROPERTY_BY_SYMBOL['V']
     conditions = {}
-    pre = [props['preconditions']] if 'preconditions' in props else []
+    pre = [props[p_name]] if p_name in props else []
     if pre: conditions['P'] = pre
-    if 'safety' in props:
-        conditions['P_and_I'] = pre + [props['safety']]
-        conditions['P_and_not_I'] = pre + [z3.Not(props['safety'])]
-    if 'effects' in props:
-        conditions['P_and_V'] = pre + [props['effects']]
-        if 'safety' in props:
-            conditions['P_and_V_and_not_I'] = pre + [props['effects'], z3.Not(props['safety'])]
-            conditions['P_and_V_and_I'] = pre + [props['effects'], props['safety']]
+    if i_name in props:
+        conditions['P_and_I'] = pre + [props[i_name]]
+        conditions['P_and_not_I'] = pre + [z3.Not(props[i_name])]
+    if v_name in props:
+        conditions['P_and_V'] = pre + [props[v_name]]
+        if i_name in props:
+            conditions['P_and_V_and_not_I'] = pre + [props[v_name], z3.Not(props[i_name])]
+            conditions['P_and_V_and_I'] = pre + [props[v_name], props[i_name]]
     return variables, conditions
 
 
@@ -44,6 +48,7 @@ def solve_queries(claim, text):
     r.validate(claim, text)
     _, modules = r.compile_spec(claim, text)
     variables, conditions = setup(claim)
+    p_name = PIV_PROPERTY_BY_SYMBOL['P']
     predicates = {'P': ['report_preconditions'], 'P_and_I': ['report_safety'],
                   'P_and_not_I': ['(not report_safety)'], 'P_and_V': ['report_effects'],
                   'P_and_V_and_not_I': ['report_effects', '(not report_safety)'],
@@ -62,7 +67,8 @@ def solve_queries(claim, text):
                 value = value.as_long() if z3.is_int_value(value) else True if z3.is_true(value) else False if z3.is_false(value) else str(value)
                 witness[symbol] = {'value': value, 'model_completion': symbol not in assigned}
         parts = list(predicates[name])
-        if name != 'P' and 'preconditions' in claim['properties'] and claim['properties']['preconditions']['expression'] is not None:
+        if (name != 'P' and p_name in claim['properties'] and
+                claim['properties'][p_name]['expression'] is not None):
             parts.insert(0, 'report_preconditions')
         smt = modules + '\n'.join(f'(assert {part})' for part in parts) + '\n(check-sat)\n'
         if status == 'sat': smt += '(get-model)\n'
@@ -114,7 +120,7 @@ def continuation_blockers(bundle, unresolved_review=None):
             blockers.append(name + ': model declared an unresolved core relation')
         properties = claim.get('properties', {})
         if any(properties.get(field, {}).get('expression') is None
-               for field in ('preconditions', 'safety', 'effects')):
+               for field in PIV_PROPERTY_BY_SYMBOL.values()):
             blockers.append(name + ': P, I, or V formula is missing')
         queries = claim.get('semantic_relationship', {}).get('queries', {})
         if (queries.get('P_and_V') != 'sat' or

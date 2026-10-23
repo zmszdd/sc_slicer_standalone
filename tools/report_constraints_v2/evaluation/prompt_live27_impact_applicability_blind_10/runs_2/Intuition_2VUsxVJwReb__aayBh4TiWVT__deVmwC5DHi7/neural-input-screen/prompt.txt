@@ -1,0 +1,35 @@
+You are a conservative REPORT-NARRATIVE-SUFFICIENCY gate for vulnerability reports.
+Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
+whether the supplied numbered report fragments explain the affected subject, trigger,
+direct effect, and safety-relation basis well enough to attempt P/I/V formalization.
+"ready" means only that the narrative is sufficient to try. It does not mean the
+current rule grammar can express the relation, that numeric variables and units are
+available, or that a model will successfully generate complete formulas. Those are
+judged separately from the subsequent per-impact formalization results.
+
+Required dimensions:
+1. affected_subject: identifiable affected component, function, state, asset, or actor.
+2. trigger_or_action: a concrete triggering condition, operation, call, or state transition.
+3. direct_effect: an immediate unauthorized behavior, state/value change, failed guarantee,
+   or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
+4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
+   numeric, temporal, conservation, or state-transition safety relationship can be derived.
+   The report need not explicitly say "invariant", but the relation must not be invented.
+
+Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
+Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
+dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
+list every dimension whose status is missing OR uncertain, in the required dimension
+order. decision is ready only when all four dimensions are present; otherwise decision
+is insufficient. Do not treat
+PoC availability, code availability, severity labels, or a proposed fix as substitutes.
+Return JSON only with exactly:
+{"schema_version":"report-readiness/1","decision":"ready|insufficient",
+ "dimensions":{
+  "affected_subject":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "trigger_or_action":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "direct_effect":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "safety_relation_basis":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"}},
+ "missing_dimensions":[],"summary":"short explanation"}
+REPORT FRAGMENTS:
+{"schema_version":"report-evidence/1","source_sha256":"6a75f5d940b10d8c3fa4f526b062c3304fa8c18a4d7078ca250599123e9a8a40","fragments":[{"id":"e_6a75f5d940b1_0001","text":"Epoch boundary lock creation captures previous epoch rewards via inclusive timestamp snapshot."},{"id":"e_6a75f5d940b1_0002","text":"## [H-01] Epoch boundary lock creation captures previous epoch rewards via inclusive timestamp snapshot"},{"id":"e_6a75f5d940b1_0003","text":"#### Description:"},{"id":"e_6a75f5d940b1_0004","text":"[claimRewards()](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L361) computes rewards for `prevEpoch = currentEpoch - 1`. The user's reward share is determined by their balance at `epochTimestampEnd(prevEpoch)`:"},{"id":"e_6a75f5d940b1_0005","text":"- [userBondedBalanceAtEpochEnd](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L212) → `_balanceOf(account, _epochTimestampEnd(epoch))`"},{"id":"e_6a75f5d940b1_0006","text":"- [totalBondedBalanceAtEpochEnd](https://github.com/code-423n4/2026-03-intuition/blob/314b7d4d9ccbaf27e4484a6c0706af83d3f75f36/src/protocol/emissions/TrustBonding.sol#L199) → `_totalSupply(_epochTimestampEnd(epoch))`"},{"id":"e_6a75f5d940b1_0007","text":"Two properties create the vulnerability:"},{"id":"e_6a75f5d940b1_0008","text":"1. **Shared boundary timestamp:** `epochTimestampEnd(N)` equals `epochTimestampStart(N+1)` since `_calculateEpochTimestampEnd(epoch) = START + epoch * LENGTH + LENGTH`, which is identical to `_calculateEpochTimestampStart(epoch + 1) = START + (epoch + 1) * LENGTH`."},{"id":"e_6a75f5d940b1_0009","text":"2. **Inclusive VotingEscrow lookup:** The binary search in `_find_user_timestamp_epoch` uses `<=` comparison (`user_point_history[addr][_mid].ts <= _ts`), so a checkpoint created exactly at the boundary timestamp is included in the lookup for epoch N's end."},{"id":"e_6a75f5d940b1_0010","text":"Therefore, a user who creates a lock at the exact epoch boundary (`block.timestamp == epochTimestampEnd(N) == epochTimestampStart(N+1)`) will:"},{"id":"e_6a75f5d940b1_0011","text":"- Be in epoch N+1 (so `currentEpoch = N+1`, `prevEpoch = N`)"},{"id":"e_6a75f5d940b1_0012","text":"- Have their checkpoint at ts = boundary included in the epoch N balance snapshot"},{"id":"e_6a75f5d940b1_0013","text":"- Successfully claim epoch N rewards despite never being bonded during epoch N"},{"id":"e_6a75f5d940b1_0014","text":"### Impact"},{"id":"e_6a75f5d940b1_0015","text":"An attacker can capture prior-epoch emissions by timing lock creation to the exact epoch boundary. This directly dilutes rewards of honest stakers who were bonded throughout the earning epoch. In the PoC, the attacker captures ~50% of epoch 0 emissions (~504.85 ETH) by creating a lock at the boundary and claiming in the same transaction."}]}

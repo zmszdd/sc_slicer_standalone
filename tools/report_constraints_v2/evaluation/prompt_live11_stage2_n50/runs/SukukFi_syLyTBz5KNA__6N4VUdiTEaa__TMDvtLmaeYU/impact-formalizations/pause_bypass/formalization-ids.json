@@ -1,0 +1,222 @@
+{
+  "schema_version": "report-formalization/2",
+  "symbols": {
+    "token_paused": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the token's paused state is active (whenNotPaused would revert)",
+      "checkpoint": "before the validator batch call",
+      "evidence_ids": [
+        "e_fa33db6810ff_0004",
+        "e_fa33db6810ff_0016"
+      ],
+      "entity_ids": [
+        "share_token"
+      ]
+    },
+    "batch_movement_executed": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a batchTransfers/rBatchTransfers call moved balances while the token was paused",
+      "checkpoint": "after the validator batch call",
+      "evidence_ids": [
+        "e_fa33db6810ff_0004",
+        "e_fa33db6810ff_0016"
+      ],
+      "entity_ids": [
+        "share_token",
+        "balances",
+        "validator"
+      ]
+    },
+    "validator_authorized": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "caller holds the validator role permitted to invoke batchTransfers/rBatchTransfers",
+      "checkpoint": "before the validator batch call",
+      "evidence_ids": [
+        "e_fa33db6810ff_0005",
+        "e_fa33db6810ff_0011"
+      ],
+      "entity_ids": [
+        "validator",
+        "share_token"
+      ]
+    },
+    "kyc_gate_enforced": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "standard transfer/mint/burn paths enforce isKycVerified on recipient/holder",
+      "checkpoint": "before the validator batch call",
+      "evidence_ids": [
+        "e_fa33db6810ff_0003",
+        "e_fa33db6810ff_0007",
+        "e_fa33db6810ff_0010"
+      ],
+      "entity_ids": [
+        "share_token"
+      ]
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_pause_bypass_cb03d850",
+      "scope": "validator-only batch settlement (batchTransfers/rBatchTransfers) mutating balances without KYC or pause checks",
+      "modality": "potential",
+      "impact_ids": [
+        "pause_bypass"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "batchTransfers and rBatchTransfers are restricted to the validator role.; Standard transfer, transferFrom, mint and burn revert when the recipient (and for mint/burn the holder) is not marked isKycVerified.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "validator_authorized"
+              },
+              {
+                "var": "kyc_gate_enforced"
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_fa33db6810ff_0005",
+            "e_fa33db6810ff_0011",
+            "e_fa33db6810ff_0003",
+            "e_fa33db6810ff_0007",
+            "e_fa33db6810ff_0010"
+          ],
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "validator_role_restricted",
+            "standard_flows_kyc_gated"
+          ]
+        },
+        "safety": {
+          "text": "While the token is paused, no balance movement path should execute.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "token_paused"
+                  },
+                  {
+                    "var": "validator_authorized"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "batch_movement_executed"
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_fa33db6810ff_0016"
+          ],
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_pause_blocks_movement"
+          ]
+        },
+        "effects": {
+          "text": "batchTransfers and rBatchTransfers ignore whenNotPaused, allowing fund movement even while the token is paused.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "token_paused"
+                  },
+                  {
+                    "var": "validator_authorized"
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "batch_movement_executed"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "evidence_ids": [
+            "e_fa33db6810ff_0004",
+            "e_fa33db6810ff_0016"
+          ],
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "pause_bypass"
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "validator_role_restricted",
+            "standard_flows_kyc_gated"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_pause_blocks_movement"
+          ],
+          "args.0": [
+            "intent_pause_blocks_movement"
+          ],
+          "args.1": [
+            "intent_pause_blocks_movement"
+          ]
+        },
+        "effects": {
+          "": [
+            "pause_bypass"
+          ],
+          "args.0": [
+            "pause_bypass"
+          ],
+          "args.1": [
+            "pause_bypass"
+          ],
+          "args.1.args.0": [
+            "pause_bypass"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "pause_bypass",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The scenario assumes a compromised or malicious validator exercising the privileged batch functions.",
+        "The paused state is an observable precondition of the token at the time of the batch call."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Formalizes only the pause_bypass impact; KYC-gating bypass (kyc_bypass_single_key) is handled in a separate claim pass.",
+    "The relation is stated at the occurrence level (movement executed while paused) rather than a numeric amount, since the report gives no concrete balances."
+  ]
+}

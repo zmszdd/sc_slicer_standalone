@@ -1,0 +1,205 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "LaunchToken graduation via _graduate/_createPairAndSwapRemaining adding liquidity to a UniSwapV2 pair",
+    "environment": "LaunchToken launchpad with UniSwapV2 router/pair",
+    "evidence": [
+      "The current logic of the contract is that when LaunchToken reaches BONDING_SUPPLY on a buy, the contract should automatically deposit 20% of the token into the UniSwapV2 pool and it should also deposit all of the quoteReserve it holds.",
+      "However, an attacker can permanently prevent a token from graduating with 1 wei direct deposit into the uniswap pair. In uniswapV2 a pair can be created easily by providing the LaunchToken address and quote address.",
+      "1. Lets say that a token is near its graduation, the attacker can deploy the pair (token,quote) before the graduation.",
+      "2. He can then make a direct deposit of 1 wei into the pair and call sync, this will bump the internal reserves of tokenA (depends on which is the smaller token, in my ex. I will make the quote token token A) to 1 wei.",
+      "3. When graduation comes in _graduate we make a call to _createPairAndSwapRemaining, inside that function we try to add liquidity to the pair by calling ` uniV2Router.addLiquidity`, however given the attacker initiated the attack before that, the call will fail, making the whole transaction revert, disabling graduation forever.",
+      "Given that the attacker called sync, reserveA will be 1 wei, making the call revert as reserveB will be 0.",
+      "This is a permanent DoS because LaunchToken cannot be transfered until graduation, they can only be moved by the launchpad and the gte router. There is no way that anybody moves out token into the pair either, if somebody tries to move it in launchpad and set the final recipient as the pair, we still revert as the function _assertValidRecipient makes sure the final recipient is not the pair.",
+      "Permanent DoS in a way that the contract is stopped performing its main functionality, given that in the launch of the new contract a lot of tokens will be created as a lot of users will want to arbitrage from the new functionality GTE offers, an attacker can make a massive attack by suppling 1 wei of quote to each token made. Given that this bug will only appear when one of the newly deployed tokens reach their BONDING_SUPPLY, this can be catastrophic, as users will be forced to pull out all of their quote."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "attacker",
+      "role": "attacker",
+      "evidence": [
+        "However, an attacker can permanently prevent a token from graduating with 1 wei direct deposit into the uniswap pair. In uniswapV2 a pair can be created easily by providing the LaunchToken address and quote address.",
+        "1. Lets say that a token is near its graduation, the attacker can deploy the pair (token,quote) before the graduation.",
+        "2. He can then make a direct deposit of 1 wei into the pair and call sync, this will bump the internal reserves of tokenA (depends on which is the smaller token, in my ex. I will make the quote token token A) to 1 wei."
+      ]
+    },
+    {
+      "id": "launch_token",
+      "name": "LaunchToken",
+      "role": "contract",
+      "evidence": [
+        "The current logic of the contract is that when LaunchToken reaches BONDING_SUPPLY on a buy, the contract should automatically deposit 20% of the token into the UniSwapV2 pool and it should also deposit all of the quoteReserve it holds.",
+        "This is a permanent DoS because LaunchToken cannot be transfered until graduation, they can only be moved by the launchpad and the gte router. There is no way that anybody moves out token into the pair either, if somebody tries to move it in launchpad and set the final recipient as the pair, we still revert as the function _assertValidRecipient makes sure the final recipient is not the pair."
+      ]
+    },
+    {
+      "id": "uniswap_pair",
+      "name": "UniSwapV2 pair (token, quote)",
+      "role": "contract",
+      "evidence": [
+        "However, an attacker can permanently prevent a token from graduating with 1 wei direct deposit into the uniswap pair. In uniswapV2 a pair can be created easily by providing the LaunchToken address and quote address.",
+        "2. He can then make a direct deposit of 1 wei into the pair and call sync, this will bump the internal reserves of tokenA (depends on which is the smaller token, in my ex. I will make the quote token token A) to 1 wei."
+      ]
+    },
+    {
+      "id": "uniswap_router",
+      "name": "UniSwapV2Router",
+      "role": "contract",
+      "evidence": [
+        "3. When graduation comes in _graduate we make a call to _createPairAndSwapRemaining, inside that function we try to add liquidity to the pair by calling ` uniV2Router.addLiquidity`, however given the attacker initiated the attack before that, the call will fail, making the whole transaction revert, disabling graduation forever.",
+        "Lets look inside _addLiquidity which is called directly addLiquidity by  in the UniSwapV2Router:"
+      ]
+    },
+    {
+      "id": "quote_reserve",
+      "name": "quoteReserve",
+      "role": "asset",
+      "evidence": [
+        "The current logic of the contract is that when LaunchToken reaches BONDING_SUPPLY on a buy, the contract should automatically deposit 20% of the token into the UniSwapV2 pool and it should also deposit all of the quoteReserve it holds."
+      ]
+    },
+    {
+      "id": "users",
+      "name": "users",
+      "role": "victim",
+      "evidence": [
+        "Permanent DoS in a way that the contract is stopped performing its main functionality, given that in the launch of the new contract a lot of tokens will be created as a lot of users will want to arbitrage from the new functionality GTE offers, an attacker can make a massive attack by suppling 1 wei of quote to each token made. Given that this bug will only appear when one of the newly deployed tokens reach their BONDING_SUPPLY, this can be catastrophic, as users will be forced to pull out all of their quote."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "token_near_graduation",
+      "kind": "precondition",
+      "text": "A LaunchToken is near its graduation (approaching BONDING_SUPPLY).",
+      "modality": "potential",
+      "entity_ids": [
+        "launch_token"
+      ],
+      "evidence": [
+        "1. Lets say that a token is near its graduation, the attacker can deploy the pair (token,quote) before the graduation."
+      ]
+    },
+    {
+      "id": "pair_deployed_before_graduation",
+      "kind": "precondition",
+      "text": "The attacker deploys the (token, quote) UniSwapV2 pair before graduation.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "uniswap_pair"
+      ],
+      "evidence": [
+        "However, an attacker can permanently prevent a token from graduating with 1 wei direct deposit into the uniswap pair. In uniswapV2 a pair can be created easily by providing the LaunchToken address and quote address.",
+        "1. Lets say that a token is near its graduation, the attacker can deploy the pair (token,quote) before the graduation."
+      ]
+    },
+    {
+      "id": "direct_deposit_and_sync",
+      "kind": "action",
+      "text": "The attacker makes a direct deposit of 1 wei into the pair and calls sync, bumping the internal reserve of tokenA to 1 wei.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "uniswap_pair"
+      ],
+      "evidence": [
+        "2. He can then make a direct deposit of 1 wei into the pair and call sync, this will bump the internal reserves of tokenA (depends on which is the smaller token, in my ex. I will make the quote token token A) to 1 wei."
+      ]
+    },
+    {
+      "id": "graduation_add_liquidity",
+      "kind": "action",
+      "text": "On graduation, _graduate calls _createPairAndSwapRemaining which calls uniV2Router.addLiquidity to add liquidity to the pair.",
+      "modality": "potential",
+      "entity_ids": [
+        "launch_token",
+        "uniswap_router",
+        "uniswap_pair"
+      ],
+      "evidence": [
+        "The current logic of the contract is that when LaunchToken reaches BONDING_SUPPLY on a buy, the contract should automatically deposit 20% of the token into the UniSwapV2 pool and it should also deposit all of the quoteReserve it holds.",
+        "3. When graduation comes in _graduate we make a call to _createPairAndSwapRemaining, inside that function we try to add liquidity to the pair by calling ` uniV2Router.addLiquidity`, however given the attacker initiated the attack before that, the call will fail, making the whole transaction revert, disabling graduation forever."
+      ]
+    },
+    {
+      "id": "reserve_a_one_wei",
+      "kind": "root_cause",
+      "text": "Because the attacker set reserveA to 1 wei via sync, _addLiquidity takes the else path and calls quote, which reverts because reserveB is 0.",
+      "modality": "potential",
+      "entity_ids": [
+        "uniswap_router",
+        "uniswap_pair"
+      ],
+      "evidence": [
+        "Given that the attacker made the reserveA for example 1 wei we will go into the first else path, where we will call quote, lets look inside quote:",
+        "Given that the attacker called sync, reserveA will be 1 wei, making the call revert as reserveB will be 0."
+      ]
+    },
+    {
+      "id": "graduation_reverts",
+      "kind": "impact",
+      "text": "The addLiquidity call fails, making the whole graduation transaction revert and disabling graduation.",
+      "modality": "potential",
+      "entity_ids": [
+        "launch_token",
+        "uniswap_router"
+      ],
+      "evidence": [
+        "3. When graduation comes in _graduate we make a call to _createPairAndSwapRemaining, inside that function we try to add liquidity to the pair by calling ` uniV2Router.addLiquidity`, however given the attacker initiated the attack before that, the call will fail, making the whole transaction revert, disabling graduation forever."
+      ]
+    },
+    {
+      "id": "permanent_dos",
+      "kind": "impact",
+      "text": "The DoS is permanent because LaunchToken cannot be transferred until graduation and _assertValidRecipient prevents the pair from being a final recipient.",
+      "modality": "potential",
+      "entity_ids": [
+        "launch_token",
+        "uniswap_pair"
+      ],
+      "evidence": [
+        "This is a permanent DoS because LaunchToken cannot be transfered until graduation, they can only be moved by the launchpad and the gte router. There is no way that anybody moves out token into the pair either, if somebody tries to move it in launchpad and set the final recipient as the pair, we still revert as the function _assertValidRecipient makes sure the final recipient is not the pair."
+      ]
+    },
+    {
+      "id": "users_forced_out",
+      "kind": "impact",
+      "text": "Users are forced to pull out all of their quote.",
+      "modality": "potential",
+      "entity_ids": [
+        "users",
+        "quote_reserve"
+      ],
+      "evidence": [
+        "Permanent DoS in a way that the contract is stopped performing its main functionality, given that in the launch of the new contract a lot of tokens will be created as a lot of users will want to arbitrage from the new functionality GTE offers, an attacker can make a massive attack by suppling 1 wei of quote to each token made. Given that this bug will only appear when one of the newly deployed tokens reach their BONDING_SUPPLY, this can be catastrophic, as users will be forced to pull out all of their quote."
+      ]
+    },
+    {
+      "id": "intent_graduation_completes",
+      "kind": "security_intent",
+      "text": "When a LaunchToken reaches BONDING_SUPPLY on a buy, graduation should complete by depositing 20% of the token and all held quoteReserve into the UniSwapV2 pool without reverting.",
+      "modality": "inferred",
+      "entity_ids": [
+        "launch_token",
+        "uniswap_pair",
+        "quote_reserve"
+      ],
+      "evidence": [
+        "The current logic of the contract is that when LaunchToken reaches BONDING_SUPPLY on a buy, the contract should automatically deposit 20% of the token into the UniSwapV2 pool and it should also deposit all of the quoteReserve it holds."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "direct_deposit_and_sync",
+    "graduation_add_liquidity"
+  ],
+  "ambiguities": [
+    "Report does not state whether the attacker needs any permission or role to deploy the pair or deposit directly; permissionlessness is not explicitly asserted.",
+    "The 1-wei deposit and sync are described as a possible attack, not an observed transaction.",
+    "Whether reserveA or reserveB is the 1-wei side depends on token ordering, which the report leaves conditional.",
+    "The claim that users are forced to pull out all quote is asserted as a downstream consequence without quantitative support."
+  ]
+}

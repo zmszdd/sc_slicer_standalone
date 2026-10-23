@@ -1,0 +1,49 @@
+`previewWithdraw` Permanently DoSed After Any `previewMint`- Routed Deposit Due to Invariant-Breaking Ceiling Arithmetic
+
+## Vulnerability details
+
+`previewMint` computes the cost of minting shares using ceiling (round-up) arithmetic at two steps:
+
+
+The curve invariant requires `totalAssets == HALF_SLOPE * square(totalShares)`. Ceiling rounding breaks this invariant on every mint: after any `previewMint`-routed deposit, `totalAssets` is strictly greater than `HALF_SLOPE * square(totalShares)`.
+
+`previewWithdraw` then attempts:
+
+
+PRB-Math's `sub` performs an unchecked subtraction on unsigned fixed-point numbers. When the invariant is broken, `divUp(totalAssets, HALF_SLOPE) > square(totalShares)`, so `deduct > square(s)`. The subtraction underflows and the transaction reverts with `ARITHMETIC_OVERFLOW (0x11)`.
+
+The identical structure is present in `OffsetProgressiveCurve.sol` at L160:
+
+
+### Concrete state walk (SLOPE=2e18, HALF_SLOPE=1e18)
+
+
+Each sequential 1-share mint accumulates exactly 1 asset of irrecoverable excess. After N such mints, exactly N assets are permanently unwithdrawable via the asset-based path. The excess compounds for every subsequent small-share mint from a large `totalShares` base.
+
+### Regression note
+
+The prior Diligence audit (Oct 2025, Finding 5.5) identified a rounding asymmetry in these curves and marked it Fixed in PR 111. The differential changes at `ProgressiveCurve.sol:L240` and `OffsetProgressiveCurve.sol:L247` subsequently re-introduced the invariant violation. This is a regression in the primary differential area.
+
+## Impact
+
+Any vault that processes a deposit through the `previewMint` path is permanently DoSed for all asset-based (`previewWithdraw`) exits:
+
+- Protocols and UIs implementing ERC4626-style `previewWithdraw` to compute share amounts before withdrawal will revert on every call.
+- Users cannot exit via the asset-denominated path. They must compute share amounts manually and use `previewRedeem` (shares-based), which remains functional.
+- The locked excess accumulates: N sequential 1-share mints lock N assets. For high-activity vaults with many small mints, the locked amount grows proportionally.
+- The DoS is irreversible without an upgrade: once `totalAssets > HALF_SLOPE * square(totalShares)`, every call to `previewWithdraw(totalAssets, ...)` panics until the invariant is externally restored.
+
+
+## Recommended mitigation steps
+
+Option A (fix at the withdrawal side) — guard against invariant drift:
+
+
+When `deduct > square(s)`, `inner` clamps to `wrap(0)`. Because `sqrt(0) = 0`, the next line computes `sharesUD = sub(s, 0) = s`, so the function returns `totalShares` — effectively saying "burn all shares to cover this amount." Callers receiving `totalShares` in response to a partial-withdrawal query should recognize the invariant is violated and fall back to `previewRedeem`.
+
+Option B (fix at the mint side) — maintain the invariant at source:
+
+
+This aligns `previewMint` with `previewDeposit`'s floor arithmetic, preserving `totalAssets == HALF_SLOPE * square(totalShares)` after every operation and eliminating the root cause. Note that switching from ceiling to floor means the contract collects slightly fewer assets per mint, which marginally favors depositors over the vault.
+
+Option B is preferred as it eliminates the invariant violation entirely rather than masking its effects.

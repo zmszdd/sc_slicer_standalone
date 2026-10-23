@@ -1,0 +1,139 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "f2acb541b53f4f53b4b9f61e32a43fa36374c3f2926fedd1fdadfe2af9cf32a2",
+  "fragments": [
+    {
+      "id": "e_f2acb541b53f_0001",
+      "text": "MonetrixVault.claimRedeem hard-codes payOut(msg.sender, ...): a USDC blacklist of the redeemer between requestRedeem and claimRedeem permanently strands the user's USDM, the obligation, and the funded escrow USDC",
+      "start": 0,
+      "end": 212,
+      "line": 1
+    },
+    {
+      "id": "e_f2acb541b53f_0002",
+      "text": "### Description",
+      "start": 214,
+      "end": 229,
+      "line": 3
+    },
+    {
+      "id": "e_f2acb541b53f_0003",
+      "text": "USDC on every chain Circle deploys to (and on every bridge that proxies a Circle-canonical USDC) implements a per-account blacklist. Calling `transfer(to, amount)` reverts if either `msg.sender` or `to` is on the blacklist. The list can change between user actions; a user who was unblacklisted at deposit time can become blacklisted before the cooldown elapses.",
+      "start": 231,
+      "end": 593,
+      "line": 5
+    },
+    {
+      "id": "e_f2acb541b53f_0004",
+      "text": "`MonetrixVault.claimRedeem` (Vault.sol#L198-L213) is the only path to convert a `RedeemRequest` into USDC:",
+      "start": 595,
+      "end": 701,
+      "line": 7
+    },
+    {
+      "id": "e_f2acb541b53f_0005",
+      "text": "Two design decisions stack: the function `require`s `msg.sender == req.owner`, and it then calls `payOut(msg.sender, amount)` — the recipient is hard-coded to the request owner. There is no `address recipient` parameter, no `claimRedeemTo(uint256, address)` overload, and no admin redirect.",
+      "start": 704,
+      "end": 994,
+      "line": 10
+    },
+    {
+      "id": "e_f2acb541b53f_0006",
+      "text": "`RedeemEscrow.payOut` (RedeemEscrow.sol#L47-L53) finalises the transfer through OpenZeppelin's `SafeERC20.safeTransfer`:",
+      "start": 996,
+      "end": 1116,
+      "line": 12
+    },
+    {
+      "id": "e_f2acb541b53f_0007",
+      "text": "`SafeERC20.safeTransfer` calls `usdc.transfer(recipient, amount)` and reverts on a failed transfer — which is what a Circle-blacklist hook produces. The whole `claimRedeem` transaction reverts at this point, including the `usdm.burn`, the `redeemRequests` delete, and the obligation decrement. The user's `RedeemRequest` row remains alive, the user's USDM stays in the Vault, the escrow's USDC stays funded, and the obligation ledger is unchanged. Every retry produces the same revert as long as the blacklist is in place.",
+      "start": 1119,
+      "end": 1641,
+      "line": 15
+    },
+    {
+      "id": "e_f2acb541b53f_0008",
+      "text": "The Vault has no alternative claim path. The PoC's raw `address.call` invocations confirm there is no `claimRedeemTo(uint256,address)` and no `claimRedeemFor(address,uint256)` selector. There is no admin function to reassign a request to a fresh recipient address. The two surfaces that move USDC out of the RedeemEscrow are:",
+      "start": 1643,
+      "end": 1968,
+      "line": 17
+    },
+    {
+      "id": "e_f2acb541b53f_0009",
+      "text": "- `RedeemEscrow.payOut(recipient, amount)` — `onlyVault`, called only from `claimRedeem`. Reverts because of the blacklisted recipient.",
+      "start": 1970,
+      "end": 2105,
+      "line": 19
+    },
+    {
+      "id": "e_f2acb541b53f_0010",
+      "text": "- `RedeemEscrow.reclaimTo(to, amount)` — `onlyVault`, callable through `Vault.reclaimFromRedeemEscrow(amount)` (Vault.sol#L431-L435, `onlyOperator`). It dispatches `usdc.safeTransfer(address(this), amount)` to the Vault. The transfer to the *Vault* is not blocked by a user-targeted blacklist; however, the function enforces `bal >= amount + totalOwed` (RedeemEscrow.sol#L62). With `bal == 10k` and `totalOwed == 10k` (the blacklisted user's obligation is still on the books because `payOut` could not run), the only `amount` that satisfies the check is `0`, which fails the `amount > 0` guard at line 60. The reclaim path is therefore unreachable for any non-zero amount as long as the obligation re",
+      "start": 2106,
+      "end": 2806,
+      "line": 20
+    },
+    {
+      "id": "e_f2acb541b53f_0011",
+      "text": "mains.",
+      "start": 2806,
+      "end": 2812,
+      "line": 20
+    },
+    {
+      "id": "e_f2acb541b53f_0012",
+      "text": "A new function added through a UUPS upgrade — pushed through the 48h `UPGRADER` timelock — is the only on-chain way to redirect the funds to a non-blacklisted address. The simplest such function would expose either a recipient-redirected claim path (preferred — see Recommended mitigation below) or a Governor primitive to \"force-cancel\" the obligation row and unfund the escrow back to the Vault.",
+      "start": 2814,
+      "end": 3211,
+      "line": 22
+    },
+    {
+      "id": "e_f2acb541b53f_0013",
+      "text": "### Impact",
+      "start": 3213,
+      "end": 3223,
+      "line": 24
+    },
+    {
+      "id": "e_f2acb541b53f_0014",
+      "text": "The post-blacklist state is a triple stranding for the affected user, demonstrable on-chain:",
+      "start": 3225,
+      "end": 3317,
+      "line": 26
+    },
+    {
+      "id": "e_f2acb541b53f_0015",
+      "text": "1. **The user's USDM stays in the Vault.** `requestRedeem` (Vault.sol#L185) `transferFrom`s the USDM into the Vault. `claimRedeem` would `burn` it — but the burn is reverted along with the failed `payOut`. The user's USDM-denominated stake in the protocol is custody-locked in the Vault. They cannot reclaim it; the only Vault path that touches it is `claimRedeem`.",
+      "start": 3319,
+      "end": 3684,
+      "line": 28
+    },
+    {
+      "id": "e_f2acb541b53f_0016",
+      "text": "2. **The escrow's USDC sits there permanently.** RedeemEscrow holds the user's `amount` USDC, but `payOut` reverts every time the user invokes `claimRedeem`. `reclaimTo` (via `Vault.reclaimFromRedeemEscrow`) is not callable for the user's portion either: the function enforces `bal >= amount + totalOwed`. With `bal` exactly funding `totalOwed`, only `amount == 0` satisfies, and that fails the `amount > 0` guard. The escrow can only be drained once the obligation is gone — which only `payOut` does — and `payOut` is the path that's blocked.",
+      "start": 3686,
+      "end": 4229,
+      "line": 30
+    },
+    {
+      "id": "e_f2acb541b53f_0017",
+      "text": "3. **The obligation ledger is unchanged.** `totalOwed` still reflects the user's outstanding claim, so any future redemption-shortfall accounting is consistent with reality from the protocol's view; the user, however, has no way to consume that obligation.",
+      "start": 4231,
+      "end": 4487,
+      "line": 32
+    },
+    {
+      "id": "e_f2acb541b53f_0018",
+      "text": "The trigger is purely external — Circle adding the user's address to the blacklist between request and claim. This is not a malicious user action against the protocol; it is the documented operating reality of any USDC integration. A non-malicious user with a perfectly valid request loses the ability to recover their funds the moment the blacklist tag flips.",
+      "start": 4489,
+      "end": 4849,
+      "line": 34
+    },
+    {
+      "id": "e_f2acb541b53f_0019",
+      "text": "The recovery scope is bounded to the affected user: the protocol as a whole is unaffected, but the affected user's funds are off the redemption surface until a UUPS upgrade adds a recipient-redirected variant. The pattern — exit function with hardcoded `msg.sender` recipient, no recipient parameter, no admin redirect — is a recurring Medium in audits of any USDC-integrated protocol with a delayed-claim model: the user is non-malicious, the trigger is external (issuer blacklist), the lock is permanent until governance acts, and the impact is bounded to that user.",
+      "start": 4851,
+      "end": 5419,
+      "line": 36
+    }
+  ]
+}

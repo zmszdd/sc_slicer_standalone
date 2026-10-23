@@ -1,0 +1,104 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "18daee0d98d820d01fc21eadd25564a5a15c4a1fad469735f4a9e89d833f7a3d",
+  "fragments": [
+    {
+      "id": "e_18daee0d98d8_0001",
+      "text": "Nested multicall resets payment guard, breaking batches that mix oracle updates and actions",
+      "start": 0,
+      "end": 91,
+      "line": 1
+    },
+    {
+      "id": "e_18daee0d98d8_0002",
+      "text": "Title: Nested multicall resets payment guard, breaking batches that mix oracle updates and actions",
+      "start": 93,
+      "end": 191,
+      "line": 3
+    },
+    {
+      "id": "e_18daee0d98d8_0003",
+      "text": "Severity: Medium",
+      "start": 194,
+      "end": 210,
+      "line": 4
+    },
+    {
+      "id": "e_18daee0d98d8_0004",
+      "text": "Target: src/Covenant.sol – multicall(), _checkPayment()",
+      "start": 213,
+      "end": 268,
+      "line": 5
+    },
+    {
+      "id": "e_18daee0d98d8_0005",
+      "text": "## Summary",
+      "start": 270,
+      "end": 280,
+      "line": 7
+    },
+    {
+      "id": "e_18daee0d98d8_0006",
+      "text": "The `Covenant.multicall` helper only tracks “batch mode” with a boolean `_isMulticall`. If any payload within the batch calls `multicall` again (nested multicall), the inner frame sets `_isMulticall` back to `false` before the outer loop finishes. Subsequent outer payloads then hit `_checkPayment` with `_isMulticall == false`, so the contract enforces `msg.value == msgValue` despite still being inside the outer batch. Any sequence that spends ETH on an inner oracle update (non-zero `msgValue`) and follows up with a zero-value call will revert with `Errors.E_IncorrectPayment`, breaking otherwise valid batched flows.",
+      "start": 281,
+      "end": 903,
+      "line": 8
+    },
+    {
+      "id": "e_18daee0d98d8_0007",
+      "text": "## Impact",
+      "start": 905,
+      "end": 914,
+      "line": 10
+    },
+    {
+      "id": "e_18daee0d98d8_0008",
+      "text": "- **Liveness/DoS on self:** Integrators composing helper contracts that themselves call `multicall` can no longer combine price updates and mint/swap/redemption actions in a single top-level batch if the inner helper consumes ETH. The revert occurs even when the batched operations are solvent and previously worked in single-level multicalls.",
+      "start": 915,
+      "end": 1258,
+      "line": 11
+    },
+    {
+      "id": "e_18daee0d98d8_0009",
+      "text": "- **Composability break:** This undermines the reasons to expose `multicall`—operators cannot safely reuse library helpers that themselves rely on batching, forcing duplicate logic or separate transactions.",
+      "start": 1259,
+      "end": 1465,
+      "line": 12
+    },
+    {
+      "id": "e_18daee0d98d8_0010",
+      "text": "- **User-facing regression:** The revert arises solely from call ordering, not from balance insolvency, producing unexpected `E_IncorrectPayment` errors for otherwise valid flows.",
+      "start": 1466,
+      "end": 1645,
+      "line": 13
+    },
+    {
+      "id": "e_18daee0d98d8_0011",
+      "text": "## Root Cause",
+      "start": 1647,
+      "end": 1660,
+      "line": 15
+    },
+    {
+      "id": "e_18daee0d98d8_0012",
+      "text": "- `multicall` toggles `_isMulticall` from `false → true → false` without tracking depth ([src/Covenant.sol#L506-L521](https://github.com/code-423n4/2025-10-covenant/blob/main/src/Covenant.sol#L506-L521)). An inner call resets the flag before the outer loop completes.",
+      "start": 1661,
+      "end": 1928,
+      "line": 16
+    },
+    {
+      "id": "e_18daee0d98d8_0013",
+      "text": "- `_checkPayment` (invoked by mint/redeem/swap/updateState) requires exact `msg.value == msgValue` whenever `_isMulticall == false` ([src/Covenant.sol#L556-L560](https://github.com/code-423n4/2025-10-covenant/blob/main/src/Covenant.sol#L556-L560)). After the inner call returns, the flag is false, so the next outer payload reverts.",
+      "start": 1929,
+      "end": 2261,
+      "line": 17
+    },
+    {
+      "id": "e_18daee0d98d8_0014",
+      "text": "- No guard disallows nesting nor compensates for it.",
+      "start": 2262,
+      "end": 2314,
+      "line": 18
+    }
+  ]
+}

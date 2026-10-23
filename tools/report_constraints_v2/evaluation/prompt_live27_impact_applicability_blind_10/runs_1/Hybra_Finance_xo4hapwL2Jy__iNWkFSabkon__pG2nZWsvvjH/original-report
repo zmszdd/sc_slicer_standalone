@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Hybra Finance_xo4hapwL2Jy",
+    "audit_uid": "xo4hapwL2Jy",
+    "requested_submission_uid": "pG2nZWsvvjH",
+    "requested_finding_uid": "iNWkFSabkon",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Hybra_Finance_xo4hapwL2Jy/20260618_145600/findings.json",
+    "source_submission_uid": "pG2nZWsvvjH",
+    "source_finding_uid": "iNWkFSabkon",
+    "original_report_path": "Hybra Finance_xo4hapwL2Jy\\low_valid_pG2nZWsvvjH.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "pG2nZWsvvjH",
+  "finding_uid": "iNWkFSabkon",
+  "finding_number": "53",
+  "title": "`votingEscrow` NFTs lose rewards upon splitting-merging",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "Huntoor",
+  "body": "## Finding description and impact\nin `VotingEscrow`, any token with pending rewards merged as `from` or splitted will lose all of its earned rewards\n\nthis happens due to the fact that when we merge a `from` Id or we split a main NFT Id we  `_burn` that NFT, and hence its owner will be `address(0)` and hence claims will be lost since amounts will be transferred to `address(0)`\n```solidity\nFile: VotingEscrow.sol\n1074:         locked[_from] = IVotingEscrow.LockedBalance(0, 0, false);\n1075:         _checkpoint(_from, _locked0, IVotingEscrow.LockedBalance(0, 0, false));\n1076:         _burn(_from);\n```\nthis is not an out-of-scope bug since it doesn't originate from the `RewardsDistributor` but it comes from not calling claim upon any merge/splitting.\n\nAlso this wouldn't be a user mistake since he assumes that those cases will be handled as developer said in his ` ve(3,3) Epoch Cycle, Rotation, and Reward Distribution / Rebase` are of concerns\n\nbut in addition to users losing their rewards, `gHybr` contract is also affected.\n\nsince `gHybr` contract settles withdrawals through splitting, this would happen.\n1. Users deposits 100e18 to `governanceHybr`\n2. `governanceHybr` earns `Hybr` rewards\n3. one user is willing withdraw, `claimRewards()` hasn't been called by the operator yet\n4. the user withdraw and the old ve Id owned by `governanceHybr` gets splitted and loses all old `hybr` rewards\n\nThe above scenario is more reaslistic since it doesn't involve a naive user mistake of not claiming before splitting\n### Impact\nLoss of user rewards upon merging/splitting\n\nLoss of rebase amounts given to `gHybr`\n## Recommended mitigation steps\ncall claim on the to be splitted Id and merged from Id",
+  "proof_of_concept": "```solidity\n    function test_rewardsDistributor_lossOnSplitMerge() external {\n\n        // Enable splitting for this test contract\n        votingEscrow.toggleSplit(address(this), true);\n\n        skip(2 weeks);\n        // Create a veNFT lock\n        uint256 lockAmount = 1000 ether;\n        hybr.approve(address(votingEscrow), lockAmount);\n        uint256 tokenId = votingEscrow.create_lock(lockAmount, 86400 * 365 * 2);\n\n        // Fund RewardsDistributor with some rewards\n        // First, let the minter distribute some rewards\n        minter.update_period();\n\n        // Then manually add more rewards to ensure we have significant claimable amounts\n        uint256 rewardAmount = 100 ether;\n        hybr.transfer(address(rewardsDistributor), rewardAmount);\n\n        // Call checkpoint_token through the minter (which is the depositor)\n        vm.prank(address(minter));\n        rewardsDistributor.checkpoint_token();\n\n        // Advance time to accumulate some claimable rewards\n        vm.warp(block.timestamp + 1 weeks);\n\n        // Check claimable rewards before split\n        uint256 claimableBeforeSplit = rewardsDistributor.claimable(tokenId);\n        console.log(\"Claimable before split:\", claimableBeforeSplit);\n        console.log(\n            \"Time cursor before split:\",\n            rewardsDistributor.time_cursor_of(tokenId)\n        );\n        console.log(\"Last token time:\", rewardsDistributor.last_token_time());\n        console.log(\"Current timestamp:\", block.timestamp);\n\n        // If no claimable rewards, let's advance more time and add more rewards\n        if (claimableBeforeSplit == 0) {\n            vm.warp(block.timestamp + 2 weeks);\n            minter.update_period();\n\n            // Add more rewards and checkpoint again\n            hybr.transfer(address(rewardsDistributor), 200 ether);\n            vm.prank(address(minter));\n            rewardsDistributor.checkpoint_token();\n\n            claimableBeforeSplit = rewardsDistributor.claimable(tokenId);\n            console.log(\n                \"Claimable after more time and rewards:\",\n                claimableBeforeSplit\n            );\n        }\n\n        assertGt(\n            claimableBeforeSplit,\n            0,\n            \"Should have claimable rewards before split\"\n        );\n\n        // Split the NFT into two parts\n        uint256[] memory amounts = new uint256[](2);\n        amounts[0] = 600; // 60% of the lock\n        amounts[1] = 400; // 40% of the lock\n\n        uint256[] memory newTokenIds = votingEscrow.multiSplit(\n            tokenId,\n            amounts\n        );\n        assertEq(newTokenIds.length, 2, \"Should create 2 new NFTs\");\n\n        uint256 tokenId1 = newTokenIds[0];\n        uint256 tokenId2 = newTokenIds[1];\n\n        // Check that the original tokenId no longer exists\n        assertEq(\n            votingEscrow.ownerOf(tokenId),\n            address(0),\n            \"Original NFT should be burned\"\n        );\n\n        // Check claimable rewards for new NFTs - they should be 0 because time_cursor_of is reset\n        uint256 claimableAfterSplit1 = rewardsDistributor.claimable(tokenId1);\n        uint256 claimableAfterSplit2 = rewardsDistributor.claimable(tokenId2);\n\n        assertEq(\n            claimableAfterSplit1,\n            0,\n            \"New NFT 1 should have 0 claimable rewards due to lost time_cursor_of\"\n        );\n        assertEq(\n            claimableAfterSplit2,\n            0,\n            \"New NFT 2 should have 0 claimable rewards due to lost time_cursor_of\"\n        );\n\n        // Demonstrate the economic impact: rewards are permanently lost\n        uint256 totalLostRewards = claimableBeforeSplit;\n        assertGt(totalLostRewards, 0, \"Significant rewards should be lost\");\n\n        //i showing rewards gets burned, run with -vvvv\n        rewardsDistributor.claim(tokenId);// 98076556845719136296 is the burned amount\n    }\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-10-hybra-finance/blob/main/ve33/contracts/VotingEscrow.sol#L1060-L1201"
+  ],
+  "source_record": {
+    "project_id": "xo4hapwL2Jy",
+    "submission_index": "466",
+    "api_submission_id": "",
+    "uid": "pG2nZWsvvjH",
+    "number": "466",
+    "title": "`votingEscrow` NFTs lose rewards upon splitting-merging",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "Huntoor",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-10-hybra-finance/blob/main/ve33/contracts/VotingEscrow.sol#L1060-L1201"
+    ],
+    "body": "## Finding description and impact\nin `VotingEscrow`, any token with pending rewards merged as `from` or splitted will lose all of its earned rewards\n\nthis happens due to the fact that when we merge a `from` Id or we split a main NFT Id we  `_burn` that NFT, and hence its owner will be `address(0)` and hence claims will be lost since amounts will be transferred to `address(0)`\n```solidity\nFile: VotingEscrow.sol\n1074:         locked[_from] = IVotingEscrow.LockedBalance(0, 0, false);\n1075:         _checkpoint(_from, _locked0, IVotingEscrow.LockedBalance(0, 0, false));\n1076:         _burn(_from);\n```\nthis is not an out-of-scope bug since it doesn't originate from the `RewardsDistributor` but it comes from not calling claim upon any merge/splitting.\n\nAlso this wouldn't be a user mistake since he assumes that those cases will be handled as developer said in his ` ve(3,3) Epoch Cycle, Rotation, and Reward Distribution / Rebase` are of concerns\n\nbut in addition to users losing their rewards, `gHybr` contract is also affected.\n\nsince `gHybr` contract settles withdrawals through splitting, this would happen.\n1. Users deposits 100e18 to `governanceHybr`\n2. `governanceHybr` earns `Hybr` rewards\n3. one user is willing withdraw, `claimRewards()` hasn't been called by the operator yet\n4. the user withdraw and the old ve Id owned by `governanceHybr` gets splitted and loses all old `hybr` rewards\n\nThe above scenario is more reaslistic since it doesn't involve a naive user mistake of not claiming before splitting\n### Impact\nLoss of user rewards upon merging/splitting\n\nLoss of rebase amounts given to `gHybr`\n## Recommended mitigation steps\ncall claim on the to be splitted Id and merged from Id",
+    "proof_of_concept": "```solidity\n    function test_rewardsDistributor_lossOnSplitMerge() external {\n\n        // Enable splitting for this test contract\n        votingEscrow.toggleSplit(address(this), true);\n\n        skip(2 weeks);\n        // Create a veNFT lock\n        uint256 lockAmount = 1000 ether;\n        hybr.approve(address(votingEscrow), lockAmount);\n        uint256 tokenId = votingEscrow.create_lock(lockAmount, 86400 * 365 * 2);\n\n        // Fund RewardsDistributor with some rewards\n        // First, let the minter distribute some rewards\n        minter.update_period();\n\n        // Then manually add more rewards to ensure we have significant claimable amounts\n        uint256 rewardAmount = 100 ether;\n        hybr.transfer(address(rewardsDistributor), rewardAmount);\n\n        // Call checkpoint_token through the minter (which is the depositor)\n        vm.prank(address(minter));\n        rewardsDistributor.checkpoint_token();\n\n        // Advance time to accumulate some claimable rewards\n        vm.warp(block.timestamp + 1 weeks);\n\n        // Check claimable rewards before split\n        uint256 claimableBeforeSplit = rewardsDistributor.claimable(tokenId);\n        console.log(\"Claimable before split:\", claimableBeforeSplit);\n        console.log(\n            \"Time cursor before split:\",\n            rewardsDistributor.time_cursor_of(tokenId)\n        );\n        console.log(\"Last token time:\", rewardsDistributor.last_token_time());\n        console.log(\"Current timestamp:\", block.timestamp);\n\n        // If no claimable rewards, let's advance more time and add more rewards\n        if (claimableBeforeSplit == 0) {\n            vm.warp(block.timestamp + 2 weeks);\n            minter.update_period();\n\n            // Add more rewards and checkpoint again\n            hybr.transfer(address(rewardsDistributor), 200 ether);\n            vm.prank(address(minter));\n            rewardsDistributor.checkpoint_token();\n\n            claimableBeforeSplit = rewardsDistributor.claimable(tokenId);\n            console.log(\n                \"Claimable after more time and rewards:\",\n                claimableBeforeSplit\n            );\n        }\n\n        assertGt(\n            claimableBeforeSplit,\n            0,\n            \"Should have claimable rewards before split\"\n        );\n\n        // Split the NFT into two parts\n        uint256[] memory amounts = new uint256[](2);\n        amounts[0] = 600; // 60% of the lock\n        amounts[1] = 400; // 40% of the lock\n\n        uint256[] memory newTokenIds = votingEscrow.multiSplit(\n            tokenId,\n            amounts\n        );\n        assertEq(newTokenIds.length, 2, \"Should create 2 new NFTs\");\n\n        uint256 tokenId1 = newTokenIds[0];\n        uint256 tokenId2 = newTokenIds[1];\n\n        // Check that the original tokenId no longer exists\n        assertEq(\n            votingEscrow.ownerOf(tokenId),\n            address(0),\n            \"Original NFT should be burned\"\n        );\n\n        // Check claimable rewards for new NFTs - they should be 0 because time_cursor_of is reset\n        uint256 claimableAfterSplit1 = rewardsDistributor.claimable(tokenId1);\n        uint256 claimableAfterSplit2 = rewardsDistributor.claimable(tokenId2);\n\n        assertEq(\n            claimableAfterSplit1,\n            0,\n            \"New NFT 1 should have 0 claimable rewards due to lost time_cursor_of\"\n        );\n        assertEq(\n            claimableAfterSplit2,\n            0,\n            \"New NFT 2 should have 0 claimable rewards due to lost time_cursor_of\"\n        );\n\n        // Demonstrate the economic impact: rewards are permanently lost\n        uint256 totalLostRewards = claimableBeforeSplit;\n        assertGt(totalLostRewards, 0, \"Significant rewards should be lost\");\n\n        //i showing rewards gets burned, run with -vvvv\n        rewardsDistributor.claim(tokenId);// 98076556845719136296 is the burned amount\n    }\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/xo4hapwL2Jy/submissions/466",
+    "raw": {
+      "auditUid": "xo4hapwL2Jy",
+      "createdAt": "2025-10-14T01:21:04.342Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "4n6qwiZGhTF",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-15T05:25:24.482Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "iNWkFSabkon"
+        },
+        {
+          "uid": "thv6wkrBUXo",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-20T11:09:18.223Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "pG2nZWsvvjH",
+          "findingUid": null
+        },
+        {
+          "uid": "NLdWWH7FiCb",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-04T21:24:06.055Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "iNWkFSabkon"
+        }
+      ],
+      "finding": {
+        "uid": "iNWkFSabkon",
+        "number": 53,
+        "duplicates": 14
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-11-04T21:24:06.055Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "`votingEscrow` NFTs lose rewards upon splitting-merging",
+      "uid": "pG2nZWsvvjH",
+      "updatedAt": "2025-10-14T01:21:04.342Z",
+      "user": {
+        "uid": "rP3fYrYLrik",
+        "handle": "Huntoor"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\nin `VotingEscrow`, any token with pending rewards merged as `from` or splitted will lose all of its earned rewards\n\nthis happens due to the fact that when we merge a `from` Id or we split a main NFT Id we  `_burn` that NFT, and hence its owner will be `address(0)` and hence claims will be lost since amounts will be transferred to `address(0)`\n```solidity\nFile: VotingEscrow.sol\n1074:         locked[_from] = IVotingEscrow.LockedBalance(0, 0, false);\n1075:         _checkpoint(_from, _locked0, IVotingEscrow.LockedBalance(0, 0, false));\n1076:         _burn(_from);\n```\nthis is not an out-of-scope bug since it doesn't originate from the `RewardsDistributor` but it comes from not calling claim upon any merge/splitting.\n\nAlso this wouldn't be a user mistake since he assumes that those cases will be handled as developer said in his ` ve(3,3) Epoch Cycle, Rotation, and Reward Distribution / Rebase` are of concerns\n\nbut in addition to users losing their rewards, `gHybr` contract is also affected.\n\nsince `gHybr` contract settles withdrawals through splitting, this would happen.\n1. Users deposits 100e18 to `governanceHybr`\n2. `governanceHybr` earns `Hybr` rewards\n3. one user is willing withdraw, `claimRewards()` hasn't been called by the operator yet\n4. the user withdraw and the old ve Id owned by `governanceHybr` gets splitted and loses all old `hybr` rewards\n\nThe above scenario is more reaslistic since it doesn't involve a naive user mistake of not claiming before splitting\n### Impact\nLoss of user rewards upon merging/splitting\n\nLoss of rebase amounts given to `gHybr`\n## Recommended mitigation steps\ncall claim on the to be splitted Id and merged from Id",
+      "proofOfConcept": "```solidity\n    function test_rewardsDistributor_lossOnSplitMerge() external {\n\n        // Enable splitting for this test contract\n        votingEscrow.toggleSplit(address(this), true);\n\n        skip(2 weeks);\n        // Create a veNFT lock\n        uint256 lockAmount = 1000 ether;\n        hybr.approve(address(votingEscrow), lockAmount);\n        uint256 tokenId = votingEscrow.create_lock(lockAmount, 86400 * 365 * 2);\n\n        // Fund RewardsDistributor with some rewards\n        // First, let the minter distribute some rewards\n        minter.update_period();\n\n        // Then manually add more rewards to ensure we have significant claimable amounts\n        uint256 rewardAmount = 100 ether;\n        hybr.transfer(address(rewardsDistributor), rewardAmount);\n\n        // Call checkpoint_token through the minter (which is the depositor)\n        vm.prank(address(minter));\n        rewardsDistributor.checkpoint_token();\n\n        // Advance time to accumulate some claimable rewards\n        vm.warp(block.timestamp + 1 weeks);\n\n        // Check claimable rewards before split\n        uint256 claimableBeforeSplit = rewardsDistributor.claimable(tokenId);\n        console.log(\"Claimable before split:\", claimableBeforeSplit);\n        console.log(\n            \"Time cursor before split:\",\n            rewardsDistributor.time_cursor_of(tokenId)\n        );\n        console.log(\"Last token time:\", rewardsDistributor.last_token_time());\n        console.log(\"Current timestamp:\", block.timestamp);\n\n        // If no claimable rewards, let's advance more time and add more rewards\n        if (claimableBeforeSplit == 0) {\n            vm.warp(block.timestamp + 2 weeks);\n            minter.update_period();\n\n            // Add more rewards and checkpoint again\n            hybr.transfer(address(rewardsDistributor), 200 ether);\n            vm.prank(address(minter));\n            rewardsDistributor.checkpoint_token();\n\n            claimableBeforeSplit = rewardsDistributor.claimable(tokenId);\n            console.log(\n                \"Claimable after more time and rewards:\",\n                claimableBeforeSplit\n            );\n        }\n\n        assertGt(\n            claimableBeforeSplit,\n            0,\n            \"Should have claimable rewards before split\"\n        );\n\n        // Split the NFT into two parts\n        uint256[] memory amounts = new uint256[](2);\n        amounts[0] = 600; // 60% of the lock\n        amounts[1] = 400; // 40% of the lock\n\n        uint256[] memory newTokenIds = votingEscrow.multiSplit(\n            tokenId,\n            amounts\n        );\n        assertEq(newTokenIds.length, 2, \"Should create 2 new NFTs\");\n\n        uint256 tokenId1 = newTokenIds[0];\n        uint256 tokenId2 = newTokenIds[1];\n\n        // Check that the original tokenId no longer exists\n        assertEq(\n            votingEscrow.ownerOf(tokenId),\n            address(0),\n            \"Original NFT should be burned\"\n        );\n\n        // Check claimable rewards for new NFTs - they should be 0 because time_cursor_of is reset\n        uint256 claimableAfterSplit1 = rewardsDistributor.claimable(tokenId1);\n        uint256 claimableAfterSplit2 = rewardsDistributor.claimable(tokenId2);\n\n        assertEq(\n            claimableAfterSplit1,\n            0,\n            \"New NFT 1 should have 0 claimable rewards due to lost time_cursor_of\"\n        );\n        assertEq(\n            claimableAfterSplit2,\n            0,\n            \"New NFT 2 should have 0 claimable rewards due to lost time_cursor_of\"\n        );\n\n        // Demonstrate the economic impact: rewards are permanently lost\n        uint256 totalLostRewards = claimableBeforeSplit;\n        assertGt(totalLostRewards, 0, \"Significant rewards should be lost\");\n\n        //i showing rewards gets burned, run with -vvvv\n        rewardsDistributor.claim(tokenId);// 98076556845719136296 is the burned amount\n    }\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-10-hybra-finance/blob/main/ve33/contracts/VotingEscrow.sol#L1060-L1201",
+      "number": 466,
+      "aiExplanation": null,
+      "_index": 466
+    }
+  }
+}

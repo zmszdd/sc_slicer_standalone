@@ -1,0 +1,172 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "UniswapPriceOracle.validatePrice TWAP/slippage check used by buyback and liquidity operations",
+    "environment": "autonolas-tokenomics UniswapPriceOracle.sol on-chain oracle",
+    "evidence_ids": [
+      "e_15a52521a32e_0001",
+      "e_15a52521a32e_0003",
+      "e_15a52521a32e_0005",
+      "e_15a52521a32e_0006",
+      "e_15a52521a32e_0008",
+      "e_15a52521a32e_0009"
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "flash-loan or MEV attacker",
+      "role": "attacker",
+      "evidence_ids": [
+        "e_15a52521a32e_0003",
+        "e_15a52521a32e_0006"
+      ]
+    },
+    {
+      "id": "oracle",
+      "name": "UniswapPriceOracle",
+      "role": "contract",
+      "evidence_ids": [
+        "e_15a52521a32e_0003",
+        "e_15a52521a32e_0005"
+      ]
+    },
+    {
+      "id": "protocol_reserves",
+      "name": "protocol-owned reserves",
+      "role": "asset",
+      "evidence_ids": [
+        "e_15a52521a32e_0008",
+        "e_15a52521a32e_0009"
+      ]
+    },
+    {
+      "id": "buyback_liquidity_flows",
+      "name": "buyback and liquidity manager operations",
+      "role": "other",
+      "evidence_ids": [
+        "e_15a52521a32e_0003",
+        "e_15a52521a32e_0008",
+        "e_15a52521a32e_0009"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "spot_price_manipulated",
+      "kind": "precondition",
+      "text": "An attacker transiently moves the Uniswap spot price (tradePrice) to an attacker-controlled level before the swap.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "oracle"
+      ],
+      "evidence_ids": [
+        "e_15a52521a32e_0003",
+        "e_15a52521a32e_0006"
+      ]
+    },
+    {
+      "id": "oracle_used_by_flows",
+      "kind": "precondition",
+      "text": "Buybacks and liquidity manager operations rely on UniswapPriceOracle.validatePrice for their slippage guard.",
+      "modality": "asserted",
+      "entity_ids": [
+        "oracle",
+        "buyback_liquidity_flows"
+      ],
+      "evidence_ids": [
+        "e_15a52521a32e_0003",
+        "e_15a52521a32e_0008"
+      ]
+    },
+    {
+      "id": "twap_cancels_out",
+      "kind": "root_cause",
+      "text": "validatePrice adds tradePrice*elapsedTime to the last cumulative price and immediately subtracts the same value, so derivation is computed against tradePrice itself and timeWeightedAverage equals tradePrice.",
+      "modality": "asserted",
+      "entity_ids": [
+        "oracle"
+      ],
+      "evidence_ids": [
+        "e_15a52521a32e_0003",
+        "e_15a52521a32e_0005",
+        "e_15a52521a32e_0006"
+      ]
+    },
+    {
+      "id": "guard_passes_manipulated",
+      "kind": "impact",
+      "text": "The slippage guard passes for the attacker-manipulated tradePrice, so the oracle reports the manipulated price as within slippage limits.",
+      "modality": "potential",
+      "entity_ids": [
+        "oracle",
+        "attacker"
+      ],
+      "evidence_ids": [
+        "e_15a52521a32e_0003",
+        "e_15a52521a32e_0006"
+      ]
+    },
+    {
+      "id": "swaps_at_manipulated_prices",
+      "kind": "impact",
+      "text": "Subsequent swaps or liquidity removals execute at attacker-determined prices.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "buyback_liquidity_flows"
+      ],
+      "evidence_ids": [
+        "e_15a52521a32e_0003",
+        "e_15a52521a32e_0008"
+      ]
+    },
+    {
+      "id": "reserve_drain",
+      "kind": "impact",
+      "text": "Protocol-owned reserves can be drained through buyback or liquidity manager operations executed at attacker-determined prices.",
+      "modality": "potential",
+      "entity_ids": [
+        "protocol_reserves",
+        "buyback_liquidity_flows"
+      ],
+      "evidence_ids": [
+        "e_15a52521a32e_0008"
+      ]
+    },
+    {
+      "id": "economic_loss",
+      "kind": "impact",
+      "text": "Protocol funds are swapped or rebalanced at manipulated rates, causing immediate economic loss in Autonolas buyback/liquidity flows.",
+      "modality": "potential",
+      "entity_ids": [
+        "protocol_reserves",
+        "buyback_liquidity_flows"
+      ],
+      "evidence_ids": [
+        "e_15a52521a32e_0009"
+      ]
+    },
+    {
+      "id": "intent_twap_guard",
+      "kind": "security_intent",
+      "text": "The TWAP-based slippage guard should reject trades whose price deviates from the historical time-weighted average beyond the slippage bound, rather than accepting the current spot price.",
+      "modality": "inferred",
+      "entity_ids": [
+        "oracle"
+      ],
+      "evidence_ids": [
+        "e_15a52521a32e_0001",
+        "e_15a52521a32e_0005",
+        "e_15a52521a32e_0006"
+      ]
+    }
+  ],
+  "attack_steps": [],
+  "ambiguities": [
+    "Report does not state who may call validatePrice or whether the attacker is permissionless.",
+    "No concrete transaction, numeric slippage bound, or observed loss amount is provided; impacts are capability claims.",
+    "Timing of the transient spot-price move relative to the checked swap is described only generally."
+  ]
+}

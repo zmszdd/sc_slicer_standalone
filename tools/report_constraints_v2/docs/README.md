@@ -7,7 +7,7 @@ Python 源码混放。
 
 | 文件 | 作用 |
 | --- | --- |
-| `STAGE2_CURRENT_STATUS.md` | 当前完成度、实验结论和未解决问题 |
+| `STAGE2_CURRENT_STATUS.md` | 主线目标、阶段二完成判据、当前收口工作、实验结论和限制（权威状态入口） |
 | `STAGE2_PRESENTATION_REPORT.md` | 面向导师或他人的阶段性汇报 |
 | `SECOND_STAGE_DESIGN.md` | 研究目标、方法边界和总体设计 |
 | `SAFETY_RELATION_TAXONOMY.md` | 12 类安全关系及确定性模板 |

@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Spot CLOB and Router_qa8y3zjgyCn",
+    "audit_uid": "qa8y3zjgyCn",
+    "requested_submission_uid": "sRR6R7uhY36",
+    "requested_finding_uid": "QW9maHr29yd",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Spot_CLOB_and_Router_qa8y3zjgyCn/20260618_143057/findings.json",
+    "source_submission_uid": "sRR6R7uhY36",
+    "source_finding_uid": "QW9maHr29yd",
+    "original_report_path": "GTE Spot CLOB and Router_qa8y3zjgyCn\\medium_valid_sRR6R7uhY36.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "sRR6R7uhY36",
+  "finding_uid": "QW9maHr29yd",
+  "finding_number": "19",
+  "title": "Invalid check of `maxNumLimitsPerSide` allows more orders to be added without removal of non competitive orders",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "0xlookman",
+  "body": "## Finding description and impact\n\nClob orderBooks have a `maxNumLimitsPerSide` from which on addition of new orders, the non competive orders should be removed. But the contract makes an assumption that there will be only one order in the worst price limit queue.\n\nFor cases where the worst price limit queue has more than one order, the limit will not be removed and if the new order being added introduces a new limit/price queue, the `maxNumLimitsPerSide` variable will be exceeded and the check  of `ds.askTree.size() == maxNumLimitsPerSide)` will return false hence the least competitive price order will not be removed from the orderBook while it should be.\n\n```solidity\n        if (ds.askTree.size() == maxNumLimitsPerSide) {\n            uint256 maxAskPrice = ds.getWorstAskPrice();\n            if (newOrder.price >= maxAskPrice) revert MaxOrdersInBookPostNotCompetitive();\n\n\n            _removeNonCompetitiveOrder(ds, ds.orders[ds.askLimits[maxAskPrice].tailOrder]);\n        }\n``` \n[Link to code](https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L625-L630)\n\nThis will make the side's tree to grow to a non intended size with very many non competitive orders that should be removed to  give room for new ones. It also breaks a significant protocal invariant that should hold.\n\n## Recommended mitigation steps\n\nConsider modifying the check from `ds.askTree.size() == maxNumLimitsPerSide)` to `ds.askTree.size() >= maxNumLimitsPerSide)` to allow continued removal of non competitive orders.",
+  "proof_of_concept": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PoCTestBase} from \"./PoCTestBase.t.sol\";\nimport {Side} from \"contracts/clob/types/Order.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\n\ncontract PoC is PoCTestBase {\n\n\n    function test_submissionValidity() external {\n        Side mySide = Side.BUY;\n        uint256 amountOrder = 6 ether;\n        uint256 price;\n        //@audit two worst performing orders with the same limit/price, hence same level\n        setupOrder(mySide, users[0], amountOrder, ((price + 1) * 1 ether));\n        //@audit the first price in the loop will be the same as ((price + 1) * 1 ether)) since the `price` variable \n        // whose value is zero will be incremented to match (price + 1) hence placing it in the above order's limit\n        for (uint256 i = 0; i < MAX_NUM_LIMITS_PER_SIDE; i++){\n            price++;\n            //@audit each bit posted with its prices hence its a limit\n            setupOrder(mySide, users[0], amountOrder, (price * 1 ether));\n        }\n        //price\n        // Bids should be equal to maxLimits + 1, since some 2 bids have the same price.\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 1);\n        price++;\n        setupOrder(mySide, users[0], amountOrder, ((price) * 1 ether));\n        //Bids are still equal to maxLimits + 1 since one non-competive bid has been removed but the Limits\n        //have been increased hence going beyond maxLimits making the orders nolonger deducted any new order added.\n        //at this point will be added without removing a non-competitive order\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 1);\n\n        //All the below new orders add new limts(prices) without removing non-competitive bids since the linits are beyond\n        //maxLimit\n        price++;\n        setupOrder(mySide, users[0], amountOrder, ((price) * 1 ether));\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 2);\n        price++;\n        setupOrder(mySide, users[0], amountOrder, ((price) * 1 ether));\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 3);\n        price++;\n        setupOrder(mySide, users[0], amountOrder, ((price) * 1 ether));\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 4);\n    }\n}",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L625-L630"
+  ],
+  "source_record": {
+    "project_id": "qa8y3zjgyCn",
+    "submission_index": "737",
+    "api_submission_id": "",
+    "uid": "sRR6R7uhY36",
+    "number": "737",
+    "title": "Invalid check of `maxNumLimitsPerSide` allows more orders to be added without removal of non competitive orders",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "0xlookman",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L625-L630"
+    ],
+    "body": "## Finding description and impact\n\nClob orderBooks have a `maxNumLimitsPerSide` from which on addition of new orders, the non competive orders should be removed. But the contract makes an assumption that there will be only one order in the worst price limit queue.\n\nFor cases where the worst price limit queue has more than one order, the limit will not be removed and if the new order being added introduces a new limit/price queue, the `maxNumLimitsPerSide` variable will be exceeded and the check  of `ds.askTree.size() == maxNumLimitsPerSide)` will return false hence the least competitive price order will not be removed from the orderBook while it should be.\n\n```solidity\n        if (ds.askTree.size() == maxNumLimitsPerSide) {\n            uint256 maxAskPrice = ds.getWorstAskPrice();\n            if (newOrder.price >= maxAskPrice) revert MaxOrdersInBookPostNotCompetitive();\n\n\n            _removeNonCompetitiveOrder(ds, ds.orders[ds.askLimits[maxAskPrice].tailOrder]);\n        }\n``` \n[Link to code](https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L625-L630)\n\nThis will make the side's tree to grow to a non intended size with very many non competitive orders that should be removed to  give room for new ones. It also breaks a significant protocal invariant that should hold.\n\n## Recommended mitigation steps\n\nConsider modifying the check from `ds.askTree.size() == maxNumLimitsPerSide)` to `ds.askTree.size() >= maxNumLimitsPerSide)` to allow continued removal of non competitive orders.",
+    "proof_of_concept": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PoCTestBase} from \"./PoCTestBase.t.sol\";\nimport {Side} from \"contracts/clob/types/Order.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\n\ncontract PoC is PoCTestBase {\n\n\n    function test_submissionValidity() external {\n        Side mySide = Side.BUY;\n        uint256 amountOrder = 6 ether;\n        uint256 price;\n        //@audit two worst performing orders with the same limit/price, hence same level\n        setupOrder(mySide, users[0], amountOrder, ((price + 1) * 1 ether));\n        //@audit the first price in the loop will be the same as ((price + 1) * 1 ether)) since the `price` variable \n        // whose value is zero will be incremented to match (price + 1) hence placing it in the above order's limit\n        for (uint256 i = 0; i < MAX_NUM_LIMITS_PER_SIDE; i++){\n            price++;\n            //@audit each bit posted with its prices hence its a limit\n            setupOrder(mySide, users[0], amountOrder, (price * 1 ether));\n        }\n        //price\n        // Bids should be equal to maxLimits + 1, since some 2 bids have the same price.\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 1);\n        price++;\n        setupOrder(mySide, users[0], amountOrder, ((price) * 1 ether));\n        //Bids are still equal to maxLimits + 1 since one non-competive bid has been removed but the Limits\n        //have been increased hence going beyond maxLimits making the orders nolonger deducted any new order added.\n        //at this point will be added without removing a non-competitive order\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 1);\n\n        //All the below new orders add new limts(prices) without removing non-competitive bids since the linits are beyond\n        //maxLimit\n        price++;\n        setupOrder(mySide, users[0], amountOrder, ((price) * 1 ether));\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 2);\n        price++;\n        setupOrder(mySide, users[0], amountOrder, ((price) * 1 ether));\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 3);\n        price++;\n        setupOrder(mySide, users[0], amountOrder, ((price) * 1 ether));\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 4);\n    }\n}",
+    "detail_url": "https://code4rena.com/api/v1/audits/qa8y3zjgyCn/submissions/737",
+    "raw": {
+      "auditUid": "qa8y3zjgyCn",
+      "createdAt": "2025-08-06T13:02:08.851Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "6vwDEBRqnJF",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-31T17:21:10.853Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "QW9maHr29yd"
+        },
+        {
+          "uid": "YnWJfMPJVW3",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-07-31T17:21:12.642Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "QW9maHr29yd"
+        },
+        {
+          "uid": "kyXXLNT7r2o",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-08-07T12:02:26.719Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "QW9maHr29yd"
+        },
+        {
+          "uid": "cfeMT8SQCFa",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-08-11T12:39:42.645Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "sRR6R7uhY36",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "QW9maHr29yd",
+        "number": 19,
+        "duplicates": 28
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-08-12T11:15:17.017Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Invalid check of `maxNumLimitsPerSide` allows more orders to be added without removal of non competitive orders",
+      "uid": "sRR6R7uhY36",
+      "updatedAt": "2025-08-06T13:06:05.592Z",
+      "user": {
+        "uid": "9FLRFKRzHZr",
+        "handle": "0xlookman"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nClob orderBooks have a `maxNumLimitsPerSide` from which on addition of new orders, the non competive orders should be removed. But the contract makes an assumption that there will be only one order in the worst price limit queue.\n\nFor cases where the worst price limit queue has more than one order, the limit will not be removed and if the new order being added introduces a new limit/price queue, the `maxNumLimitsPerSide` variable will be exceeded and the check  of `ds.askTree.size() == maxNumLimitsPerSide)` will return false hence the least competitive price order will not be removed from the orderBook while it should be.\n\n```solidity\n        if (ds.askTree.size() == maxNumLimitsPerSide) {\n            uint256 maxAskPrice = ds.getWorstAskPrice();\n            if (newOrder.price >= maxAskPrice) revert MaxOrdersInBookPostNotCompetitive();\n\n\n            _removeNonCompetitiveOrder(ds, ds.orders[ds.askLimits[maxAskPrice].tailOrder]);\n        }\n``` \n[Link to code](https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L625-L630)\n\nThis will make the side's tree to grow to a non intended size with very many non competitive orders that should be removed to  give room for new ones. It also breaks a significant protocal invariant that should hold.\n\n## Recommended mitigation steps\n\nConsider modifying the check from `ds.askTree.size() == maxNumLimitsPerSide)` to `ds.askTree.size() >= maxNumLimitsPerSide)` to allow continued removal of non competitive orders.",
+      "proofOfConcept": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {PoCTestBase} from \"./PoCTestBase.t.sol\";\nimport {Side} from \"contracts/clob/types/Order.sol\";\nimport {ICLOB} from \"contracts/clob/ICLOB.sol\";\n\ncontract PoC is PoCTestBase {\n\n\n    function test_submissionValidity() external {\n        Side mySide = Side.BUY;\n        uint256 amountOrder = 6 ether;\n        uint256 price;\n        //@audit two worst performing orders with the same limit/price, hence same level\n        setupOrder(mySide, users[0], amountOrder, ((price + 1) * 1 ether));\n        //@audit the first price in the loop will be the same as ((price + 1) * 1 ether)) since the `price` variable \n        // whose value is zero will be incremented to match (price + 1) hence placing it in the above order's limit\n        for (uint256 i = 0; i < MAX_NUM_LIMITS_PER_SIDE; i++){\n            price++;\n            //@audit each bit posted with its prices hence its a limit\n            setupOrder(mySide, users[0], amountOrder, (price * 1 ether));\n        }\n        //price\n        // Bids should be equal to maxLimits + 1, since some 2 bids have the same price.\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 1);\n        price++;\n        setupOrder(mySide, users[0], amountOrder, ((price) * 1 ether));\n        //Bids are still equal to maxLimits + 1 since one non-competive bid has been removed but the Limits\n        //have been increased hence going beyond maxLimits making the orders nolonger deducted any new order added.\n        //at this point will be added without removing a non-competitive order\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 1);\n\n        //All the below new orders add new limts(prices) without removing non-competitive bids since the linits are beyond\n        //maxLimit\n        price++;\n        setupOrder(mySide, users[0], amountOrder, ((price) * 1 ether));\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 2);\n        price++;\n        setupOrder(mySide, users[0], amountOrder, ((price) * 1 ether));\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 3);\n        price++;\n        setupOrder(mySide, users[0], amountOrder, ((price) * 1 ether));\n        assertEq(clob.getNumBids(),  MAX_NUM_LIMITS_PER_SIDE + 4);\n    }\n}",
+      "linesOfCode": "https://github.com/code-423n4/2025-07-gte-clob/blob/92a8839e3eb9715d53e24f0168442cecdc9b784b/contracts/clob/CLOB.sol#L625-L630",
+      "number": 737,
+      "aiExplanation": null,
+      "_index": 737
+    }
+  }
+}

@@ -1,0 +1,229 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "BuyBackBurnerBalancer V3 (Slipstream) buyback swap via _performSwap",
+    "environment": "On-chain Balancer V3 pool with public mempool; MEV sandwich attack",
+    "evidence": [
+      "BuyBackBurnerBalancer V3 swaps set amountOutMinimum=1 and sqrtPriceLimitX96=0, allowing MEV bots to extract up to 100% of swap value via sandwich attacks",
+      "The `_performSwap` function for V3 (Slipstream) swaps in `BuyBackBurnerBalancer.sol` implements swaps with no effective slippage protection:",
+      "1. Attacker monitors mempool for `buyBack()` transactions targeting V3 pools",
+      "2. When buyback tx is detected, attacker front-runs with large buy → inflates price",
+      "3. Victim's buyback executes at inflated price, receives minimal OLAS",
+      "4. Attacker back-runs by selling → extracts profit",
+      "5. Protocol receives fraction of fair OLAS value",
+      "- **Direct financial loss**: Protocol receives significantly less OLAS than fair value",
+      "- **Repeatable**: Every V3 buyback is exploitable",
+      "| **External conditions** | Requires public mempool (mitigable via Flashbots) |"
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "MEV bot / sandwich attacker",
+      "role": "attacker",
+      "evidence": [
+        "BuyBackBurnerBalancer V3 swaps set amountOutMinimum=1 and sqrtPriceLimitX96=0, allowing MEV bots to extract up to 100% of swap value via sandwich attacks",
+        "1. Attacker monitors mempool for `buyBack()` transactions targeting V3 pools",
+        "2. When buyback tx is detected, attacker front-runs with large buy → inflates price",
+        "4. Attacker back-runs by selling → extracts profit"
+      ]
+    },
+    {
+      "id": "protocol",
+      "name": "Protocol (BuyBackBurnerBalancer)",
+      "role": "victim",
+      "evidence": [
+        "The `_performSwap` function for V3 (Slipstream) swaps in `BuyBackBurnerBalancer.sol` implements swaps with no effective slippage protection:",
+        "5. Protocol receives fraction of fair OLAS value",
+        "- **Direct financial loss**: Protocol receives significantly less OLAS than fair value"
+      ]
+    },
+    {
+      "id": "v3_pool",
+      "name": "Balancer V3 (Slipstream) pool",
+      "role": "contract",
+      "evidence": [
+        "BuyBackBurnerBalancer V3 swaps set amountOutMinimum=1 and sqrtPriceLimitX96=0, allowing MEV bots to extract up to 100% of swap value via sandwich attacks",
+        "The `_performSwap` function for V3 (Slipstream) swaps in `BuyBackBurnerBalancer.sol` implements swaps with no effective slippage protection:",
+        "1. Attacker monitors mempool for `buyBack()` transactions targeting V3 pools"
+      ]
+    },
+    {
+      "id": "olas",
+      "name": "OLAS token",
+      "role": "asset",
+      "evidence": [
+        "3. Victim's buyback executes at inflated price, receives minimal OLAS",
+        "5. Protocol receives fraction of fair OLAS value",
+        "- **Direct financial loss**: Protocol receives significantly less OLAS than fair value"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_public_mempool",
+      "kind": "precondition",
+      "text": "The buyback transaction is visible in the public mempool.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "protocol"
+      ],
+      "evidence": [
+        "1. Attacker monitors mempool for `buyBack()` transactions targeting V3 pools",
+        "| **External conditions** | Requires public mempool (mitigable via Flashbots) |"
+      ]
+    },
+    {
+      "id": "p_v3_buyback_tx",
+      "kind": "precondition",
+      "text": "A buyBack() transaction targeting a V3 pool is pending.",
+      "modality": "asserted",
+      "entity_ids": [
+        "protocol",
+        "v3_pool"
+      ],
+      "evidence": [
+        "1. Attacker monitors mempool for `buyBack()` transactions targeting V3 pools"
+      ]
+    },
+    {
+      "id": "a_frontrun_buy",
+      "kind": "action",
+      "text": "Attacker front-runs with a large buy, inflating the pool price.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "v3_pool"
+      ],
+      "evidence": [
+        "2. When buyback tx is detected, attacker front-runs with large buy → inflates price"
+      ]
+    },
+    {
+      "id": "a_victim_swap",
+      "kind": "action",
+      "text": "Victim's buyback swap executes at the inflated price.",
+      "modality": "asserted",
+      "entity_ids": [
+        "protocol",
+        "v3_pool"
+      ],
+      "evidence": [
+        "3. Victim's buyback executes at inflated price, receives minimal OLAS"
+      ]
+    },
+    {
+      "id": "a_backrun_sell",
+      "kind": "action",
+      "text": "Attacker back-runs by selling to extract profit.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "v3_pool"
+      ],
+      "evidence": [
+        "4. Attacker back-runs by selling → extracts profit"
+      ]
+    },
+    {
+      "id": "rc_no_slippage_protection",
+      "kind": "root_cause",
+      "text": "V3 _performSwap sets amountOutMinimum=1 and sqrtPriceLimitX96=0 with no post-swap validation, so the swap has no effective slippage protection.",
+      "modality": "asserted",
+      "entity_ids": [
+        "protocol",
+        "v3_pool"
+      ],
+      "evidence": [
+        "The `_performSwap` function for V3 (Slipstream) swaps in `BuyBackBurnerBalancer.sol` implements swaps with no effective slippage protection:",
+        "1. `amountOutMinimum = 1` - Swap succeeds even if 99.99999999% of value is lost",
+        "2. `sqrtPriceLimitX96 = 0` - No price boundary for the swap",
+        "3. No post-swap validation (unlike V2 implementation)",
+        "| Post-swap validation | ✅ Price bounds check | ❌ NONE |"
+      ]
+    },
+    {
+      "id": "i_slippage_bound",
+      "kind": "security_intent",
+      "text": "A V3 buyback swap should enforce an effective minimum output / price bound so it cannot execute at an arbitrarily inflated price.",
+      "modality": "inferred",
+      "entity_ids": [
+        "protocol",
+        "v3_pool"
+      ],
+      "evidence": [
+        "The `_performSwap` function for V3 (Slipstream) swaps in `BuyBackBurnerBalancer.sol` implements swaps with no effective slippage protection:",
+        "1. `amountOutMinimum = 1` - Swap succeeds even if 99.99999999% of value is lost",
+        "2. `sqrtPriceLimitX96 = 0` - No price boundary for the swap",
+        "| Post-swap validation | ✅ Price bounds check | ❌ NONE |"
+      ]
+    },
+    {
+      "id": "v_minimal_olas",
+      "kind": "impact",
+      "text": "Victim's buyback receives minimal OLAS at the inflated price.",
+      "modality": "asserted",
+      "entity_ids": [
+        "protocol",
+        "olas"
+      ],
+      "evidence": [
+        "3. Victim's buyback executes at inflated price, receives minimal OLAS"
+      ]
+    },
+    {
+      "id": "v_protocol_less_value",
+      "kind": "impact",
+      "text": "Protocol receives significantly less OLAS than fair value (a fraction of fair OLAS value).",
+      "modality": "asserted",
+      "entity_ids": [
+        "protocol",
+        "olas"
+      ],
+      "evidence": [
+        "5. Protocol receives fraction of fair OLAS value",
+        "- **Direct financial loss**: Protocol receives significantly less OLAS than fair value",
+        "| **Direct fund loss** | ✅ Yes - reduced OLAS acquisition |"
+      ]
+    },
+    {
+      "id": "v_up_to_100pct",
+      "kind": "impact",
+      "text": "MEV bots can extract up to 100% of swap value via sandwich attacks.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "protocol"
+      ],
+      "evidence": [
+        "BuyBackBurnerBalancer V3 swaps set amountOutMinimum=1 and sqrtPriceLimitX96=0, allowing MEV bots to extract up to 100% of swap value via sandwich attacks"
+      ]
+    },
+    {
+      "id": "v_repeatable",
+      "kind": "impact",
+      "text": "Every V3 buyback is exploitable, undermining the entire buyback-and-burn mechanism.",
+      "modality": "potential",
+      "entity_ids": [
+        "protocol",
+        "v3_pool"
+      ],
+      "evidence": [
+        "- **Repeatable**: Every V3 buyback is exploitable",
+        "- **Cumulative damage**: Undermines entire buyback-and-burn mechanism"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_frontrun_buy",
+    "a_victim_swap",
+    "a_backrun_sell"
+  ],
+  "ambiguities": [
+    "Report does not state the exact OLAS amounts or the precise fraction lost in a concrete transaction.",
+    "'Up to 100%' extraction is a potential maximum, not an observed incident.",
+    "Attacker profit amount is not quantified.",
+    "Whether the attacker is permissionless/unauthorized is not explicitly stated; inferred from MEV bot description."
+  ]
+}

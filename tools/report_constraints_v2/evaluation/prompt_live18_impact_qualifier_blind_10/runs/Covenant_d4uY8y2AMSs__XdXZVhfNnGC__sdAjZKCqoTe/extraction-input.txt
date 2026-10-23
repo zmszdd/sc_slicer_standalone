@@ -1,0 +1,15 @@
+Nested `multicall` Breaks Payment Validation Logic, Leading to DoS
+
+## Finding description and impact
+
+The `Covenant.multicall` function uses a storage variable `_isMulticall` to signal to other functions (`mint`, `redeem`, `swap`, `updateState`) that they are being called as part of a batch. This flag allows these functions to bypass the strict `msg.value == msgValue` check in the `_checkPayment` helper, as the total `msg.value` is handled by the top-level `multicall`.
+
+The `multicall` function sets `_isMulticall = true` at the beginning and `_isMulticall = false` at the end.
+
+
+The vulnerability occurs because `multicall` can be called recursively via `delegatecall`. If a user crafts a `multicall` where one of the inner calls is to `multicall` itself, the nested (inner) `multicall` will execute and set `_isMulticall` to `false` upon completion. When control returns to the outer `multicall`'s loop, the `_isMulticall` flag is now `false`, even though the outer batch operation is still in progress.
+
+Any subsequent call in the outer `multicall` that requires a fee (e.g., `updateState`) will now fail in `_checkPayment`, because `_isMulticall` is `false` and the `delegatecall`'s `msg.value` is 0, which will not match the required fee specified in the call parameters. This reverts the entire transaction.
+
+### Impact
+This vulnerability allows for a Denial of Service on the `multicall` functionality. A malicious user can craft a transaction that includes a nested `multicall` to make any legitimate batch transaction that follows it (and requires a fee) fail. This breaks a core feature of the protocol designed for gas efficiency and user experience.

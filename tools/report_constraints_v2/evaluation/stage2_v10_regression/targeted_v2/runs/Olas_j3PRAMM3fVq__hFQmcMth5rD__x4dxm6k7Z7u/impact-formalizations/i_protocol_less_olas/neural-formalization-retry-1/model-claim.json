@@ -1,0 +1,216 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "value_relation",
+  "precondition_ids": [
+    "p_public_mempool",
+    "p_v3_swap_params",
+    "p_no_post_validation"
+  ],
+  "intent_id": "si_slippage_bound",
+  "impact_ids": [
+    "i_protocol_less_olas"
+  ],
+  "symbols": {
+    "pending_buyback_observable": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a pending buyBack() transaction targeting a V3 pool is observable in the public mempool before execution",
+      "checkpoint": "before buyback execution",
+      "entity_ids": [
+        "attacker",
+        "buyback_contract",
+        "v3_pool"
+      ],
+      "source_ids": [
+        "p_public_mempool"
+      ]
+    },
+    "amount_out_minimum": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "amountOutMinimum parameter set by the V3 _performSwap path",
+      "checkpoint": "swap parameter configuration",
+      "entity_ids": [
+        "buyback_contract",
+        "v3_pool"
+      ],
+      "source_ids": [
+        "p_v3_swap_params"
+      ]
+    },
+    "sqrt_price_limit_x96": {
+      "sort": "int",
+      "unit": "dimensionless",
+      "meaning": "sqrtPriceLimitX96 parameter set by the V3 _performSwap path",
+      "checkpoint": "swap parameter configuration",
+      "entity_ids": [
+        "buyback_contract",
+        "v3_pool"
+      ],
+      "source_ids": [
+        "p_v3_swap_params"
+      ]
+    },
+    "post_swap_validation_present": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the V3 swap path performs a post-swap validation (report states it does not, unlike V2)",
+      "checkpoint": "after swap execution",
+      "entity_ids": [
+        "buyback_contract"
+      ],
+      "source_ids": [
+        "p_no_post_validation"
+      ]
+    },
+    "effective_slippage_protection_enforced": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the V3 buyback swap enforces effective slippage protection so it does not execute at an arbitrarily inflated price",
+      "checkpoint": "swap execution",
+      "entity_ids": [
+        "buyback_contract",
+        "protocol",
+        "olas"
+      ],
+      "source_ids": [
+        "si_slippage_bound"
+      ]
+    },
+    "protocol_receives_less_than_fair_olas": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the protocol receives significantly less OLAS than fair value from the buyback swap, a direct financial loss",
+      "checkpoint": "after buyback swap execution",
+      "entity_ids": [
+        "protocol",
+        "olas"
+      ],
+      "source_ids": [
+        "i_protocol_less_olas",
+        "si_slippage_bound"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_public_mempool",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "pending_buyback_observable",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_v3_swap_params",
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "comparison",
+            "left": "amount_out_minimum",
+            "operator": "eq",
+            "right": {
+              "const": 1
+            }
+          },
+          {
+            "kind": "comparison",
+            "left": "sqrt_price_limit_x96",
+            "operator": "eq",
+            "right": {
+              "const": 0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "source_id": "p_no_post_validation",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "post_swap_validation_present",
+        "value": false
+      }
+    }
+  ],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "pending_buyback_observable",
+          "value": true
+        },
+        {
+          "kind": "comparison",
+          "left": "amount_out_minimum",
+          "operator": "eq",
+          "right": {
+            "const": 1
+          }
+        },
+        {
+          "kind": "comparison",
+          "left": "sqrt_price_limit_x96",
+          "operator": "eq",
+          "right": {
+            "const": 0
+          }
+        },
+        {
+          "kind": "truth",
+          "symbol": "post_swap_validation_present",
+          "value": false
+        }
+      ]
+    },
+    "relation": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "effective_slippage_protection_enforced",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "protocol_receives_less_than_fair_olas",
+          "value": false
+        }
+      ]
+    }
+  },
+  "assumptions": [
+    "The attack relies on a standard MEV sandwich technique and public mempool visibility (as_mev_technique).",
+    "Fair OLAS value is not numerically defined in the report; the impact is expressed as a qualitative Boolean relation.",
+    "The buyback swap is executed by the protocol's BuyBackBurnerBalancer contract against a Balancer V3 (Slipstream) pool."
+  ],
+  "unresolved": [
+    {
+      "category": "missing_report_definition",
+      "description": "Report does not give exact OLAS amounts or a numeric fair-value reference, so the 'significantly less than fair value' relation is represented as a grounded Boolean rather than a numeric inequality.",
+      "source_ids": [
+        "i_protocol_less_olas",
+        "si_slippage_bound"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_actor",
+      "description": "Report does not state who calls buyBack() or any authorization requirement.",
+      "source_ids": [
+        "p_public_mempool"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The selected impact is formalized only as the qualitative 'protocol receives less than fair OLAS value' relation; the up-to-100% extraction magnitude (i_up_to_100_percent) and repeatability (i_repeatable) are separate impacts not covered by this plan.",
+    "Exploitability is conditional on public mempool visibility; a private mempool mitigation is noted but not modeled.",
+    "Whether the attacker's front-run buy and back-run sell are separate transactions is not specified and is not encoded."
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "ab2cdbcdf9333d9d29048cf68099b1e8328cd622331cf9cdcb6436ea3b34b339",
+  "fragments": [
+    {
+      "id": "e_ab2cdbcdf933_0001",
+      "text": "`ProgressiveCurve.previewWithdraw` reverts for most deposit amounts due to ceil/floor rounding mismatch",
+      "start": 0,
+      "end": 103,
+      "line": 1
+    },
+    {
+      "id": "e_ab2cdbcdf933_0002",
+      "text": "## Vulnerability details",
+      "start": 105,
+      "end": 129,
+      "line": 3
+    },
+    {
+      "id": "e_ab2cdbcdf933_0003",
+      "text": "### Root Cause",
+      "start": 131,
+      "end": 145,
+      "line": 5
+    },
+    {
+      "id": "e_ab2cdbcdf933_0004",
+      "text": "In `previewWithdraw` ([ProgressiveCurve.sol L153](https://github.com/code-423n4/2026-03-intuition/blob/main/src/protocol/curves/ProgressiveCurve.sol#L153)), `deduct` is computed with ceiling division (`PCMath.divUp`), while `PCMath.square(s)` uses floor rounding (`mul(x, x)`):",
+      "start": 147,
+      "end": 424,
+      "line": 7
+    },
+    {
+      "id": "e_ab2cdbcdf933_0005",
+      "text": "When `assets == totalAssets` (full withdrawal), the relationship `totalAssets ≈ HALF_SLOPE * totalShares²` means `deduct = ceil(totalAssets / HALF_SLOPE)` can exceed `floor(totalShares²)` by 1 ULP, causing the `sub()` to underflow and revert.",
+      "start": 427,
+      "end": 669,
+      "line": 10
+    },
+    {
+      "id": "e_ab2cdbcdf933_0006",
+      "text": "This was partially addressed in PR #136 which fixed the analogous rounding issue in `_convertToAssets` (line 240) by using consistent floor rounding. However, `previewWithdraw` was missed, it still uses `divUp`.",
+      "start": 671,
+      "end": 882,
+      "line": 12
+    },
+    {
+      "id": "e_ab2cdbcdf933_0007",
+      "text": "### Impact",
+      "start": 884,
+      "end": 894,
+      "line": 14
+    },
+    {
+      "id": "e_ab2cdbcdf933_0008",
+      "text": "`previewWithdraw` reverts with a UD60x18 underflow for the vast majority of deposit amounts. Any external integration, UI, or on-chain contract calling `BondingCurveRegistry.previewWithdraw` (which delegates to `ProgressiveCurve.previewWithdraw`) will encounter an unexpected revert when querying a full withdrawal. This breaks the public API contract where `previewWithdraw(totalAssets, totalAssets, totalShares)` should return `totalShares` for a full withdrawal, and never revert for valid inputs (`assets <= totalAssets`).",
+      "start": 896,
+      "end": 1422,
+      "line": 16
+    },
+    {
+      "id": "e_ab2cdbcdf933_0009",
+      "text": "`OffsetProgressiveCurve` shares the same root cause in its `previewWithdraw` function at the same line range.",
+      "start": 1424,
+      "end": 1533,
+      "line": 18
+    },
+    {
+      "id": "e_ab2cdbcdf933_0010",
+      "text": "Note that the actual `redeem` path via `_convertToAssets`/`previewRedeem` is NOT affected, the protocol's core deposit/redeem flow works correctly. Only the `previewWithdraw` view function is broken.",
+      "start": 1535,
+      "end": 1734,
+      "line": 20
+    }
+  ]
+}

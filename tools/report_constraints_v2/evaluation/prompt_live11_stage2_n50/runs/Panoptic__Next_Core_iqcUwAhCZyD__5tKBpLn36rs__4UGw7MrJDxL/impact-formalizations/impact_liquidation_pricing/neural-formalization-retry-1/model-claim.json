@@ -1,0 +1,181 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "value_relation",
+  "precondition_ids": [
+    "ema_return_order"
+  ],
+  "intent_id": "intent_correct_twap",
+  "impact_ids": [
+    "impact_liquidation_pricing"
+  ],
+  "symbols": {
+    "get_emas_tuple_order": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "OraclePack.getEMAs() returns the tuple ordered spotEMA(0), fastEMA(1), slowEMA(2), eonsEMA(3), medianTick(4)",
+      "checkpoint": "before twapEMA() unpacks the tuple",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "ema_return_order"
+      ]
+    },
+    "twap_tick_used_for_liquidation": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "the twapTick value consumed by PanopticPool.getTWAP() and fed as sqrtRatioAtTick(twapTick) into getLiquidationBonus for liquidation bonus and conversion pricing",
+      "checkpoint": "after twapEMA() computes twapTick, at liquidation pricing consumption",
+      "entity_ids": [
+        "panoptic_pool",
+        "twap_tick"
+      ],
+      "source_ids": [
+        "intent_correct_twap",
+        "impact_liquidation_pricing"
+      ]
+    },
+    "intended_twap_tick": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "the intended TWAP tick 0.6*fast + 0.3*slow + 0.1*eons consistent with the system's own interpretation of getEMAs()",
+      "checkpoint": "derived from getEMAs() tuple per intended weighting",
+      "entity_ids": [
+        "risk_engine",
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "intent_correct_twap",
+        "ema_return_order"
+      ]
+    },
+    "fast_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "fastEMA component (index 1) of the getEMAs() tuple",
+      "checkpoint": "before twapEMA() unpacks the tuple",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "ema_return_order",
+        "intent_correct_twap"
+      ]
+    },
+    "slow_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "slowEMA component (index 2) of the getEMAs() tuple",
+      "checkpoint": "before twapEMA() unpacks the tuple",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "ema_return_order",
+        "intent_correct_twap"
+      ]
+    },
+    "eons_ema": {
+      "sort": "int",
+      "unit": "tick",
+      "meaning": "eonsEMA component (index 3) of the getEMAs() tuple",
+      "checkpoint": "before twapEMA() unpacks the tuple",
+      "entity_ids": [
+        "oracle_pack"
+      ],
+      "source_ids": [
+        "ema_return_order",
+        "intent_correct_twap"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "ema_return_order",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "get_emas_tuple_order",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [
+    {
+      "symbol": "intended_twap_tick",
+      "expression": {
+        "op": "add",
+        "args": [
+          {
+            "op": "add",
+            "args": [
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "symbol": "fast_ema"
+                  },
+                  {
+                    "const": 6
+                  }
+                ]
+              },
+              {
+                "op": "mul",
+                "args": [
+                  {
+                    "symbol": "slow_ema"
+                  },
+                  {
+                    "const": 3
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "symbol": "eons_ema"
+          }
+        ]
+      },
+      "source_ids": [
+        "intent_correct_twap",
+        "ema_return_order"
+      ]
+    }
+  ],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "truth",
+      "symbol": "get_emas_tuple_order",
+      "value": true
+    },
+    "relation": {
+      "kind": "comparison",
+      "left": "twap_tick_used_for_liquidation",
+      "operator": "eq",
+      "right": {
+        "symbol": "intended_twap_tick"
+      }
+    }
+  },
+  "assumptions": [
+    "The intended TWAP weighting 0.6*fast + 0.3*slow + 0.1*eons is the system's own interpretation of the getEMAs() tuple ordering.",
+    "Liquidation bonus and conversion pricing are derived from sqrtRatioAtTick(twapTick) as stated in the impact."
+  ],
+  "unresolved": [
+    {
+      "category": "missing_report_definition",
+      "description": "The report does not supply numeric EMA values or a concrete scenario showing the wrong TWAP reaching a live dispatch call; the equality of the consumed twapTick to the intended TWAP is formalized symbolically.",
+      "source_ids": [
+        "intent_correct_twap",
+        "impact_liquidation_pricing"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Only the liquidation-pricing impact is formalized; stale-guard and solvency impacts are handled in separate passes.",
+    "The intended TWAP is expressed as the scaled sum 6*fast + 3*slow + eons (tenths of a tick) to avoid division; the consumed twapTick is compared against this scaled quantity."
+  ]
+}

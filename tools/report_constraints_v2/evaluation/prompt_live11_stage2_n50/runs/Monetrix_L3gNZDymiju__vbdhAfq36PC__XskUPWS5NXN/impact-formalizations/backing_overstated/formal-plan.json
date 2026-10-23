@@ -1,0 +1,205 @@
+{
+  "schema_version": "report-formal-plan/4",
+  "relation_class": "value_relation",
+  "precondition_ids": [
+    "pm_enabled_vault",
+    "vault_has_position",
+    "auto_borrow_triggered"
+  ],
+  "intent_id": "intent_net_backing",
+  "impact_ids": [
+    "backing_overstated"
+  ],
+  "symbols": {
+    "pm_enabled": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Portfolio Margin is activated on the Vault's L1 account",
+      "checkpoint": "before keeper reads surplus",
+      "entity_ids": [
+        "vault"
+      ],
+      "source_ids": [
+        "pm_enabled_vault"
+      ]
+    },
+    "vault_has_l1_position": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "The Vault holds a hedge or spot position on L1",
+      "checkpoint": "before keeper reads surplus",
+      "entity_ids": [
+        "vault"
+      ],
+      "source_ids": [
+        "vault_has_position"
+      ]
+    },
+    "auto_borrow_occurred": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "An adverse price movement triggered a PM auto-borrow on the Vault's L1 account producing a nonzero 0x811 borrow.value",
+      "checkpoint": "before keeper reads surplus",
+      "entity_ids": [
+        "vault",
+        "precompile_811"
+      ],
+      "source_ids": [
+        "auto_borrow_triggered"
+      ]
+    },
+    "borrow_value": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "outstanding 0x811 borrow.value on the Vault's L1 account",
+      "checkpoint": "at backing read",
+      "entity_ids": [
+        "precompile_811",
+        "vault"
+      ],
+      "source_ids": [
+        "auto_borrow_triggered",
+        "borrow_leg_discarded"
+      ]
+    },
+    "summed_supply": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "summed supply decoded by PrecompileReader.suppliedBalance from the fourth uint64 slot",
+      "checkpoint": "at backing read",
+      "entity_ids": [
+        "precompile_reader",
+        "precompile_811"
+      ],
+      "source_ids": [
+        "borrow_leg_discarded"
+      ]
+    },
+    "reported_backing": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "totalBackingSigned() value reported by the accountant",
+      "checkpoint": "after backing read",
+      "entity_ids": [
+        "accountant"
+      ],
+      "source_ids": [
+        "backing_overstated",
+        "intent_net_backing"
+      ]
+    },
+    "real_net_assets": {
+      "sort": "int",
+      "unit": "USDC",
+      "meaning": "real net assets equal to summed supply minus outstanding borrow.value",
+      "checkpoint": "at backing read",
+      "entity_ids": [
+        "accountant",
+        "precompile_811"
+      ],
+      "source_ids": [
+        "intent_net_backing",
+        "borrow_leg_discarded"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "pm_enabled_vault",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "pm_enabled",
+        "value": true
+      }
+    },
+    {
+      "source_id": "vault_has_position",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "vault_has_l1_position",
+        "value": true
+      }
+    },
+    {
+      "source_id": "auto_borrow_triggered",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "auto_borrow_occurred",
+        "value": true
+      }
+    }
+  ],
+  "derived_definitions": [
+    {
+      "symbol": "real_net_assets",
+      "expression": {
+        "op": "sub",
+        "args": [
+          {
+            "symbol": "summed_supply"
+          },
+          {
+            "symbol": "borrow_value"
+          }
+        ]
+      },
+      "source_ids": [
+        "intent_net_backing"
+      ]
+    }
+  ],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "truth",
+          "symbol": "pm_enabled",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "vault_has_l1_position",
+          "value": true
+        },
+        {
+          "kind": "truth",
+          "symbol": "auto_borrow_occurred",
+          "value": true
+        }
+      ]
+    },
+    "relation": {
+      "kind": "relation",
+      "left": {
+        "symbol": "reported_backing"
+      },
+      "operator": "le",
+      "right": {
+        "symbol": "real_net_assets"
+      }
+    }
+  },
+  "assumptions": [
+    "The auto-borrow trigger is conditional in the report; this plan formalizes the subcase where it occurs.",
+    "borrow_value is the report-stated outstanding borrow amount; its concrete numeric value is not required.",
+    "summed_supply is the value decoded from the fourth uint64 slot as described by the report."
+  ],
+  "unresolved": [
+    {
+      "category": "unsupported_relation",
+      "description": "Report does not give a numeric definition of the exact borrow amount X; borrow_value remains symbolic.",
+      "source_ids": [
+        "auto_borrow_triggered",
+        "backing_overstated"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Formalizes only the backing_overstated impact; phantom surplus passing gates and principal displacement are separate impacts not covered here.",
+    "The report establishes the auto-borrow only as potential, so the claim is scoped to the subcase where it triggers.",
+    "The equality/inequality relation is expressed as reported_backing <= real_net_assets; the report's 'overstates by exactly the borrow amount' is captured via the derived real_net_assets definition."
+  ]
+}
