@@ -31,6 +31,7 @@ from prompts.live16_snapshot import (
 from lib import report_only as r
 from lib.salvage import check_numeric_plan, check_address_plan
 from lib.salvage import (drop_unused_invalid_symbols, example_pinning_review,
+                         merge_appended_relationship_trace,
                          mixed_unit_scaling_review)
 from lib.semantic_core import (compile_bundle, normalize_readiness,
                            impact_claim_set, normalize_truth_binding, require, symbols_for_claim,
@@ -472,6 +473,19 @@ def verify_multi_intent_plans(directory, raw_elements, raw_formal, features,
                 'formal plan changed the frozen P/I/V source pair')
         claim_path = accepted_model_claim_path(target)
         raw_claim = json.loads(claim_path.read_text())
+        # A salvaged response must replay: re-apply the deterministic
+        # transform to the untouched raw response and require the saved
+        # claim to equal the merged result (v3.20 normalization contract).
+        normalization_path = claim_path.parent / 'response-normalization.json'
+        if normalization_path.exists():
+            raw_response = (claim_path.parent / 'model-response.txt').read_text()
+            salvaged = merge_appended_relationship_trace(raw_response)
+            require(salvaged is not None,
+                    'response normalization record has no matching raw response')
+            require(salvaged[0] == raw_claim,
+                    'salvaged model claim differs from saved claim')
+            require(json.loads(normalization_path.read_text()) == salvaged[1],
+                    'response normalization record changed')
         if features.get('fidelity_only_rules'):
             raw_claim['precondition_ids'] = list(selected_p)
             raw_claim['intent_id'] = intent_id

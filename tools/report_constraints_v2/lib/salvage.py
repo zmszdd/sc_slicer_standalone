@@ -622,6 +622,59 @@ def drop_unused_invalid_symbols(raw):
     return result, changes
 
 
+def merge_appended_relationship_trace(text):
+    """Deterministically repair a formalization response that closes its JSON
+    object and then continues ``,"relationship_trace":...}`` outside the brace.
+
+    prompt_live24 attribution: four no-rule pairs died as ``Extra data``
+    JSONDecodeError because the model wrote the flat report-formal-plan
+    object, closed it, and then appended the live-24 audit-only trace as a
+    sibling key after the closing brace. The appended fragment names exactly
+    one key the model clearly intended inside the object; relocating it adds
+    no semantic content and never invents a source or formula field. The raw
+    response stays untouched in ``model-response.txt``; the caller records
+    this transform so offline replay can re-apply it.
+
+    Returns ``(claim, record)`` where ``claim`` is the merged flat plan with
+    the trace sibling, or ``None`` when the text does not match this exact
+    shape (balanced responses and unrelated extra data are left alone).
+    """
+    if not isinstance(text, str) or 'relationship_trace' not in text:
+        return None
+    stripped = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip())
+    decoder = json.JSONDecoder()
+    try:
+        plan, end = decoder.raw_decode(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(plan, dict) or 'relationship_trace' in plan:
+        return None
+    rest = stripped[end:].lstrip()
+    prefix = ',"relationship_trace":'
+    if not rest.startswith(prefix):
+        return None
+    value_part = rest[len(prefix):]
+    try:
+        trace, trace_end = decoder.raw_decode(value_part)
+    except json.JSONDecodeError:
+        return None
+    # Only whitespace or the model's own dangling closer may follow the value.
+    if value_part[trace_end:].strip() not in ('', '}'):
+        return None
+    if not isinstance(trace, dict):
+        return None
+    claim = dict(plan)
+    claim['relationship_trace'] = copy.deepcopy(trace)
+    record = {
+        'transform': 'merge_appended_relationship_trace',
+        'appended_key': 'relationship_trace',
+        'reason': ('model closed the formal-plan object and appended the '
+                   'audit-only trace key outside the brace; the key was '
+                   'relocated inside without changing any plan field'),
+    }
+    return claim, record
+
+
 def replay_main():
     # Imported lazily: semantic_pipeline imports this module.
     from cli.semantic_pipeline import load_report, write_json

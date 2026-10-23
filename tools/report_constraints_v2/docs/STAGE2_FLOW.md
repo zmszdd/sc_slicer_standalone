@@ -1,9 +1,9 @@
 # 阶段二流程图与文件索引
 
-来源：直接读 `cli/semantic_pipeline.py` 主流程代码，非文档转述。更新于 2026-10-22
-（semantic-live-23 将关系证据上下文同时传给规则生成与生成后审查后）。
+来源：直接读 `cli/semantic_pipeline.py` 主流程代码，非文档转述。更新于 2026-10-23
+（semantic-live-24 引入生成器 relationship-trace 及追加式 trace 的机械容错后）。
 
-当前活动版本 semantic-live-23 将已提取 action/root-cause 引用的精确报告片段作为关系上下文传给规则生成器及生成后审查。上下文只用于理解冻结 P/I/V 的关系，不得新增或改写来源。关系存疑单列为 needs_review；只有 P/I/V 来源公式失配会触发局部修复。仅 passed 来源组进入阶段三。
+当前活动版本 semantic-live-24 将已提取 action/root-cause 引用的精确报告片段作为关系上下文传给规则生成器及生成后审查，并要求生成器随形式计划返回仅供审查的 `relationship_trace`（在冻结 relation_context 中引用一条 P/I/V 关系路径）。trace 在合成前剥离，不能成为规则条件或新来源；审查把它当未验证指针独立核对。生成器把 trace 追加在 plan 闭括号之外的同构畸形响应由 `merge_appended_relationship_trace` 确定性容错（v3.20 规范化契约：原始响应不改写、`response-normalization.json` 记录变换、`verify` 重放复验）。上下文只用于理解冻结 P/I/V 的关系，不得新增或改写来源。关系存疑单列为 needs_review；只有 P/I/V 来源公式失配会触发局部修复。仅 passed 来源组进入阶段三。
 
 本文档止于阶段二主链（报告 → P/I/V → stage3-spec）。Impact 只从明确标注的 Impact 区域提取主要、不同且有原文依据的结果；P/I 证据可来自报告正文、明确的 NatSpec/标准要求或直接说明预期安全关系的修复建议。修复动作本身和 Impact 后果不能用来推测 I。阶段三把代码执行关系 T 与本阶段输出绑定后判断一致性（`main.py stage3-feedback`，`lib/stage3_consistency.py`）。
 
@@ -140,4 +140,4 @@ flowchart LR
 Prompt：可编辑的只有 `prompts/current.py`（`semantic-live`，默认版本）；
 `prompts/versions/` 是冻结只读存档（v3.5–v3.20，共 16 个）。运行时经
 `prompts/active.py` 解析，`prompts/registry.py` 管版本与功能开关。
-当前工作版本为 `semantic-live`（提示文本标记 `semantic-live-23`）；live-16、live-20、live-22 等快照留作历史重放版本。live-18 引入完整 P/I/V 来源冻结后逐 `(Impact, I)` 生成规则、生成后忠实度审查；live-21 加入 I 公式隔离与角色局部修复；live-22 补充审查端关系上下文并将关系存疑与公式失配分开处理；live-23 将同一受限关系上下文加入生成端，并加强 I 公式反恒真检查。其余数值、单位、可行性、重复谓词等仍不作为生成前筛选门。见[阶段二现状](STAGE2_CURRENT_STATUS.md)了解实现状态和评测边界。
+当前工作版本为 `semantic-live`（提示文本标记 `semantic-live-24`）；live-16、live-20、live-22、live-23 等快照留作历史重放版本。live-18 引入完整 P/I/V 来源冻结后逐 `(Impact, I)` 生成规则、生成后忠实度审查；live-21 加入 I 公式隔离与角色局部修复；live-22 补充审查端关系上下文并将关系存疑与公式失配分开处理；live-23 将同一受限关系上下文加入生成端，并加强 I 公式反恒真检查；live-24 要求生成器返回仅供审查的 relationship-trace，并以机械容错处理追加在 plan 对象外的 trace 键。其余数值、单位、可行性、重复谓词等仍不作为生成前筛选门。见[阶段二现状](STAGE2_CURRENT_STATUS.md)了解实现状态和评测边界。

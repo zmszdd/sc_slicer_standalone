@@ -56,6 +56,7 @@ from lib.impact_cards import (APPLICABILITY_SCHEMA_VERSION,
 from lib.solving import attach_review
 from lib.solving import from_bundle as triage_bundle, from_failure as triage_failure
 from lib.salvage import (example_pinning_review, mixed_unit_scaling_review,
+                                merge_appended_relationship_trace,
                                 normalize_attack_step_roles,
                                 normalize_element_ids, drop_unused_invalid_symbols)
 from lib.stage3_consistency import binding_contract
@@ -1309,7 +1310,28 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
         try:
             if on_attempt is not None:
                 on_attempt()
-            candidate = extract_fn(attempt_payload, call_dir, model, attempt_prompt)
+            try:
+                candidate = extract_fn(attempt_payload, call_dir, model,
+                                       attempt_prompt)
+            except json.JSONDecodeError:
+                # live-24 paired attribution: the model sometimes closes the
+                # flat formal-plan object and appends the audit-only
+                # relationship_trace key outside the brace. Relocating that
+                # one key is a mechanical, content-gated repair; the raw
+                # response stays in model-response.txt and the transform is
+                # logged for offline replay. Anything else re-raises.
+                raw_path = call_dir / 'model-response.txt'
+                salvaged = None
+                if raw_path.is_file():
+                    salvaged = merge_appended_relationship_trace(
+                        raw_path.read_text())
+                if salvaged is None:
+                    raise
+                candidate, normalization = salvaged
+                write_json(call_dir / 'model-claim.json', candidate)
+                write_json(call_dir / 'response-normalization.json',
+                           normalization)
+                record['response_normalization'] = normalization['transform']
             if relationship_trace_enabled and isinstance(candidate, dict):
                 relationship_trace = candidate.pop('relationship_trace', None)
                 if not isinstance(relationship_trace, dict):

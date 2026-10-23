@@ -91,7 +91,7 @@ class LivePromptTests(unittest.TestCase):
         # direction-correct repairs.  Guards keep the live-3 constant-form rule
         # from silently disappearing in a later in-place edit.
         formal = current.FORMAL_PLAN_PROMPT
-        self.assertIn('TASK VERSION: semantic-live-21', formal)
+        self.assertIn('TASK VERSION: semantic-live-24', formal)
         self.assertIn('schema_version:"report-formal-plan/8"', formal)
         for phrase in ('Every explicit bound constant must be a literal',
                        'appears in the cited report text',
@@ -269,7 +269,7 @@ class LivePromptTests(unittest.TestCase):
         # keep the judgment rules from silently disappearing in a later
         # in-place edit.
         audit = current.FAITHFULNESS_AUDIT_PROMPT
-        for phrase in ('Judge\nONLY whether the predicate faithfully encodes',
+        for phrase in ('Judge ONLY whether each predicate faithfully encodes',
                        'equality against zero',
                        '"at most N"',
                        '"exceeds N"',
@@ -326,7 +326,8 @@ class FeatureDecouplingTests(unittest.TestCase):
                          'impact_inventory_stage', 'frozen_piv_sources',
                          'multi_i_claims', 'strict_piv', 'structured_unresolved',
                          'numeric_guard', 'address_guard', 'relation_alignment',
-                         'local_repair', 'unit_guard', 'fidelity_only_rules'}
+                         'local_repair', 'unit_guard', 'fidelity_only_rules',
+                         'relation_context_generation', 'relationship_trace'}
         inherited = [name for name in registry.FEATURE_NAMES
                      if name not in post_baseline]
         for version in ('semantic-v3.16', 'semantic-v3.20'):
@@ -366,6 +367,14 @@ class FeatureDecouplingTests(unittest.TestCase):
                                                   'impact_section_scope'))
         self.assertFalse(registry.feature_enabled('semantic-v3.20',
                                                   'impact_inventory_stage'))
+        # semantic-live-23/24: cited action/root-cause excerpts reach the
+        # generator, and the generator proposes an audit-only relationship
+        # trace; every frozen version keeps both off.
+        for name in ('relation_context_generation', 'relationship_trace'):
+            with self.subTest(feature=name):
+                self.assertTrue(registry.feature_enabled('semantic-live', name))
+                self.assertFalse(registry.feature_enabled('semantic-v3.16', name))
+                self.assertFalse(registry.feature_enabled('semantic-v3.20', name))
         # These standalone advisory diagnostics were later removed from the
         # live path; the semantic faithfulness audit remains the single extra
         # review channel.

@@ -6,7 +6,8 @@ import tempfile
 import unittest
 
 from lib.salvage import (normalize_attack_step_roles, normalize_element_ids,
-                                drop_unused_invalid_symbols)
+                                drop_unused_invalid_symbols,
+                                merge_appended_relationship_trace)
 from lib.plan_synthesizer import synthesize_id_formalization
 from lib.semantic_core import validate_elements
 from lib.ingest import build_catalog, hydrate_elements
@@ -236,6 +237,111 @@ class MechanicalSalvageTests(unittest.TestCase):
                            'left': 'token_supply', 'right': {'const': 1000000}}}]}
         review = example_pinning_review(plan, elements)
         self.assertEqual(review['flagged_count'], 0)
+
+
+class AppendedTraceSalvageTests(unittest.TestCase):
+    PILOT = Path(__file__).resolve().parents[1] / 'evaluation/archive/deepseek_flash_pilot_01/runs'
+    MALFORMED = ('{"schema_version":"report-formal-plan/8","relation_class":'
+                 '"sequence_preservation","precondition_ids":["p_one"]}'
+                 ',"relationship_trace":{"status":"explicit","links":[],'
+                 '"gap":""}}')
+
+    def test_appended_trace_key_is_merged_into_the_plan_object(self):
+        salvaged = merge_appended_relationship_trace(self.MALFORMED)
+        self.assertIsNotNone(salvaged)
+        claim, record = salvaged
+        self.assertEqual(claim['schema_version'], 'report-formal-plan/8')
+        self.assertEqual(claim['precondition_ids'], ['p_one'])
+        self.assertEqual(claim['relationship_trace'],
+                         {'status': 'explicit', 'links': [], 'gap': ''})
+        self.assertEqual(record['transform'],
+                         'merge_appended_relationship_trace')
+
+    def test_balanced_response_is_left_alone(self):
+        balanced = ('{"schema_version":"report-formal-plan/8",'
+                    '"relationship_trace":{"status":"insufficient",'
+                    '"links":[],"gap":""}}')
+        self.assertIsNone(merge_appended_relationship_trace(balanced))
+
+    def test_unrelated_extra_data_is_not_salvaged(self):
+        unrelated = '{"schema_version":"report-formal-plan/8"} trailing notes'
+        self.assertIsNone(merge_appended_relationship_trace(unrelated))
+
+    def test_non_dict_trace_value_is_not_salvaged(self):
+        malformed = ('{"schema_version":"report-formal-plan/8"}'
+                     ',"relationship_trace":"explicit"}')
+        self.assertIsNone(merge_appended_relationship_trace(malformed))
+
+    def test_request_formalization_salvages_the_appended_trace_key(self):
+        """live-24 paired attribution: four no-rule pairs died on exactly
+        this response shape; the wiring must recover the pair without a
+        retry and record the transform for offline replay."""
+        source = self.PILOT / 'kinetiq'
+        elements = json.loads((source / 'elements-ids.json').read_text())
+        plan = json.loads(
+            (source / 'neural-formalization/model-claim.json').read_text())
+        trace = {'status': 'explicit',
+                 'links': [{'from_source_ids': ['p_one'],
+                            'context_statement_id': 'act_one',
+                            'evidence_ids': ['e_1'],
+                            'reported_relation': 'the action skips the check'}],
+                 'gap': ''}
+        raw = json.dumps(plan) + ',"relationship_trace":' + \
+            json.dumps(trace) + '}'
+
+        def fake_extract(_payload, folder, _model, _prompt):
+            (folder / 'model-response.txt').write_text(raw)
+            raise json.JSONDecodeError('Extra data: line 1 column 68', '', 68)
+
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)
+            salvaged_plan, _, _ = request_formalization(
+                '{}', 'prompt', 'test-model', output, 1, True, elements,
+                extract_fn=fake_extract, attempts=[],
+                mechanical_salvage=True,
+                relationship_trace_enabled=True)
+            # mechanical_salvage drops the plan's unused zero_address symbol
+            # exactly as in the opt-in salvage test; nothing else may change.
+            expected = copy.deepcopy(plan)
+            del expected['symbols']['zero_address']
+            self.assertEqual(salvaged_plan, expected)
+            self.assertNotIn('relationship_trace', salvaged_plan)
+            self.assertEqual(
+                json.loads((output / 'relationship-trace.json').read_text()),
+                trace)
+            saved_claim = json.loads(
+                (output / 'neural-formalization/model-claim.json').read_text())
+            self.assertIn('relationship_trace', saved_claim)
+            self.assertEqual(saved_claim['relationship_trace'], trace)
+            normalization = json.loads(
+                (output / 'neural-formalization/response-normalization.json')
+                .read_text())
+            self.assertEqual(normalization['transform'],
+                             'merge_appended_relationship_trace')
+            attempts = json.loads(
+                (output / 'formalization-attempts.json').read_text())
+            self.assertEqual([x['outcome'] for x in attempts],
+                             ['accepted_for_validation'])
+            self.assertEqual(attempts[0]['response_normalization'],
+                             'merge_appended_relationship_trace')
+            # The raw response itself is never rewritten.
+            self.assertEqual(
+                (output / 'neural-formalization/model-response.txt')
+                .read_text(), raw)
+
+    def test_request_formalization_unrelated_json_error_still_raises(self):
+        source = self.PILOT / 'kinetiq'
+        elements = json.loads((source / 'elements-ids.json').read_text())
+
+        def fake_extract(_payload, folder, _model, _prompt):
+            (folder / 'model-response.txt').write_text('{"a":1} extra')
+            raise json.JSONDecodeError('Extra data', '', 8)
+
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaises(json.JSONDecodeError):
+                request_formalization(
+                    '{}', 'prompt', 'test-model', Path(temp), 0, True,
+                    elements, extract_fn=fake_extract)
 
 
 if __name__ == '__main__':

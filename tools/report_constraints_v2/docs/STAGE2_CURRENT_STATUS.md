@@ -1,8 +1,14 @@
 # 阶段二现状与收口计划
 
-状态摘要更新于 2026-10-22。下文按时间顺序保留实验记录；若历史记录中的“下一步”与本节冲突，以本节为准。
+状态摘要更新于 2026-10-23。下文按时间顺序保留实验记录；若历史记录中的“下一步”与本节冲突，以本节为准。
 
 # 阶段二当前状态
+
+## 生成器关系路径与追加式 trace 的机械容错（semantic-live-24，2026-10-23）
+
+live-24 让生成器随形式计划返回仅供审查的 `relationship_trace`：在冻结的 `relation_context` 中引用一条连接 P/I/V 来源的路径（引用的 action/root-cause 片段及其证据 ID）。trace 在合成前被剥离，不能成为规则条件或新来源；审查把 trace 当作未验证指针独立核对每个引用 ID——不支持的 trace 不能改善判定，缺失的 trace 也不能抹去已有片段。要素提示同时要求 action/root-cause 陈述保留完整的因果/时序桥并引用全部支持片段。
+
+同一批 52 组冻结来源上，live-24 生成 41 组（live-23 为 46），其中 37 组通过、4 组待复核、0 组失败（通过占生成数 90.2%，live-23 为 78.3%），11 组未生成；模型调用 117 次。按预登记护栏（忠实率上升不得以丢弃完整规则为代价），这是混合结果：忠实率改善，但生成率从 88.5% 降到 78.8%。新增未生成家族经原始响应离线核对（零模型调用）确认：4 组是同一畸形形状——模型写完扁平 plan 对象后把 `,"relationship_trace":{...}}` 追加在闭括号之外；针对该形状的确定性容错 `merge_appended_relationship_trace`（`lib/salvage.py`）已按 v3.20 规范化契约接入生成与 `verify` 重放（原始响应不改写，`response-normalization.json` 记录变换），离线对 4/4 原始响应均可恢复；其效果待下一次配对复测度量。Panoptic Hypovault 5 组未生成仍是既有的类型/单位与 schema 家族，未回归；Monetrix 2 组 bool 比较失败尚未归因。详见[live-24 冻结来源 relationship-trace 复测](../evaluation/prompt_live24_relation_trace_frozen_10/REPORT.md)。本轮全量自动化测试 473 项通过。
 
 ## 关系上下文进入生成端（semantic-live-23，2026-10-22）
 

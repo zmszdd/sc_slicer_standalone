@@ -110,7 +110,7 @@ case/
 当前 P/I/V 提取不会读取合约代码、PoC、修复 diff、阶段一切片结果、历史运行结果或参考答案。
 提取前筛选检查受影响对象、触发动作、直接效果和安全关系依据。`input-readiness.json`
 中的 ready 只表示报告叙述足以尝试规则化，不表示当前生成器一定能生成完整公式。
-逐影响项的实际规则化结果及未完成项另见 `stage2-assessment.json`。当前 semantic-live-17 对每个已选 `(Impact, I 来源)` 独立生成规则，不合并或重新筛选 I；同一 Impact 的所有已选 I 规则都完成后，该 Impact 才进入 `stage3-spec.json`。未完成项保留失败原因供阶段二审计，不以空公式规则交给阶段三。当前每份报告最多处理 64 个来源对，超限会拒绝整组适用性结果而不截断来源；live-17 尚待回归与真实盲测评估。
+逐影响项的实际规则化结果及未完成项另见 `stage2-assessment.json`。当前 semantic-live-24 对每个已选 `(Impact, I 来源)` 独立生成规则，不合并或重新筛选 I；同一 Impact 的所有已选 I 规则都完成后，该 Impact 才进入 `stage3-spec.json`。未完成项保留失败原因供阶段二审计，不以空公式规则交给阶段三。当前每份报告最多处理 64 个来源对，超限会拒绝整组适用性结果而不截断来源。生成器随计划返回仅供审查的 relationship-trace（合成前剥离）；把 trace 键追加在 plan 对象外的畸形响应由确定性容错恢复并留 `response-normalization.json` 供 `verify` 重放。
 
 ## 主要输出
 

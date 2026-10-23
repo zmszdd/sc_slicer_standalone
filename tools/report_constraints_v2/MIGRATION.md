@@ -615,3 +615,37 @@ formalize-only/offline 不注入、显式 provider 自持预算）；新增
 `test_mechanical_salvage_run_replays_in_verify` 集成测试（带
 `entity_ids: []` 未引用符号的计划经 `--mechanical-salvage` 落盘、
 verify 重放必须通过——修复前该场景不可验证）。
+
+## 2026-10-23：S20 —— live-24 收口：追加式 relationship-trace 机械容错
+
+live-24（生成器随形式计划返回仅供审查的 `relationship_trace`）在 52 组
+冻结来源配对复测中暴露新失败家族：4 组原始响应为同一同构畸形——模型
+写完扁平 `report-formal-plan/8` 对象后，把
+`,"relationship_trace":{...}}` 追加在闭括号之外（旧扁平习惯与两键输出
+要求的杂交形态），`json.loads` 报 `Extra data`，配对直接死亡。离线核对
+（零模型调用）确认 4/4 同形且可恢复。
+
+修复沿用 v3.20 规范化契约（原始响应永不改写、变换落
+`response-normalization.json`、`verify` 重放复验）：
+
+1. **`lib/salvage.py` 新增 `merge_appended_relationship_trace`**：
+   内容门控的确定性合并——仅当"完整 JSON 对象后紧跟
+   `,"relationship_trace":` + 可解析 dict + 无其余尾随"这一精确形状
+   时，把键搬回对象内；不匹配任何一环（平衡响应、无关尾随、非 dict
+   trace）一律返回 None 不动手
+2. **`cli/semantic_pipeline.py` `request_formalization` 接线**：计划
+   解析抛 `JSONDecodeError` 时先读原始响应尝试该容错，成功则以
+   `accepted_for_validation` 免重试收下并落
+   `model-claim.json` / `response-normalization.json`，attempts 记
+   `response_normalization` 键；失败原样上抛，绝不静默吞其他 JSON 错误
+3. **`cli/batch_verify.py` 重放**：存在 normalization 记录时，从
+   `model-response.txt` 原文重演容错并核对"复算 claim 与落盘 claim
+   逐字节相等、复算记录与落盘记录相等"，篡改可检
+
+测试：`test_mechanical_salvage.py` 新增 `AppendedTraceSalvageTests`
+（合并/不合并四形态单测 + kinetiq 真实计划端到端接线 + 无关 JSON 错误
+仍上抛），共 6 项；`test_prompt_live.py` 三处守卫随 live-24 提示在位
+编辑更新（版本号、审查措辞、feature 基线补
+`relation_context_generation` / `relationship_trace` 两键及显式
+subTest）。全量 473/473 通过。效果度量（生成率是否从 78.8% 回升而
+90.2% 忠实率不降）待下一次配对复测，需模型调用授权。
