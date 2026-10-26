@@ -1,0 +1,35 @@
+Reduce-Only Order Matching Can Permanently Corrupt Open Interest Accounting
+
+## Finding description and impact
+
+The GTE perpetuals protocol tracks Open Interest through two distinct but interdependent accounting systems.
+
+**Position Open Interest System**
+The protocol maintains Position OI in `MarketMetadata` which tracks the aggregate of all actual user positions:
+
+
+This system correctly updates when positions change through the `updateOI` function:
+
+
+**Book Open Interest System**
+
+Separately, the protocol tracks Book OI in each order book's metadata, representing the total exposure from pending orders:
+
+
+Book OI increases when orders are posted to the book and should decrease when orders are filled or removed. The two OI systems should theoretically represent the same underlying economic reality from different perspectives.
+
+The issue occurs in the `_matchIncomingOrder` function within the order matching process. When matching against reduce-only orders, the system calls `_boundReduceOnlyOrder` to ensure the order does not exceed the user's current position:
+
+
+The problematic `_boundReduceOnlyOrder` function modifies Book OI immediately upon discovering an oversized reduce-only order:
+
+
+When `_boundReduceOnlyOrder` executes, it permanently modifies the Book OI by reducing `ds.metadata.baseOI` or `ds.metadata.quoteOI`. This reduction represents the "excess" portion of the reduce-only order that exceeds the user's current position. However, this creates accounting corruption because the function removes this excess from Book OI regardless of whether any actual trade occurs. Even when trades execute successfully, the Book OI experiences additional reduction beyond what the actual trade should cause.
+
+The problem compounds because `_boundReduceOnlyOrder` incorrectly treats the excess portion of reduce-only orders as representing actual exposure that should be immediately removed from accounting. In reality, this excess represents a mismatch between stale order size and current position size - not real exposure that needs immediate removal. This faulty assumption causes Book OI to become understated relative to the actual market exposure tracked by Position OI.
+
+Funding rate calculations, which depend on accurate Open Interest measurements to maintain equilibrium between perpetual and spot prices, become systematically incorrect.
+
+## Recommended Mitigation Steps
+
+Move the OI adjustment logic after successful trade validation rather than performing it immediately when bounding the order. The system should only adjust Open Interest when an actual trade occurs, not during the preparation phase.

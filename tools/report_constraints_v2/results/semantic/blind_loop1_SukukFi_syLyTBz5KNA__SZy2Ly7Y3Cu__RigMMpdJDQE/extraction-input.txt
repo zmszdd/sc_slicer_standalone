@@ -1,0 +1,31 @@
+Missing third-party authorization check in `WERC7575Vault::_withdraw` enables a malicious validator to drain all user assets from the vault
+
+## Finding description and impact
+
+### Root Cause
+
+The internal `_withdraw` function in `WERC7575Vault` (called by both `withdraw()` and `redeem()`) only enforces the self-allowance mechanism:
+[WERC7575Vault.sol#L407](https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575Vault.sol#L407)
+It completely omits the standard third-party authorization check that should be performed when `msg.sender != owner`:
+Because of this omission, any caller can withdraw/redeem on behalf of an owner as long as that owner has previously executed a self-permit (i.e., allowance(owner, owner) > 0).
+The validator is the only entity capable of signing such self-permits on behalf of users.
+[WERC7575ShareToken.sol#L419-L422](https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L419-L422)
+
+### Attack Scenario
+
+1. Validator private key is compromised (phishing, insider attack, etc.).
+2. Attacker uses the validator key to sign and to call `permit(owner, owner, type(uint256).max, ...)` for every user.
+3. Attacker then calls `vault.withdraw(assets, attacker, user)` or `vault.redeem(shares, attacker, user)` for each user in the same block.
+4. All calls succeed: self-allowance is spent, shares are burned, and assets are transferred to the attacker.
+5. This can be done before the owner reacts and transfers validator rights to a new address by calling `WERC7575ShareToken::setValidator`
+
+### Impact
+
+- **Total loss of funds:** A single successful validator compromise allows draining 100 % of vault assets.
+- Validator is an acknowledged single point of failure (explicitly documented in `KNOWN_ISSUES.md`), but this bug removes **the last line of defense:** even  with a compromised key, third-party withdrawals should still require explicit user approval.
+- **Extremely high attacker motivation:** Potential gain is in the hundreds of millions of dollars (or more, depending on TVL). This creates enormous  financial incentive for sophisticated actors to target the validator key via phishing, social engineering, malware, or insider collusion.
+- While validator key compromise is considered a low-probability event under strong operational security, the combination of low probability and **catastrophic impact** (full fund drainage) still warrants Medium severity.
+
+## Recommended Mitigation
+
+Add the standard third-party authorization check in `_withdraw`:

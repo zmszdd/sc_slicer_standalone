@@ -1,0 +1,301 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "TrailsRouter public multicall entrypoints delegate to Multicall3 aggregate3Value in router context, spending router-held ETH and ERC-20 balances",
+    "environment": "TrailsRouter contract with canonical Multicall3 delegatecall",
+    "evidence": [
+      "Public router multicall entrypoints in TrailsRouter delegate to Multicall3 without delegatecall-only gating or target/value constraints, allowing any EOA to run arbitrary aggregate3Value batches in the router’s context and directly spend router-held ETH and ERC‑20 balances. This results in direct theft of all assets held by the router.",
+      "The TrailsRouter contract exposes three public functions—execute, pullAmountAndExecute, and pullAndExecute—that forward arbitrary IMulticall3.aggregate3Value payloads to the canonical Multicall3 via delegatecall, executing subcalls in the storage and balance context of TrailsRouter.The TrailsRouter contract exposes three public entrypoints that delegate to the canonical Multicall3 router:",
+      "All three functions allow any external account to execute arbitrary `IMulticall3.aggregate3Value` payloads in the context of `TrailsRouter`, spending **router-held ETH and ERC‑20 balances**.",
+      "The helper [`\\_validateRouterCall()`](https://github.com/code-423n4/2025-11-sequence/blob/593987c2b569f3212d2cadb31fc8d14b84bc30a9/src/TrailsRouter.sol#L373-L396) only enforces the selector is `aggregate3Value`, and each `IMulticall3.Call3Value` has `allowFailure == false`. It **does not** restrict `calls[i].target` (arbitrary address), `calls[i].value` (ETH forwarded per subcall), `calls[i].callData` (arbitrary function calls).",
+      "but in the **context of `TrailsRouter`** , `msg.sender` in each subcall is `TrailsRouter`. Any `call.value` is paid from `address(this).balance` of `TrailsRouter`. Any ERC‑20 `transfer()` / `transferFrom()` invoked by `call.callData` uses `TrailsRouter`’s balances and allowances. Thus, if `TrailsRouter` holds any ETH or ERC‑20 tokens (via other flows or direct transfers), an attacker can craft an `aggregate3Value` batch where:",
+      "However, `execute()`, `pullAmountAndExecute()`, and `pullAndExecute()` are **public** and can be called directly by any EOA, without delegatecall context or sentinel checks. This contradicts the intended “delegatecall-only router pattern” and exposes router-held balances as a public honeypot."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "attacker EOA",
+      "role": "attacker",
+      "evidence": [
+        "Public router multicall entrypoints in TrailsRouter delegate to Multicall3 without delegatecall-only gating or target/value constraints, allowing any EOA to run arbitrary aggregate3Value batches in the router’s context and directly spend router-held ETH and ERC‑20 balances. This results in direct theft of all assets held by the router.",
+        "All three functions allow any external account to execute arbitrary `IMulticall3.aggregate3Value` payloads in the context of `TrailsRouter`, spending **router-held ETH and ERC‑20 balances**.",
+        "High. The vulnerability enables direct theft of all ETH and ERC‑20 tokens held by `TrailsRouter` by any EOA, with no privileged roles required. It is cross-user: if any user or integrator leaves funds on the router (which is expected in complex flows), a separate attacker can drain them. This contradicts the intended delegatecall-only router pattern and undermines system safety."
+      ]
+    },
+    {
+      "id": "trails_router",
+      "name": "TrailsRouter",
+      "role": "contract",
+      "evidence": [
+        "The TrailsRouter contract exposes three public functions—execute, pullAmountAndExecute, and pullAndExecute—that forward arbitrary IMulticall3.aggregate3Value payloads to the canonical Multicall3 via delegatecall, executing subcalls in the storage and balance context of TrailsRouter.The TrailsRouter contract exposes three public entrypoints that delegate to the canonical Multicall3 router:",
+        "but in the **context of `TrailsRouter`** , `msg.sender` in each subcall is `TrailsRouter`. Any `call.value` is paid from `address(this).balance` of `TrailsRouter`. Any ERC‑20 `transfer()` / `transferFrom()` invoked by `call.callData` uses `TrailsRouter`’s balances and allowances. Thus, if `TrailsRouter` holds any ETH or ERC‑20 tokens (via other flows or direct transfers), an attacker can craft an `aggregate3Value` batch where:",
+        "`TrailsRouter` is explicitly designed to accept direct ETH via `receive()`:"
+      ]
+    },
+    {
+      "id": "multicall3",
+      "name": "Multicall3",
+      "role": "contract",
+      "evidence": [
+        "The TrailsRouter contract exposes three public functions—execute, pullAmountAndExecute, and pullAndExecute—that forward arbitrary IMulticall3.aggregate3Value payloads to the canonical Multicall3 via delegatecall, executing subcalls in the storage and balance context of TrailsRouter.The TrailsRouter contract exposes three public entrypoints that delegate to the canonical Multicall3 router:",
+        "Because `execute()` uses `delegatecall` into `MULTICALL3`, each subcall is effectively run as:"
+      ]
+    },
+    {
+      "id": "router_eth_balance",
+      "name": "router-held ETH balance",
+      "role": "asset",
+      "evidence": [
+        "but in the **context of `TrailsRouter`** , `msg.sender` in each subcall is `TrailsRouter`. Any `call.value` is paid from `address(this).balance` of `TrailsRouter`. Any ERC‑20 `transfer()` / `transferFrom()` invoked by `call.callData` uses `TrailsRouter`’s balances and allowances. Thus, if `TrailsRouter` holds any ETH or ERC‑20 tokens (via other flows or direct transfers), an attacker can craft an `aggregate3Value` batch where:",
+        "- Another subcall sends the router’s entire ETH balance to the attacker, via an empty call to the attacker address with `value = routerEthBalance`.",
+        "- Seed the router so that `address(router).balance == routerEthBalance`,"
+      ]
+    },
+    {
+      "id": "router_token_balance",
+      "name": "router-held ERC-20 balance",
+      "role": "asset",
+      "evidence": [
+        "but in the **context of `TrailsRouter`** , `msg.sender` in each subcall is `TrailsRouter`. Any `call.value` is paid from `address(this).balance` of `TrailsRouter`. Any ERC‑20 `transfer()` / `transferFrom()` invoked by `call.callData` uses `TrailsRouter`’s balances and allowances. Thus, if `TrailsRouter` holds any ETH or ERC‑20 tokens (via other flows or direct transfers), an attacker can craft an `aggregate3Value` batch where:",
+        "- One subcall transfers the router’s entire token balance to the attacker, e.g. `token.transfer(attacker, routerTokenBalance)`,",
+        "- Similarly, the payload can drain any ERC‑20 balances on the router via a `transfer` subcall."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "router_holds_eth_or_tokens",
+      "kind": "precondition",
+      "text": "TrailsRouter holds ETH or ERC-20 tokens, e.g. via direct receive() or a prior flow leaving funds on the router.",
+      "modality": "potential",
+      "entity_ids": [
+        "trails_router",
+        "router_eth_balance",
+        "router_token_balance"
+      ],
+      "evidence": [
+        "but in the **context of `TrailsRouter`** , `msg.sender` in each subcall is `TrailsRouter`. Any `call.value` is paid from `address(this).balance` of `TrailsRouter`. Any ERC‑20 `transfer()` / `transferFrom()` invoked by `call.callData` uses `TrailsRouter`’s balances and allowances. Thus, if `TrailsRouter` holds any ETH or ERC‑20 tokens (via other flows or direct transfers), an attacker can craft an `aggregate3Value` batch where:",
+        "`TrailsRouter` is explicitly designed to accept direct ETH via `receive()`:",
+        "Temporarily hold funds during flows like `pullAmountAndExecute()` and `injectSweepAndCall()` and handle cross-chain and same-chain flows where balances can remain on the router between steps.",
+        "- Seed router balances (ETH or ERC‑20) via any mechanism (direct `receive()` or prior flow leaving funds)."
+      ]
+    },
+    {
+      "id": "attacker_crafts_aggregate3value",
+      "kind": "precondition",
+      "text": "Attacker crafts an aggregate3Value payload whose subcalls transfer the router's token balance to the attacker and send the router's ETH balance to the attacker.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "multicall3",
+        "router_eth_balance",
+        "router_token_balance"
+      ],
+      "evidence": [
+        "- One subcall transfers the router’s entire token balance to the attacker, e.g. `token.transfer(attacker, routerTokenBalance)`,",
+        "- Another subcall sends the router’s entire ETH balance to the attacker, via an empty call to the attacker address with `value = routerEthBalance`.",
+        "- Craft `aggregate3Value` calls:",
+        "- Call 1: `token.transfer(attacker, routerTokenBalance)`.",
+        "- Call 2: `attacker` address as `target` with `value = routerEthBalance`."
+      ]
+    },
+    {
+      "id": "pull_amount_zero_eth_branch",
+      "kind": "precondition",
+      "text": "Attacker calls pullAmountAndExecute(address(0), 0, data) with msg.value == 0, so the ETH branch check msg.value < amount is 0 < 0, which is false.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "trails_router"
+      ],
+      "evidence": [
+        "- For the ETH branch (`token == address(0)`), the only condition is `msg.value < amount`.",
+        "- If an attacker calls `pullAmountAndExecute(address(0), 0, data)` with `msg.value == 0`, the check becomes `0 < 0`, which is **false**, so the function does **not** revert.",
+        "- `pullAmountAndExecute(address(0), 0, callData)` with `msg.value == 0`."
+      ]
+    },
+    {
+      "id": "pull_and_execute_dust",
+      "kind": "precondition",
+      "text": "Attacker calls pullAndExecute(address(0), data) with a dust msg.value (e.g. 1 wei) while the router already holds a large ETH balance.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "trails_router",
+        "router_eth_balance"
+      ],
+      "evidence": [
+        "For the ETH branch (`token == address(0)`), it only requires `msg.value > 0`, then calls `pullAmountAndExecute(address(0), msg.value, data)`. If `TrailsRouter` already holds a large ETH balance `routerEthBalance`, an attacker can:",
+        "- Call `pullAndExecute(address(0), data)` with a **dust** `msg.value` (e.g. `1 wei`),",
+        "- `pullAndExecute(address(0), callData)` with dust `msg.value` (e.g., `1 wei`)."
+      ]
+    },
+    {
+      "id": "invoke_public_entrypoint",
+      "kind": "action",
+      "text": "Attacker invokes one of the public entrypoints execute(callData), pullAmountAndExecute(address(0), 0, callData) with msg.value == 0, or pullAndExecute(address(0), callData) with dust msg.value.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "trails_router"
+      ],
+      "evidence": [
+        "All three functions allow any external account to execute arbitrary `IMulticall3.aggregate3Value` payloads in the context of `TrailsRouter`, spending **router-held ETH and ERC‑20 balances**.",
+        "- Invoke one of:",
+        "- `execute(callData)` directly.",
+        "- `pullAmountAndExecute(address(0), 0, callData)` with `msg.value == 0`.",
+        "- `pullAndExecute(address(0), callData)` with dust `msg.value` (e.g., `1 wei`)."
+      ]
+    },
+    {
+      "id": "delegatecall_multicall3",
+      "kind": "action",
+      "text": "The entrypoint forwards the arbitrary aggregate3Value payload to Multicall3 via delegatecall, executing subcalls in the storage and balance context of TrailsRouter.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router",
+        "multicall3"
+      ],
+      "evidence": [
+        "The TrailsRouter contract exposes three public functions—execute, pullAmountAndExecute, and pullAndExecute—that forward arbitrary IMulticall3.aggregate3Value payloads to the canonical Multicall3 via delegatecall, executing subcalls in the storage and balance context of TrailsRouter.The TrailsRouter contract exposes three public entrypoints that delegate to the canonical Multicall3 router:",
+        "Because `execute()` uses `delegatecall` into `MULTICALL3`, each subcall is effectively run as:",
+        "- The function then directly performs `MULTICALL3.delegatecall(data)` with no further constraints."
+      ]
+    },
+    {
+      "id": "subcalls_spend_router_balances",
+      "kind": "action",
+      "text": "Each subcall runs with msg.sender TrailsRouter, so call.value is paid from address(this).balance and callData transfer/transferFrom uses TrailsRouter's balances and allowances.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router",
+        "multicall3",
+        "router_eth_balance",
+        "router_token_balance"
+      ],
+      "evidence": [
+        "but in the **context of `TrailsRouter`** , `msg.sender` in each subcall is `TrailsRouter`. Any `call.value` is paid from `address(this).balance` of `TrailsRouter`. Any ERC‑20 `transfer()` / `transferFrom()` invoked by `call.callData` uses `TrailsRouter`’s balances and allowances. Thus, if `TrailsRouter` holds any ETH or ERC‑20 tokens (via other flows or direct transfers), an attacker can craft an `aggregate3Value` batch where:",
+        "As with `execute()`, `aggregate3Value` subcalls can freely spend `address(this).balance` by setting `call.value`, invoke arbitrary `callData` such as `token.transfer(attacker, routerTokenBalance)`. Crucially, this gives an attacker **another public entrypoint** to perform the same router-balance-draining behavior **without providing any ETH or tokens up-front** (since `amount == 0` and `msg.value == 0` are accepted).",
+        "- The `aggregate3Value` payload can then set `call.value = routerEthBalance + dust` and send **all ETH on the router (including the pre-existing balance)** to the attacker,"
+      ]
+    },
+    {
+      "id": "no_target_value_calldata_gating",
+      "kind": "root_cause",
+      "text": "_validateRouterCall only enforces the aggregate3Value selector and allowFailure == false, and does not restrict calls[i].target, calls[i].value, or calls[i].callData, and the entrypoints lack delegatecall-only gating.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router",
+        "multicall3"
+      ],
+      "evidence": [
+        "Public router multicall entrypoints in TrailsRouter delegate to Multicall3 without delegatecall-only gating or target/value constraints, allowing any EOA to run arbitrary aggregate3Value batches in the router’s context and directly spend router-held ETH and ERC‑20 balances. This results in direct theft of all assets held by the router.",
+        "The helper [`\\_validateRouterCall()`](https://github.com/code-423n4/2025-11-sequence/blob/593987c2b569f3212d2cadb31fc8d14b84bc30a9/src/TrailsRouter.sol#L373-L396) only enforces the selector is `aggregate3Value`, and each `IMulticall3.Call3Value` has `allowFailure == false`. It **does not** restrict `calls[i].target` (arbitrary address), `calls[i].value` (ETH forwarded per subcall), `calls[i].callData` (arbitrary function calls).",
+        "However, `execute()`, `pullAmountAndExecute()`, and `pullAndExecute()` are **public** and can be called directly by any EOA, without delegatecall context or sentinel checks. This contradicts the intended “delegatecall-only router pattern” and exposes router-held balances as a public honeypot."
+      ]
+    },
+    {
+      "id": "zero_amount_accepted",
+      "kind": "root_cause",
+      "text": "In pullAmountAndExecute the ETH branch only checks msg.value < amount, so token == address(0) with amount == 0 and msg.value == 0 does not revert and proceeds to delegatecall.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router"
+      ],
+      "evidence": [
+        "- For the ETH branch (`token == address(0)`), the only condition is `msg.value < amount`.",
+        "- If an attacker calls `pullAmountAndExecute(address(0), 0, data)` with `msg.value == 0`, the check becomes `0 < 0`, which is **false**, so the function does **not** revert.",
+        "- The function then directly performs `MULTICALL3.delegatecall(data)` with no further constraints."
+      ]
+    },
+    {
+      "id": "dust_unlocks_delegatecall",
+      "kind": "root_cause",
+      "text": "pullAndExecute's ETH branch only requires msg.value > 0, so a dust amount (e.g. 1 wei) is sufficient to unlock the delegatecall that can drain arbitrarily large router-held balances.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router",
+        "router_eth_balance"
+      ],
+      "evidence": [
+        "For the ETH branch (`token == address(0)`), it only requires `msg.value > 0`, then calls `pullAmountAndExecute(address(0), msg.value, data)`. If `TrailsRouter` already holds a large ETH balance `routerEthBalance`, an attacker can:",
+        "This means a dust amount (e.g. `1 wei`) is sufficient for an attacker to unlock a powerful delegatecall that can drain arbitrarily large router-held balances."
+      ]
+    },
+    {
+      "id": "intent_delegatecall_only",
+      "kind": "security_intent",
+      "text": "Dangerous entrypoints that delegate to Multicall3 and can spend router-held balances must be restricted to delegatecall-only execution.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router",
+        "multicall3"
+      ],
+      "evidence": [
+        "However, `execute()`, `pullAmountAndExecute()`, and `pullAndExecute()` are **public** and can be called directly by any EOA, without delegatecall context or sentinel checks. This contradicts the intended “delegatecall-only router pattern” and exposes router-held balances as a public honeypot.",
+        "Enforce delegatecall-only execution on dangerous entrypoints and tighten ETH branch logic:",
+        "- Add `onlyDelegatecall` to:"
+      ]
+    },
+    {
+      "id": "intent_no_zero_eth_amount",
+      "kind": "security_intent",
+      "text": "The ETH branch of pullAmountAndExecute must reject zero amounts when token == address(0).",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router"
+      ],
+      "evidence": [
+        "- Tighten ETH branch in `pullAmountAndExecute()` to reject zero amounts when `token == address(0)`."
+      ]
+    },
+    {
+      "id": "intent_router_balances_not_spent_by_public_callers",
+      "kind": "security_intent",
+      "text": "Public callers must not be able to spend router-held ETH and ERC-20 balances through arbitrary aggregate3Value subcalls.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router",
+        "router_eth_balance",
+        "router_token_balance"
+      ],
+      "evidence": [
+        "Public router multicall entrypoints in TrailsRouter delegate to Multicall3 without delegatecall-only gating or target/value constraints, allowing any EOA to run arbitrary aggregate3Value batches in the router’s context and directly spend router-held ETH and ERC‑20 balances. This results in direct theft of all assets held by the router.",
+        "All three functions allow any external account to execute arbitrary `IMulticall3.aggregate3Value` payloads in the context of `TrailsRouter`, spending **router-held ETH and ERC‑20 balances**.",
+        "High. The vulnerability enables direct theft of all ETH and ERC‑20 tokens held by `TrailsRouter` by any EOA, with no privileged roles required. It is cross-user: if any user or integrator leaves funds on the router (which is expected in complex flows), a separate attacker can drain them. This contradicts the intended delegatecall-only router pattern and undermines system safety."
+      ]
+    },
+    {
+      "id": "direct_theft_all_eth_erc20",
+      "kind": "impact",
+      "text": "The vulnerability enables direct theft of all ETH and ERC‑20 tokens held by `TrailsRouter` by any EOA, with no privileged roles required.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "High. The vulnerability enables direct theft of all ETH and ERC‑20 tokens held by `TrailsRouter` by any EOA, with no privileged roles required. It is cross-user: if any user or integrator leaves funds on the router (which is expected in complex flows), a separate attacker can drain them. This contradicts the intended delegatecall-only router pattern and undermines system safety."
+      ]
+    },
+    {
+      "id": "cross_user_drain",
+      "kind": "impact",
+      "text": "if any user or integrator leaves funds on the router (which is expected in complex flows), a separate attacker can drain them",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "High. The vulnerability enables direct theft of all ETH and ERC‑20 tokens held by `TrailsRouter` by any EOA, with no privileged roles required. It is cross-user: if any user or integrator leaves funds on the router (which is expected in complex flows), a separate attacker can drain them. This contradicts the intended delegatecall-only router pattern and undermines system safety."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "invoke_public_entrypoint",
+    "delegatecall_multicall3",
+    "subcalls_spend_router_balances"
+  ],
+  "ambiguities": [
+    "Whether router-held balances exist at attack time is conditional (potential), not established as an observed prior state.",
+    "The report does not state a specific numeric router balance or token amount; only qualitative 'entire balance' is given.",
+    "Whether the attacker must be a distinct EOA from the fund-leaving user is described as cross-user but not tied to a specific prior transaction.",
+    "undermines system safety"
+  ]
+}

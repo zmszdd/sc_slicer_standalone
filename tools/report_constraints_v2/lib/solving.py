@@ -120,11 +120,20 @@ def verify_witness(claim, query, witness):
 
 # ------------------- 节选自 review.py -------------------
 
-def continuation_blockers(bundle, unresolved_review=None):
-    """Only missing core structure blocks progress; review warnings remain visible."""
+def continuation_blockers(bundle, unresolved_review=None, query_results=None):
+    """Only missing core structure blocks progress; review warnings remain visible.
+
+    ``query_results`` is an optional ``{claim_id: {query: status}}`` map from the
+    deterministic Z3 pass.  In fidelity-only mode ``compile_bundle`` defers the
+    relationship review, so the claim carries no ``queries``; the already-solved
+    results are supplied here instead so the same direct-witness gate applies.
+    """
     blockers = []
     claims = bundle.get('claims', [])
-    if bundle.get('core_formalization_status') != 'formalized_candidate' or not claims:
+    # Missing coverage stays visible in stage2-assessment; only a structurally
+    # invalid or infeasible *claim* blocks the already-formalized subset from
+    # continuing.  An empty claim set still has nothing to hand to stage 3.
+    if not claims:
         blockers.append('core P/I/V is not fully formalized')
     if unresolved_review and unresolved_review.get('blocks_candidate_acceptance'):
         blockers.append('model declared a blocking unresolved core relation')
@@ -141,6 +150,8 @@ def continuation_blockers(bundle, unresolved_review=None):
                for field in PIV_PROPERTY_BY_SYMBOL.values()):
             blockers.append(name + ': P, I, or V formula is missing')
         queries = claim.get('semantic_relationship', {}).get('queries', {})
+        if not queries and query_results:
+            queries = query_results.get(claim.get('id', ''), {})
         if (queries.get('P_and_V') != 'sat' or
                 queries.get('P_and_V_and_not_I') != 'sat' or
                 queries.get('P_and_V_and_I') != 'unsat'):
@@ -148,12 +159,16 @@ def continuation_blockers(bundle, unresolved_review=None):
     return blockers
 
 
-def from_bundle(bundle, unresolved_review=None):
+def from_bundle(bundle, unresolved_review=None, query_results=None):
     acceptance = bundle['acceptance_status']
-    infeasible_claims = [claim['id'] for claim in bundle.get('claims', [])
-                         if claim.get('semantic_relationship', {}).get('queries', {}).get(
-                             'P_and_V') in ('unsat', 'unknown')]
-    blockers = continuation_blockers(bundle, unresolved_review)
+    infeasible_claims = []
+    for claim in bundle.get('claims', []):
+        queries = claim.get('semantic_relationship', {}).get('queries', {})
+        if not queries and query_results:
+            queries = query_results.get(claim.get('id'), {})
+        if queries.get('P_and_V') in ('unsat', 'unknown'):
+            infeasible_claims.append(claim['id'])
+    blockers = continuation_blockers(bundle, unresolved_review, query_results)
     # A route is an action decision, so it must agree with the continuation
     # gate.  Previously a bundle with a missing P or V could be labelled
     # ``candidate`` while ``stage2_can_continue`` was false.

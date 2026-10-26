@@ -1,0 +1,138 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "hL5CRCiGJhk",
+    "requested_finding_uid": "7yYS2jorBMq",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "hL5CRCiGJhk",
+    "source_finding_uid": "7yYS2jorBMq",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\high_valid_hL5CRCiGJhk.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "hL5CRCiGJhk",
+  "finding_uid": "7yYS2jorBMq",
+  "finding_number": "5",
+  "title": "Flawed Rewards Termination Logic Allows Early Buyers to Extract AMM Trading Fees Indefinitely",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "udogodwin",
+  "body": "## Finding description and impact\n\nThe GTE launchpad system includes a rewards mechanism where early buyers during the bonding curve phase earn a share of future trading fees. The LaunchToken contract tracks these early buyers through `bondingShare` mappings and `totalFeeShare` counters. When users transfer their tokens away, the system should end the rewards program once no bonding shares remain.\n\nHowever, the `LaunchToken` contract contains a flawed boolean condition in the `_decreaseFeeShares()` function that prevents the rewards system from properly ending after token graduation. This allows early bonding curve buyers to continue earning AMM trading fees indefinitely, even though rewards should stop when the token graduates to automated market maker trading.\n\n```solidity\nfunction _decreaseFeeShares(address account, uint256 amount) internal {\n    uint256 share = bondingShare[account];\n    if (share == 0 || account == address(0)) return;\n\n    amount = amount > share ? share : amount;\n\n    emit FeeShareDecreased(account, amount, _incEventNonce());\n\n    unchecked {\n        totalFeeShare -= amount;\n        bondingShare[account] -= amount;\n    }\n\n    if (totalFeeShare == 0 && !unlocked) _endRewards(); // <- BUG: This condition becomes impossible\n\n    ILaunchpad(launchpad).decreaseStake(account, uint96(amount));\n}\n```\nThe problem occurs because of the token lifecycle in the launchpad system. During the bonding curve phase, `unlocked` is false. However, when the token graduates to AMM trading, the `unlock()` function is called:\n\n```solidity\nfunction unlock() external onlyLaunchpad {\n    unlocked = true;\n    emit TransfersUnlocked(block.timestamp, _incEventNonce());\n}\n```\n\nOnce `unlocked` becomes true, the condition `if (totalFeeShare == 0 && !unlocked)` can never be satisfied again. The expression `!unlocked` evaluates to false when `unlocked` is true, making the entire condition `(totalFeeShare == 0 && false)` always evaluate to false, regardless of the `totalFeeShare` value.\n\nThe `_endRewards()` function exists and is designed to stop the fee collection mechanism:\n\n```solidity\n/// @dev Hook to end rewards program for this base token if no more pre-bonding shares exist\nfunction _endRewards() internal {\n    ILaunchpad(launchpad).endRewards();\n    emit FeeShareConcluded(block.timestamp, _incEventNonce());\n}\n```\n\nThis function calls the launchpad's `endRewards()`, which ultimately calls `distributor.endRewards(pair)` and then `pair.endRewardsAccrual()` to stop fee collection from AMM swaps. However, due to the flawed condition, this cleanup never happens after graduation.\n\nThis makes early bonding curve buyers continue receiving AMM trading fees indefinitely after token graduation.\n\nThe rewards system was meant to compensate early risk-takers during the uncertain bonding phase, not provide permanent income streams from mature tokens with established liquidity.\n\n## Recommended mitigation steps\n\nFix the boolean logic in the `_decreaseFeeShares()` function by removing the `!unlocked` condition, allowing rewards to end when all bonding shares are exhausted regardless of the token's locked status\n\n```solidity\nfunction _decreaseFeeShares(address account, uint256 amount) internal {\n    uint256 share = bondingShare[account];\n    if (share == 0 || account == address(0)) return;\n\n    amount = amount > share ? share : amount;\n\n    emit FeeShareDecreased(account, amount, _incEventNonce());\n\n    unchecked {\n        totalFeeShare -= amount;\n        bondingShare[account] -= amount;\n    }\n\n    if (totalFeeShare == 0) _endRewards(); // Fixed: Remove !unlocked condition\n\n    ILaunchpad(launchpad).decreaseStake(account, uint96(amount));\n}\n```\n\nThis change ensures that when all early buyers have transferred away their tokens, the rewards program properly terminates and stops extracting fees from AMM traders.",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {LaunchToken} from \"contracts/launchpad/LaunchToken.sol\";\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    function test_submissionValidity() external {\n        // Setup: Buy tokens during bonding to get bonding shares\n        deal(address(quoteToken), user, type(uint256).max);\n        \n        // Buy some tokens (not full graduation) to establish bonding shares\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            token: token,\n            recipient: user,\n            account: user,\n            amountOutBase: BONDING_SUPPLY / 2, // Half of bonding supply\n            maxAmountInQuote: type(uint256).max\n        }));\n        \n        // Verify user has bonding shares before graduation\n        require(LaunchToken(token).unlocked() == false, \"Token should still be bonding\");\n        require(LaunchToken(token).totalFeeShare() > 0, \"Should have fee shares from bonding\");\n        \n        // Now buy remaining supply to trigger graduation\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            token: token,\n            recipient: user,\n            account: user,\n            amountOutBase: BONDING_SUPPLY / 2, // Remaining half\n            maxAmountInQuote: type(uint256).max\n        }));\n        \n        // Verify graduation occurred\n        require(LaunchToken(token).unlocked() == true, \"Token should be graduated/unlocked\");\n        require(LaunchToken(token).totalFeeShare() > 0, \"Should still have fee shares\");\n        \n        // The endRewards condition becomes impossible after graduation\n        // The condition in _decreaseFeeShares is: if (totalFeeShare == 0 && !unlocked) _endRewards();\n        // After graduation: unlocked = true, so !unlocked = false\n        // Therefore: (totalFeeShare == 0 && false) = false, regardless of totalFeeShare value\n        \n        bool unlocked = LaunchToken(token).unlocked();\n        require(unlocked == true, \"Should be unlocked after graduation\");\n        \n        // Prove that !unlocked is false, making the condition impossible\n        require(!unlocked == false, \"!unlocked is false after graduation\");\n        \n        // Even if totalFeeShare becomes 0, the condition (0 == 0 && false) = false\n        // This proves endRewards can never be called post-graduation\n        bool wouldTriggerEndRewards = (0 == 0 && !unlocked);\n        require(wouldTriggerEndRewards == false, \"endRewards condition impossible after graduation\");\n        \n        // Early bonding buyers will continue earning AMM fees indefinitely\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/LaunchToken.sol#L134-L150"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "546",
+    "api_submission_id": "",
+    "uid": "hL5CRCiGJhk",
+    "number": "546",
+    "title": "Flawed Rewards Termination Logic Allows Early Buyers to Extract AMM Trading Fees Indefinitely",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "udogodwin",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/LaunchToken.sol#L134-L150"
+    ],
+    "body": "## Finding description and impact\n\nThe GTE launchpad system includes a rewards mechanism where early buyers during the bonding curve phase earn a share of future trading fees. The LaunchToken contract tracks these early buyers through `bondingShare` mappings and `totalFeeShare` counters. When users transfer their tokens away, the system should end the rewards program once no bonding shares remain.\n\nHowever, the `LaunchToken` contract contains a flawed boolean condition in the `_decreaseFeeShares()` function that prevents the rewards system from properly ending after token graduation. This allows early bonding curve buyers to continue earning AMM trading fees indefinitely, even though rewards should stop when the token graduates to automated market maker trading.\n\n```solidity\nfunction _decreaseFeeShares(address account, uint256 amount) internal {\n    uint256 share = bondingShare[account];\n    if (share == 0 || account == address(0)) return;\n\n    amount = amount > share ? share : amount;\n\n    emit FeeShareDecreased(account, amount, _incEventNonce());\n\n    unchecked {\n        totalFeeShare -= amount;\n        bondingShare[account] -= amount;\n    }\n\n    if (totalFeeShare == 0 && !unlocked) _endRewards(); // <- BUG: This condition becomes impossible\n\n    ILaunchpad(launchpad).decreaseStake(account, uint96(amount));\n}\n```\nThe problem occurs because of the token lifecycle in the launchpad system. During the bonding curve phase, `unlocked` is false. However, when the token graduates to AMM trading, the `unlock()` function is called:\n\n```solidity\nfunction unlock() external onlyLaunchpad {\n    unlocked = true;\n    emit TransfersUnlocked(block.timestamp, _incEventNonce());\n}\n```\n\nOnce `unlocked` becomes true, the condition `if (totalFeeShare == 0 && !unlocked)` can never be satisfied again. The expression `!unlocked` evaluates to false when `unlocked` is true, making the entire condition `(totalFeeShare == 0 && false)` always evaluate to false, regardless of the `totalFeeShare` value.\n\nThe `_endRewards()` function exists and is designed to stop the fee collection mechanism:\n\n```solidity\n/// @dev Hook to end rewards program for this base token if no more pre-bonding shares exist\nfunction _endRewards() internal {\n    ILaunchpad(launchpad).endRewards();\n    emit FeeShareConcluded(block.timestamp, _incEventNonce());\n}\n```\n\nThis function calls the launchpad's `endRewards()`, which ultimately calls `distributor.endRewards(pair)` and then `pair.endRewardsAccrual()` to stop fee collection from AMM swaps. However, due to the flawed condition, this cleanup never happens after graduation.\n\nThis makes early bonding curve buyers continue receiving AMM trading fees indefinitely after token graduation.\n\nThe rewards system was meant to compensate early risk-takers during the uncertain bonding phase, not provide permanent income streams from mature tokens with established liquidity.\n\n## Recommended mitigation steps\n\nFix the boolean logic in the `_decreaseFeeShares()` function by removing the `!unlocked` condition, allowing rewards to end when all bonding shares are exhausted regardless of the token's locked status\n\n```solidity\nfunction _decreaseFeeShares(address account, uint256 amount) internal {\n    uint256 share = bondingShare[account];\n    if (share == 0 || account == address(0)) return;\n\n    amount = amount > share ? share : amount;\n\n    emit FeeShareDecreased(account, amount, _incEventNonce());\n\n    unchecked {\n        totalFeeShare -= amount;\n        bondingShare[account] -= amount;\n    }\n\n    if (totalFeeShare == 0) _endRewards(); // Fixed: Remove !unlocked condition\n\n    ILaunchpad(launchpad).decreaseStake(account, uint96(amount));\n}\n```\n\nThis change ensures that when all early buyers have transferred away their tokens, the rewards program properly terminates and stops extracting fees from AMM traders.",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {LaunchToken} from \"contracts/launchpad/LaunchToken.sol\";\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    function test_submissionValidity() external {\n        // Setup: Buy tokens during bonding to get bonding shares\n        deal(address(quoteToken), user, type(uint256).max);\n        \n        // Buy some tokens (not full graduation) to establish bonding shares\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            token: token,\n            recipient: user,\n            account: user,\n            amountOutBase: BONDING_SUPPLY / 2, // Half of bonding supply\n            maxAmountInQuote: type(uint256).max\n        }));\n        \n        // Verify user has bonding shares before graduation\n        require(LaunchToken(token).unlocked() == false, \"Token should still be bonding\");\n        require(LaunchToken(token).totalFeeShare() > 0, \"Should have fee shares from bonding\");\n        \n        // Now buy remaining supply to trigger graduation\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            token: token,\n            recipient: user,\n            account: user,\n            amountOutBase: BONDING_SUPPLY / 2, // Remaining half\n            maxAmountInQuote: type(uint256).max\n        }));\n        \n        // Verify graduation occurred\n        require(LaunchToken(token).unlocked() == true, \"Token should be graduated/unlocked\");\n        require(LaunchToken(token).totalFeeShare() > 0, \"Should still have fee shares\");\n        \n        // The endRewards condition becomes impossible after graduation\n        // The condition in _decreaseFeeShares is: if (totalFeeShare == 0 && !unlocked) _endRewards();\n        // After graduation: unlocked = true, so !unlocked = false\n        // Therefore: (totalFeeShare == 0 && false) = false, regardless of totalFeeShare value\n        \n        bool unlocked = LaunchToken(token).unlocked();\n        require(unlocked == true, \"Should be unlocked after graduation\");\n        \n        // Prove that !unlocked is false, making the condition impossible\n        require(!unlocked == false, \"!unlocked is false after graduation\");\n        \n        // Even if totalFeeShare becomes 0, the condition (0 == 0 && false) = false\n        // This proves endRewards can never be called post-graduation\n        bool wouldTriggerEndRewards = (0 == 0 && !unlocked);\n        require(wouldTriggerEndRewards == false, \"endRewards condition impossible after graduation\");\n        \n        // Early bonding buyers will continue earning AMM fees indefinitely\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/546",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-17T16:36:20.369Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "pWC7GGbCrsz",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:50:11.283Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "srPK3PSSyxo",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:50:12.556Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "EJ9wDFJDZLG",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-22T15:50:43.554Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "hL5CRCiGJhk",
+          "findingUid": null
+        },
+        {
+          "uid": "E8BRnzui3nm",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-06T20:50:08.519Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "7yYS2jorBMq"
+        },
+        {
+          "uid": "wkvMx4UKCsR",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-02T14:58:47.216Z",
+          "type": "credit",
+          "value": "75%",
+          "submissionUid": "hL5CRCiGJhk",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "7yYS2jorBMq",
+        "number": 5,
+        "duplicates": 72
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": "75%",
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-12-02T14:58:47.216Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Flawed Rewards Termination Logic Allows Early Buyers to Extract AMM Trading Fees Indefinitely",
+      "uid": "hL5CRCiGJhk",
+      "updatedAt": "2025-09-17T16:36:20.369Z",
+      "user": {
+        "uid": "scPWT8q8ihw",
+        "handle": "udogodwin"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe GTE launchpad system includes a rewards mechanism where early buyers during the bonding curve phase earn a share of future trading fees. The LaunchToken contract tracks these early buyers through `bondingShare` mappings and `totalFeeShare` counters. When users transfer their tokens away, the system should end the rewards program once no bonding shares remain.\n\nHowever, the `LaunchToken` contract contains a flawed boolean condition in the `_decreaseFeeShares()` function that prevents the rewards system from properly ending after token graduation. This allows early bonding curve buyers to continue earning AMM trading fees indefinitely, even though rewards should stop when the token graduates to automated market maker trading.\n\n```solidity\nfunction _decreaseFeeShares(address account, uint256 amount) internal {\n    uint256 share = bondingShare[account];\n    if (share == 0 || account == address(0)) return;\n\n    amount = amount > share ? share : amount;\n\n    emit FeeShareDecreased(account, amount, _incEventNonce());\n\n    unchecked {\n        totalFeeShare -= amount;\n        bondingShare[account] -= amount;\n    }\n\n    if (totalFeeShare == 0 && !unlocked) _endRewards(); // <- BUG: This condition becomes impossible\n\n    ILaunchpad(launchpad).decreaseStake(account, uint96(amount));\n}\n```\nThe problem occurs because of the token lifecycle in the launchpad system. During the bonding curve phase, `unlocked` is false. However, when the token graduates to AMM trading, the `unlock()` function is called:\n\n```solidity\nfunction unlock() external onlyLaunchpad {\n    unlocked = true;\n    emit TransfersUnlocked(block.timestamp, _incEventNonce());\n}\n```\n\nOnce `unlocked` becomes true, the condition `if (totalFeeShare == 0 && !unlocked)` can never be satisfied again. The expression `!unlocked` evaluates to false when `unlocked` is true, making the entire condition `(totalFeeShare == 0 && false)` always evaluate to false, regardless of the `totalFeeShare` value.\n\nThe `_endRewards()` function exists and is designed to stop the fee collection mechanism:\n\n```solidity\n/// @dev Hook to end rewards program for this base token if no more pre-bonding shares exist\nfunction _endRewards() internal {\n    ILaunchpad(launchpad).endRewards();\n    emit FeeShareConcluded(block.timestamp, _incEventNonce());\n}\n```\n\nThis function calls the launchpad's `endRewards()`, which ultimately calls `distributor.endRewards(pair)` and then `pair.endRewardsAccrual()` to stop fee collection from AMM swaps. However, due to the flawed condition, this cleanup never happens after graduation.\n\nThis makes early bonding curve buyers continue receiving AMM trading fees indefinitely after token graduation.\n\nThe rewards system was meant to compensate early risk-takers during the uncertain bonding phase, not provide permanent income streams from mature tokens with established liquidity.\n\n## Recommended mitigation steps\n\nFix the boolean logic in the `_decreaseFeeShares()` function by removing the `!unlocked` condition, allowing rewards to end when all bonding shares are exhausted regardless of the token's locked status\n\n```solidity\nfunction _decreaseFeeShares(address account, uint256 amount) internal {\n    uint256 share = bondingShare[account];\n    if (share == 0 || account == address(0)) return;\n\n    amount = amount > share ? share : amount;\n\n    emit FeeShareDecreased(account, amount, _incEventNonce());\n\n    unchecked {\n        totalFeeShare -= amount;\n        bondingShare[account] -= amount;\n    }\n\n    if (totalFeeShare == 0) _endRewards(); // Fixed: Remove !unlocked condition\n\n    ILaunchpad(launchpad).decreaseStake(account, uint96(amount));\n}\n```\n\nThis change ensures that when all early buyers have transferred away their tokens, the rewards program properly terminates and stops extracting fees from AMM traders.",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {LaunchToken} from \"contracts/launchpad/LaunchToken.sol\";\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    function test_submissionValidity() external {\n        // Setup: Buy tokens during bonding to get bonding shares\n        deal(address(quoteToken), user, type(uint256).max);\n        \n        // Buy some tokens (not full graduation) to establish bonding shares\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            token: token,\n            recipient: user,\n            account: user,\n            amountOutBase: BONDING_SUPPLY / 2, // Half of bonding supply\n            maxAmountInQuote: type(uint256).max\n        }));\n        \n        // Verify user has bonding shares before graduation\n        require(LaunchToken(token).unlocked() == false, \"Token should still be bonding\");\n        require(LaunchToken(token).totalFeeShare() > 0, \"Should have fee shares from bonding\");\n        \n        // Now buy remaining supply to trigger graduation\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            token: token,\n            recipient: user,\n            account: user,\n            amountOutBase: BONDING_SUPPLY / 2, // Remaining half\n            maxAmountInQuote: type(uint256).max\n        }));\n        \n        // Verify graduation occurred\n        require(LaunchToken(token).unlocked() == true, \"Token should be graduated/unlocked\");\n        require(LaunchToken(token).totalFeeShare() > 0, \"Should still have fee shares\");\n        \n        // The endRewards condition becomes impossible after graduation\n        // The condition in _decreaseFeeShares is: if (totalFeeShare == 0 && !unlocked) _endRewards();\n        // After graduation: unlocked = true, so !unlocked = false\n        // Therefore: (totalFeeShare == 0 && false) = false, regardless of totalFeeShare value\n        \n        bool unlocked = LaunchToken(token).unlocked();\n        require(unlocked == true, \"Should be unlocked after graduation\");\n        \n        // Prove that !unlocked is false, making the condition impossible\n        require(!unlocked == false, \"!unlocked is false after graduation\");\n        \n        // Even if totalFeeShare becomes 0, the condition (0 == 0 && false) = false\n        // This proves endRewards can never be called post-graduation\n        bool wouldTriggerEndRewards = (0 == 0 && !unlocked);\n        require(wouldTriggerEndRewards == false, \"endRewards condition impossible after graduation\");\n        \n        // Early bonding buyers will continue earning AMM fees indefinitely\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/LaunchToken.sol#L134-L150",
+      "number": 546,
+      "aiExplanation": null,
+      "_index": 546
+    }
+  }
+}

@@ -1,0 +1,192 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "reduce-only order matching and Book Open Interest accounting in GTE perpetuals",
+    "environment": "GTE perpetuals protocol order book",
+    "evidence": [
+      "The GTE perpetuals protocol tracks Open Interest through two distinct but interdependent accounting systems.",
+      "Separately, the protocol tracks Book OI in each order book's metadata, representing the total exposure from pending orders:",
+      "Book OI increases when orders are posted to the book and should decrease when orders are filled or removed. The two OI systems should theoretically represent the same underlying economic reality from different perspectives.",
+      "The issue occurs in the `_matchIncomingOrder` function within the order matching process. When matching against reduce-only orders, the system calls `_boundReduceOnlyOrder` to ensure the order does not exceed the user's current position:",
+      "The problematic `_boundReduceOnlyOrder` function modifies Book OI immediately upon discovering an oversized reduce-only order:",
+      "When `_boundReduceOnlyOrder` executes, it permanently modifies the Book OI by reducing `ds.metadata.baseOI` or `ds.metadata.quoteOI`. This reduction represents the \"excess\" portion of the reduce-only order that exceeds the user's current position. However, this creates accounting corruption because the function removes this excess from Book OI regardless of whether any actual trade occurs. Even when trades execute successfully, the Book OI experiences additional reduction beyond what the actual trade should cause.",
+      "The problem compounds because `_boundReduceOnlyOrder` incorrectly treats the excess portion of reduce-only orders as representing actual exposure that should be immediately removed from accounting. In reality, this excess represents a mismatch between stale order size and current position size - not real exposure that needs immediate removal. This faulty assumption causes Book OI to become understated relative to the actual market exposure tracked by Position OI.",
+      "Move the OI adjustment logic after successful trade validation rather than performing it immediately when bounding the order. The system should only adjust Open Interest when an actual trade occurs, not during the preparation phase."
+    ]
+  },
+  "entities": [
+    {
+      "id": "gte_perpetuals",
+      "name": "GTE perpetuals protocol",
+      "role": "contract",
+      "evidence": [
+        "The GTE perpetuals protocol tracks Open Interest through two distinct but interdependent accounting systems."
+      ]
+    },
+    {
+      "id": "order_book",
+      "name": "Order book metadata (Book OI)",
+      "role": "contract",
+      "evidence": [
+        "Separately, the protocol tracks Book OI in each order book's metadata, representing the total exposure from pending orders:",
+        "Book OI increases when orders are posted to the book and should decrease when orders are filled or removed. The two OI systems should theoretically represent the same underlying economic reality from different perspectives."
+      ]
+    },
+    {
+      "id": "market_metadata",
+      "name": "MarketMetadata (Position OI)",
+      "role": "contract",
+      "evidence": [
+        "The protocol maintains Position OI in `MarketMetadata` which tracks the aggregate of all actual user positions:",
+        "This system correctly updates when positions change through the `updateOI` function:"
+      ]
+    },
+    {
+      "id": "reduce_only_order",
+      "name": "Reduce-only order",
+      "role": "asset",
+      "evidence": [
+        "The issue occurs in the `_matchIncomingOrder` function within the order matching process. When matching against reduce-only orders, the system calls `_boundReduceOnlyOrder` to ensure the order does not exceed the user's current position:",
+        "When `_boundReduceOnlyOrder` executes, it permanently modifies the Book OI by reducing `ds.metadata.baseOI` or `ds.metadata.quoteOI`. This reduction represents the \"excess\" portion of the reduce-only order that exceeds the user's current position. However, this creates accounting corruption because the function removes this excess from Book OI regardless of whether any actual trade occurs. Even when trades execute successfully, the Book OI experiences additional reduction beyond what the actual trade should cause."
+      ]
+    },
+    {
+      "id": "user_position",
+      "name": "User current position",
+      "role": "other",
+      "evidence": [
+        "The issue occurs in the `_matchIncomingOrder` function within the order matching process. When matching against reduce-only orders, the system calls `_boundReduceOnlyOrder` to ensure the order does not exceed the user's current position:",
+        "The problem compounds because `_boundReduceOnlyOrder` incorrectly treats the excess portion of reduce-only orders as representing actual exposure that should be immediately removed from accounting. In reality, this excess represents a mismatch between stale order size and current position size - not real exposure that needs immediate removal. This faulty assumption causes Book OI to become understated relative to the actual market exposure tracked by Position OI."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "book_oi_tracks_pending_orders",
+      "kind": "precondition",
+      "text": "Book OI in each order book's metadata represents the total exposure from pending orders and increases when orders are posted to the book.",
+      "modality": "asserted",
+      "entity_ids": [
+        "order_book"
+      ],
+      "evidence": [
+        "Separately, the protocol tracks Book OI in each order book's metadata, representing the total exposure from pending orders:",
+        "Book OI increases when orders are posted to the book and should decrease when orders are filled or removed. The two OI systems should theoretically represent the same underlying economic reality from different perspectives."
+      ]
+    },
+    {
+      "id": "position_oi_tracks_user_positions",
+      "kind": "precondition",
+      "text": "Position OI in MarketMetadata tracks the aggregate of all actual user positions.",
+      "modality": "asserted",
+      "entity_ids": [
+        "market_metadata"
+      ],
+      "evidence": [
+        "The protocol maintains Position OI in `MarketMetadata` which tracks the aggregate of all actual user positions:"
+      ]
+    },
+    {
+      "id": "reduce_only_order_exceeds_position",
+      "kind": "precondition",
+      "text": "A reduce-only order is oversized relative to the user's current position, so its excess portion exceeds the current position size.",
+      "modality": "potential",
+      "entity_ids": [
+        "reduce_only_order",
+        "user_position"
+      ],
+      "evidence": [
+        "The issue occurs in the `_matchIncomingOrder` function within the order matching process. When matching against reduce-only orders, the system calls `_boundReduceOnlyOrder` to ensure the order does not exceed the user's current position:",
+        "When `_boundReduceOnlyOrder` executes, it permanently modifies the Book OI by reducing `ds.metadata.baseOI` or `ds.metadata.quoteOI`. This reduction represents the \"excess\" portion of the reduce-only order that exceeds the user's current position. However, this creates accounting corruption because the function removes this excess from Book OI regardless of whether any actual trade occurs. Even when trades execute successfully, the Book OI experiences additional reduction beyond what the actual trade should cause.",
+        "The problem compounds because `_boundReduceOnlyOrder` incorrectly treats the excess portion of reduce-only orders as representing actual exposure that should be immediately removed from accounting. In reality, this excess represents a mismatch between stale order size and current position size - not real exposure that needs immediate removal. This faulty assumption causes Book OI to become understated relative to the actual market exposure tracked by Position OI."
+      ]
+    },
+    {
+      "id": "match_incoming_order_calls_bound",
+      "kind": "action",
+      "text": "During order matching, `_matchIncomingOrder` calls `_boundReduceOnlyOrder` when matching against reduce-only orders to ensure the order does not exceed the user's current position.",
+      "modality": "asserted",
+      "entity_ids": [
+        "gte_perpetuals",
+        "reduce_only_order"
+      ],
+      "evidence": [
+        "The issue occurs in the `_matchIncomingOrder` function within the order matching process. When matching against reduce-only orders, the system calls `_boundReduceOnlyOrder` to ensure the order does not exceed the user's current position:"
+      ]
+    },
+    {
+      "id": "bound_reduces_book_oi_immediately",
+      "kind": "root_cause",
+      "text": "`_boundReduceOnlyOrder` permanently reduces `ds.metadata.baseOI` or `ds.metadata.quoteOI` by the excess portion immediately upon discovering an oversized reduce-only order, regardless of whether any actual trade occurs, and even when trades execute successfully the Book OI experiences additional reduction beyond what the actual trade should cause.",
+      "modality": "asserted",
+      "entity_ids": [
+        "order_book",
+        "reduce_only_order"
+      ],
+      "evidence": [
+        "The problematic `_boundReduceOnlyOrder` function modifies Book OI immediately upon discovering an oversized reduce-only order:",
+        "When `_boundReduceOnlyOrder` executes, it permanently modifies the Book OI by reducing `ds.metadata.baseOI` or `ds.metadata.quoteOI`. This reduction represents the \"excess\" portion of the reduce-only order that exceeds the user's current position. However, this creates accounting corruption because the function removes this excess from Book OI regardless of whether any actual trade occurs. Even when trades execute successfully, the Book OI experiences additional reduction beyond what the actual trade should cause."
+      ]
+    },
+    {
+      "id": "excess_is_not_real_exposure",
+      "kind": "root_cause",
+      "text": "The excess portion of a reduce-only order represents a mismatch between stale order size and current position size, not real exposure that needs immediate removal, so treating it as exposure to remove causes Book OI to become understated relative to Position OI.",
+      "modality": "asserted",
+      "entity_ids": [
+        "order_book",
+        "reduce_only_order",
+        "user_position"
+      ],
+      "evidence": [
+        "The problem compounds because `_boundReduceOnlyOrder` incorrectly treats the excess portion of reduce-only orders as representing actual exposure that should be immediately removed from accounting. In reality, this excess represents a mismatch between stale order size and current position size - not real exposure that needs immediate removal. This faulty assumption causes Book OI to become understated relative to the actual market exposure tracked by Position OI."
+      ]
+    },
+    {
+      "id": "oi_adjust_only_on_trade",
+      "kind": "security_intent",
+      "text": "Open Interest should only be adjusted when an actual trade occurs, not during the preparation/bounding phase of order matching.",
+      "modality": "asserted",
+      "entity_ids": [
+        "order_book",
+        "gte_perpetuals"
+      ],
+      "evidence": [
+        "Move the OI adjustment logic after successful trade validation rather than performing it immediately when bounding the order. The system should only adjust Open Interest when an actual trade occurs, not during the preparation phase."
+      ]
+    },
+    {
+      "id": "book_oi_decrease_on_fill_or_remove",
+      "kind": "security_intent",
+      "text": "Book OI should decrease only when orders are filled or removed.",
+      "modality": "asserted",
+      "entity_ids": [
+        "order_book"
+      ],
+      "evidence": [
+        "Book OI increases when orders are posted to the book and should decrease when orders are filled or removed. The two OI systems should theoretically represent the same underlying economic reality from different perspectives."
+      ]
+    },
+    {
+      "id": "oi_systems_same_reality",
+      "kind": "security_intent",
+      "text": "The Position OI and Book OI systems should represent the same underlying economic reality from different perspectives.",
+      "modality": "asserted",
+      "entity_ids": [
+        "order_book",
+        "market_metadata"
+      ],
+      "evidence": [
+        "Book OI increases when orders are posted to the book and should decrease when orders are filled or removed. The two OI systems should theoretically represent the same underlying economic reality from different perspectives."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "match_incoming_order_calls_bound"
+  ],
+  "ambiguities": [
+    "Report does not state who submits the oversized reduce-only order or whether any caller restriction applies.",
+    "Report does not specify numeric values for the excess portion or the resulting Book OI reduction.",
+    "Report does not establish a concrete prior transaction creating the stale order size versus current position mismatch."
+  ]
+}

@@ -1,0 +1,62 @@
+You are a semantic faithfulness auditor. For each
+listed source you get its role (P, I, or V), the report statement text, the
+generated predicate that claims to encode it, and the meanings of the symbols
+the predicate uses. A null predicate means that the generated rule omitted
+that frozen source; mark it other_mismatch. You also receive the full P/I/V relation,
+exact report excerpts from cited action/root-cause evidence as relation_context, and
+a generator-proposed relationship_trace that cites a path through those excerpts.
+Judge ONLY whether each predicate faithfully encodes its report
+source, and whether the report supports a relationship between V and I under P.
+The relationship may be direct or mediated by an intermediate mechanism, but an
+indirect link is consistent only when relation_context or the P/I/V excerpts
+explicitly support that bridge. relation_context may support the relationship only;
+it cannot replace or change any frozen source. Do not infer a causal bridge from
+protocol knowledge or shared vocabulary. When relation_context supports your verdict,
+name the relevant statement_id and evidence_id in the piv_relation reason. If the
+P/I/V excerpts alone support the verdict, name the relevant frozen source ID instead.
+Treat relationship_trace as an unverified pointer: confirm every cited statement,
+evidence fragment and source ID exists and that the exact text supports the claimed
+link. A trace never upgrades a verdict without supporting excerpts; missing, inaccurate,
+or incomplete trace links do not erase evidence that is present in relation_context.
+Distinguish a formula mapping defect (a source check mismatch) from a relationship
+that the report does not clearly establish (weakened); do not treat the latter as a
+formula defect. Style, optimality and code truth are out of scope; never rewrite or
+propose predicates.
+
+A predicate is unfaithful when any of the following holds:
+- inverted: the predicate asserts the opposite direction or polarity of the
+  statement's claim, e.g. the statement says a fee accrues / an amount exists /
+  a balance is held (so a faithful encoding implies a positive or nonzero
+  quantity) and the predicate checks equality against zero, or the statement
+  says "at most N" and the predicate demands strictly less than N, or the
+  statement says "exceeds N" and the predicate accepts N itself.
+- wrong_constant: a numeric literal in the predicate is not the statement's
+  own quantity -- it belongs to a different statement, a different quantity,
+  or to nothing in the statement at all.
+- wrong_symbol: a symbol the predicate uses does not carry the meaning the
+  statement's fact requires (e.g. the statement is about the fee amount while
+  the predicate's symbol means elapsed time).
+- other_mismatch: the predicate encodes a different fact than the statement
+  states.
+Otherwise the source encoding is consistent. A tautologically weak but
+direction-correct bound (e.g. >= 0) is consistent, NOT inverted; the report's
+own semantics set the standard, not mathematical strength. For the relation
+check, mark consistent when formulas and supplied report excerpts support a direct
+or explicit indirect link. Mark weakened when that relationship is insufficiently
+supported or ambiguous; this means needs review, not that a source formula is wrong.
+Mark mismatch only when the relationship is clearly contradictory or report evidence
+establishes that V is unrelated to I under P. A downstream V is not a mismatch just
+because it is not the literal negation of I. Do not call an unsupported but explicitly
+unformalized claim faithful.
+
+Return JSON only, exactly:
+{"checks":[{"source_id":ID,"role":"P|I|V","verdict":"consistent"|"inverted"|"wrong_constant"|
+"wrong_symbol"|"other_mismatch","reason":ONE_SHORT_SENTENCE}],
+ "piv_relation":{"verdict":"consistent"|"weakened"|"mismatch","reason":ONE_SHORT_SENTENCE}}
+Cover every listed source_id exactly once, with its role, and only listed ones. The relation
+check must assess the supplied P/I/V formulas together and use relation_context and
+relationship_trace only as pointers to exact report evidence for an explicit bridge,
+not as replacement sources. Independently verify every trace ID against the supplied
+context; an unsupported or inaccurate trace cannot improve the verdict. If the trace
+omits a bridge but the supplied excerpts establish it, judge the excerpts directly.
+{"schema_version":"faithfulness-audit-input/4","relation_class":"access_control","sources":[{"source_id":"wallet_deployed_via_factory","role":"P","statement_text":"The BuilderWallet is deployed by the factory via CREATE2 and the factory calls init(builderAdmin) immediately after deployment.","predicate":{"kind":"truth","symbol":"wallet_deployed_by_factory","value":true},"symbol_meanings":{"wallet_deployed_by_factory":{"sort":"bool","unit":null,"meaning":"BuilderWallet was deployed by the factory via CREATE2 and factory called init(builderAdmin) after deployment"}}},{"source_id":"init_publicly_callable","role":"P","statement_text":"The init() function is publicly callable.","predicate":{"kind":"truth","symbol":"init_callable_by_any_address","value":true},"symbol_meanings":{"init_callable_by_any_address":{"sort":"bool","unit":null,"meaning":"init() is publicly callable by any address"}}},{"source_id":"init_not_factory_restricted","role":"P","statement_text":"The init() function is not restricted to the factory.","predicate":{"kind":"truth","symbol":"init_restricted_to_factory","value":false},"symbol_meanings":{"init_restricted_to_factory":{"sort":"bool","unit":null,"meaning":"init() is restricted to the factory (false = not restricted)"}}},{"source_id":"init_not_reinit_protected","role":"P","statement_text":"The init() function is not protected against re-initialization.","predicate":{"kind":"truth","symbol":"init_reinit_protected","value":false},"symbol_meanings":{"init_reinit_protected":{"sort":"bool","unit":null,"meaning":"init() is protected against re-initialization (false = not protected)"}}},{"source_id":"intent_one_time_init","role":"I","statement_text":"init() must enforce one-time initialization and not be re-callable.","predicate":{"op":"implies","args":[{"var":"init_reinvoked"},{"var":"init_reinit_protected"}]},"symbol_meanings":{"init_reinit_protected":{"sort":"bool","unit":null,"meaning":"init() is protected against re-initialization (false = not protected)"},"init_reinvoked":{"sort":"bool","unit":null,"meaning":"init() was re-invoked after the factory's initial call"}}},{"source_id":"total_loss_of_assets","role":"V","statement_text":"This results in total loss of assets","predicate":{"op":"and","args":[{"var":"init_reinvoked"},{"op":"not","args":[{"var":"init_reinit_protected"}]},{"var":"assets_drained"}]},"symbol_meanings":{"assets_drained":{"sort":"bool","unit":null,"meaning":"all assets held by the BuilderWallet were drained, resulting in total loss of assets"},"init_reinit_protected":{"sort":"bool","unit":null,"meaning":"init() is protected against re-initialization (false = not protected)"},"init_reinvoked":{"sort":"bool","unit":null,"meaning":"init() was re-invoked after the factory's initial call"}}}],"piv_relation":{"P":{"op":"and","args":[{"var":"wallet_deployed_by_factory"},{"var":"init_callable_by_any_address"},{"op":"not","args":[{"var":"init_restricted_to_factory"}]},{"op":"not","args":[{"var":"init_reinit_protected"}]}]},"I":{"op":"implies","args":[{"var":"init_reinvoked"},{"var":"init_reinit_protected"}]},"V":{"op":"and","args":[{"var":"init_reinvoked"},{"op":"not","args":[{"var":"init_reinit_protected"}]},{"var":"assets_drained"}]}},"relation_context":[{"statement_id":"attacker_recalls_init","role":"action","evidence":[{"evidence_id":"e_4e6c3ba02350_0003","text":"The BuilderWallet contract lacks access control on its `init()` function, allowing any address to assign itself as `builderAdmin`. Since `builderAdmin` is the sole authority permitted to call `sweep()`, an attacker can unilaterally gain withdrawal rights and drain all ERC20 tokens held by the wallet."},{"evidence_id":"e_4e6c3ba02350_0007","text":"The factory's `deployBuilder` currently calls `BuilderWallet(wallet).init(builderAdmin)` immediately after CREATE2, but that does not prevent an attacker from re-calling `init` and hijacking the wallet."}]},{"statement_id":"init_lacks_access_control","role":"root_cause","evidence":[{"evidence_id":"e_4e6c3ba02350_0009","text":"- publicly callable"},{"evidence_id":"e_4e6c3ba02350_0010","text":"- not restricted to the factory"},{"evidence_id":"e_4e6c3ba02350_0011","text":"- not protected against re-initialization"}]}],"relationship_trace":{"status":"explicit","links":[{"from_source_ids":["init_not_reinit_protected","intent_one_time_init","total_loss_of_assets"],"context_statement_id":"attacker_recalls_init","evidence_ids":["e_4e6c3ba02350_0007","e_4e6c3ba02350_0003"],"reported_relation":"Because init() is not protected against re-initialization, an attacker can re-call init, seize builderAdmin, and drain all assets held by the wallet."}],"gap":""}}

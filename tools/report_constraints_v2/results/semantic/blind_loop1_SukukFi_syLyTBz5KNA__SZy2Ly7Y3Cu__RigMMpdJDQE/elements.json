@@ -1,0 +1,198 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "WERC7575Vault::_withdraw (called by withdraw() and redeem()) third-party withdrawal authorization",
+    "environment": "SukukFi WERC7575Vault and WERC7575ShareToken with validator-signed self-permits",
+    "evidence": [
+      "Missing third-party authorization check in `WERC7575Vault::_withdraw` enables a malicious validator to drain all user assets from the vault",
+      "The internal `_withdraw` function in `WERC7575Vault` (called by both `withdraw()` and `redeem()`) only enforces the self-allowance mechanism:",
+      "It completely omits the standard third-party authorization check that should be performed when `msg.sender != owner`:",
+      "Because of this omission, any caller can withdraw/redeem on behalf of an owner as long as that owner has previously executed a self-permit (i.e., allowance(owner, owner) > 0).",
+      "The validator is the only entity capable of signing such self-permits on behalf of users.",
+      "1. Validator private key is compromised (phishing, insider attack, etc.).",
+      "2. Attacker uses the validator key to sign and to call `permit(owner, owner, type(uint256).max, ...)` for every user.",
+      "3. Attacker then calls `vault.withdraw(assets, attacker, user)` or `vault.redeem(shares, attacker, user)` for each user in the same block.",
+      "- Validator is an acknowledged single point of failure (explicitly documented in `KNOWN_ISSUES.md`), but this bug removes **the last line of defense:** even  with a compromised key, third-party withdrawals should still require explicit user approval.",
+      "Add the standard third-party authorization check in `_withdraw`:"
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "Attacker holding compromised validator key",
+      "role": "attacker",
+      "evidence": [
+        "1. Validator private key is compromised (phishing, insider attack, etc.).",
+        "2. Attacker uses the validator key to sign and to call `permit(owner, owner, type(uint256).max, ...)` for every user.",
+        "3. Attacker then calls `vault.withdraw(assets, attacker, user)` or `vault.redeem(shares, attacker, user)` for each user in the same block."
+      ]
+    },
+    {
+      "id": "validator",
+      "name": "Validator (sole signer of self-permits)",
+      "role": "authority",
+      "evidence": [
+        "The validator is the only entity capable of signing such self-permits on behalf of users.",
+        "1. Validator private key is compromised (phishing, insider attack, etc.)."
+      ]
+    },
+    {
+      "id": "owner",
+      "name": "Vault share owner / user",
+      "role": "victim",
+      "evidence": [
+        "Because of this omission, any caller can withdraw/redeem on behalf of an owner as long as that owner has previously executed a self-permit (i.e., allowance(owner, owner) > 0).",
+        "2. Attacker uses the validator key to sign and to call `permit(owner, owner, type(uint256).max, ...)` for every user.",
+        "3. Attacker then calls `vault.withdraw(assets, attacker, user)` or `vault.redeem(shares, attacker, user)` for each user in the same block."
+      ]
+    },
+    {
+      "id": "vault",
+      "name": "WERC7575Vault",
+      "role": "contract",
+      "evidence": [
+        "The internal `_withdraw` function in `WERC7575Vault` (called by both `withdraw()` and `redeem()`) only enforces the self-allowance mechanism:",
+        "[WERC7575Vault.sol#L407](https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575Vault.sol#L407)"
+      ]
+    },
+    {
+      "id": "share_token",
+      "name": "WERC7575ShareToken",
+      "role": "contract",
+      "evidence": [
+        "[WERC7575ShareToken.sol#L419-L422](https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L419-L422)",
+        "2. Attacker uses the validator key to sign and to call `permit(owner, owner, type(uint256).max, ...)` for every user."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "validator_key_compromised",
+      "kind": "precondition",
+      "text": "The validator private key is compromised (e.g., via phishing or insider attack).",
+      "modality": "potential",
+      "entity_ids": [
+        "validator",
+        "attacker"
+      ],
+      "evidence": [
+        "1. Validator private key is compromised (phishing, insider attack, etc.)."
+      ]
+    },
+    {
+      "id": "validator_sole_self_permit_signer",
+      "kind": "precondition",
+      "text": "The validator is the only entity capable of signing self-permits on behalf of users.",
+      "modality": "asserted",
+      "entity_ids": [
+        "validator",
+        "share_token"
+      ],
+      "evidence": [
+        "The validator is the only entity capable of signing such self-permits on behalf of users.",
+        "[WERC7575ShareToken.sol#L419-L422](https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L419-L422)"
+      ]
+    },
+    {
+      "id": "owner_self_allowance_positive",
+      "kind": "precondition",
+      "text": "The owner has previously executed a self-permit so that allowance(owner, owner) > 0.",
+      "modality": "potential",
+      "entity_ids": [
+        "owner",
+        "share_token"
+      ],
+      "evidence": [
+        "Because of this omission, any caller can withdraw/redeem on behalf of an owner as long as that owner has previously executed a self-permit (i.e., allowance(owner, owner) > 0)."
+      ]
+    },
+    {
+      "id": "attacker_signs_self_permit",
+      "kind": "action",
+      "text": "The attacker uses the compromised validator key to sign and call permit(owner, owner, type(uint256).max, ...) for each user.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "validator",
+        "owner",
+        "share_token"
+      ],
+      "evidence": [
+        "2. Attacker uses the validator key to sign and to call `permit(owner, owner, type(uint256).max, ...)` for every user."
+      ]
+    },
+    {
+      "id": "attacker_calls_withdraw_redeem",
+      "kind": "action",
+      "text": "The attacker calls vault.withdraw(assets, attacker, user) or vault.redeem(shares, attacker, user) for each user in the same block.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "vault",
+        "owner"
+      ],
+      "evidence": [
+        "3. Attacker then calls `vault.withdraw(assets, attacker, user)` or `vault.redeem(shares, attacker, user)` for each user in the same block."
+      ]
+    },
+    {
+      "id": "missing_third_party_auth_check",
+      "kind": "root_cause",
+      "text": "The internal _withdraw function only enforces the self-allowance mechanism and omits the standard third-party authorization check that should be performed when msg.sender != owner, so any caller can withdraw or redeem on behalf of an owner who has a positive self-allowance.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault"
+      ],
+      "evidence": [
+        "The internal `_withdraw` function in `WERC7575Vault` (called by both `withdraw()` and `redeem()`) only enforces the self-allowance mechanism:",
+        "It completely omits the standard third-party authorization check that should be performed when `msg.sender != owner`:",
+        "Because of this omission, any caller can withdraw/redeem on behalf of an owner as long as that owner has previously executed a self-permit (i.e., allowance(owner, owner) > 0)."
+      ]
+    },
+    {
+      "id": "third_party_withdrawal_requires_user_approval",
+      "kind": "security_intent",
+      "text": "When msg.sender != owner, a third-party withdrawal or redemption must require explicit user approval rather than relying only on the owner's self-allowance.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "owner"
+      ],
+      "evidence": [
+        "It completely omits the standard third-party authorization check that should be performed when `msg.sender != owner`:",
+        "- Validator is an acknowledged single point of failure (explicitly documented in `KNOWN_ISSUES.md`), but this bug removes **the last line of defense:** even  with a compromised key, third-party withdrawals should still require explicit user approval.",
+        "Add the standard third-party authorization check in `_withdraw`:"
+      ]
+    },
+    {
+      "id": "total_loss_of_funds",
+      "kind": "impact",
+      "text": "Total loss of funds: A single successful validator compromise allows draining 100 % of vault assets.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "- **Total loss of funds:** A single successful validator compromise allows draining 100 % of vault assets."
+      ]
+    },
+    {
+      "id": "catastrophic_full_fund_drainage",
+      "kind": "impact",
+      "text": "catastrophic impact (full fund drainage)",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "- While validator key compromise is considered a low-probability event under strong operational security, the combination of low probability and **catastrophic impact** (full fund drainage) still warrants Medium severity."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "attacker_signs_self_permit",
+    "attacker_calls_withdraw_redeem"
+  ],
+  "ambiguities": [
+    "Report does not state whether the owner's self-permit exists before the attacker's permit call or is created by it; the positive self-allowance is treated as a conditional prior state.",
+    "The exact third-party authorization check semantics (e.g., allowance(owner, msg.sender)) are only implied by the mitigation reference, not fully specified.",
+    "Timing of setValidator reaction relative to the attack is described only qualitatively.",
+    "Potential gain in the hundreds of millions of dollars is framed as attacker motivation, not a distinct harmful outcome."
+  ]
+}

@@ -297,8 +297,15 @@ describes. Encode P, I, and V independently from their own source records, then 
 the post-generation fidelity audit assess their relationship.
 
 V must be encoded separately in the required impact_outcome field as the selected
-impact's stated observable outcome. Do not make V be `P AND NOT I`, a negated
-version of I, an intermediate mechanism, or a convenient proxy.
+impact's stated observable outcome. Do not make V merely `P AND NOT I`, an
+intermediate mechanism, or a convenient proxy. For authorization_guard and
+condition_requires_effect patterns the direct falsifier of I is the guarded
+effect together with the denied guard: encode the selected impact as
+`effect happened AND the required authorization/condition was absent` whenever
+the impact or its cited evidence states that denial. That combination is the
+report's own violation witness, not a negated copy of I. If the selected impact
+only names a downstream consequence and no stated denial of I's guard, keep the
+frozen IDs and return a blocking unresolved item instead of inventing a bridge.
 Do not use a correspondence pattern to equate an I fact with a V outcome unless the
 TARGET INTENT explicitly states that equality. The pattern must encode the target I
 relation; the impact outcome must remain the separate V witness. A source ID alone

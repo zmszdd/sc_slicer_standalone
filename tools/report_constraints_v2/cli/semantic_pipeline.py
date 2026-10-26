@@ -594,7 +594,11 @@ def _direct_witness_hint(message):
             'the selected Impact states the concrete observed counterpart of the '
             "pattern's desired relation: the forbidden completion, the out-of-range "
             'value, the mismatched before/after state, or the denied required '
-            'authorization. V must be the Impact\'s own report-stated observable, '
+            'authorization. For authorization_guard or condition_requires_effect, '
+            'set impact_outcome to the guarded effect together with the denied '
+            'guard (effect happened AND the required authorization/condition was '
+            'absent) as the report states it. V must be the Impact\'s own '
+            'report-stated observable, '
             'not a formula copied from I and not a downstream profit/loss proxy. '
             'If the report gives only an indirect consequence and no stated V '
             'directly contradicts I under the frozen P, do not weaken V or invent '
@@ -2641,6 +2645,7 @@ def main():
         bundle['external_model_invocations'] = calls
         declarations = []
         queries = {}
+        query_status = {}
         for claim in bundle['claims']:
             filename = claim['id'] + '.smt2'
             (args.output / filename).write_text(claim.pop('smt'))
@@ -2654,6 +2659,9 @@ def main():
                     'assumptions': original['assumptions'], 'unresolved': original['unresolved']}
             query_dir = args.output / 'queries' / claim['id']; query_dir.mkdir(parents=True)
             queries[claim['id']] = solve_queries(base, text)
+            query_status[claim['id']] = {
+                name: result['status']
+                for name, result in queries[claim['id']].items()}
             for name, result in queries[claim['id']].items():
                 query_file = query_dir / (name + '.smt2')
                 query_file.write_text(result.pop('smt'))
@@ -2667,7 +2675,7 @@ def main():
                                  'code_queries_after_binding': ['P AND T', 'P AND T AND NOT I',
                                                                'P AND T AND V', 'P AND T AND NOT V'],
                                  'binding_contract': binding_contract(formal, original)})
-        triage = triage_bundle(bundle, unresolved_review)
+        triage = triage_bundle(bundle, unresolved_review, query_status)
         assessment = stage2_assessment(
             readiness=readiness, bundle=bundle,
             eligible_impact_ids=eligible_impact_ids,
