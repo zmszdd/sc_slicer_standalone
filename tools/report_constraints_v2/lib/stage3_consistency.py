@@ -20,7 +20,6 @@ snapshot/feature replay contract, and the consistency file is written at most
 once per run (re-ingestion of an already-adjudicated run is refused, mirroring
 the "replay never overwrites" discipline).
 """
-import argparse
 import json
 from pathlib import Path
 
@@ -211,21 +210,3 @@ def ingest_feedback(directory, feedback):
     }
     target.write_text(json.dumps(record, ensure_ascii=False, indent=2) + '\n')
     return record
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description='ingest stage-3 binding/query feedback and record the '
-                    'real consistency verdict for one finished run')
-    parser.add_argument('directory', type=Path, help='a stage-2 run directory')
-    parser.add_argument('--feedback', type=Path, required=True,
-                        help='stage3-consistency-feedback/1 JSON file')
-    args = parser.parse_args()
-    feedback = json.loads(args.feedback.read_text())
-    print(json.dumps(ingest_feedback(args.directory, feedback),
-                     ensure_ascii=False, indent=2))
-    return 0
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())

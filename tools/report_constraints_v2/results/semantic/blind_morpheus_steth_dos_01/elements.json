@@ -1,0 +1,161 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "stETH staking via DepositPool.stake() into Distributor.supply() and Aave supply",
+    "environment": "Aave integration with stETH as a 1-wei transfer-discrepancy token",
+    "evidence": [
+      "Aave supply DoS due to stETH 1-wei transfer discrepancy in `Distributor.supply`",
+      "When a user stakes stETH, the flow is:",
+      "1. `DepositPool.stake()` → `Distributor.supply(depositPoolAddress, amount)`",
+      "2. `Distributor.supply` pulls `amount` from the `DepositPool` and then calls Aave `supply` with the same `amount`.",
+      "The implementation assumes transfer-in equals `amount`. For stETH, due to the known 1 wei discrepancy on transfer, the distributor’s actual balance increases by `amount - 1`. It then instructs Aave to pull `amount`, which exceeds the distributor’s actual balance by 1 wei, so Aave’s `supply` reverts.",
+      "Staking with stETH is effectively DoS’d; transactions revert.",
+      "Treat stETH as a fee-on-transfer/deflationary-like token pattern. Use balance delta to determine the actual received amount, then pass that to Aave."
+    ]
+  },
+  "entities": [
+    {
+      "id": "user",
+      "name": "stETH staker",
+      "role": "victim",
+      "evidence": [
+        "When a user stakes stETH, the flow is:",
+        "Staking with stETH is effectively DoS’d; transactions revert."
+      ]
+    },
+    {
+      "id": "deposit_pool",
+      "name": "DepositPool",
+      "role": "contract",
+      "evidence": [
+        "1. `DepositPool.stake()` → `Distributor.supply(depositPoolAddress, amount)`",
+        "2. `Distributor.supply` pulls `amount` from the `DepositPool` and then calls Aave `supply` with the same `amount`."
+      ]
+    },
+    {
+      "id": "distributor",
+      "name": "Distributor",
+      "role": "contract",
+      "evidence": [
+        "1. `DepositPool.stake()` → `Distributor.supply(depositPoolAddress, amount)`",
+        "2. `Distributor.supply` pulls `amount` from the `DepositPool` and then calls Aave `supply` with the same `amount`.",
+        "The implementation assumes transfer-in equals `amount`. For stETH, due to the known 1 wei discrepancy on transfer, the distributor’s actual balance increases by `amount - 1`. It then instructs Aave to pull `amount`, which exceeds the distributor’s actual balance by 1 wei, so Aave’s `supply` reverts."
+      ]
+    },
+    {
+      "id": "aave",
+      "name": "Aave",
+      "role": "contract",
+      "evidence": [
+        "2. `Distributor.supply` pulls `amount` from the `DepositPool` and then calls Aave `supply` with the same `amount`.",
+        "The implementation assumes transfer-in equals `amount`. For stETH, due to the known 1 wei discrepancy on transfer, the distributor’s actual balance increases by `amount - 1`. It then instructs Aave to pull `amount`, which exceeds the distributor’s actual balance by 1 wei, so Aave’s `supply` reverts."
+      ]
+    },
+    {
+      "id": "steth",
+      "name": "stETH token",
+      "role": "asset",
+      "evidence": [
+        "Aave supply DoS due to stETH 1-wei transfer discrepancy in `Distributor.supply`",
+        "The implementation assumes transfer-in equals `amount`. For stETH, due to the known 1 wei discrepancy on transfer, the distributor’s actual balance increases by `amount - 1`. It then instructs Aave to pull `amount`, which exceeds the distributor’s actual balance by 1 wei, so Aave’s `supply` reverts."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "steth_transfer_discrepancy",
+      "kind": "precondition",
+      "text": "stETH has a known 1-wei discrepancy on transfer, so a transfer of amount increases the recipient balance by amount - 1.",
+      "modality": "asserted",
+      "entity_ids": [
+        "steth"
+      ],
+      "evidence": [
+        "The implementation assumes transfer-in equals `amount`. For stETH, due to the known 1 wei discrepancy on transfer, the distributor’s actual balance increases by `amount - 1`. It then instructs Aave to pull `amount`, which exceeds the distributor’s actual balance by 1 wei, so Aave’s `supply` reverts."
+      ]
+    },
+    {
+      "id": "supply_pulls_amount",
+      "kind": "action",
+      "text": "Distributor.supply pulls amount from the DepositPool and then calls Aave supply with the same amount.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distributor",
+        "deposit_pool",
+        "aave"
+      ],
+      "evidence": [
+        "2. `Distributor.supply` pulls `amount` from the `DepositPool` and then calls Aave `supply` with the same `amount`."
+      ]
+    },
+    {
+      "id": "assumes_transfer_in_equals_amount",
+      "kind": "root_cause",
+      "text": "The implementation assumes transfer-in equals amount; for stETH the distributor's actual balance increases by amount - 1, but it instructs Aave to pull amount, which exceeds the distributor's actual balance by 1 wei, so Aave's supply reverts.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distributor",
+        "aave",
+        "steth"
+      ],
+      "evidence": [
+        "The implementation assumes transfer-in equals `amount`. For stETH, due to the known 1 wei discrepancy on transfer, the distributor’s actual balance increases by `amount - 1`. It then instructs Aave to pull `amount`, which exceeds the distributor’s actual balance by 1 wei, so Aave’s `supply` reverts."
+      ]
+    },
+    {
+      "id": "intent_use_actual_received_amount",
+      "kind": "security_intent",
+      "text": "stETH must be treated as a fee-on-transfer/deflationary-like token: the actual received amount must be determined from the balance delta and that amount passed to Aave.",
+      "modality": "asserted",
+      "entity_ids": [
+        "distributor",
+        "aave",
+        "steth"
+      ],
+      "evidence": [
+        "Treat stETH as a fee-on-transfer/deflationary-like token pattern. Use balance delta to determine the actual received amount, then pass that to Aave."
+      ]
+    },
+    {
+      "id": "intent_supply_amount_within_balance",
+      "kind": "security_intent",
+      "text": "The amount Aave is instructed to pull must not exceed the distributor's actual balance.",
+      "modality": "inferred",
+      "entity_ids": [
+        "distributor",
+        "aave"
+      ],
+      "evidence": [
+        "The implementation assumes transfer-in equals `amount`. For stETH, due to the known 1 wei discrepancy on transfer, the distributor’s actual balance increases by `amount - 1`. It then instructs Aave to pull `amount`, which exceeds the distributor’s actual balance by 1 wei, so Aave’s `supply` reverts."
+      ]
+    },
+    {
+      "id": "steth_staking_dos",
+      "kind": "impact",
+      "text": "Staking with stETH is effectively DoS’d",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "Staking with stETH is effectively DoS’d; transactions revert."
+      ]
+    },
+    {
+      "id": "staking_transactions_revert",
+      "kind": "impact",
+      "text": "transactions revert",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "Staking with stETH is effectively DoS’d; transactions revert."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "supply_pulls_amount"
+  ],
+  "ambiguities": [
+    "No explicit statement that anyone can call stake() or supply(); caller authorization is unspecified.",
+    "The intent that Aave's pull must not exceed the distributor's actual balance is inferred from the revert description rather than stated as a requirement.",
+    "The report does not state whether the 1-wei discrepancy applies to every stETH transfer or only some transfers."
+  ]
+}

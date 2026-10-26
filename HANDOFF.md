@@ -88,7 +88,8 @@ constraints.json / status.json / stage3-spec.json
 - 已把筛选放到 P/I/V 提取之前。
 - 信息明确不足的报告不再进入后续流程，避免浪费调用和制造低质量公式。
 - 旧的“生成后自动筛选”已退出活动工作流，不要重新接回主流程。
-- `preview.py screen` 目前只做本地文件/输入检查；真正的语义充分性门在主流程中。
+- 本地文件/输入身份核对并入主流程的 `load_report` / `build_catalog`；
+  真正的语义充分性门在主流程中。
 
 ### 3.3 神经符号规则化
 
@@ -214,8 +215,8 @@ v3.20 提示词修正的对照实测（5 例 × 10 次 = 50 次调用）：
 - Prompt 已迁到 `tools/report_constraints_v2/prompts/versions/`，统一由
   `prompts/registry.py` 注册和管理版本能力；冻结 Prompt 文本的 SHA-256 未变。
 - P/I/V 规范已集中到 `prompts/definitions.py`，生产流程经 `prompts/active.py`
-  显式解析最终 Prompt；可用 `python main.py preview-prompt --part
-  definitions|element|formal` 查看，不调用模型。v3.5–v3.20 冻结文件未修改。
+  显式解析最终 Prompt（`resolve_prompt_set()`，不调用模型）。
+  v3.5–v3.20 冻结文件未修改。
 - 自动测试已迁到 `tools/report_constraints_v2/tests/`；删除退役分支的 22 项专用测试后，当前主线 268 项通过。
 - 阶段二根目录现在**没有任何 `.py`**：入口在 `cli/`，共享模块在 `lib/`。
   重构前的 14 个旧模块名（`fidelity`、`evidence_catalog`、`verify_semantic` 等）
@@ -661,14 +662,6 @@ python main.py batch --reports-root /path/to/reports --output results/semantic/a
 `--resume` 复用输出目录并跳过已有 `status.json` 的案例，半成品目录会被改名为
 `<case>.incomplete-<UTC>` 保留证据（不删除）。完成后写出 `batch-summary.json` 和
 `batch-summary.md`。单批仍限制最多 5 例（`--max-cases` 可调），以控制费用。
-
-### 预览将发送的报告文本
-
-```bash
-cd /root/sc_slicer_standalone
-/root/.local/share/uv/tools/halmos/bin/python \
-  main.py preview-report --case-dir /absolute/path/to/case
-```
 
 ### 当前稳定版单案例运行
 

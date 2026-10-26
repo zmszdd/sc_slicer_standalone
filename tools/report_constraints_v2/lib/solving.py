@@ -7,10 +7,6 @@
                           (itself merged from automatic_triage.py +
                           review_observability.py on 2026-09-21).
 """
-import argparse
-import json
-from pathlib import Path
-
 import z3
 
 from lib import report_only as r
@@ -42,6 +38,28 @@ def setup(claim):
             conditions['P_and_V_and_not_I'] = pre + [props[v_name], z3.Not(props[i_name])]
             conditions['P_and_V_and_I'] = pre + [props[v_name], props[i_name]]
     return variables, conditions
+
+
+def direct_relation_feasible(claim):
+    """Return True when one claim satisfies the stage-2 handoff gate.
+
+    Mirrors ``continuation_blockers`` exactly: the reported violation must be
+    satisfiable with P, satisfiable with P and NOT I, and unsatisfiable with
+    P and I (V falsifies I under P).
+    """
+    _, conditions = setup(claim)
+    required = ('P_and_V', 'P_and_V_and_not_I', 'P_and_V_and_I')
+    if any(name not in conditions for name in required):
+        return False
+    for name, expected in (('P_and_V', 'sat'),
+                           ('P_and_V_and_not_I', 'sat'),
+                           ('P_and_V_and_I', 'unsat')):
+        solver = z3.Solver()
+        solver.set(timeout=5000)
+        solver.add(*conditions[name])
+        if str(solver.check()) != expected:
+            return False
+    return True
 
 
 def solve_queries(claim, text):
@@ -223,17 +241,3 @@ def attach_review(bundle, formal):
             bundle['acceptance_status'] != 'rejected'):
         bundle['acceptance_status'] = 'needs_review'
     return result
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('directory', type=Path)
-    args = parser.parse_args()
-    # CLI is read-only, including for historical bundles.
-    formal = json.loads((args.directory / 'formalization.json').read_text())
-    bundle = json.loads((args.directory / 'constraints.json').read_text())
-    print(json.dumps(review(formal, bundle), ensure_ascii=False, indent=2))
-
-
-if __name__ == '__main__':
-    main()

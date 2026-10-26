@@ -1,0 +1,97 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "e19edb60f2a6b5c613e7bfe8b96bef77b29c502751d44ac5c32c2f37fb76d9d6",
+  "fragments": [
+    {
+      "id": "e_e19edb60f2a6_0001",
+      "text": "Attacker can drain funds from `GTELaunchPadV2Pair` using `swap`",
+      "start": 0,
+      "end": 63,
+      "line": 1
+    },
+    {
+      "id": "e_e19edb60f2a6_0002",
+      "text": "## Finding description and impact",
+      "start": 65,
+      "end": 98,
+      "line": 3
+    },
+    {
+      "id": "e_e19edb60f2a6_0003",
+      "text": "If we consider a situation where there are some non-zero accrued launchpad fees on the `GTELaunchPadV2Pair`, then the reserves are calculated as current balances subtract accrued fees within the `_update` function (GTELaunchPadV2Pair.sol lines 154-155):",
+      "start": 99,
+      "end": 352,
+      "line": 4
+    },
+    {
+      "id": "e_e19edb60f2a6_0004",
+      "text": "Now an attacker can call `swap` and the function infers the amount(s) transferred into the pair based on the below calculation (lines 250-251):",
+      "start": 355,
+      "end": 498,
+      "line": 7
+    },
+    {
+      "id": "e_e19edb60f2a6_0005",
+      "text": "The issue is that `balance0` and `balance1` are inclusive of swap fees, but `reserve0` and `reserve1` are not. Let's say the attacker chooses `amount0Out = totalLaunchpadFee0` and does not transfer any tokens into the contract prior to calling `swap`. In this case `balance0` (the balance measured after transferring `amount0Out` to the attacker) is just the same as reserves. Therefore:",
+      "start": 501,
+      "end": 888,
+      "line": 10
+    },
+    {
+      "id": "e_e19edb60f2a6_0006",
+      "text": "`amount0In = balance0 - (_reserve0 - amount0Out)  = _reserve0 - (_reserve0 - totalLaunchpadFee0) =  totalLaunchpadFee0`",
+      "start": 891,
+      "end": 1010,
+      "line": 12
+    },
+    {
+      "id": "e_e19edb60f2a6_0007",
+      "text": "The contract incorrectly infers that the attacker has transferred tokens in when they haven't transferred anything. To make it work, the attacker needs to reduce `amount0Out` by 0.3% so the k invariant is still satisfied when considering fees. The same principle applies for `amount1` also.",
+      "start": 1012,
+      "end": 1302,
+      "line": 14
+    },
+    {
+      "id": "e_e19edb60f2a6_0008",
+      "text": "After the attacker's call to `swap`, the issue can be exploited again due to the fact the reserves are just updated to be current balances minus the accrued swap fees (assume the attacker performs the attack within the same block as when the fees were accrued, so this way the accrued fees are not cleared). Therefore the attacker can repeatedly execute `swap` in this manner in one transaction and drain a large amount of funds from the protocol.",
+      "start": 1304,
+      "end": 1751,
+      "line": 16
+    },
+    {
+      "id": "e_e19edb60f2a6_0009",
+      "text": "Additionally, the pair does not correctly implement the k invariant as we can see on lines 256-261:",
+      "start": 1753,
+      "end": 1852,
+      "line": 18
+    },
+    {
+      "id": "e_e19edb60f2a6_0010",
+      "text": "This is because the adjusted balances are actually inflated by the inclusion of accrued swap fees in them.",
+      "start": 1855,
+      "end": 1961,
+      "line": 21
+    },
+    {
+      "id": "e_e19edb60f2a6_0011",
+      "text": "Impact: theft of up to 100% of tokens held by the pair.",
+      "start": 1963,
+      "end": 2018,
+      "line": 23
+    },
+    {
+      "id": "e_e19edb60f2a6_0012",
+      "text": "## Recommended mitigation steps",
+      "start": 2020,
+      "end": 2051,
+      "line": 25
+    },
+    {
+      "id": "e_e19edb60f2a6_0013",
+      "text": "When inferring the amount(s) transferred in by the user, subtract off the accrued launchpad fees so they amounts can be accurately measured. Also, you need to take away the accrued fees from the balances before checking the k invariant. Essentially, the accrued launchpad fees are no longer part of the available liquidity of the protocol, and so this needs to be carefully considered.",
+      "start": 2053,
+      "end": 2438,
+      "line": 27
+    }
+  ]
+}

@@ -1,0 +1,258 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "41ff6b99b3df1ce9381707fcf54f14e63e917d5400cb8e9c456982e70d9878f6",
+  "fragments": [
+    {
+      "id": "e_41ff6b99b3df_0001",
+      "text": "Critical Stale Price Oracle Manipulation in Market Creation",
+      "start": 0,
+      "end": 59,
+      "line": 1
+    },
+    {
+      "id": "e_41ff6b99b3df_0002",
+      "text": "## Summary",
+      "start": 61,
+      "end": 71,
+      "line": 3
+    },
+    {
+      "id": "e_41ff6b99b3df_0003",
+      "text": "The protocol initializes new markets using a potentially stale oracle price. The createMarket function is non‑payable and does not update pull‑based oracles (e.g., Pyth) prior to reading the price inside LatentSwapLEX.initMarket. Meanwhile, user actions like mint/redeem/swap do update the oracle. This inconsistency allows attackers to initialize a market at an outdated price and immediately arbitrage once correct prices are refreshed, draining initial market liquidity.",
+      "start": 72,
+      "end": 545,
+      "line": 4
+    },
+    {
+      "id": "e_41ff6b99b3df_0004",
+      "text": "## Finding Description",
+      "start": 547,
+      "end": 569,
+      "line": 6
+    },
+    {
+      "id": "e_41ff6b99b3df_0005",
+      "text": "1) createMarket forwards directly to initMarket without any oracle price update:",
+      "start": 570,
+      "end": 650,
+      "line": 7
+    },
+    {
+      "id": "e_41ff6b99b3df_0006",
+      "text": "src/Covenant.sol (lines 211–228)",
+      "start": 652,
+      "end": 684,
+      "line": 9
+    },
+    {
+      "id": "e_41ff6b99b3df_0007",
+      "text": "2) LatentSwapLEX.initMarket reads the price immediately; no _updateOraclePrice is called prior:",
+      "start": 686,
+      "end": 781,
+      "line": 11
+    },
+    {
+      "id": "e_41ff6b99b3df_0008",
+      "text": "src/lex/latentswap/LatentSwapLEX.sol (lines 246–256)",
+      "start": 783,
+      "end": 835,
+      "line": 13
+    },
+    {
+      "id": "e_41ff6b99b3df_0009",
+      "text": "3) The price read uses getQuote (non‑preview) and depends on the oracle being fresh:",
+      "start": 838,
+      "end": 922,
+      "line": 16
+    },
+    {
+      "id": "e_41ff6b99b3df_0010",
+      "text": "src/lex/latentswap/libraries/LatentSwapLogic.sol (lines 1153–1187)",
+      "start": 924,
+      "end": 990,
+      "line": 18
+    },
+    {
+      "id": "e_41ff6b99b3df_0011",
+      "text": "4) All post‑creation user flows correctly update the oracle first (contrast):",
+      "start": 993,
+      "end": 1070,
+      "line": 21
+    },
+    {
+      "id": "e_41ff6b99b3df_0012",
+      "text": "5) Updating a pull‑based oracle is payable:",
+      "start": 1075,
+      "end": 1118,
+      "line": 26
+    },
+    {
+      "id": "e_41ff6b99b3df_0013",
+      "text": "src/interfaces/IPriceOracle.sol (lines 37–43)",
+      "start": 1120,
+      "end": 1165,
+      "line": 28
+    },
+    {
+      "id": "e_41ff6b99b3df_0014",
+      "text": "6) The “smoking gun”: createMarket is non‑payable, so it cannot forward the oracle fee. Thus, it is impossible to safely call createMarket directly in pull‑oracle mode.",
+      "start": 1168,
+      "end": 1336,
+      "line": 31
+    },
+    {
+      "id": "e_41ff6b99b3df_0015",
+      "text": "7) The protocol’s multicall cannot fix this (only delegate‑calls into Covenant and forces strict balance equality):",
+      "start": 1338,
+      "end": 1453,
+      "line": 33
+    },
+    {
+      "id": "e_41ff6b99b3df_0016",
+      "text": "Because multicall delegate‑calls into Covenant itself, it cannot call an external oracle adapter’s updatePriceFeeds directly; and the strict balance check further constrains fee handling.",
+      "start": 1457,
+      "end": 1644,
+      "line": 37
+    },
+    {
+      "id": "e_41ff6b99b3df_0017",
+      "text": "## Impact Explanation",
+      "start": 1646,
+      "end": 1667,
+      "line": 39
+    },
+    {
+      "id": "e_41ff6b99b3df_0018",
+      "text": "Severity: HIGH.",
+      "start": 1668,
+      "end": 1683,
+      "line": 40
+    },
+    {
+      "id": "e_41ff6b99b3df_0019",
+      "text": "Why high:",
+      "start": 1685,
+      "end": 1694,
+      "line": 42
+    },
+    {
+      "id": "e_41ff6b99b3df_0020",
+      "text": "- Initialization sets LexState.lastBaseTokenPrice and derived invariants. If stale, the market is born mispriced.",
+      "start": 1695,
+      "end": 1808,
+      "line": 43
+    },
+    {
+      "id": "e_41ff6b99b3df_0021",
+      "text": "- An attacker can create a market when the oracle lags, then immediately perform mint/redeem/swap (which refreshes to the true price) to arbitrage the price gap established at initialization.",
+      "start": 1809,
+      "end": 2000,
+      "line": 44
+    },
+    {
+      "id": "e_41ff6b99b3df_0022",
+      "text": "- The non‑payable nature of createMarket mathematically prevents safe price updates through the direct path, proving this is a design flaw (not user error).",
+      "start": 2001,
+      "end": 2157,
+      "line": 45
+    },
+    {
+      "id": "e_41ff6b99b3df_0023",
+      "text": "Concrete exploit path:",
+      "start": 2159,
+      "end": 2181,
+      "line": 47
+    },
+    {
+      "id": "e_41ff6b99b3df_0024",
+      "text": "- Attacker monitors for stale oracle windows.",
+      "start": 2182,
+      "end": 2227,
+      "line": 48
+    },
+    {
+      "id": "e_41ff6b99b3df_0025",
+      "text": "- Calls createMarket (no fee, no update → stale price used).",
+      "start": 2228,
+      "end": 2288,
+      "line": 49
+    },
+    {
+      "id": "e_41ff6b99b3df_0026",
+      "text": "- Immediately invokes a state‑changing action (mint/redeem/swap), which updates to the correct price and unlocks a deterministic arbitrage of the mispricing.",
+      "start": 2289,
+      "end": 2446,
+      "line": 50
+    },
+    {
+      "id": "e_41ff6b99b3df_0027",
+      "text": "- Early LPs or bootstrap funds are directly impacted; loss can be catastrophic.",
+      "start": 2447,
+      "end": 2526,
+      "line": 51
+    },
+    {
+      "id": "e_41ff6b99b3df_0028",
+      "text": "## Likelihood Explanation",
+      "start": 2528,
+      "end": 2553,
+      "line": 53
+    },
+    {
+      "id": "e_41ff6b99b3df_0029",
+      "text": "High likelihood:",
+      "start": 2554,
+      "end": 2570,
+      "line": 54
+    },
+    {
+      "id": "e_41ff6b99b3df_0030",
+      "text": "- createMarket is the obvious, first entrypoint to spin up markets.",
+      "start": 2571,
+      "end": 2638,
+      "line": 55
+    },
+    {
+      "id": "e_41ff6b99b3df_0031",
+      "text": "- No natspec warnings instruct users to avoid direct use or to wrap with a safe helper.",
+      "start": 2639,
+      "end": 2726,
+      "line": 56
+    },
+    {
+      "id": "e_41ff6b99b3df_0032",
+      "text": "- Pull‑based oracles (e.g., Pyth) are common and require fees; createMarket cannot pass them.",
+      "start": 2727,
+      "end": 2820,
+      "line": 57
+    },
+    {
+      "id": "e_41ff6b99b3df_0033",
+      "text": "## Recommendation",
+      "start": 2822,
+      "end": 2839,
+      "line": 59
+    },
+    {
+      "id": "e_41ff6b99b3df_0034",
+      "text": "- Make market creation safe for pull‑based oracles:",
+      "start": 2840,
+      "end": 2891,
+      "line": 60
+    },
+    {
+      "id": "e_41ff6b99b3df_0035",
+      "text": "- Option A: Make createMarket payable and forward msg.value (and initData) to an oracle update hook before any initial price read.",
+      "start": 2894,
+      "end": 3024,
+      "line": 61
+    },
+    {
+      "id": "e_41ff6b99b3df_0036",
+      "text": "- Option B (preferred): In LatentSwapLEX.initMarket, call _updateOraclePrice before readBasePriceAndCalculateLiqRatio, using initData and msg.value passed through from createMarket.",
+      "start": 3027,
+      "end": 3208,
+      "line": 62
+    }
+  ]
+}

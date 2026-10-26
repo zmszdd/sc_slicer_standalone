@@ -1,0 +1,28 @@
+Yield withdrawal blocked by zero reward early return
+
+## Finding Description and Impact
+
+When withdrawing yield, it is calculated as the [difference](https://github.com/code-423n4/2025-08-morpheus/blob/a65c254e4c3133c32c05b80bf2bd6ff9eced68e2/contracts/capital-protocol/Distributor.sol#L482-L483) between `lastUnderlyingBalance` and `deposited` for the given `depositPool`. The `lastUnderlyingBalance` is [updated](https://github.com/code-423n4/2025-08-morpheus/blob/a65c254e4c3133c32c05b80bf2bd6ff9eced68e2/contracts/capital-protocol/Distributor.sol#L384-L389) in `distributeRewards()` to reflect the current token balance, which includes accumulated yield. However, this function returns early when the calculated `rewards_` amount for the period between `lastCalculatedTimestamp_` and `block.timestamp` is zero:
+
+https://github.com/code-423n4/2025-08-morpheus/blob/a65c254e4c3133c32c05b80bf2bd6ff9eced68e2/contracts/capital-protocol/Distributor.sol#L340-L346
+
+This prevents `lastUnderlyingBalance` from being updated when `rewards_` is zero, causing the accounting system to fail to recognize newly accumulated yield and making it impossible to withdraw.
+
+Rewards are only calculated up to the [maxEndTime](https://github.com/code-423n4/2025-08-morpheus/blob/a65c254e4c3133c32c05b80bf2bd6ff9eced68e2/contracts/libs/LinearDistributionIntervalDecrease.sol#L36-L40), which represents when reward distribution for a given pool ends completely. After this point, no more rewards are distributed from that pool.
+
+When `getPeriodRewards()` returns zero for any period after `maxEndTime`, it will permanently return zero for all future periods. This means `distributeRewards()` will always return early without updating `lastUnderlyingBalance`, creating a permanent lock on any yield that accumulated since `lastCalculatedTimestamp_` and any yield that accumulates after the reward distribution period ends
+
+The problem is particularly severe because:
+1. Users can remain staked after `maxEndTime` and their tokens continue generating yield
+2. The yield accounting becomes permanently broken once rewards end
+3. All yield generated after `maxEndTime` becomes permanently inaccessible
+4. This affects the entire deposit pool, not just individual users
+
+If `lastCalculatedTimestamp_ == maxEndTime - 100`, `getPeriodRewards(rewardPoolIndex_, lastCalculatedTimestamp_, maxEndTime) == 0`, and `yield == 10e18` during that time, this yield amount will be permanently stuck. Any continuing yield accumulation after `maxEndTime` will also become unwithdrawable.
+
+## Recommended Mitigation Steps
+
+Implement functionality that allows withdrawing yield even when no rewards accrue. For example:
+
+1. Add a mechanism to update `lastUnderlyingBalance` independent of reward calculations
+2. Implement a fallback method for yield withdrawal after reward distribution ends

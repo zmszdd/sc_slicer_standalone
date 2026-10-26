@@ -1,0 +1,174 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "1cb2fb483ba7e3211747577bdcd67dccbd3e3669305e0066bcf21ca46c26322a",
+  "fragments": [
+    {
+      "id": "e_1cb2fb483ba7_0001",
+      "text": "Nested multicalls revert, breaking composability and availability",
+      "start": 0,
+      "end": 65,
+      "line": 1
+    },
+    {
+      "id": "e_1cb2fb483ba7_0002",
+      "text": "## Finding Description",
+      "start": 67,
+      "end": 89,
+      "line": 3
+    },
+    {
+      "id": "e_1cb2fb483ba7_0003",
+      "text": "`Covenant` exposes a payable `multicall()` that runs an array of batched calls via `delegatecall` (through `MulticallLib.multicall()`), and enforces a post-batch balance equality check to prevent over/under-deposits of ETH.",
+      "start": 90,
+      "end": 313,
+      "line": 4
+    },
+    {
+      "id": "e_1cb2fb483ba7_0004",
+      "text": "Affected function code:",
+      "start": 315,
+      "end": 338,
+      "line": 6
+    },
+    {
+      "id": "e_1cb2fb483ba7_0005",
+      "text": "[Covenant.sol#L507-L524](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/Covenant.sol#L507-L524)",
+      "start": 340,
+      "end": 485,
+      "line": 8
+    },
+    {
+      "id": "e_1cb2fb483ba7_0006",
+      "text": "In turn, `MulticallLib.multicall()` iterates the calls and performs `delegatecall` back into the same contract (so the callee sees the same execution context):",
+      "start": 488,
+      "end": 647,
+      "line": 11
+    },
+    {
+      "id": "e_1cb2fb483ba7_0007",
+      "text": "[MultiCall.sol#L26-L32](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/libraries/MultiCall.sol#L26-L32)",
+      "start": 649,
+      "end": 802,
+      "line": 13
+    },
+    {
+      "id": "e_1cb2fb483ba7_0008",
+      "text": "Root cause",
+      "start": 803,
+      "end": 813,
+      "line": 14
+    },
+    {
+      "id": "e_1cb2fb483ba7_0009",
+      "text": "- The end-of-batch balance equality check is applied independently at each nesting level, but each level computes `balanceBeforeCall` using the same top-level `msg.value` because inner batches execute via `delegatecall`.",
+      "start": 814,
+      "end": 1034,
+      "line": 15
+    },
+    {
+      "id": "e_1cb2fb483ba7_0010",
+      "text": "- There is no notion of per-batch “consumed value”; thus, an inner `multicall()` assumes the entire transaction `msg.value` must be fully balanced within its own sub-batch.",
+      "start": 1035,
+      "end": 1207,
+      "line": 16
+    },
+    {
+      "id": "e_1cb2fb483ba7_0011",
+      "text": "Highest-impact scenario",
+      "start": 1209,
+      "end": 1232,
+      "line": 18
+    },
+    {
+      "id": "e_1cb2fb483ba7_0012",
+      "text": "- A nested batch where the inner `multicall()` does not itself forward any ETH, but the outer batch intends to do so later. The inner batch computes `balanceBeforeCall = (prevBalance + msg.value) - msg.value = prevBalance`, while the actual end-of-inner-batch balance remains `prevBalance + msg.value`. The equality check fails and the transaction reverts, making nested batching brittle and non-composable.",
+      "start": 1233,
+      "end": 1640,
+      "line": 19
+    },
+    {
+      "id": "e_1cb2fb483ba7_0013",
+      "text": "## Impact",
+      "start": 1642,
+      "end": 1651,
+      "line": 21
+    },
+    {
+      "id": "e_1cb2fb483ba7_0014",
+      "text": "Medium.",
+      "start": 1652,
+      "end": 1659,
+      "line": 22
+    },
+    {
+      "id": "e_1cb2fb483ba7_0015",
+      "text": "- Availability/composability is impacted: nested multicalls revert even in benign cases (e.g., inner batch does nothing), breaking integrations that rely on multi-level batching and deferred ETH forwarding within the outer batch.",
+      "start": 1660,
+      "end": 1889,
+      "line": 23
+    },
+    {
+      "id": "e_1cb2fb483ba7_0016",
+      "text": "## Likelihood Explanation",
+      "start": 1892,
+      "end": 1917,
+      "line": 26
+    },
+    {
+      "id": "e_1cb2fb483ba7_0017",
+      "text": "High.",
+      "start": 1918,
+      "end": 1923,
+      "line": 27
+    },
+    {
+      "id": "e_1cb2fb483ba7_0018",
+      "text": "- `delegatecall`-based multicalls are commonly composed. Any integrator nesting `multicall()` or building batch abstractions that rely on forwarding ETH later in the outer batch will hit this revert systematically.",
+      "start": 1924,
+      "end": 2138,
+      "line": 28
+    },
+    {
+      "id": "e_1cb2fb483ba7_0019",
+      "text": "## Recommendation",
+      "start": 2144,
+      "end": 2161,
+      "line": 34
+    },
+    {
+      "id": "e_1cb2fb483ba7_0020",
+      "text": "Option A: Depth-aware enforcement (preferred)",
+      "start": 2162,
+      "end": 2207,
+      "line": 35
+    },
+    {
+      "id": "e_1cb2fb483ba7_0021",
+      "text": "- Track depth and only enforce the equality check at the outermost level.",
+      "start": 2208,
+      "end": 2281,
+      "line": 36
+    },
+    {
+      "id": "e_1cb2fb483ba7_0022",
+      "text": "- Keep `_checkPayment()` strict only when `depth == 0`.",
+      "start": 2282,
+      "end": 2337,
+      "line": 37
+    },
+    {
+      "id": "e_1cb2fb483ba7_0023",
+      "text": "Option B: Disallow nested multicalls (simpler, if nesting is unnecessary)",
+      "start": 2339,
+      "end": 2412,
+      "line": 39
+    },
+    {
+      "id": "e_1cb2fb483ba7_0024",
+      "text": "- Fail fast when already inside a multicall.",
+      "start": 2413,
+      "end": 2457,
+      "line": 40
+    }
+  ]
+}

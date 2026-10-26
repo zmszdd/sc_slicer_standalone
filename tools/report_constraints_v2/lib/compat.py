@@ -47,8 +47,6 @@ ALIASES = {
     'deepseek': 'lib.deepseek',
     'report_only': 'lib.report_only',
     'semantic_pipeline': 'cli.semantic_pipeline',
-    'preview': 'cli.preview',
-    'preconditions': 'cli.preconditions',
 }
 
 

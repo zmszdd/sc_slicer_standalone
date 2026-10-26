@@ -5,7 +5,7 @@
 
 当前活动版本 semantic-live-24 将已提取 action/root-cause 引用的精确报告片段作为关系上下文传给规则生成器及生成后审查，并要求生成器随形式计划返回仅供审查的 `relationship_trace`（在冻结 relation_context 中引用一条 P/I/V 关系路径）。trace 在合成前剥离，不能成为规则条件或新来源；审查把它当未验证指针独立核对。生成器把 trace 追加在 plan 闭括号之外的同构畸形响应由 `merge_appended_relationship_trace` 确定性容错（v3.20 规范化契约：原始响应不改写、`response-normalization.json` 记录变换、`verify` 重放复验）。上下文只用于理解冻结 P/I/V 的关系，不得新增或改写来源。关系存疑单列为 needs_review；只有 P/I/V 来源公式失配会触发局部修复。仅 passed 来源组进入阶段三。
 
-本文档止于阶段二主链（报告 → P/I/V → stage3-spec）。Impact 只从明确标注的 Impact 区域提取主要、不同且有原文依据的结果；P/I 证据可来自报告正文、明确的 NatSpec/标准要求或直接说明预期安全关系的修复建议。修复动作本身和 Impact 后果不能用来推测 I。阶段三把代码执行关系 T 与本阶段输出绑定后判断一致性（`main.py stage3-feedback`，`lib/stage3_consistency.py`）。
+本文档止于阶段二主链（报告 → P/I/V → stage3-spec）。Impact 只从明确标注的 Impact 区域提取主要、不同且有原文依据的结果；P/I 证据可来自报告正文、明确的 NatSpec/标准要求或直接说明预期安全关系的修复建议。修复动作本身和 Impact 后果不能用来推测 I。阶段三把代码执行关系 T 与本阶段输出绑定后判断一致性（`lib/stage3_consistency.py` 的 `binding_contract` / `ingest_feedback`）。
 
 ## 1. 主流程 `python main.py run`
 
@@ -112,29 +112,18 @@ flowchart LR
         V1["cli/batch_verify.py"] --> V2["plan_synthesizer / salvage<br/>solving / semantic_core"]
         V2 --> V3["重放并校验<br/>evidence/公式/SMT/接口哈希"]
     end
-    subgraph Pre["main.py preview / screen"]
-        P1["preview.py screen<br/>本地输入检查"] 
-        P2["preview.py report<br/>第一步报告正文"]
-        P3["preview.py plan<br/>第二步精简 JSON"]
-    end
 ```
 
 | 命令 | 入口文件 | 依赖文件 | 产物 |
 |---|---|---|---|
 | `batch` | `cli/batch_verify.py` | `cli/semantic_pipeline.py`（子进程）、`prompts/registry.py` | `batch-summary.json`、`batch-summary.md`、每例一个子目录 |
 | `verify` | `cli/batch_verify.py` | `lib/report_only`、`lib/semantic_core`、`lib/plan_synthesizer`、`lib/salvage`、`lib/ingest`、`lib/solving`、`prompts` | 控制台 JSON（`offline_verified`） |
-| `screen` | `cli/preview.py`（`screen`） | `lib/ingest`、`cli/semantic_pipeline.load_report` | 可选 `--output` JSON |
-| `preview-report` / `preview-plan` | `cli/preview.py`（`report` / `plan`） | `lib/ingest`、`lib/semantic_core`、`cli/semantic_pipeline` | 仅标准输出（不写文件） |
-| `audit-preconditions` / `repair-preconditions` | `cli/preconditions.py`（`audit` / `repair`） | `lib/report_only`、`lib/ingest`、`lib/semantic_core`、`cli/semantic_pipeline` | 审计/修复 JSON（**主流程不调用，opt-in**） |
-| `observability` | `lib/solving.py`（CLI） | 自身 | 审查提示 |
-| `salvage-replay` | `lib/salvage.py`（CLI） | `lib/semantic_core`、`lib/plan_synthesizer`、`cli/semantic_pipeline`（延迟导入） | 重放结果目录 |
-| `stage3-feedback` | `lib/stage3_consistency.py`（CLI） | 自身 | 该 run 的 `stage3-consistency.json` |
 
 ## 5. 模块清单
 
 | 类别 | 文件 |
 | --- | --- |
-| 入口(4) | `cli/semantic_pipeline.py`、`cli/batch_verify.py`、`cli/preview.py`、`cli/preconditions.py` |
+| 入口(2) | `cli/semantic_pipeline.py`、`cli/batch_verify.py` |
 | 库(13) | `lib/semantic_core.py`、`lib/plan_synthesizer.py`、`lib/deepseek.py`、`lib/report_only.py`、`lib/ingest.py`、`lib/solving.py`、`lib/salvage.py`、`lib/stage3_consistency.py`、`lib/impact_inventory.py`、`lib/impact_cards.py`、`lib/multi_impact.py`、`lib/piv_contract.py`、`lib/compat.py`（历史名兼容） |
 
 Prompt：可编辑的只有 `prompts/current.py`（`semantic-live`，默认版本）；

@@ -1,8 +1,96 @@
 # 阶段二现状与收口计划
 
-状态摘要更新于 2026-10-23。下文按时间顺序保留实验记录；若历史记录中的“下一步”与本节冲突，以本节为准。
+状态摘要更新于 2026-10-24。下文按时间顺序保留实验记录；若历史记录中的“下一步”与本节冲突，以本节为准。
 
 # 阶段二当前状态
+
+## 主链生成/重放契约修复（2026-10-24）
+
+围绕主线做了一次未使用报告的盲测，发现并修复两处生成端与零调用重放端不一致：
+
+1. **live-24 两层响应未解包**。live-24 Prompt 要求返回
+   `{formal_plan, relationship_trace}` 两个顶层键，但 `request_formalization`
+   只弹出 `relationship_trace`，没有解包 `formal_plan`；忠实遵循两层结构的候选全部
+   被 `unexpected formal plan fields` 拒绝。现在生成端确定性解包 `formal_plan`，
+   `verify` 重放端同步解包并剥离已 salvage 的顶层 `relationship_trace`
+   （`cli/semantic_pipeline.py`、`cli/batch_verify.py`）。
+2. **成功多 I 规则无法重放 `relation_context`**。`verify_multi_intent_plans` 重放
+   成功 Impact/I 对时没有把 `relation_context` 加回请求，而 live-23/24 生成端会加，
+   导致成功规则被 `saved Impact/I formal request escaped its frozen sources` 拦下。
+   现在重放端按相同规则补回 `relation_context`。
+3. **入口默认预算会覆盖显式 `--readiness-retries 0`**。`main.py` 的 readiness
+   append 原本只以 `--provider` 为冲突标记，用户显式传 `--readiness-retries 0`
+   （未显式 provider）时会被追加的 `--readiness-retries 1` 覆盖。现在冲突标记扩展为
+   `--provider` / `--readiness-retries` 任一，显式预算与其它 retry flags 一样生效。
+
+新增回归测试 `FormalPlanEnvelopeTests`；全量自动化测试 474 项通过。修复后同一份
+盲测报告（Silo Finance `W66hJ3tzotg`）的 `formalization_rate` 从 0 提升到 0.5：
+1/2 个 Impact 通过忠实度审查，另一个 Impact 的 I 被审查判为恒真式（`x implies x==x`）
+而正确留档为 `unformalized`。
+
+## 多案例盲测与 local-repair 重放修复（2026-10-26）
+
+对 5 份全新报告（GTE Spot、GTE Perps、Covenant×2、Olas）跑真实 `run` + 零调用 `verify`：
+
+- 总 Impact 10，formalized 8，`formalization_rate=0.8`；忠实度 13 通过 / 2 失败。
+- 0/5 `stage2_can_continue=true`：formalized 的 claim 仍全部被
+  `direct P/I/V relationship is absent or infeasible` 拦下。生成端倾向把 I 写成
+  `¬V ⇒ condition`，使 `P∧V∧I` 恒可满足，是当前主线最主要的语义缺口，不是重放契约问题。
+- 发现并修复 local-repair 重放不一致：成功重试会从上一版恢复 `unresolved/limitations`
+  等非可变字段，但 `verify` 未重放 `restore_frozen_repair_fields`，导致
+  `saved Impact/I plan differs from normalized model response`。现在
+  `verify_multi_intent_plans` 按 attempt 记录重放该恢复步骤，5/5
+  `offline_verified=true`、`model_calls=0`。
+
+## 主线极性门禁（2026-10-27）
+
+盲测暴露的最终阻塞是：生成端把 I 写成 `¬V ⇒ condition` 或自蕴含，使
+`P ∧ V ∧ I` 恒可满足，而阶段二续跑门要求它 UNSAT。修复沿主线收紧生成侧，
+不改变 `continuation_blockers` 与零调用重放：
+
+- `prompts/current.py` 要求 I 对 V 无条件；只支持间接后果、无法让 V 直接
+  falsify I 时返回阻塞 `unsupported_relation`，不再凑 `¬V ⇒ ...`。
+- `lib/solving.py` 新增 `direct_relation_feasible`，与 `continuation_blockers`
+  完全同口径地判断 `P∧V`、`P∧V∧¬I`、`P∧V∧I` 三个查询。
+- `lib/plan_synthesizer.py` 新增 `reject_vacuous_safety`，先做 V 守卫/自蕴含的
+  语法拦截，再做上述语义拦截。
+- `cli/semantic_pipeline.py` 在规则生成后调用该拦截，不通过的 pair 直接标记为
+  `unformalized`、`failure_family=direct_relation_infeasible`，不再进入
+  `formalized_candidate`。
+
+同份 Morpheus `Y2BDLFiSWVh` 复测：两条原先“忠实度通过但恒真”的 claim 现在都
+被正确标记为 `direct_relation_infeasible`，`formalization_rate` 从 1.0 降到 0.0
+（诚实计数），`verify` 仍 `offline_verified=true`。全量测试 476 项通过。
+
+另取 6 份全新报告做门禁下复测：1 份在 Impact inventory 失败，
+其余 5 份共 20 个 Impact、`formalized=0`、`stage2_can_continue=0/5`，5 份
+`verify` 均 `offline_verified=true`。根因是 live schema 让 V 独立于 I，生成器
+倾向给出下游后果，`P∧V∧I` 仍 SAT。
+
+随后把 `direct_relation_infeasible` 接回 `request_formalization` 的有界修复：
+
+- `cli/semantic_pipeline.py` 在 `accepted_for_validation` 前调用
+  `reject_vacuous_safety`，失败进入既有 local-repair/重试反馈，不再只做最终拒绝。
+- 新增 `direct P/I/V relationship is absent or infeasible` 的 role-scoped
+  重试提示，mutable 范围锁定 `pattern/impact_outcome/impact_context_terms/
+  symbols/derived_definitions`。
+- `prompts/current.py` 把“V 不强制否定 I”改为“V 必须直接 falsify I
+  （`P∧V∧I` UNSAT），只给下游后果则不接受”。
+
+全量测试 476 项通过。该改动让能写出直接见证的 pair 获得修复机会，写不出时
+诚实落为 `unformalized`，不再虚假进入 `formalized_candidate`。
+
+新门禁下另取 3 份全新报告（GTE Perps、SukukFi、Hybra）复测：Hybra 有 3/8
+个 Impact 正式化（`formalization_rate=0.375`），通过 claim 的 V 已是对应 I
+的直接违反（如 `required_effect` 的 condition 真且 effect 假）；另外两份
+`formalization_rate=0.0`。三份 `stage2_can_continue=0/3`，`verify` 均
+`offline_verified=true`、`model_calls=0`。
+
+本次复测同时暴露 `fresh_restate` 成功重试的 replay 缺口：生成端在
+fresh-restate attempt 上没有记录 `mutable_top_level_fields`，导致 `verify`
+把“saved plan”与“normalized model response”判为不一致。修复为生成端补记该字段，
+replay 端按“最近一个有 generated-rule-candidate 的前序 attempt”回放
+`repair_base`，三份新盲测与全量 476 项测试均通过。
 
 ## 生成器关系路径与追加式 trace 的机械容错（semantic-live-24，2026-10-23）
 

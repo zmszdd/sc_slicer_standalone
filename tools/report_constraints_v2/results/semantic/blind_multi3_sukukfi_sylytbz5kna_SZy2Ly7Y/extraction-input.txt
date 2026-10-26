@@ -1,0 +1,54 @@
+Lack of checks in `WERC7575Vault::_withdraw` allows attacker to steal user's withdraw/redeem
+
+## Finding description and impact
+**Root Cause**
+
+From the code comments of `WERC7575Vault::withdraw` and `WERC7575Vault::redeem`, it is intended that the caller of these functions must be share owner or an operator having allowance for the owner's shares.
+
+
+However, [`WERC7575Vault::_withdraw`](https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L397) does not enforce these conditions, allowing an attacker to withdraw/redeem the user's shares using the attacker's address as the receiver of assets. Thus, an attacker can steal the user's funds.
+
+**Happy Path 1**
+
+1. Validator signs permit signature and gives signature to user off-chain
+2. User broadcasts `WERC7575ShareToken::permit` and `WERC7575Vault::withdraw/redeem` transaction
+3. User's withdraw/redeem transaction succeeds, user (or the rightful receiver) receives the assets
+
+**Attack Path 1**
+
+1. Validator signs permit signature and gives signature to user off-chain
+2. User broadcasts `WERC7575ShareToken::permit` and `WERC7575Vault::withdraw/redeem` transaction
+3. Attacker sees user's transaction in the mempool and frontruns user's withdraw/redeem
+   - Attacker calls `WERC7575ShareToken::permit` using parameters and signatures extracted from user's calldata
+   - Attacker calls `WERC7575Vault::withdraw/redeem` to withdraw/redeem the user's assets/shares but with attacker's address as the receiver
+4. User's permit transaction and withdraw/redeem transaction fails
+5. Attacker profits from stealing user's funds
+
+**Happy Path 2**
+
+1. Validator signs permit signature
+2. Validator calls `WERC7575ShareToken::permit` to give user self-allowance
+3. User calls `WERC7575Vault::withdraw/redeem` to withdraw assets or redeem shares
+
+**Attack Path 2**
+
+1. Validator signs permit signature
+2. Validator calls `WERC7575ShareToken::permit` to give user self-allowance
+3. Attacker immediately calls `WERC7575Vault::withdraw/redeem` to withdraw/redeem the user's assets/shares but with attacker's address as the receiver
+4. Attacker profits from stealing user's funds
+
+**Impact**
+
+1. Loss of funds to user
+2. Attacker profits from stealing user's funds
+
+## Recommended mitigation steps
+
+Suggest to implement either of these mitigations:
+
+1. Check that msg.sender is owner in `WERC7575Vault::_withdraw`
+
+2. If delegation functionality is intended, implement the following changes
+In `WERC7575Vault::_withdraw`, add the following lines
+
+In `WERC7575ShareToken`, add the following function

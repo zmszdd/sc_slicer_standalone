@@ -1,0 +1,108 @@
+{
+  "schema_version": "semantic-faithfulness-audit/4",
+  "status": "completed",
+  "verdict_consistent": false,
+  "fidelity_status": "failed",
+  "checks": [
+    {
+      "source_id": "attacker_is_service_owner",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate directly asserts the attacker is a service owner able to create a service."
+    },
+    {
+      "source_id": "service_created_with_single_agent_large_bond",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate directly encodes creating a service with a single agent and a large USDC bond."
+    },
+    {
+      "source_id": "token_utility_holds_usdc_balance",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate directly encodes that ServiceRegistryTokenUtility holds a USDC balance for the bond."
+    },
+    {
+      "source_id": "reentrancy_guard_required",
+      "role": "I",
+      "verdict": "other_mismatch",
+      "reason": "Predicate is a tautology (X implies X) that does not encode the requirement that create() and update() be protected against reentrancy."
+    },
+    {
+      "source_id": "drains_service_registry_token_utility_funds",
+      "role": "V",
+      "verdict": "consistent",
+      "reason": "Predicate encodes terminating the service and withdrawing the bond from ServiceRegistryTokenUtility, draining funds."
+    }
+  ],
+  "piv_relation": {
+    "verdict": "weakened",
+    "reason": "The I predicate is a tautology and does not encode the reentrancy-protection requirement, so the P-to-I-to-V link is not properly established even though relation_context (e_a93184658870_0003, e_a93184658870_0009) describes the reentrancy enabling the drain."
+  },
+  "relation_context": [
+    {
+      "statement_id": "create_mints_nft_via_safe_mint",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_a93184658870_0006",
+          "text": "- `ServiceRegistry.create()` mints a service NFT to the attacker using `_safeMint`;"
+        }
+      ]
+    },
+    {
+      "statement_id": "reenter_update_bond_to_one_wei",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_a93184658870_0007",
+          "text": "- During the `onERC721Received` callback, the attacker reenters `ServiceManager` by calling `update()` and changes the bond amount to 1 wei;"
+        }
+      ]
+    },
+    {
+      "statement_id": "activate_registration_pays_reduced_bond",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_a93184658870_0008",
+          "text": "- The attacker then calls `ServiceManager.activateRegistration()` and only pays the reduced bond amount;"
+        }
+      ]
+    },
+    {
+      "statement_id": "create_lacks_cei",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_a93184658870_0003",
+          "text": "`ServiceManager.create()` does not follow the Checks-Effects-Interactions (CEI) pattern. This allows a malicious service creator to reenter the contract and modify service parameters before `ServiceRegistryTokenUtility.createWithToken()` is executed:"
+        },
+        {
+          "evidence_id": "e_a93184658870_0009",
+          "text": "- Execution resumes after the callback, and `ServiceRegistryTokenUtility.createWithToken()` is called using the stale bond configuration captured before reentrancy;"
+        }
+      ]
+    }
+  ],
+  "relationship_trace": {
+    "status": "explicit",
+    "links": [
+      {
+        "from_source_ids": [
+          "reentrancy_guard_required",
+          "drains_service_registry_token_utility_funds"
+        ],
+        "context_statement_id": "create_lacks_cei",
+        "evidence_ids": [
+          "e_a93184658870_0003",
+          "e_a93184658870_0009"
+        ],
+        "reported_relation": "Missing CEI/reentrancy protection in create() lets the attacker reenter and have createWithToken() use a stale bond configuration, enabling the later bond withdrawal that drains ServiceRegistryTokenUtility."
+      }
+    ],
+    "gap": ""
+  },
+  "mismatch_count": 2,
+  "repair_finding_count": 1
+}

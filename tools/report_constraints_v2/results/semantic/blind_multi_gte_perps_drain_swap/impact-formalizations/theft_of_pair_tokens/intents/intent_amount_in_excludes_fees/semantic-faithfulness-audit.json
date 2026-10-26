@@ -1,0 +1,143 @@
+{
+  "schema_version": "semantic-faithfulness-audit/4",
+  "status": "completed",
+  "verdict_consistent": true,
+  "fidelity_status": "passed",
+  "checks": [
+    {
+      "source_id": "nonzero_accrued_launchpad_fees",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate asserts the truth of nonzero accrued launchpad fees, matching the statement."
+    },
+    {
+      "source_id": "reserves_exclude_fees",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate asserts reserves are balances minus accrued fees within _update, matching the statement."
+    },
+    {
+      "source_id": "attacker_no_prior_transfer",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate asserts the attacker transfers no tokens before swap, matching the statement."
+    },
+    {
+      "source_id": "attacker_sets_amount0out",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate asserts amount0Out equals totalLaunchpadFee0, matching the statement."
+    },
+    {
+      "source_id": "intent_amount_in_excludes_fees",
+      "role": "I",
+      "verdict": "consistent",
+      "reason": "Predicate encodes that nonzero accrued fees imply inferred amount-in subtracts fees, matching the statement's intent."
+    },
+    {
+      "source_id": "theft_of_pair_tokens",
+      "role": "V",
+      "verdict": "consistent",
+      "reason": "Predicate asserts theft of up to 100% of pair tokens, matching the statement (duplicated conjunct is harmless)."
+    }
+  ],
+  "piv_relation": {
+    "verdict": "consistent",
+    "reason": "relation_context e_e19edb60f2a6_0005 and e_e19edb60f2a6_0007/e_e19edb60f2a6_0010 explicitly bridge fee-inclusive balances vs fee-excluding reserves to the incorrect inferred transfer and resulting theft, supporting the P-to-V link."
+  },
+  "relation_context": [
+    {
+      "statement_id": "attacker_calls_swap",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_e19edb60f2a6_0004",
+          "text": "Now an attacker can call `swap` and the function infers the amount(s) transferred into the pair based on the below calculation (lines 250-251):"
+        },
+        {
+          "evidence_id": "e_e19edb60f2a6_0005",
+          "text": "The issue is that `balance0` and `balance1` are inclusive of swap fees, but `reserve0` and `reserve1` are not. Let's say the attacker chooses `amount0Out = totalLaunchpadFee0` and does not transfer any tokens into the contract prior to calling `swap`. In this case `balance0` (the balance measured after transferring `amount0Out` to the attacker) is just the same as reserves. Therefore:"
+        }
+      ]
+    },
+    {
+      "statement_id": "fees_included_in_balances_not_reserves",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_e19edb60f2a6_0007",
+          "text": "The contract incorrectly infers that the attacker has transferred tokens in when they haven't transferred anything. To make it work, the attacker needs to reduce `amount0Out` by 0.3% so the k invariant is still satisfied when considering fees. The same principle applies for `amount1` also."
+        },
+        {
+          "evidence_id": "e_e19edb60f2a6_0010",
+          "text": "This is because the adjusted balances are actually inflated by the inclusion of accrued swap fees in them."
+        }
+      ]
+    },
+    {
+      "statement_id": "k_invariant_inflated",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_e19edb60f2a6_0009",
+          "text": "Additionally, the pair does not correctly implement the k invariant as we can see on lines 256-261:"
+        }
+      ]
+    },
+    {
+      "statement_id": "repeatable_swap_drain",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_e19edb60f2a6_0008",
+          "text": "After the attacker's call to `swap`, the issue can be exploited again due to the fact the reserves are just updated to be current balances minus the accrued swap fees (assume the attacker performs the attack within the same block as when the fees were accrued, so this way the accrued fees are not cleared). Therefore the attacker can repeatedly execute `swap` in this manner in one transaction and drain a large amount of funds from the protocol."
+        }
+      ]
+    }
+  ],
+  "relationship_trace": {
+    "status": "explicit",
+    "links": [
+      {
+        "from_source_ids": [
+          "attacker_sets_amount0out",
+          "attacker_no_prior_transfer",
+          "intent_amount_in_excludes_fees",
+          "theft_of_pair_tokens"
+        ],
+        "context_statement_id": "attacker_calls_swap",
+        "evidence_ids": [
+          "e_e19edb60f2a6_0004",
+          "e_e19edb60f2a6_0005"
+        ],
+        "reported_relation": "With amount0Out = totalLaunchpadFee0 and no prior token transfer, swap infers a nonzero amount-in from balances that include fees while reserves exclude them, enabling the theft."
+      },
+      {
+        "from_source_ids": [
+          "reserves_exclude_fees",
+          "intent_amount_in_excludes_fees",
+          "theft_of_pair_tokens"
+        ],
+        "context_statement_id": "fees_included_in_balances_not_reserves",
+        "evidence_ids": [
+          "e_e19edb60f2a6_0007",
+          "e_e19edb60f2a6_0010"
+        ],
+        "reported_relation": "Balances include accrued fees but reserves do not, so the contract incorrectly infers a transfer that did not occur, which the attacker exploits."
+      },
+      {
+        "from_source_ids": [
+          "theft_of_pair_tokens"
+        ],
+        "context_statement_id": "repeatable_swap_drain",
+        "evidence_ids": [
+          "e_e19edb60f2a6_0008"
+        ],
+        "reported_relation": "Because reserves are updated to balances minus accrued fees, the attacker can repeat swap in one transaction and drain funds from the protocol."
+      }
+    ],
+    "gap": ""
+  },
+  "mismatch_count": 0,
+  "repair_finding_count": 0
+}

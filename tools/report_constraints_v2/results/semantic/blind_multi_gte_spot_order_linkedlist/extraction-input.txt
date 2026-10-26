@@ -1,0 +1,39 @@
+Order double-linked list is broken because order.prevOrderId is not persisted
+
+## Finding description and impact
+
+`order.prevOrderId` is updated only in memory and not saved to storage, breaking the linked list. This causes order adding and removal issues, potentially leading to denial of service when the order book is full and the limit’s tailOrder becomes invalid.
+
+### Description
+
+Orders are stored as a double-linked list in the book.
+
+However, this linking is broken as `order.prevOrderId` is not actually stored in EVM storage:
+
+[File: contracts/clob/types/Book.sol](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/types/Book.sol#L150-L154)
+
+As we can see in the above code, linked list is updated in the end. And order is passed as memory type:
+
+[File: contracts/clob/types/Book.sol](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/types/Book.sol#L275-L289)
+
+In L284, `order.prevOrderId` is updated. However, it is not stored in EVM storage because order is passed as memory in L275.
+
+This completely breaks linked list in future operations. For example, when removing orders:
+
+[File: contracts/clob/types/Book.sol](https://github.com/code-423n4/2025-07-gte-clob/blob/9f06332ebd4cfe2577d9eae81aeb58d3662ffccd/contracts/clob/types/Book.sol#L320-L327)
+
+- `prev` will be null in L320 because `prevOrderId` was not persisted
+- Thus, L323 will not be reached and L324 will always be reached. This means `prev` and `next` linkage will be broken
+- In L327, `limit.tailOrder` will always be set to null  if removed entry was the tail
+
+### Impact
+
+Order adding/removal will be affected.
+
+Especially, when order book is full, CLOB can face DoS because limit tailOrder is set to empty order due to broken linked list.
+
+This DoS is demonstrated by a POC.
+
+## Recommended mitigation steps
+
+Describe the best method(s) to mitigate the finding.

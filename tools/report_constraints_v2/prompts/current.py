@@ -146,10 +146,14 @@ that actually establish that state or omit the extra claim. Keep distinct
 conditions atomic rather than mixing a supported trigger with an unsupported
 history claim in one statement.
 For I, state the narrow report-supported safety requirement, including its guard,
-ordering, or checkpoint when stated. Keep I and the reported V outcome as separate
-source-grounded claims. The post-generation audit checks whether the report links
-the outcome to a violation of that requirement; do not force a direct logical
-negation when the report describes an indirect consequence.
+ordering, or checkpoint when stated, but never make the guard the reported impact
+outcome or its negation. I must be unconditional with respect to V: the
+post-generation gate requires V to falsify I under P (P AND V AND NOT I
+satisfiable, P AND V AND I unsatisfiable). If the report only supports an
+indirect consequence and no stated V directly falsifies I, return a blocking
+`unsupported_relation` instead of encoding I as `(NOT V) implies ...` or any
+other V-guarded tautology. Keep I and the reported V outcome as separate
+source-grounded claims.
 Do not promise full business success when the report only establishes a narrower
 failure, and do not merge a suggested repair into the security property.
 When the report explicitly describes how an action or root cause leads from a
@@ -449,12 +453,17 @@ Before choosing a pattern, perform this polarity check internally:
 2. The pattern's generated safety formula MUST express that intended sentence,
    never the vulnerable behavior, root cause, or reported bad outcome.
 3. The program-generated V MUST preserve the selected impact's report-stated
-   observable and relation. The report must support how V relates to a violation
-   of I under P; this may be direct or mediated by an explicitly described
-   mechanism. Do not force V to be a literal negation of I. Merely citing the
-   impact ID on a symbol does not establish coverage: the symbol meaning and
-   generated predicate must encode the impact's distinguishing subject/state/
-   operator/direction when those are stated.
+   observable and relation and MUST directly falsify I under P: the concrete
+   observed counterpart of the pattern's desired relation (forbidden completion,
+   out-of-range value, mismatched before/after state, or denied required
+   authorization), not a downstream profit/loss proxy. V is not the literal
+   formula `P AND NOT I` and is not copied from I, but the compiled check
+   P AND V AND I must be UNSAT. Merely citing the impact ID on a symbol does not
+   establish coverage: the symbol meaning and generated predicate must encode the
+   impact's distinguishing subject/state/operator/direction when those are stated.
+If no report-stated V directly falsifies I under P, do not emit a V-guarded I,
+a self-implication, or an indirect-consequence V; return a blocking
+`unsupported_relation` item instead.
 Every class expresses this polarity through the single kind the program
 fixed for it. Never substitute a legacy condition/effect shape of your own. Thus,
 if the report says a valid operation should complete but instead reverts, the
@@ -528,8 +537,10 @@ quantities and relationship. Preserve comparison direction. Product units on bot
 sides must match; do not invent cancellation, division, constants, or a formula from
 domain knowledge. Prefer a report-grounded relation over a free Boolean paraphrase.
 The program constructs the safety relation from the pattern and compiles the
-independent impact_outcome predicate as V. Do not use the pattern's mechanical
-negation as the report impact.
+independent impact_outcome predicate as V. Encode the selected Impact's own
+report-stated observable as the direct contradiction of the pattern's desired
+relation; do not paste the pattern relation with a negation and do not use a
+downstream consequence as V.
 
 For the selected pattern, identify its CORE OBSERVABLES: use symbols in its
 effect/authorization slots, relation slot, bounded/proportional quantity slots,

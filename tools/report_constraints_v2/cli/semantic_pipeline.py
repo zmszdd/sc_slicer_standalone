@@ -39,6 +39,7 @@ from lib.plan_synthesizer import (check_distinct_p_predicates, classified_relati
                               faithfulness_status, intent_scope_review,
                               predicate_binding_symbols, relax_unsupported_relation,
                               placeholder_predicate_review,
+                              reject_vacuous_safety,
                               requirement_source_review, structured_unresolved_review,
                               symbol_table_review, synthesize_id_formalization,
                               validate_faithfulness_verdict)
@@ -431,6 +432,8 @@ def formal_failure_family(message):
     value = str(message).lower()
     if value.startswith('semantic faithfulness mismatch'):
         return 'semantic_fidelity'
+    if 'direct p/i/v relationship is absent or infeasible' in value:
+        return 'direct_relation_infeasible'
     if any(token in value for token in ('numeric p ', 'quantity binding',
                                         'quantity expression', 'type/unit mismatch',
                                         'invalid compound predicate',
@@ -583,6 +586,22 @@ def _piv_relationship_hint(message):
             'be represented, leave this impact unresolved.\nCheck findings: '
             + message + '\n')
 
+
+def _direct_witness_hint(message):
+    return ('\nRETRY FEEDBACK: The generated V does not directly falsify I under P. '
+            'Repair impact_outcome (and only when necessary its supporting '
+            'impact_context_terms, pattern, symbols, or derived_definitions) so '
+            'the selected Impact states the concrete observed counterpart of the '
+            "pattern's desired relation: the forbidden completion, the out-of-range "
+            'value, the mismatched before/after state, or the denied required '
+            'authorization. V must be the Impact\'s own report-stated observable, '
+            'not a formula copied from I and not a downstream profit/loss proxy. '
+            'If the report gives only an indirect consequence and no stated V '
+            'directly contradicts I under the frozen P, do not weaken V or invent '
+            'a bridge predicate; keep the frozen IDs and let this candidate be '
+            'rejected rather than accepting an indirect-consequence V.\n'
+            'Check findings: ' + message + '\n')
+
 _FORMAL_ERROR_RULES = (
     (('missing plan quantity unit'), _SYMBOL_SCOPE,
      '\nRETRY FEEDBACK: Every int symbol needs a nonempty unit string. '
@@ -689,6 +708,8 @@ _FORMAL_ERROR_RULES = (
      _audit_mismatch_hint),
     (('prefix', 'P/I/V relationship check failed:'), _FAITHFULNESS_SCOPE,
      _piv_relationship_hint),
+    (('prefix', 'direct P/I/V relationship is absent or infeasible'),
+     _FAITHFULNESS_SCOPE, _direct_witness_hint),
     ('local repair did not change P/I/V formula fields', _FAITHFULNESS_SCOPE,
      '\nRETRY FEEDBACK: The focused repair changed metadata but left the failing '
      'P/I/V expression unchanged. Change the relevant precondition_terms for P '
@@ -1298,6 +1319,7 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
         record = {'attempt': attempt + 1, 'artifact_dir': call_dir.name}
         if fresh_restate:
             record['fresh_restate'] = True
+            record['mutable_top_level_fields'] = list(mutable_fields)
             fresh_restate = False
         if local_repair and repair_base is not None and not record.get('fresh_restate'):
             record.update({'repair_mode': ('bounded_semantic_replan'
@@ -1342,6 +1364,14 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                            relationship_trace)
                 write_json(output / 'relationship-trace.json',
                            relationship_trace)
+            # semantic-live-24 asks the model to return exactly two top-level
+            # keys: `formal_plan` plus the sibling `relationship_trace`.  The
+            # plan fields live inside `formal_plan`; keep the raw response
+            # untouched and deterministically unwrap the envelope before any
+            # schema/source validation.  Flat responses (all historical
+            # prompt versions) pass through unchanged.
+            if isinstance(candidate, dict) and isinstance(candidate.get('formal_plan'), dict):
+                candidate = candidate['formal_plan']
             if frozen_source_ids is not None and not fidelity_only_rules:
                 if not isinstance(candidate, dict):
                     raise ValueError('formal plan must be a JSON object')
@@ -1534,6 +1564,12 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                     check_address_plan(candidate, elements)
                 if candidate_gate is not None and not fidelity_only_rules:
                     candidate_gate(candidate, formal)
+                relation_reasons = reject_vacuous_safety(
+                    candidate, formal, claim_id=synthesis_claim_id)
+                if relation_reasons:
+                    raise ValueError(
+                        'direct P/I/V relationship is absent or infeasible: ' +
+                        '; '.join(relation_reasons))
                 if structured and not fidelity_only_rules:
                     review = structured_unresolved_review(candidate, elements)
                 else:
@@ -2213,6 +2249,12 @@ def main():
                                     **({'piv_relation': audit['piv_relation']}
                                        if audit.get('piv_relation') else {})})
                                  if audit else 'unavailable'))
+                            relation_reasons = reject_vacuous_safety(
+                                target_plan, target_formal, claim_id=claim_id)
+                            if relation_reasons:
+                                raise ValueError(
+                                    'direct P/I/V relationship is absent or infeasible: ' +
+                                    '; '.join(relation_reasons))
                             successful.append((impact_id, intent_id, target_formal))
                             write_json(target_output / 'formal-plan.json', target_plan)
                             write_json(target_output / 'formalization-ids.json', target_formal)
@@ -2690,7 +2732,9 @@ def main():
                 interface[name.replace('-', '_').removesuffix('.json') + '_path'] = name
                 interface[name.replace('-', '_').removesuffix('.json') + '_sha256'] = \
                     r.sha((args.output / name).read_bytes())
-        interface['stage3_feedback_command'] = 'python main.py stage3-feedback <run-dir> --feedback <feedback.json>'
+        interface['stage3_feedback_command'] = (
+            'lib.stage3_consistency.ingest_feedback(<run-dir>, '
+            '<stage3-consistency-feedback/1 JSON path>)')
         write_json(args.output / 'stage3-spec.json', interface)
         status = {key: bundle[key] for key in ('core_formalization_status', 'acceptance_status',
                                               'external_model_invocations', 'consistency_verdict')}

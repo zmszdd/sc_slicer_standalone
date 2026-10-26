@@ -1,0 +1,22 @@
+GrowthHYBR full withdrawals revert because `multiSplit` receives a zero slice
+
+## Finding description and impact
+`GrowthHYBR.withdraw` always splits the contract’s veNFT into three pieces: the portion that stays in the vault, the user’s share, and the protocol fee. When a user controls 100% of the outstanding gHYBR supply (e.g., the first depositor or the last remaining LP), we obtain:
+
+
+For the final holder, `remainingAmount` becomes `0`. The code then calls:
+
+
+Inside `VotingEscrow.multiSplit`, each entry must be strictly positive:
+
+
+With a zero remainder the call reverts, aborting the entire withdrawal. The vault burns the user’s gHYBR shares before entering `multiSplit`, so the user loses their shares and remains unable to exit or claim the underlying HYBR ever again. Any trailing penalty/fee accounting is also blocked. This is a permanent, loss-of-funds (final depositor shuts down the pool).
+
+>**NOTE**: A single participant (or the last remaining LP) cannot withdraw their shares; the call deterministically reverts with "ZW", leaving funds locked and the accounting (including withdrawal fee) unclaimable.This occurs when user owns 100% of the contract’s veNFT value at withdraw time (typical for the last exiting user). With a non-zero fee, remaining = veBalance - userAmount - fee == 0.
+
+
+## Recommended mitigation steps
+
+- Detect when `remainingAmount == 0` and skip the internal gHYBR slice (e.g., create only two NFTs: user and fee). 
+- or guard the 100%-exit path: if shares == totalSupply() (or remaining == 0), handle a dedicated 2-way (user, fee) split; Don’t set veTokenId to a remainder that doesn’t exist. 
+- Alternatively, pre-fund a minimal dust amount so `remainingAmount` is never zero.

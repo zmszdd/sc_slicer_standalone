@@ -1,0 +1,40 @@
+Nested multicalls revert, breaking composability and availability
+
+## Finding Description
+`Covenant` exposes a payable `multicall()` that runs an array of batched calls via `delegatecall` (through `MulticallLib.multicall()`), and enforces a post-batch balance equality check to prevent over/under-deposits of ETH.
+
+Affected function code:
+
+[Covenant.sol#L507-L524](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/Covenant.sol#L507-L524)
+
+
+In turn, `MulticallLib.multicall()` iterates the calls and performs `delegatecall` back into the same contract (so the callee sees the same execution context):
+
+[MultiCall.sol#L26-L32](https://github.com/code-423n4/2025-10-covenant/blob/d5ebe4461564b46cacf8a90cf11add29470ef001/src/libraries/MultiCall.sol#L26-L32)
+Root cause
+- The end-of-batch balance equality check is applied independently at each nesting level, but each level computes `balanceBeforeCall` using the same top-level `msg.value` because inner batches execute via `delegatecall`.
+- There is no notion of per-batch “consumed value”; thus, an inner `multicall()` assumes the entire transaction `msg.value` must be fully balanced within its own sub-batch.
+
+Highest-impact scenario
+- A nested batch where the inner `multicall()` does not itself forward any ETH, but the outer batch intends to do so later. The inner batch computes `balanceBeforeCall = (prevBalance + msg.value) - msg.value = prevBalance`, while the actual end-of-inner-batch balance remains `prevBalance + msg.value`. The equality check fails and the transaction reverts, making nested batching brittle and non-composable.
+
+## Impact
+Medium.
+- Availability/composability is impacted: nested multicalls revert even in benign cases (e.g., inner batch does nothing), breaking integrations that rely on multi-level batching and deferred ETH forwarding within the outer batch.
+
+
+## Likelihood Explanation
+High.
+- `delegatecall`-based multicalls are commonly composed. Any integrator nesting `multicall()` or building batch abstractions that rely on forwarding ETH later in the outer batch will hit this revert systematically.
+
+
+
+
+
+## Recommendation
+Option A: Depth-aware enforcement (preferred)
+- Track depth and only enforce the equality check at the outermost level.
+- Keep `_checkPayment()` strict only when `depth == 0`.
+
+Option B: Disallow nested multicalls (simpler, if nesting is unnecessary)
+- Fail fast when already inside a multicall.

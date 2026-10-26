@@ -1,0 +1,177 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "Nested multicall() batches executed via delegatecall with a post-batch ETH balance equality check",
+    "environment": "Covenant contract with MulticallLib.multicall() delegatecall batching",
+    "evidence_ids": [
+      "e_1cb2fb483ba7_0003",
+      "e_1cb2fb483ba7_0006",
+      "e_1cb2fb483ba7_0009",
+      "e_1cb2fb483ba7_0010",
+      "e_1cb2fb483ba7_0012"
+    ]
+  },
+  "entities": [
+    {
+      "id": "covenant",
+      "name": "Covenant contract",
+      "role": "contract",
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0003",
+        "e_1cb2fb483ba7_0005"
+      ]
+    },
+    {
+      "id": "multicall_lib",
+      "name": "MulticallLib.multicall()",
+      "role": "contract",
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0006",
+        "e_1cb2fb483ba7_0007"
+      ]
+    },
+    {
+      "id": "integrator",
+      "name": "Integrator nesting multicall",
+      "role": "other",
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0018"
+      ]
+    },
+    {
+      "id": "eth_value",
+      "name": "Transaction msg.value / ETH balance",
+      "role": "asset",
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0009",
+        "e_1cb2fb483ba7_0012"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "outer_batch_with_msg_value",
+      "kind": "precondition",
+      "text": "An outer multicall() batch is executed with a nonzero top-level msg.value that the outer batch intends to forward later.",
+      "modality": "potential",
+      "entity_ids": [
+        "covenant",
+        "eth_value"
+      ],
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0009",
+        "e_1cb2fb483ba7_0012"
+      ]
+    },
+    {
+      "id": "inner_multicall_nested",
+      "kind": "precondition",
+      "text": "An inner multicall() is nested within the outer batch and executes via delegatecall in the same execution context.",
+      "modality": "potential",
+      "entity_ids": [
+        "covenant",
+        "multicall_lib"
+      ],
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0006",
+        "e_1cb2fb483ba7_0009"
+      ]
+    },
+    {
+      "id": "inner_forwards_no_eth",
+      "kind": "precondition",
+      "text": "The inner multicall() does not itself forward any ETH.",
+      "modality": "potential",
+      "entity_ids": [
+        "multicall_lib",
+        "eth_value"
+      ],
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0012"
+      ]
+    },
+    {
+      "id": "inner_balance_check_uses_top_level_msg_value",
+      "kind": "root_cause",
+      "text": "Each nesting level computes balanceBeforeCall using the same top-level msg.value because inner batches execute via delegatecall, and there is no notion of per-batch consumed value, so the inner multicall() assumes the entire transaction msg.value must be fully balanced within its own sub-batch.",
+      "modality": "asserted",
+      "entity_ids": [
+        "covenant",
+        "multicall_lib",
+        "eth_value"
+      ],
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0009",
+        "e_1cb2fb483ba7_0010"
+      ]
+    },
+    {
+      "id": "inner_balance_before_call_equals_prev_balance",
+      "kind": "root_cause",
+      "text": "The inner batch computes balanceBeforeCall = (prevBalance + msg.value) - msg.value = prevBalance while the actual end-of-inner-batch balance remains prevBalance + msg.value, so the equality check fails.",
+      "modality": "asserted",
+      "entity_ids": [
+        "multicall_lib",
+        "eth_value"
+      ],
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0012"
+      ]
+    },
+    {
+      "id": "intent_balance_check_only_outermost",
+      "kind": "security_intent",
+      "text": "The post-batch ETH balance equality check should be enforced only at the outermost multicall level, so nested batches are not required to balance the entire transaction msg.value within their own sub-batch.",
+      "modality": "asserted",
+      "entity_ids": [
+        "covenant",
+        "multicall_lib"
+      ],
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0021",
+        "e_1cb2fb483ba7_0022"
+      ]
+    },
+    {
+      "id": "intent_nested_multicall_composability",
+      "kind": "security_intent",
+      "text": "Nested multicalls should remain composable and not revert in benign cases such as an inner batch that does nothing, so integrations relying on multi-level batching and deferred ETH forwarding within the outer batch continue to work.",
+      "modality": "asserted",
+      "entity_ids": [
+        "covenant",
+        "multicall_lib",
+        "integrator"
+      ],
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0015",
+        "e_1cb2fb483ba7_0018"
+      ]
+    },
+    {
+      "id": "nested_multicalls_revert",
+      "kind": "impact",
+      "text": "nested multicalls revert even in benign cases (e.g., inner batch does nothing)",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0015"
+      ]
+    },
+    {
+      "id": "breaking_integrations",
+      "kind": "impact",
+      "text": "breaking integrations that rely on multi-level batching and deferred ETH forwarding within the outer batch",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence_ids": [
+        "e_1cb2fb483ba7_0015"
+      ]
+    }
+  ],
+  "attack_steps": [],
+  "ambiguities": [
+    "No explicit caller/authorization condition is stated for invoking multicall(); the report does not say anyone can call it.",
+    "The report describes the nested-batch revert as a conditional scenario (if/when nested with msg.value), not an observed transaction; no concrete prior transaction state is supplied.",
+    "The exact balanceBeforeCall/end-balance values are given only as the inner batch's own computation, so they are treated as root-cause mechanism rather than preconditions."
+  ]
+}

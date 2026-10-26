@@ -1,16 +1,12 @@
 """Active prompt assembly and inspection regressions; no model calls."""
 
-import io
-import sys
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 
 from prompts.active import resolve_prompt_set
 from prompts.definitions import PIV_DEFINITIONS, render_definitions
 from prompts.registry import EXPERIMENTAL_VERSION, RECOMMENDED_VERSION
 from prompts.versions import (semantic_prompts_v316, semantic_prompts_v318,
                               semantic_prompts_v319, semantic_prompts_v320)
-from cli import preview
 
 
 class CanonicalDefinitionsTest(unittest.TestCase):
@@ -48,22 +44,6 @@ class ActivePromptTest(unittest.TestCase):
         self.assertEqual(resolved.version, EXPERIMENTAL_VERSION)
         self.assertEqual(resolved.formal_prompt,
                          semantic_prompts_v320.formal_prompt('ids', 'core'))
-
-    def test_preview_prints_exact_resolved_prompt_without_model(self):
-        previous = sys.argv
-        out, err = io.StringIO(), io.StringIO()
-        try:
-            sys.argv = ['preview.py', 'prompt', '--part', 'element']
-            with redirect_stdout(out), redirect_stderr(err):
-                code = preview.main()
-        finally:
-            sys.argv = previous
-        resolved = resolve_prompt_set()
-        self.assertEqual(code, 0)
-        self.assertEqual(out.getvalue(), resolved.element_prompt)
-        self.assertIn(resolved.sha256('element'), err.getvalue())
-        self.assertIn('"external_model_called": false', err.getvalue())
-
 
 class LegacyPatternKindRemovalTest(unittest.TestCase):
     """The formal prompt must never offer a pattern kind the compiler rejects.

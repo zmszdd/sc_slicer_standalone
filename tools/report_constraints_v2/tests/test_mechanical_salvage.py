@@ -9,6 +9,7 @@ from lib.salvage import (normalize_attack_step_roles, normalize_element_ids,
                                 drop_unused_invalid_symbols,
                                 merge_appended_relationship_trace)
 from lib.plan_synthesizer import synthesize_id_formalization
+from lib.solving import direct_relation_feasible
 from lib.semantic_core import validate_elements
 from lib.ingest import build_catalog, hydrate_elements
 from cli.semantic_pipeline import request_formalization
@@ -342,6 +343,77 @@ class AppendedTraceSalvageTests(unittest.TestCase):
                 request_formalization(
                     '{}', 'prompt', 'test-model', Path(temp), 0, True,
                     elements, extract_fn=fake_extract)
+
+
+class FormalPlanEnvelopeTests(unittest.TestCase):
+    PILOT = Path(__file__).resolve().parents[1] / 'evaluation/archive/deepseek_flash_pilot_01/runs'
+
+    def test_request_formalization_unwraps_formal_plan_envelope(self):
+        """semantic-live-24 asks for {formal_plan, relationship_trace}; the
+        generator must deterministically unwrap the envelope while keeping the
+        raw response untouched."""
+        source = self.PILOT / 'kinetiq'
+        elements = json.loads((source / 'elements-ids.json').read_text())
+        plan = json.loads(
+            (source / 'neural-formalization/model-claim.json').read_text())
+        trace = {'status': 'explicit',
+                 'links': [{'from_source_ids': ['p_one'],
+                            'context_statement_id': 'act_one',
+                            'evidence_ids': ['e_1'],
+                            'reported_relation': 'the action skips the check'}],
+                 'gap': ''}
+        envelope = {'formal_plan': plan, 'relationship_trace': trace}
+        raw = json.dumps(envelope)
+
+        def fake_extract(_payload, folder, _model, _prompt):
+            (folder / 'model-response.txt').write_text(raw)
+            (folder / 'model-claim.json').write_text(raw)
+            return json.loads(raw)
+
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)
+            expected, _ = drop_unused_invalid_symbols(copy.deepcopy(plan))
+            unwrapped, _, _ = request_formalization(
+                '{}', 'prompt', 'test-model', output, 0, True, elements,
+                extract_fn=fake_extract, attempts=[],
+                mechanical_salvage=True,
+                relationship_trace_enabled=True)
+            self.assertEqual(unwrapped, expected)
+            self.assertNotIn('relationship_trace', unwrapped)
+            saved_claim = json.loads(
+                (output / 'neural-formalization/model-claim.json').read_text())
+            self.assertEqual(saved_claim, envelope)
+            self.assertEqual(
+                json.loads((output / 'relationship-trace.json').read_text()),
+                trace)
+            # The raw response itself is never rewritten.
+            self.assertEqual(
+                (output / 'neural-formalization/model-response.txt')
+                .read_text(), raw)
+
+
+class DirectRelationGateTests(unittest.TestCase):
+    def test_direct_contradiction_is_feasible(self):
+        claim = {'symbols': {'v': {'sort': 'bool'}},
+                 'properties': {
+                     'preconditions': {'expression': {'var': 'v'}},
+                     'safety': {'expression': {'op': 'not',
+                                               'args': [{'var': 'v'}]}},
+                     'effects': {'expression': {'var': 'v'}},
+                 }}
+        self.assertTrue(direct_relation_feasible(claim))
+
+    def test_v_guarded_safety_is_infeasible(self):
+        claim = {'symbols': {'v': {'sort': 'bool'}, 'q': {'sort': 'bool'}},
+                 'properties': {
+                     'preconditions': {'expression': {'var': 'v'}},
+                     'safety': {'expression': {
+                         'op': 'implies',
+                         'args': [{'op': 'not', 'args': [{'var': 'v'}]},
+                                  {'var': 'q'}]}},
+                     'effects': {'expression': {'var': 'v'}},
+                 }}
+        self.assertFalse(direct_relation_feasible(claim))
 
 
 if __name__ == '__main__':

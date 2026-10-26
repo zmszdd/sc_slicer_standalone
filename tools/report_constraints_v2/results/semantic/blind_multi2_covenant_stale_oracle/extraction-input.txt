@@ -1,0 +1,62 @@
+Critical Stale Price Oracle Manipulation in Market Creation
+
+## Summary
+The protocol initializes new markets using a potentially stale oracle price. The createMarket function is non‑payable and does not update pull‑based oracles (e.g., Pyth) prior to reading the price inside LatentSwapLEX.initMarket. Meanwhile, user actions like mint/redeem/swap do update the oracle. This inconsistency allows attackers to initialize a market at an outdated price and immediately arbitrage once correct prices are refreshed, draining initial market liquidity.
+
+## Finding Description
+1) createMarket forwards directly to initMarket without any oracle price update:
+
+src/Covenant.sol (lines 211–228)
+
+2) LatentSwapLEX.initMarket reads the price immediately; no _updateOraclePrice is called prior:
+
+src/lex/latentswap/LatentSwapLEX.sol (lines 246–256)
+
+
+3) The price read uses getQuote (non‑preview) and depends on the oracle being fresh:
+
+src/lex/latentswap/libraries/LatentSwapLogic.sol (lines 1153–1187)
+
+
+4) All post‑creation user flows correctly update the oracle first (contrast):
+
+
+
+
+5) Updating a pull‑based oracle is payable:
+
+src/interfaces/IPriceOracle.sol (lines 37–43)
+
+
+6) The “smoking gun”: createMarket is non‑payable, so it cannot forward the oracle fee. Thus, it is impossible to safely call createMarket directly in pull‑oracle mode.
+
+7) The protocol’s multicall cannot fix this (only delegate‑calls into Covenant and forces strict balance equality):
+
+
+
+Because multicall delegate‑calls into Covenant itself, it cannot call an external oracle adapter’s updatePriceFeeds directly; and the strict balance check further constrains fee handling.
+
+## Impact Explanation
+Severity: HIGH.
+
+Why high:
+- Initialization sets LexState.lastBaseTokenPrice and derived invariants. If stale, the market is born mispriced.
+- An attacker can create a market when the oracle lags, then immediately perform mint/redeem/swap (which refreshes to the true price) to arbitrage the price gap established at initialization.
+- The non‑payable nature of createMarket mathematically prevents safe price updates through the direct path, proving this is a design flaw (not user error).
+
+Concrete exploit path:
+- Attacker monitors for stale oracle windows.
+- Calls createMarket (no fee, no update → stale price used).
+- Immediately invokes a state‑changing action (mint/redeem/swap), which updates to the correct price and unlocks a deterministic arbitrage of the mispricing.
+- Early LPs or bootstrap funds are directly impacted; loss can be catastrophic.
+
+## Likelihood Explanation
+High likelihood:
+- createMarket is the obvious, first entrypoint to spin up markets.
+- No natspec warnings instruct users to avoid direct use or to wrap with a safe helper.
+- Pull‑based oracles (e.g., Pyth) are common and require fees; createMarket cannot pass them.
+
+## Recommendation
+- Make market creation safe for pull‑based oracles:
+  - Option A: Make createMarket payable and forward msg.value (and initData) to an oracle update hook before any initial price read.
+  - Option B (preferred): In LatentSwapLEX.initMarket, call _updateOraclePrice before readBasePriceAndCalculateLiqRatio, using initData and msg.value passed through from createMarket.

@@ -37,7 +37,7 @@ class CommandTableTest(unittest.TestCase):
                 self.assertTrue(description.strip(), command)
 
     def test_no_command_reuses_the_same_script_and_arguments(self):
-        # preview-report / preview-plan share preview.py but differ by prefix.
+        # batch / verify share batch_verify.py but differ by prefix.
         keys = [(script, entry.STAGE2_ARG_PREFIX.get(command, ()))
                 for command, (script, _) in entry.STAGE2_COMMANDS.items()]
         self.assertEqual(len(keys), len(set(keys)))
@@ -52,12 +52,6 @@ class CommandTableTest(unittest.TestCase):
     def test_meta_and_stage2_tables_do_not_overlap(self):
         meta = {name for name, _ in entry.META_COMMANDS}
         self.assertEqual(meta & set(entry.STAGE2_COMMANDS), set())
-
-    def test_primary_and_advanced_commands_partition_stage2(self):
-        primary = set(entry.PRIMARY_STAGE2_COMMANDS)
-        advanced = set(entry.ADVANCED_STAGE2_COMMANDS)
-        self.assertFalse(primary & advanced)
-        self.assertEqual(primary | advanced, set(entry.STAGE2_COMMANDS))
 
     def test_stage2_layout_is_where_the_entry_point_expects_it(self):
         self.assertTrue(entry._script_path('semantic_pipeline.py').is_file())
@@ -81,20 +75,13 @@ class DispatchTest(unittest.TestCase):
 
     def test_child_exit_code_is_preserved(self):
         # argparse rejects the missing required argument, so the child exits 2.
-        code, _, _ = run(['screen'])
+        code, _, _ = run(['verify'])
         self.assertEqual(code, 2)
 
     def test_child_help_is_forwarded(self):
-        code, out, _ = run(['preview-report', '--help'])
+        code, out, _ = run(['verify', '--help'])
         self.assertEqual(code, 0)
         self.assertIn('usage', out.lower())
-
-    def test_prompt_preview_is_exposed_without_model_defaults(self):
-        code, out, err = run(['preview-prompt', '--part', 'definitions'])
-        self.assertEqual(code, 0)
-        self.assertIn('P — Preconditions', out)
-        self.assertIn('V — Direct violation witness', out)
-        self.assertIn('"external_model_called": false', err)
 
     def test_stage2_shorthand_matches_the_explicit_prefix(self):
         direct, out, _ = run(['versions'])
@@ -255,8 +242,18 @@ class Stage2OnlyTest(unittest.TestCase):
                           '--element-retries', '1',
                           '--readiness-retries', '1'])
 
+        # `--readiness-retries` is the only retry flag whose conflict list also
+        # contains `--provider`; an explicit budget must still win over the
+        # pinned default and never produce a duplicate `--readiness-retries`.
+        argv = ['--extract', '--case-dir', 'x', '--readiness-retries', '0']
+        result = entry._with_arg_defaults('run', argv)
+        self.assertEqual(result.count('--readiness-retries'), 1)
+        self.assertEqual(result[result.index('--readiness-retries') + 1], '0')
+        self.assertIn('--formal-retries', result)
+        self.assertIn('--element-retries', result)
+
     def test_offline_commands_get_no_model_defaults(self):
-        for command in ('verify', 'screen', 'status'):
+        for command in ('verify', 'status'):
             with self.subTest(command=command):
                 self.assertEqual(entry._with_arg_defaults(command, ['d']), ['d'])
 

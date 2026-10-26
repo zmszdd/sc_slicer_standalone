@@ -1,0 +1,232 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "BalancerPriceOracle price snapshot and validation",
+    "environment": "Balancer Vault pool oracle",
+    "evidence_ids": [
+      "e_d166b8fd1ba7_0001",
+      "e_d166b8fd1ba7_0003",
+      "e_d166b8fd1ba7_0004",
+      "e_d166b8fd1ba7_0005",
+      "e_d166b8fd1ba7_0007"
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "Attacker",
+      "role": "attacker",
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0001",
+        "e_d166b8fd1ba7_0004",
+        "e_d166b8fd1ba7_0005"
+      ]
+    },
+    {
+      "id": "balancer_vault",
+      "name": "Balancer Vault",
+      "role": "contract",
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0003"
+      ]
+    },
+    {
+      "id": "balancer_price_oracle",
+      "name": "BalancerPriceOracle",
+      "role": "contract",
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0003",
+        "e_d166b8fd1ba7_0004",
+        "e_d166b8fd1ba7_0005"
+      ]
+    },
+    {
+      "id": "pool",
+      "name": "Balancer Pool",
+      "role": "asset",
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0003",
+        "e_d166b8fd1ba7_0005"
+      ]
+    },
+    {
+      "id": "protocol_swaps",
+      "name": "Protocol Swaps",
+      "role": "victim",
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0007"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "pool_balances_read_as_spot",
+      "kind": "precondition",
+      "text": "BalancerPriceOracle.getPrice() reads pool balances directly from the Vault and returns a simple reserve ratio, a spot price that changes whenever the pool is traded.",
+      "modality": "asserted",
+      "entity_ids": [
+        "balancer_price_oracle",
+        "balancer_vault",
+        "pool"
+      ],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0003"
+      ]
+    },
+    {
+      "id": "update_price_permissionless",
+      "kind": "precondition",
+      "text": "updatePrice() is permissionless, so any address can decide when the oracle snapshot is updated.",
+      "modality": "asserted",
+      "entity_ids": [
+        "balancer_price_oracle",
+        "attacker"
+      ],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0004"
+      ]
+    },
+    {
+      "id": "attacker_holds_manipulated_spot",
+      "kind": "precondition",
+      "text": "An attacker can keep the pool in a manipulated spot regime over time.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "pool"
+      ],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0005"
+      ]
+    },
+    {
+      "id": "call_update_price",
+      "kind": "action",
+      "text": "The attacker calls updatePrice(), which writes the oracle snapshot based on the current spot price returned by getPrice().",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "balancer_price_oracle"
+      ],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0004"
+      ]
+    },
+    {
+      "id": "snapshot_moves_to_attacker_regime",
+      "kind": "root_cause",
+      "text": "Because updatePrice() derives the snapshot from the current spot regime, repeated updates while the pool is manipulated move the stored snapshot away from the original market price toward the attacker-controlled regime.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "balancer_price_oracle",
+        "pool"
+      ],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0004",
+        "e_d166b8fd1ba7_0005"
+      ]
+    },
+    {
+      "id": "validate_compares_spot_to_snapshot",
+      "kind": "root_cause",
+      "text": "validatePrice(slippage) compares current spot price to a band around the computed timeWeightedAverage, which in practice only enforces that current spot is near the oracle's stored snapshot state.",
+      "modality": "asserted",
+      "entity_ids": [
+        "balancer_price_oracle"
+      ],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0005"
+      ]
+    },
+    {
+      "id": "intent_no_raw_vault_balances_oracle",
+      "kind": "security_intent",
+      "text": "Raw Vault balances must not be used as an oracle for slippage protection of large protocol swaps.",
+      "modality": "asserted",
+      "entity_ids": [
+        "balancer_price_oracle",
+        "balancer_vault",
+        "protocol_swaps"
+      ],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0007"
+      ]
+    },
+    {
+      "id": "intent_snapshot_not_steerable",
+      "kind": "security_intent",
+      "text": "The oracle snapshot must not be steerable away from the original market price by an attacker controlling the pool spot regime and calling updatePrice() over time.",
+      "modality": "asserted",
+      "entity_ids": [
+        "balancer_price_oracle",
+        "attacker",
+        "pool"
+      ],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0001",
+        "e_d166b8fd1ba7_0005"
+      ]
+    },
+    {
+      "id": "intent_validate_reference_original_price",
+      "kind": "security_intent",
+      "text": "validatePrice(slippage) must not return true while the price is far from the original reference price.",
+      "modality": "asserted",
+      "entity_ids": [
+        "balancer_price_oracle"
+      ],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0005"
+      ]
+    },
+    {
+      "id": "spot_price_changes_on_trade",
+      "kind": "impact",
+      "text": "That value is a spot price and it can change whenever the pool is traded.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0003"
+      ]
+    },
+    {
+      "id": "any_address_controls_snapshot_timing",
+      "kind": "impact",
+      "text": "any address can decide when the snapshot should be updated",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0004"
+      ]
+    },
+    {
+      "id": "snapshot_moved_from_market_price",
+      "kind": "impact",
+      "text": "the stored snapshot can be moved away from the original market price and toward the attacker-controlled regime",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0005"
+      ]
+    },
+    {
+      "id": "validate_price_true_while_far_from_reference",
+      "kind": "impact",
+      "text": "Then `validatePrice()` can still return true while the price is far from the original reference.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence_ids": [
+        "e_d166b8fd1ba7_0005"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "call_update_price"
+  ],
+  "ambiguities": [
+    "Report does not specify numeric slippage band, snapshot interval, or how long the attacker must maintain the manipulated regime.",
+    "Report does not state a concrete prior snapshot value or original market price, so the magnitude of deviation is unspecified.",
+    "Whether validatePrice() returning true while far from the original reference is itself the harmful outcome or only enables downstream swap loss is left to the separate Impact inventory."
+  ]
+}

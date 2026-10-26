@@ -76,26 +76,8 @@ python main.py batch \
 python main.py verify /absolute/path/to/run-directory
 ```
 
-日常流程只需要 `run`、`batch`、`verify` 和下面的预览命令。`audit-preconditions`、
-`repair-preconditions`、`observability`、`salvage-replay` 是发生特定警告后的高级诊断工具，
-不会自动插入默认流程。
-
-## 本地预览
-
-以下命令不调用模型：
-
-```bash
-python main.py screen --case-dir /absolute/path/to/case
-python main.py preview-report --case-dir /absolute/path/to/case
-python main.py preview-plan --case-dir /absolute/path/to/case --elements elements-ids.json
-
-python main.py preview-prompt --part definitions
-python main.py preview-prompt --part element
-python main.py preview-prompt --part formal
-```
-
-`preview-prompt` 会输出流水线实际使用的最终 Prompt，并在标准错误中给出版本、字节数和
-SHA-256，不读取 API Key。
+日常流程只有 `run`、`batch`、`verify` 三条命令；其它诊断入口已从 `main.py`
+移除，需要的内部函数仍保留在 `lib/` 中供库调用。
 
 ## 输入
 
@@ -138,9 +120,7 @@ status.json              本次运行状态
 report_constraints_v2/
 ├── cli/                     入口层（由 main.py 调用）
 │   ├── semantic_pipeline.py 主流程
-│   ├── batch_verify.py      批量运行 + 零模型离线复验
-│   ├── preview.py           输入、计划和 Prompt 预览
-│   └── preconditions.py     可选 P 审计与受约束修复
+│   └── batch_verify.py      批量运行 + 零模型离线复验
 ├── lib/                     共享库层
 │   ├── semantic_core.py     schema、来源、类型与 bundle 校验
 │   ├── plan_synthesizer.py  确定性 P/I/V 公式合成
@@ -148,6 +128,7 @@ report_constraints_v2/
 │   ├── ingest.py            证据编号与原文回填 + 提取前信息充分性门
 │   ├── solving.py           SMT/Z3 查询 + 可观察性审查与自动分流
 │   ├── salvage.py           数值与地址保真检查 + 显式启用的机械规范化
+│   ├── stage3_consistency.py 阶段三绑定契约与反馈一致性判定
 │   └── compat.py            历史模块名兼容注册（meta path finder）
 ├── prompts/                 当前定义、运行时解析和冻结 Prompt 版本
 ├── tests/                   自动回归

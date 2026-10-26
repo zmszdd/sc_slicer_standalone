@@ -1,0 +1,39 @@
+You are a conservative REPORT-NARRATIVE-SUFFICIENCY gate for vulnerability reports.
+Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
+whether the supplied numbered report fragments explain the affected subject, trigger,
+direct effect, and safety-relation basis well enough to attempt P/I/V formalization.
+"ready" means only that the narrative is sufficient to try. It does not mean the
+current rule grammar can express the relation, that numeric variables and units are
+available, or that a model will successfully generate complete formulas. Those are
+judged separately from the subsequent per-impact formalization results.
+
+Required dimensions:
+1. affected_subject: identifiable affected component, function, state, asset, or actor.
+2. trigger_or_action: a concrete triggering condition, operation, call, or state transition.
+3. direct_effect: an immediate unauthorized behavior, state/value change, failed guarantee,
+   or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
+4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
+   numeric, temporal, conservation, or state-transition safety relationship can be derived.
+   The report need not explicitly say "invariant". A NatSpec rule, quoted standard
+   requirement, or mitigation that directly states expected behavior can support this
+   dimension; implementation steps alone cannot. The relation must not be invented.
+
+Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
+Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
+dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
+list every dimension whose status is missing OR uncertain, in the required dimension
+order. decision is ready only when all four dimensions are present; otherwise decision
+is insufficient. A proposed fix may support only the safety-relation dimension when its
+text directly states the expected property; it cannot replace evidence of the affected
+subject, trigger, or direct effect. Do not treat PoC availability, code availability,
+or severity labels as substitutes.
+Return JSON only with exactly:
+{"schema_version":"report-readiness/1","decision":"ready|insufficient",
+ "dimensions":{
+  "affected_subject":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "trigger_or_action":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "direct_effect":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "safety_relation_basis":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"}},
+ "missing_dimensions":[],"summary":"short explanation"}
+REPORT FRAGMENTS:
+{"schema_version":"report-evidence/1","source_sha256":"41ff6b99b3df1ce9381707fcf54f14e63e917d5400cb8e9c456982e70d9878f6","fragments":[{"id":"e_41ff6b99b3df_0001","text":"Critical Stale Price Oracle Manipulation in Market Creation"},{"id":"e_41ff6b99b3df_0002","text":"## Summary"},{"id":"e_41ff6b99b3df_0003","text":"The protocol initializes new markets using a potentially stale oracle price. The createMarket function is non‑payable and does not update pull‑based oracles (e.g., Pyth) prior to reading the price inside LatentSwapLEX.initMarket. Meanwhile, user actions like mint/redeem/swap do update the oracle. This inconsistency allows attackers to initialize a market at an outdated price and immediately arbitrage once correct prices are refreshed, draining initial market liquidity."},{"id":"e_41ff6b99b3df_0004","text":"## Finding Description"},{"id":"e_41ff6b99b3df_0005","text":"1) createMarket forwards directly to initMarket without any oracle price update:"},{"id":"e_41ff6b99b3df_0006","text":"src/Covenant.sol (lines 211–228)"},{"id":"e_41ff6b99b3df_0007","text":"2) LatentSwapLEX.initMarket reads the price immediately; no _updateOraclePrice is called prior:"},{"id":"e_41ff6b99b3df_0008","text":"src/lex/latentswap/LatentSwapLEX.sol (lines 246–256)"},{"id":"e_41ff6b99b3df_0009","text":"3) The price read uses getQuote (non‑preview) and depends on the oracle being fresh:"},{"id":"e_41ff6b99b3df_0010","text":"src/lex/latentswap/libraries/LatentSwapLogic.sol (lines 1153–1187)"},{"id":"e_41ff6b99b3df_0011","text":"4) All post‑creation user flows correctly update the oracle first (contrast):"},{"id":"e_41ff6b99b3df_0012","text":"5) Updating a pull‑based oracle is payable:"},{"id":"e_41ff6b99b3df_0013","text":"src/interfaces/IPriceOracle.sol (lines 37–43)"},{"id":"e_41ff6b99b3df_0014","text":"6) The “smoking gun”: createMarket is non‑payable, so it cannot forward the oracle fee. Thus, it is impossible to safely call createMarket directly in pull‑oracle mode."},{"id":"e_41ff6b99b3df_0015","text":"7) The protocol’s multicall cannot fix this (only delegate‑calls into Covenant and forces strict balance equality):"},{"id":"e_41ff6b99b3df_0016","text":"Because multicall delegate‑calls into Covenant itself, it cannot call an external oracle adapter’s updatePriceFeeds directly; and the strict balance check further constrains fee handling."},{"id":"e_41ff6b99b3df_0017","text":"## Impact Explanation"},{"id":"e_41ff6b99b3df_0018","text":"Severity: HIGH."},{"id":"e_41ff6b99b3df_0019","text":"Why high:"},{"id":"e_41ff6b99b3df_0020","text":"- Initialization sets LexState.lastBaseTokenPrice and derived invariants. If stale, the market is born mispriced."},{"id":"e_41ff6b99b3df_0021","text":"- An attacker can create a market when the oracle lags, then immediately perform mint/redeem/swap (which refreshes to the true price) to arbitrage the price gap established at initialization."},{"id":"e_41ff6b99b3df_0022","text":"- The non‑payable nature of createMarket mathematically prevents safe price updates through the direct path, proving this is a design flaw (not user error)."},{"id":"e_41ff6b99b3df_0023","text":"Concrete exploit path:"},{"id":"e_41ff6b99b3df_0024","text":"- Attacker monitors for stale oracle windows."},{"id":"e_41ff6b99b3df_0025","text":"- Calls createMarket (no fee, no update → stale price used)."},{"id":"e_41ff6b99b3df_0026","text":"- Immediately invokes a state‑changing action (mint/redeem/swap), which updates to the correct price and unlocks a deterministic arbitrage of the mispricing."},{"id":"e_41ff6b99b3df_0027","text":"- Early LPs or bootstrap funds are directly impacted; loss can be catastrophic."},{"id":"e_41ff6b99b3df_0028","text":"## Likelihood Explanation"},{"id":"e_41ff6b99b3df_0029","text":"High likelihood:"},{"id":"e_41ff6b99b3df_0030","text":"- createMarket is the obvious, first entrypoint to spin up markets."},{"id":"e_41ff6b99b3df_0031","text":"- No natspec warnings instruct users to avoid direct use or to wrap with a safe helper."},{"id":"e_41ff6b99b3df_0032","text":"- Pull‑based oracles (e.g., Pyth) are common and require fees; createMarket cannot pass them."},{"id":"e_41ff6b99b3df_0033","text":"## Recommendation"},{"id":"e_41ff6b99b3df_0034","text":"- Make market creation safe for pull‑based oracles:"},{"id":"e_41ff6b99b3df_0035","text":"- Option A: Make createMarket payable and forward msg.value (and initData) to an oracle update hook before any initial price read."},{"id":"e_41ff6b99b3df_0036","text":"- Option B (preferred): In LatentSwapLEX.initMarket, call _updateOraclePrice before readBasePriceAndCalculateLiqRatio, using initData and msg.value passed through from createMarket."}]}

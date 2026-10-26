@@ -75,34 +75,7 @@ STAGE2_COMMANDS = {
               '批量运行多个真实报告：--reports-root 自动发现，--resume 续跑'),
     'verify': ('batch_verify.py',
                '零模型调用重放候选，校验证据/公式/SMT/接口哈希'),
-    'screen': ('preview.py',
-               '本地检查案例目录与输入文件是否齐备（不是语义筛选门）'),
-    'preview-report': ('preview.py',
-                       '预览第一步将发送给模型的报告文本'),
-    'preview-plan': ('preview.py',
-                     '预览第二步将发送给模型的结构化输入'),
-    'preview-prompt': ('preview.py',
-                       '查看集中式 P/I/V 定义或最终实际 Prompt（不调用模型）'),
-    'audit-preconditions': ('preconditions.py',
-                            '可选：P 证据支持与前提/动作/结果时序审查'),
-    'repair-preconditions': ('preconditions.py',
-                             '受约束的 P 局部修复（只改被标记的 P 项）'),
-    'observability': ('solving.py',
-                      '可观察变量审查提示'),
-    'salvage-replay': ('salvage.py',
-                       '重放机械修复结果（需显式启用）'),
-    'stage3-feedback': ('stage3_consistency.py',
-                        '导入阶段三绑定/查询反馈，落盘该 run 的真实 consistency 判定'),
 }
-
-PRIMARY_STAGE2_COMMANDS = (
-    'run', 'batch', 'verify', 'screen',
-    'preview-report', 'preview-plan', 'preview-prompt',
-)
-ADVANCED_STAGE2_COMMANDS = (
-    'audit-preconditions', 'repair-preconditions', 'observability', 'salvage-replay',
-    'stage3-feedback',
-)
 
 # main.py 会为 run/batch 注入四组默认参数，且只在调用者没有自己指定时生效：
 #
@@ -122,7 +95,7 @@ ADVANCED_STAGE2_COMMANDS = (
 #
 # 追加（append）其二：S12 acceptance-verdict policy。legacy = 历史行为
 # （报告歧义 / 非断言实现否决该断言）；signals = 记为信息性字段，使正向判定
-# 可达。verify/screen 等不注入，保持逐字节重放。
+# 可达。verify 不注入，保持逐字节重放。
 #
 # 追加（append）其三：有界修复重试预算。直跑 `run` 的 argparse 默认是 0
 # （offline 重放 run 不带 neural 标志，注入非零重试会触发 parser 的
@@ -145,11 +118,14 @@ STAGE2_ARG_DEFAULTS = {
              # budget from this entry (argparse default 0) while `batch` runs
              # defaulted to 1 -- a truncated screening response in a DeepSeek
              # outage window then killed an otherwise healthy run.  The budget
-             # now matches `batch`.  The conflict flag is --provider (not
-             # --readiness-retries): the child parser guards
+             # now matches `batch`.  Injection is skipped when the caller
+             # overrides the transport (`--provider`) or sets the budget itself
+             # (`--readiness-retries`): the child parser guards
              # "--readiness-retries requires DeepSeek full extraction", so a
-             # caller who overrides the transport decides its own budget.
-             (('--readiness-retries', '1'), '--provider', ('--extract',))),
+             # non-deepseek provider owns its own budget, and an explicit
+             # budget must win exactly like the other retry flags.
+             (('--readiness-retries', '1'),
+              ('--provider', '--readiness-retries'), ('--extract',))),
             ('--extract', '--formalize-only')),
     'batch': (('--provider', 'deepseek', '--model', 'deepseek-flash'),
               ((('--deepseek-proxy', 'direct'), '--deepseek-proxy', ()),
@@ -159,12 +135,6 @@ STAGE2_ARG_DEFAULTS = {
 
 STAGE2_ARG_PREFIX = {
     'verify': ('verify',),
-    'screen': ('screen',),
-    'preview-report': ('report',),
-    'preview-plan': ('plan',),
-    'preview-prompt': ('prompt',),
-    'audit-preconditions': ('audit',),
-    'repair-preconditions': ('repair',),
 }
 
 # 不是入口、只作为库被调用的模块。列在这里是为了让分工显式可查。
@@ -184,10 +154,8 @@ def _table(rows, indent='    '):
 
 
 def _usage() -> str:
-    primary_rows = [(name, STAGE2_COMMANDS[name][1])
-                    for name in PRIMARY_STAGE2_COMMANDS]
-    advanced_rows = [(name, STAGE2_COMMANDS[name][1])
-                     for name in ADVANCED_STAGE2_COMMANDS]
+    stage2_rows = [(name, STAGE2_COMMANDS[name][1])
+                   for name in STAGE2_COMMANDS]
     return (
         'SC_Slicer 唯一入口\n'
         '\n'
@@ -200,11 +168,8 @@ def _usage() -> str:
         '工程命令（不调用模型）:\n'
         f'{_table(META_COMMANDS)}\n'
         '\n'
-        '阶段二日常命令:\n'
-        f'{_table(primary_rows)}\n'
-        '\n'
-        '高级诊断/修复命令（不属于默认流程）:\n'
-        f'{_table(advanced_rows)}\n'
+        '阶段二命令:\n'
+        f'{_table(stage2_rows)}\n'
         '\n'
         '每个命令的参数原样转发给对应脚本；用 `python main.py <command> --help` 查看该命令自己的选项。\n'
         '相对路径按你调用 main.py 时的当前目录解析。\n'
@@ -452,7 +417,8 @@ def _with_arg_defaults(command, argv):
     itself (and, for ``run``, unless the invocation is actually neural — an
     offline replay keeps the caller's model-free transport).  Append the
     proxy/verdict defaults unconditionally and the retry-budget defaults only
-    when their ``requires`` flags are present, each unless already set.
+    when their ``requires`` flags are present, each unless one of its
+    ``conflict`` flags (a string or tuple of strings) is already set.
     """
     rule = STAGE2_ARG_DEFAULTS.get(command)
     if not rule:
@@ -465,7 +431,8 @@ def _with_arg_defaults(command, argv):
         prepend = ()
     full_argv = [*prepend, *argv]
     for flags, conflict, requires in appends:
-        if conflict in argv:
+        conflicts = conflict if isinstance(conflict, tuple) else (conflict,)
+        if any(item in argv for item in conflicts):
             continue
         if requires and not any(flag in full_argv for flag in requires):
             continue

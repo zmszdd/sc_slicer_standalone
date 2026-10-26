@@ -68,6 +68,7 @@ from cli.semantic_pipeline import (allowed_statement_ids, compact_json,
                                    faithfulness_relation_context,
                                    lean_formal_input, model_catalog,
                                    numeric_fact_inventory, referenced_evidence_ids,
+                                   restore_frozen_repair_fields,
                                    stage2_assessment,
                                    validate_core_element_candidate)
 
@@ -441,7 +442,12 @@ def verify_multi_intent_plans(directory, raw_elements, raw_formal, features,
                 base['allowed_statement_ids'] = allowed_statement_ids(raw_elements)
             base['numeric_fact_inventory'] = numeric_fact_inventory(raw_elements)
         base['numeric_fact_inventory'] = numeric_fact_inventory(raw_elements)
-        payload = compact_json(target_formal_input(base, scoped_elements, card))
+        target_input = target_formal_input(base, scoped_elements, card)
+        if features.get('relation_context_generation', False):
+            target_input['relation_context'] = faithfulness_relation_context(
+                raw_elements, catalog,
+                excluded_source_ids=set(selected_p) | {intent_id, impact_id})
+        payload = compact_json(target_input)
         suffix = ('\nTARGET IMPACT ID: ' + impact_id +
                   '\nTARGET INTENT SOURCE ID: ' + intent_id +
                   '\nThis is one independent P/I/V claim for this Impact and this '
@@ -486,10 +492,62 @@ def verify_multi_intent_plans(directory, raw_elements, raw_formal, features,
                     'salvaged model claim differs from saved claim')
             require(json.loads(normalization_path.read_text()) == salvaged[1],
                     'response normalization record changed')
+        # semantic-live-24 emits the plan inside a `formal_plan` envelope with
+        # `relationship_trace` as a sibling.  The generator unwraps that
+        # envelope before validation; replay must apply the same deterministic
+        # unwrap so historical flat plans and the new two-key envelope both
+        # reach the identical normalized plan.
+        if isinstance(raw_claim, dict) and isinstance(raw_claim.get('formal_plan'), dict):
+            raw_claim = raw_claim['formal_plan']
+        # The generator strips the audit-only trace before writing the plan;
+        # a salvaged flat response may still carry it as a top-level sibling,
+        # so replay drops it the same way before comparing to the saved plan.
+        if features.get('relationship_trace'):
+            raw_claim.pop('relationship_trace', None)
         if features.get('fidelity_only_rules'):
             raw_claim['precondition_ids'] = list(selected_p)
             raw_claim['intent_id'] = intent_id
             raw_claim['impact_ids'] = [impact_id]
+        # semantic-live local repair: an accepted retry restores non-mutable
+        # top-level fields from the previously audited plan, so the raw
+        # model-claim alone cannot reproduce the saved plan.  Replay that
+        # deterministic restoration from the prior attempt's generated rule
+        # candidate before applying the remaining normalization transforms.
+        accepted_attempt = next(
+            row for row in entry.get('attempts', [])
+            if row.get('outcome') == 'accepted_for_validation')
+        accepted_index = entry['attempts'].index(accepted_attempt)
+        needs_restore = (accepted_attempt.get('repair_mode') is not None or
+                         bool(accepted_attempt.get('restored_frozen_fields')))
+        if needs_restore:
+            # The accepted retry always restores non-mutable fields from the
+            # plan that was frozen as the repair base.  A normal field-scoped
+            # repair uses the immediately previous generated candidate; a
+            # fresh_restate retry uses the last generated candidate before the
+            # null-repair attempt (which produces no generated-rule artifact).
+            # Walk backward so both paths replay the same repair_base.
+            prev_attempt = None
+            for row in reversed(entry['attempts'][:accepted_index]):
+                if (target / row['artifact_dir'] /
+                        'generated-rule-candidate.json').is_file():
+                    prev_attempt = row
+                    break
+            require(prev_attempt is not None,
+                    'local repair accepted without a generated prior plan')
+            prev_plan = json.loads((target / prev_attempt['artifact_dir'] /
+                                    'generated-rule-candidate.json').read_text())[
+                'formal_plan']
+            mutable_fields = tuple(accepted_attempt.get(
+                'mutable_top_level_fields') or ())
+            if not mutable_fields:
+                for row in reversed(entry['attempts'][:accepted_index]):
+                    if row.get('mutable_top_level_fields') is not None:
+                        mutable_fields = tuple(row['mutable_top_level_fields'])
+                        break
+            raw_claim, restored = restore_frozen_repair_fields(
+                copy.deepcopy(prev_plan), raw_claim, mutable_fields)
+            require(restored == accepted_attempt.get('restored_frozen_fields', []),
+                    'local repair field restoration replay changed')
         for filename, transform, message in (
                 ('normalization-log.json', lambda x: normalize_truth_binding(
                     x, scoped_elements,

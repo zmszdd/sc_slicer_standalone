@@ -11,8 +11,6 @@ tools/report_constraints_v2/
 │   ├── __init__.py
 │   ├── semantic_pipeline.py  # run：单案例端到端
 │   ├── batch_verify.py       # batch / verify
-│   ├── preview.py            # screen / preview-*
-│   └── preconditions.py      # audit-preconditions / repair-preconditions
 ├── lib/                      # 共享库层：被 import，不通过 main.py 暴露新命令
 │   ├── __init__.py
 │   ├── semantic_core.py      # P/I/V schema、类型、编译、基础校验
@@ -24,8 +22,8 @@ tools/report_constraints_v2/
 │   ├── multi_impact.py       # 独立 Impact/I claim 合并、稳定 ID 与覆盖汇总
 │   ├── solving.py            # symbolic_queries + review 合并
 │   ├── salvage.py            # fidelity + mechanical_salvage 合并
-│   ├── stage3_consistency.py # stage3-feedback：阶段三绑定反馈与真实一致性判定
-│   └── compat.py             # 历史模块名兼容注册（16 个名字，见下）
+│   ├── stage3_consistency.py # 阶段三绑定契约与反馈一致性判定
+│   └── compat.py             # 历史模块名兼容注册（14 个名字，见下）
 ├── prompts/                  # Prompt 注册表与冻结版本
 │   ├── definitions.py        # P/I/V 集中式语义定义
 │   ├── active.py             # 生产 Prompt 显式解析与哈希
@@ -45,9 +43,9 @@ tools/report_constraints_v2/
 
 | 层 | 目录 | 内容 | 规则 |
 | --- | --- | --- | --- |
-| 入口层 | `cli/` | 4 个脚本 | 可被 `main.py` 直接调用的脚本放这里；**不要直接 `python cli/x.py`** |
-| 共享库层 | `lib/` | 10 个模块 | 无命令入口，只被 import |
-| 兼容层 | `lib/compat.py` | 16 个名字的映射表 | 不是目录层；只做名字解析，不含任何业务逻辑 |
+| 入口层 | `cli/` | 2 个脚本 | 可被 `main.py` 直接调用的脚本放这里；**不要直接 `python cli/x.py`** |
+| 共享库层 | `lib/` | 13 个模块 | 无命令入口，只被 import |
+| 兼容层 | `lib/compat.py` | 14 个名字的映射表 | 不是目录层；只做名字解析，不含任何业务逻辑 |
 
 阶段二根目录**不含任何 `.py`**：实现全部在 `lib/` 或 `cli/`，旧名字的兼容由
 `lib/compat.py` 集中承担。
@@ -61,7 +59,7 @@ tools/report_constraints_v2/
 ModuleNotFoundError: No module named 'prompts'
 ```
 
-这是刻意的边界，不是缺陷——4 个 `cli/` 文件行为一致。正确入口：
+这是刻意的边界，不是缺陷——2 个 `cli/` 文件行为一致。正确入口：
 
 - `python main.py <command>`（`main.py` 会把 `cli/`、`lib/`、阶段二根目录一起加入 `sys.path`）
 - 或 `python -m cli.<script>` / `python -m lib.<script>`，且 **cwd 为阶段二目录**
@@ -75,8 +73,8 @@ subprocess.run([sys.executable, '-m', 'cli.semantic_pipeline', *args],
 ```
 
 `-m` 会把 cwd 放进子进程的 `sys.path[0]`，于是 `cli` 与 `lib` 两个包都可 import，
-`cli/__init__.py` 也顺带完成兼容注册。3 处调用点：`cli/batch_verify.py`、
-`lib/salvage.py` 的 `replay_main()`、`evaluation/gold_v1/run_blind.py`。
+`cli/__init__.py` 也顺带完成兼容注册。2 处调用点：`cli/batch_verify.py`、
+`evaluation/gold_v1/run_blind.py`。
 
 ## 唯一入口
 
@@ -99,7 +97,7 @@ python main.py test | versions | doctor | status | frozen
 | 表 | 条数 | 说明 |
 | --- | ---: | --- |
 | `META_COMMANDS` | 5 | 工程命令：`test` / `versions` / `doctor` / `status` / `frozen` |
-| `STAGE2_COMMANDS` | 12 | 映射到 `cli/` 或 `lib/` 中的 5 个脚本 |
+| `STAGE2_COMMANDS` | 3 | 映射到 `cli/` 中的 2 个脚本 |
 | `LIBRARY_MODULES` | 3 | 纯库模块：`semantic_core.py` / `plan_synthesizer.py` / `ingest.py` |
 
 脚本解析顺序为 `cli/` → `lib/` → 阶段二根目录，由 `main.py` 的
@@ -135,19 +133,9 @@ parser 错误），而 `batch` 一直转发 1——两个入口行为不一致�
 | `run` | `cli/semantic_pipeline.py` | — |
 | `batch` | `cli/batch_verify.py` | — |
 | `verify` | `cli/batch_verify.py` | `verify` |
-| `screen` | `cli/preview.py` | `screen` |
-| `preview-report` | `cli/preview.py` | `report` |
-| `preview-plan` | `cli/preview.py` | `plan` |
-| `preview-prompt` | `cli/preview.py` | `prompt` |
-| `audit-preconditions` | `cli/preconditions.py` | `audit` |
-| `repair-preconditions` | `cli/preconditions.py` | `repair` |
-| `observability` | `lib/solving.py` | — |
-| `salvage-replay` | `lib/salvage.py` | — |
-| `stage3-feedback` | `lib/stage3_consistency.py` | — |
 
 多个命令共用一个脚本时用前导参数区分（`main.py` 的 `STAGE2_ARG_PREFIX`）。
-`lib/solving.py` 和 `lib/salvage.py` 既是库、又各带一个 `__main__` 入口，
-因此**不列入** `LIBRARY_MODULES`。
+`lib/` 模块都只被 import，无命令入口。
 
 ## 模块职责
 
@@ -157,8 +145,6 @@ parser 错误），而 `batch` 一直转发 1——两个入口行为不一致�
 | --- | ---: | --- |
 | `semantic_pipeline.py` | — | 全链编排：readiness→Impact 清单→核心要素→报告级 P/I 适用性判定→逐 `(Impact, I)` 来源卡与独立收窄请求→形式化（有界重试、局部修复、S17 语义交叉审计）→确定性门→Z3→产物 | — |
 | `batch_verify.py` | 641 | `batch`（限量并发跑真实报告）+ `verify`（零模型调用重放，含 S18 两件 advisory、S19 example-pinning 与机械修复回放） |
-| `preconditions.py` | 362 | 可选 `audit`（P 证据/时序审查）与 `repair`（受约束 P 修复） |
-| `preview.py` | 154 | 本地 `screen` 检查与 `report` / `plan` / `prompt` 预览 |
 
 ### `lib/` 共享库层
 
@@ -203,11 +189,11 @@ import 存在，现在同属历史侧。
 | `fidelity` / `mechanical_salvage` | `lib/salvage.py` | 合并（S6/S8） |
 | `run_semantic_batch` / `verify_semantic` | `cli/batch_verify.py` | 合并（S9） |
 | `semantic_core` / `plan_synthesizer` / `report_only` | `lib/` 下的同名文件 | 移动（S2/S3） |
-| `semantic_pipeline` / `preview` / `preconditions` | `cli/` 下的同名文件 | 移动（S4） |
+| `semantic_pipeline` | `cli/` 下的同名文件 | 移动（S4） |
 | `stage3_consistency` | `lib/stage3_consistency.py` | 新模块的裸名 import（semantic-live-5） |
 | `deepseek` | `lib/deepseek.py` | 新模块的裸名 import（DeepSeek 连接显性化） |
 
-16 个名字对应 **12 个**真实模块（合并行共用一个文件）。
+14 个名字对应 **10 个**真实模块（合并行共用一个文件）。
 
 #### 注册点（每个进程各一次）
 
@@ -225,7 +211,7 @@ import 存在，现在同属历史侧。
 
 #### 为什么是延迟解析 + `insert(0)`
 
-finder 只在某个旧名字**真的被 import 时**才加载目标模块，不会在启动时把 16 个模块
+finder 只在某个旧名字**真的被 import 时**才加载目标模块，不会在启动时把 14 个模块
 （含 z3 与 53KB 的 `semantic_pipeline`）全部拉进来。
 
 `sys.meta_path.insert(0, ...)`（**不能**是 `append`）是必需的：`cli/` 与 `lib/` 都在
@@ -289,8 +275,6 @@ graph TD
   subgraph cli["cli/ 入口层"]
     SP[cli/semantic_pipeline.py]
     BV[cli/batch_verify.py]
-    PC[cli/preconditions.py]
-    PV[cli/preview.py]
   end
   subgraph lib["lib/ 共享库层"]
     SC[lib/semantic_core.py]
@@ -305,21 +289,16 @@ graph TD
   SP --> RO & SC & PS & IN & SO & SA
   SP --> DP
   BV --> RO & SC & PS & IN & SO & SA
-  PC --> SP & RO & SC & IN
-  PV --> SP & SC & IN
 
   SC --> RO
   PS --> RO & SC
   IN --> RO & SC
   SO --> RO & SC
   SA --> SC & PS
-  SA -. "replay_main() 内延迟 import + subprocess" .-> SP
 ```
 
-- 层内无环：运行时用真实 `sys.modules` 对象图检测，**互导入环为 0**。
-- `lib/salvage.py → cli/semantic_pipeline.py` 是图中唯一的向上引用，且**只在
-  `replay_main()` 运行时发生**（延迟 import 与 `subprocess`），不影响 import
-  期的层次关系。若要彻底消除，需把 `load_report` / `write_json` 下移到 `lib/`。
+- 层内无环：`lib/` 不 import `cli/`，运行时用真实 `sys.modules` 对象图检测，
+  **互导入环为 0**。
 
 ## Prompt 管理原则
 
@@ -337,8 +316,8 @@ graph TD
   当前内容），无快照的旧 run 回落冻结版本解析。政策全文见
   `docs/PROMPT_LIVE_POLICY.md`。
 
-使用 `python main.py preview-prompt --part definitions|element|formal` 可查看集中定义或
-生产流程实际使用的最终文本；该命令不读取 API Key，也不调用模型。
+生产流程实际使用的最终文本由 `prompts.active.resolve_prompt_set()` 解析；
+该解析不读取 API Key，也不调用模型。
 
 ## 冻结资产
 

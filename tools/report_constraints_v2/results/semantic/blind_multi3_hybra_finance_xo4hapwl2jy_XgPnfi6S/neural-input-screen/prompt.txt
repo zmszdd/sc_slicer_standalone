@@ -1,0 +1,39 @@
+You are a conservative REPORT-NARRATIVE-SUFFICIENCY gate for vulnerability reports.
+Do NOT extract P/I/V and do NOT judge whether the vulnerability is true. Decide only
+whether the supplied numbered report fragments explain the affected subject, trigger,
+direct effect, and safety-relation basis well enough to attempt P/I/V formalization.
+"ready" means only that the narrative is sufficient to try. It does not mean the
+current rule grammar can express the relation, that numeric variables and units are
+available, or that a model will successfully generate complete formulas. Those are
+judged separately from the subsequent per-impact formalization results.
+
+Required dimensions:
+1. affected_subject: identifiable affected component, function, state, asset, or actor.
+2. trigger_or_action: a concrete triggering condition, operation, call, or state transition.
+3. direct_effect: an immediate unauthorized behavior, state/value change, failed guarantee,
+   or asset effect. Generic severity such as "fund loss is possible" alone is insufficient.
+4. safety_relation_basis: evidence from which an expected-vs-actual, authorization,
+   numeric, temporal, conservation, or state-transition safety relationship can be derived.
+   The report need not explicitly say "invariant". A NatSpec rule, quoted standard
+   requirement, or mitigation that directly states expected behavior can support this
+   dimension; implementation steps alone cannot. The relation must not be invented.
+
+Use only supplied fragment IDs. A present dimension needs at least one supporting ID.
+Missing dimensions use an empty evidence_ids list. Use uncertain when text hints at the
+dimension but is too ambiguous to support a concrete relation. missing_dimensions MUST
+list every dimension whose status is missing OR uncertain, in the required dimension
+order. decision is ready only when all four dimensions are present; otherwise decision
+is insufficient. A proposed fix may support only the safety-relation dimension when its
+text directly states the expected property; it cannot replace evidence of the affected
+subject, trigger, or direct effect. Do not treat PoC availability, code availability,
+or severity labels as substitutes.
+Return JSON only with exactly:
+{"schema_version":"report-readiness/1","decision":"ready|insufficient",
+ "dimensions":{
+  "affected_subject":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "trigger_or_action":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "direct_effect":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"},
+  "safety_relation_basis":{"status":"present|missing|uncertain","evidence_ids":[],"reason":"short reason"}},
+ "missing_dimensions":[],"summary":"short explanation"}
+REPORT FRAGMENTS:
+{"schema_version":"report-evidence/1","source_sha256":"3243f986760e7e79527ce428f9f79790b328fabd5c078af83d3cd7c2c36eed88","fragments":[{"id":"e_3243f986760e_0001","text":"GrowthHYBR full withdrawals revert because `multiSplit` receives a zero slice"},{"id":"e_3243f986760e_0002","text":"## Finding description and impact"},{"id":"e_3243f986760e_0003","text":"`GrowthHYBR.withdraw` always splits the contract’s veNFT into three pieces: the portion that stays in the vault, the user’s share, and the protocol fee. When a user controls 100% of the outstanding gHYBR supply (e.g., the first depositor or the last remaining LP), we obtain:"},{"id":"e_3243f986760e_0004","text":"For the final holder, `remainingAmount` becomes `0`. The code then calls:"},{"id":"e_3243f986760e_0005","text":"Inside `VotingEscrow.multiSplit`, each entry must be strictly positive:"},{"id":"e_3243f986760e_0006","text":"With a zero remainder the call reverts, aborting the entire withdrawal. The vault burns the user’s gHYBR shares before entering `multiSplit`, so the user loses their shares and remains unable to exit or claim the underlying HYBR ever again. Any trailing penalty/fee accounting is also blocked. This is a permanent, loss-of-funds (final depositor shuts down the pool)."},{"id":"e_3243f986760e_0007","text":">**NOTE**: A single participant (or the last remaining LP) cannot withdraw their shares; the call deterministically reverts with \"ZW\", leaving funds locked and the accounting (including withdrawal fee) unclaimable.This occurs when user owns 100% of the contract’s veNFT value at withdraw time (typical for the last exiting user). With a non-zero fee, remaining = veBalance - userAmount - fee == 0."},{"id":"e_3243f986760e_0008","text":"## Recommended mitigation steps"},{"id":"e_3243f986760e_0009","text":"- Detect when `remainingAmount == 0` and skip the internal gHYBR slice (e.g., create only two NFTs: user and fee)."},{"id":"e_3243f986760e_0010","text":"- or guard the 100%-exit path: if shares == totalSupply() (or remaining == 0), handle a dedicated 2-way (user, fee) split; Don’t set veTokenId to a remainder that doesn’t exist."},{"id":"e_3243f986760e_0011","text":"- Alternatively, pre-fund a minimal dust amount so `remainingAmount` is never zero."}]}

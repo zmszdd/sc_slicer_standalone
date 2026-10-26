@@ -5,6 +5,7 @@ import re
 from lib import report_only as r
 from lib.piv_contract import PIV_PROPERTY_NAMES
 from lib.semantic_core import identifier, predicate_paths, require, strings
+from lib.solving import direct_relation_feasible
 
 
 PLAN_VERSION = 'report-formal-plan/1'
@@ -1145,6 +1146,49 @@ def relax_unsupported_relation(plan, elements):
                        'logical skeleton exists; binding deferred to stage 3'),
         })
     return plan, changes
+
+
+def reject_vacuous_safety(plan, formal=None, claim_id='core_claim'):
+    """Return blocking reasons when a generated safety property cannot satisfy
+    the stage-2 handoff gate.
+
+    The stage-2 continuation gate requires V to falsify I under P
+    (``P AND V`` SAT, ``P AND V AND NOT I`` SAT, ``P AND V AND I`` UNSAT).
+    Two generator shapes silently defeat that gate even though the fidelity
+    audit may pass: an I whose guard is the impact outcome itself
+    (``NOT V implies condition``), and an ``authorization_guard`` whose effect
+    and authorization bind the same symbol (``x implies x``).  A downstream
+    semantic check catches any other indirect-consequence plan.
+    """
+    reasons = []
+    pattern = plan.get('pattern') if isinstance(plan, dict) else None
+    if isinstance(pattern, dict):
+        def bound_symbols(predicate):
+            try:
+                return _predicate_binding_symbols(predicate)
+            except ValueError:
+                return set()
+        outcome_symbols = bound_symbols(plan.get('impact_outcome') or {})
+        condition = pattern.get('condition')
+        if isinstance(condition, dict) and outcome_symbols:
+            if outcome_symbols & bound_symbols(condition):
+                reasons.append('safety condition is guarded by the reported impact outcome')
+        if pattern.get('kind') == 'authorization_guard':
+            effect_symbols = bound_symbols(pattern.get('effect') or {})
+            authorization_symbols = bound_symbols(
+                pattern.get('authorization') or {})
+            if effect_symbols == authorization_symbols:
+                reasons.append('authorization guard is a tautological self-implication')
+    if formal is not None:
+        claim = next((item for item in formal.get('claims', [])
+                      if item.get('id') == claim_id), None)
+        if claim is not None:
+            merged_claim = dict(claim)
+            if 'symbols' not in merged_claim and isinstance(formal.get('symbols'), dict):
+                merged_claim['symbols'] = formal['symbols']
+            if not direct_relation_feasible(merged_claim):
+                reasons.append('compiled P/I/V gate does not admit a direct violation witness')
+    return reasons
 
 
 def synthesize_id_formalization(plan, elements, claim_id='core_claim',
