@@ -99,11 +99,3 @@ where
         shown.join(", ")
     ));
 }
-
-pub fn log_block(title: &str, body: &str) {
-    log_line(format!("--- {} ---", title));
-    for line in body.lines() {
-        log_line(line);
-    }
-    log_line(format!("--- end {} ---", title));
-}

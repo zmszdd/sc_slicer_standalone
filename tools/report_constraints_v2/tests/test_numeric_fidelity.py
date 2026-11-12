@@ -257,6 +257,59 @@ class NumericFidelityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'literal changed'):
             check_numeric_plan(changed_literal, elements, relax_assumptions=True)
 
+    def test_symbolic_relief_accepts_declared_sign_abstraction(self):
+        # Sequence kmE42: "1000 USDC are stranded" is an illustrative amount;
+        # the plan declares it symbolic and keeps only positivity (> 0).
+        elements = {'statements': [{
+            'id': 'p_stranded_funds', 'kind': 'precondition',
+            'text': '1000 USDC are stranded in the contract.'}]}
+        candidate = {
+            'precondition_ids': ['p_stranded_funds'],
+            'precondition_terms': [{
+                'source_id': 'p_stranded_funds',
+                'predicate': {'kind': 'comparison', 'left': 'stranded_balance',
+                              'operator': 'gt', 'right': {'const': 0}}}],
+            'unresolved': [{
+                'category': 'ambiguous_condition',
+                'description': 'treated as a symbolic positive balance',
+                'source_ids': ['p_stranded_funds'],
+                'blocks_formalization': False}]}
+        with self.assertRaisesRegex(ValueError, 'literal changed'):
+            check_numeric_plan(candidate, elements)
+        check_numeric_plan(candidate, elements, symbolic_numeric_relief=True)
+        # A weakened >= 0 is not sign-preserving and stays rejected.
+        weakened = {'precondition_ids': ['p_stranded_funds'],
+                    'precondition_terms': [{
+                        'source_id': 'p_stranded_funds',
+                        'predicate': {'kind': 'comparison', 'left': 'stranded_balance',
+                                      'operator': 'ge', 'right': {'const': 0}}}],
+                    'unresolved': candidate['unresolved']}
+        with self.assertRaisesRegex(ValueError, 'literal changed'):
+            check_numeric_plan(weakened, elements, symbolic_numeric_relief=True)
+
+    def test_symbolic_relief_skips_unselected_numeric_precondition(self):
+        # Merkl: the 1000-token pre-deposit is funding context, deliberately
+        # not selected into precondition_ids; only the allowance bound matters.
+        elements = {'statements': [
+            {'id': 'alice_predeposit', 'kind': 'precondition',
+             'text': 'Alice has pre-deposited 1000 tokens.'},
+            {'id': 'bob_insufficient_allowance', 'kind': 'precondition',
+             'text': 'Bob allowance (50 tokens) is insufficient for the 100 token campaign.'}]}
+        candidate = {
+            'precondition_ids': ['bob_insufficient_allowance'],
+            'precondition_terms': [{
+                'source_id': 'bob_insufficient_allowance',
+                'predicate': {'kind': 'comparison', 'left': 'operator_allowance',
+                              'operator': 'lt', 'right': {'const': 100}}}]}
+        with self.assertRaisesRegex(ValueError, 'source missing'):
+            check_numeric_plan(candidate, elements)
+        check_numeric_plan(candidate, elements, symbolic_numeric_relief=True)
+        # A selected precondition stays mandatory even with the relief on.
+        missing_selected = {'precondition_ids': ['bob_insufficient_allowance'],
+                            'precondition_terms': []}
+        with self.assertRaisesRegex(ValueError, 'source missing'):
+            check_numeric_plan(missing_selected, elements, symbolic_numeric_relief=True)
+
     def test_v310_retries_only_bad_numeric_plan(self):
         weak = plan({'kind': 'truth', 'symbol': 'low_offset', 'value': True})
         good = plan({'kind': 'comparison', 'left': 'offset18', 'operator': 'lt',

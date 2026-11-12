@@ -414,7 +414,7 @@ impl SourceDatabase {
         let mut cursor = body_start_relative;
         let mut node_id = container_id.node_id.saturating_mul(10_000);
         while cursor < body_end_relative {
-            let absolute_cursor = container_span.start + cursor;
+            let _absolute_cursor = container_span.start + cursor;
             let Some((line_start, line_end, trimmed)) = next_nonempty_line(&source, cursor) else {
                 break;
             };

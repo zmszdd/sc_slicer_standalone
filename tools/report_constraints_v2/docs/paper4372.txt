@@ -1,0 +1,2244 @@
+
+===== PAGE 1 =====
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+Knowledge-Guided Attack Synthesis and Validation for
+Smart Contracts
+ANONYMOUS AUTHOR(S)
+Smartcontractvulnerabilitiesposeseverefinancialrisks,yetexistingsecuritytoolslargelystopatvulnerabil-
+ity detection, offering limited support for explaining whether reported flaws are exploitable, how attacks un-
+fold, and what concrete damage they cause. To bridge this gap, we propose𝒦𝒜𝒮𝒞 (Knowledge-Augmented
+Synthesis and Simulation with Constraints and Dual-loop Refinement), a multi-agent framework for smart
+contractexploitgenerationandvalidationthroughexecutableproof-of-concept(PoC)tests. 𝒦𝒜𝒮𝒞organizes
+the task into planning, generation, and testing stages. It retrieves knowledge from real-world security audits
+to guide attack planning and applies explicit generation and validation constraints to connect attack plans
+with executable PoC tests. A hierarchical dual-loop refinement process uses testing feedback to repair code-
+levelerrorsintheinnerloopandreviseattackstrategiesintheouterloopwhentheirunderlyingassumptions
+fail. We evaluate𝒦𝒜𝒮𝒞 on 126 contracts across six vulnerability categories. Using GLM-5.3,𝒦𝒜𝒮𝒞 gener-
+ates and validates exploits for 121 contracts (96.03%) at an average cost of US$0.61 per contract, compared
+with 62 (49.21%) for our reproduced Claude Code baseline using the same model and evaluation protocol.
+On 11 real-world CVE-tagged contracts,𝒦𝒜𝒮𝒞 successfully validates 9 cases. Beyond exploit generation,
+𝒦𝒜𝒮𝒞 produces structured attack plans that document exploitation flows, quantify potential asset losses,
+and serve as semantic false positive filters for static analysis tools.
+CCS Concepts: •Security and privacy → Software security engineering.
+1 Introduction
+Smart contracts serve as the cornerstone of the Decentralized Finance (DeFi) [64] ecosystem. DeFi
+protocols managed more than US$69 billion in total value locked (TVL) in 2026 [16], yet exploit
+losses reached US$512 million in 2025 [27]. These losses persist despite mature traditional detec-
+tors[17,22,42],aswellasnewerLLM-basedauditorsthatcanidentifycomplex,context-dependent
+vulnerabilities at scale [51, 56, 57].
+A central limitation of current smart contract security practice is that vulnerability detection
+is often treated as the end point of analysis. Audit reports, static analyzers, and emerging LLM-
+based auditors can identify suspicious code patterns or potential weaknesses, but these findings
+are not always validated through executable attacks. Consequently, many detected vulnerabilities
+remain textual claims or static warnings, without clear evidence of whether they can be triggered
+in practice, what protocol state or transaction sequence is required, and what concrete impact an
+attacker could achieve [11, 12, 66].
+This detection-to-execution gap is particularly important because, among 4,364 contracts re-
+ported as vulnerable, roughly 75% were considered unexploitable, corresponding to false positives
+or issues that did not constitute practical security risks [30]. Such cases may reflect methodolog-
+ical limitations, incomplete coverage, or the inherent complexity of attack surfaces. They also
+point to a practical problem: identifying a potential weakness does not necessarily demonstrate
+its exploitability. Without executable validation, it remains difficult to distinguish false positives,
+theoretical issues, and low-impact findings from vulnerabilities that can lead to serious protocol
+compromise.
+Automated Exploit Generation (AEG) offers a promising way to close this gap by moving be-
+yondvulnerabilitydetectiontowardexecutableexploitrealization.Givenadetectedsmartcontract
+vulnerability, an AEG system should automatically generate a feasible attack scenario, instantiate
+FSE 2027, Shenzhen, China
+2027.
+1
+
+===== PAGE 2 =====
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+80
+81
+82
+83
+84
+85
+86
+87
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+98
+FSE 2027, July 12–16, 2027, Shenzhen, China Anon.
+the required protocol state and transaction sequence, implement the attack as a reproducible test
+case, and execute it in a controlled environment to measure practical consequences.
+However, existing AEG techniques remain limited.First, some prior methods [35, 54, 58] rely
+on predefined vulnerability assumptions, templates, or oracles, which can limit their ability to
+reconstruct complex initialization logic, protocol states, and multi-contract interactions.Second,
+other approaches [1, 13, 55] rely heavily on vulnerability reports, audit findings, or counterexam-
+plessuppliedbyupstreamanalysistoolsorhumanauditors.Theireffectivenessisthereforeclosely
+tied to the coverage and quality of these inputs, potentially limiting their generalizability when
+vulnerability information is incomplete or imprecise.Third, a gap remainsbetween generating ex-
+ecutable code and demonstrating a valid exploit [1, 60]: generated test harnesses may compile or
+executesuccessfullywithoutexercisingtheintendedvulnerablepath,whilereproducingavulnera-
+bilitymaystillfallshortofestablishingandquantifyingitsconcreteattackimpact.Althoughthese
+studies represent valuable advances in automated exploit generation, reliably combining flexible
+attack planning, effective reasoning from limited vulnerability evidence, and semantic validation
+of exploit execution and impact remains an open challenge.
+Building on these limitations, we propose𝒦𝒜𝒮𝒞 (Knowledge-Augmented Synthesis and Sim-
+ulation with Constraints and Dual-loop Refinement), a multi-agent framework for smart contract
+security assessment. To address the first limitation (fixed oracles),𝒦𝒜𝒮𝒞 adopts a general work-
+flowinwhichplanning,generation,andtestingagentscollaboratetodevelopattackstrategiesand
+success conditions for each contract. To address the second limitation (input reliance),𝒦𝒜𝒮𝒞 re-
+trieves relevant audit knowledge to supplement incomplete vulnerability information and guide
+the reconstruction of attack preconditions and interaction sequences. To address the third limita-
+tion (semantic validity), formalized constraints bind generated proof of concepts (PoC) to explicit
+exploit objectives and expected attack effects, while two nested refinement loops [45] use execu-
+tion feedback to repair implementation errors in the inner loop and revise attack strategies in the
+outer loop. The resulting Foundry tests and execution traces support reproducible assessment of
+exploitability and measurement of concrete attack impact.
+Our main contributions are as follows:
+• We propose𝒦𝒜𝒮𝒞, a multi-agent framework that bridges vulnerability detection and ex-
+ecutable exploit verification by automatically generating attack contracts from identified
+vulnerabilities and executing them in a test environment.𝒦𝒜𝒮𝒞 decomposes smart con-
+tract AEG into planning, attack contract generation, and execution-based testing, enabling
+detected vulnerabilities to be systematically translated into concrete and verifiable attacks.
+• We design a contextual retrieval algorithm and release its implementation as an open
+source MCP tool (Section7). We further introduce formal constraints that bind PoC gen-
+eration and validation to explicit attack objectives and expected outcomes, and dual-loop
+refinement that coordinates code repair with strategy replanning.
+• We evaluate𝒦𝒜𝒮𝒞 on benchmark and real-world contracts, achieving success rates from
+79.37% to 96.03% across four LLM backbones and validating 9 of 11 CVE cases. Under the
+same GLM-5.3 backbone and evaluation protocol, it outperforms Claude Code by 46.83
+percentage points. Ablation studies demonstrate the effectiveness of knowledge retrieval,
+formal success constraints, and dual-loop refinement.
+Paper Organization. Section2 introduces background on smart contracts and automated exploit
+generation. Section3 presents the 𝒦𝒜𝒮𝒞 framework and its three-agent architecture. Section4
+describes our experimental setup and answers the four research questions. Section5 discusses
+threats to validity and reviews related work, Section6 concludes, and Section7 describes data
+availability.
+2
+
+===== PAGE 3 =====
+99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+117
+118
+119
+120
+121
+122
+123
+124
+125
+126
+127
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+Knowledge-Guided Attack Synthesis and Validation FSE 2027, July 12–16, 2027, Shenzhen, China
+1 Planner Agent 2 PoC-Generator Agent 3 Foundry-Tester Agent
+Target contract
+& metadata
+Vulnerability
+context
+Top-k
+reports
+1   2   …   k
+Structured Attack plan  π
+Explanation / Preparation 
+/ Interaction / Post-state / Objective
+Formal constraints
+Cver Match target version
+Coracle Assert attack success
+Goal + post-state → require(φ)
+Plan-to-code
+synthesis
+Guide generation
+Attack contract +
+Foundry harness
+setUp()    testExploit()
+require(φ)
+Target contract: read-only
+Execute
+Foundry
+Validate
+Test pass
+Constraints hold
+Target unchanged
+Confirmed PoC
+Impact + Log
+Pass
+Check constraints
+Trace + state
+Failure diagnosis
+Constraint violation ID + evidence + fix
+Code error Execution trace
+Invalid strategy
+Fail
+Refine attack contract
+Plan unchanged
+Constraint / code issueInner loop: code repair
+Outer loop: strategy replanning
+Solodit
+MCP
+Server
+Retrieve
+Fig. 1. Overview of 𝒦𝒜𝒮𝒞. The system operates through a hierarchical dual-loop mechanism: an inner loop
+for code-level refinement (Stage 3) and an outer loop for strategy-level replanning (Stage 1), grounded by an
+external vulnerability knowledge base.
+2 Background
+2.1 Smart Contract
+A smart contract is a blockchain-deployed program that automatically enforces predefined rules
+without intermediaries.
+Vulnerabilities.Since the inception of Ethereum [10], the proliferation of deployed smart con-
+tractshasintroducednumeroussecurityissues.Themostwidelyadoptedvulnerabilitytaxonomies
+are DASP (Decentralized Application Security Project) [47] and SWC (Smart Contract Weakness
+Classification) [50], which categorize common patterns. Zhang et al. [66] further classify vulnera-
+bilities into machine-auditable bugs (e.g., reentrancy, integer overflow) that can be detected by au-
+tomatedtools,andmachine-unauditablebugs(e.g.,priceoraclemanipulation)thatrequiredomain-
+specific knowledge.
+Testing Suite. Foundry [23] is a smart contract development toolkit that has become the de
+facto standard for Ethereum security testing. Its testing framework supports Solidity-native tests
+and provides cheatcodes for fine-grained blockchain state manipulation, making it well-suited for
+simulating complex attack scenarios. In𝒦𝒜𝒮𝒞, we leverage Foundry as the execution backend
+for validating generated exploits.
+2.2 Automated Exploit Generation
+Automated Exploit Generation refers to a class of techniques designed to automatically generate
+functional exploits for given vulnerabilities. This concept was famously introduced and popular-
+izedbyAvgerinosetal.[ 6],typicallycombiningautomatedtechniquessuchassymbolicexecution,
+dynamic analysis, or genetic algorithms. Unlike fuzzing, which primarily focuses on discovering
+program crashes or the existence of vulnerabilities, the core objective of AEG is to generate an
+exploit or Proof-of-Concept (PoC) that verifies the vulnerability is in anexploitable state.
+ThemajorityofexistingAEGresearchtargetsmemory-basedvulnerabilitiesinC/C++programs
+via control-flow hijacking or data-oriented techniques [6, 9, 46]. For smart contracts, AEG instead
+synthesizes transaction sequences that trigger vulnerable states and demonstrate concrete exploit
+effects under complex on-chain state and inter-contract dependencies.
+3
+
+===== PAGE 4 =====
+148
+149
+150
+151
+152
+153
+154
+155
+156
+157
+158
+159
+160
+161
+162
+163
+164
+165
+166
+167
+168
+169
+170
+171
+172
+173
+174
+175
+176
+177
+178
+179
+180
+181
+182
+183
+184
+185
+186
+187
+188
+189
+190
+191
+192
+193
+194
+195
+196
+FSE 2027, July 12–16, 2027, Shenzhen, China Anon.
+3 Methodology
+This section presents the 𝒦𝒜𝒮𝒞 framework, including its overall architecture, and three core
+agents.
+3.1 Framework Overview
+As illustrated in Figure1, 𝒦𝒜𝒮𝒞 is organized as a loop-engineered multi-agent workflow for
+smart contract exploit generation and validation. Given a vulnerable contract, vulnerability meta-
+data, and access to the Solodit knowledge base, the framework coordinates three agents around a
+shared objective: converting a vulnerability report into an executable Foundry proof of exploit.
+The three agents collaborate through explicit intermediate artifacts rather than a single end-to-
+end prompt:
+• Planner Agent. Retrieves relevant audit findings and converts them, together with the
+target contract logic, into a structured Attack Plan that specifies the exploit objective, pre-
+conditions, interaction sequence, and success oracle.
+• PoC-Generator Agent. Translates the Attack Plan into executable Solidity artifacts, in-
+cluding the attack contract and Foundry test harness, while enforcing version, interface,
+and oracle constraints.
+• Foundry-Tester Agent.Executes the generated PoC, inspects compiler/runtime feedback
+andtransactiontraces,anddetermineswhethertheexploitpathsatisfiesthespecifiedpost-
+conditions.
+The design has three key elements, each tied to one agent. First, the Planner Agent integrates
+externalsecurityknowledgesothatattackplanningisgroundedinrealauditevidence.Second,the
+PoC-Generator Agent binds the attack plan to formal validation constraints, which improves gen-
+eration quality by encouraging executable interaction sequences and explicit post-attack checks.
+Third, the Foundry-Tester Agent implements the hierarchical dual loop: local implementation re-
+pair in the inner loop and strategy-level replanning in the outer loop.
+Both the Planner and PoC-Generator agents are initialized with safety-navigation skills that es-
+tablishaprofessionalsecurity-auditorcontextandrestrictreasoningtopublic,authorizedartifacts.
+The final output consists of the generated exploit files and a reproducible execution log (Log.md)
+documenting the planning, generation, testing, and refinement process.
+3.2 Knowledge-Augmented Reasoner: The Planner Agent
+The objective of the first stage is to bridge the abstraction-implementation gap, i.e., translating a
+high-level vulnerability classification into a precise, executable sequence of on-chain interactions.
+Toachievethis,wedeploythePlannerAgent,aspecializedreasoningunitsupportedbycontextual
+retrieval of audit evidence.
+3.2.1 Formal Agent Workflow. We model the planning process by defining the Planner Agent as
+a mapping function𝐹𝑝𝑙𝑎𝑛 that transforms raw vulnerability data into a structured attack plan. The
+execution logic follows a three-step protocol:
+(1) Contextual Analysis (𝐶𝑙𝑜𝑐𝑎𝑙 ): Given the source code𝐶𝑣 𝑢𝑙 and vulnerability metadata𝑣 (con-
+taining location𝑣𝑙𝑜𝑐 and type𝑣𝑡𝑦 𝑝𝑒), the agent extracts a Local Dependency Context𝐶𝑙𝑜𝑐𝑎𝑙 :
+𝐶𝑙𝑜𝑐𝑎𝑙 = Extract(𝐶𝑣 𝑢𝑙, 𝑣𝑙𝑜𝑐 ) (1)
+where Extract uses𝑣𝑙𝑜𝑐 as an anchor to traverse the call graph of𝐶𝑣 𝑢𝑙, collecting all state
+variables, function bodies, modifiers, and access control checks that have a transitive data
+or control dependency on the vulnerability site. This discards irrelevant contract logic and
+retains only the elements necessary to reason about triggering the vulnerability.
+4
+
+===== PAGE 5 =====
+197
+198
+199
+200
+201
+202
+203
+204
+205
+206
+207
+208
+209
+210
+211
+212
+213
+214
+215
+216
+217
+218
+219
+220
+221
+222
+223
+224
+225
+226
+227
+228
+229
+230
+231
+232
+233
+234
+235
+236
+237
+238
+239
+240
+241
+242
+243
+244
+245
+Knowledge-Guided Attack Synthesis and Validation FSE 2027, July 12–16, 2027, Shenzhen, China
+Table 1. Semantic fields of the structured attack plan.
+Field Symbol Description
+Explanation – Root cause analysis linking 𝑣𝑡𝑦 𝑝𝑒 to the logic in𝐶𝑣 𝑢𝑙
+Preparation 𝑃𝑝𝑟𝑒𝑝 Pre-conditions such as flash loan acquisition or contract deployment
+Interaction 𝐼𝑛𝑡 Ordered function call sequence (e.g.,deposit → reenter → withdraw)
+Post-State 𝑆𝑝𝑜𝑠𝑡 Quantifiable success condition
+Objective 𝑂𝑏𝑗 Categorical strategic goal
+(2) Knowledge Retrieval (𝑆𝑟𝑒𝑡 ): To ground the reasoning in real-world exploitation evidence,
+the agent issues a keyword query to the external knowledge base𝒦 (Solodit) via its API,
+using 𝑣𝑡𝑦 𝑝𝑒 as the search key:
+𝑆𝑟𝑒𝑡 = Retrieve(𝑣𝑡𝑦 𝑝𝑒, 𝒦) (2)
+whereRetrievereturnsthetop- 𝑘 matchingauditreports,rankedbyrelevanceto 𝑣𝑡𝑦 𝑝𝑒.Each
+report in𝑆𝑟𝑒𝑡 provides real-world exploitation examples, known attack patterns, and anal-
+ogous vulnerability instances from production contracts.
+(3) Structured Plan Synthesis (𝜋): Finally, the agent combines𝐶𝑙𝑜𝑐𝑎𝑙 and 𝑆𝑟𝑒𝑡 to produce the
+attack plan𝜋:
+𝜋 = Synthesize(𝐶𝑙𝑜𝑐𝑎𝑙 , 𝑆𝑟𝑒𝑡 ) ∈ 𝕊 (3)
+where Synthesize is an LLM-conditioned generation step: the modelℳ receives a struc-
+turedprompttemplate Ψthatconcatenates 𝐶𝑙𝑜𝑐𝑎𝑙 and 𝑆𝑟𝑒𝑡 ,producing 𝜋 = ℳ(Ψ(𝐶𝑙𝑜𝑐𝑎𝑙 , 𝑆𝑟𝑒𝑡 )).
+The output is constrained to the schema𝕊 via structured JSON decoding, ensuring𝜋 is a
+machine-parseable blueprint rather than free-form text.
+The schema𝕊 requires that𝜋 be a JSON object containing five semantic fields (detailed in
+Table1):
+𝕊 = {Explanation, 𝑃𝑝𝑟𝑒𝑝 , 𝐼𝑛𝑡 , 𝑆𝑝𝑜𝑠𝑡 , 𝑂𝑏𝑗 } (4)
+Combining these three steps, the complete planning function can be compactly expressed as:
+𝜋 = 𝐹 𝑝𝑙𝑎𝑛 (𝐶𝑣 𝑢𝑙, 𝑣 ,𝒦) (5)
+The five-field schema follows established attack-modeling principles. Inspired by the Cyber Kill
+Chain [31], it separates target understanding (Explanation), exploit setup and execution (Prepara-
+tionand Interaction),andsuccessverification( Post-Stateand Objective).Thisstructurealsomatches
+thepreparation–interaction–outcomepatternobservedinreal-worldDeFiexploits[ 68].Ourstruc-
+tured plan is designed to encode this empirically validated attack lifecycle, so that the generated
+plans align with the operational structure observed in real-world exploits rather than being con-
+structedadhoc.TopreventthePlannerfromproducingvagueornon-verifiableobjectives, 𝒦𝒜𝒮𝒞
+further restricts theObjective field to four explicit categories: (a)Primary Financial Gain, (b)Strate-
+gic Financial Positioning,(c) Disruption/Sabotage/DoS,and(d) Manipulation of System Behavior.This
+categorical constraint forces each plan to state the intended impact of the exploit in a form that
+can be translated into concrete post-state assertions during testing.
+3.2.2 Contextual Retrieval and Evidence Selection. Vulnerability metadata may identify a defect
+without specifying the preparation steps, contract state, or interaction sequence needed to exploit
+5
+
+===== PAGE 6 =====
+246
+247
+248
+249
+250
+251
+252
+253
+254
+255
+256
+257
+258
+259
+260
+261
+262
+263
+264
+265
+266
+267
+268
+269
+270
+271
+272
+273
+274
+275
+276
+277
+278
+279
+280
+281
+282
+283
+284
+285
+286
+287
+288
+289
+290
+291
+292
+293
+294
+FSE 2027, July 12–16, 2027, Shenzhen, China Anon.
+it. To support attack planning,𝒦𝒜𝒮𝒞 extends the Solodit MCP tool with contextual ranking and
+structured evidence extraction. Algorithm1 summarizes this procedure.
+The tool accepts a primary vulnerability query𝑞0, up to two optional related queries, and op-
+tional target context𝑥 = (𝑞 0, 𝑚, 𝑓 , 𝑐, 𝜏 ), where 𝑚, 𝑓, 𝑐, and 𝜏 denote the suspected vulnerability
+mechanism, function name, code context, and test framework, respectively. Related queries are
+supplied by the caller and expand the candidate pool. Only keyword queries are sent to Solodit;
+target context is used locally for ranking.
+Queriesarenormalizedbyremovingsurroundingwhitespaceandenclosingdoublequotes,then
+deduplicated without regard to case while preserving their original order. The tool scans query
+results within a page limit𝑃 per query and a fixed total request budget𝐵 = 10. Candidate reports
+are deduplicated by slug, falling back to their identifier when the slug is unavailable, with the first
+occurrence retained. By default,𝑃 = 2 and at most𝑘 = 10 reports are returned.
+For each candidate report𝑟, the tool computes a deterministic relevance score:
+𝑠(𝑟, 𝑥) = 5 min(𝑛𝑚, 5) + 5min(𝑛𝑓 , 2) + 2min(𝑛𝑐, 5) + 3min(𝑛𝑞, 3)
++ 𝑏PoC(𝑟) + 𝑏framework(𝑟, 𝜏 ). (6)
+Here, 𝑛𝑚, 𝑛𝑓, and𝑛𝑐 count distinct context tokens matched in the report title, summary, and body,
+whereas 𝑛𝑞 counts primary query tokens matched in the title. Token normalization splits camel
+case and underscores, converts text to lowercase, and filters short tokens and selected common
+words and Solidity keywords. Mechanism and code inputs contribute at most their first 20 and 30
+distinct retained tokens, respectively. Omitted context fields contribute zero.
+The PoC bonus assigns scores of 0, 1, 2, and 3 to reports with no detected substantive PoC
+section,anarrativedescription,reproductionsteps,andtestcode,respectively.Thesecategoriesare
+identified from explicit PoC sections using textual patterns. A further bonus of 2 is assigned when
+the extracted PoC contains markers associated with the requested test framework. These fixed
+weights emphasize mechanism and function matches while treating PoC form and framework
+cues as supplementary signals. Reports are sorted by decreasing score, with ties resolved by their
+first encounter order.
+For the selected reports, the tool returns source information, matching excerpts, PoC evidence,
+and extracted prerequisite and outcome evidence. Prerequisites are selected from matching lines
+in the PoC excerpt. Outcome evidence is taken from a detected assertion in test code or, otherwise,
+from the report’s impact section. Fields for which the extractor finds no evidence are explicitly
+marked. The Planner can request the full report when additional context is needed.
+The Planner uses this evidence to formulate candidate preparation steps, interactions, and ex-
+pected effects against the target contract. Retrieval scores and PoC labels describe textual matches
+and report content; they do not establish that an example applies to the target or executes suc-
+cessfully. These candidate assumptions remain subject to subsequent generation, execution, and
+refinement.
+3.3 Syntax Translator: The PoC-Generator Agent
+While the Planner Agent defines thesemantic trajectory of the exploit, its output remains an ab-
+stract JSON description. The objective of Stage 2 is to bridge the semantic-syntactic gap by trans-
+forming this high-level plan into executable code. We deploy the PoC-Generator Agent, a syntax-
+constrained translator that maps the logical steps in𝜋 to a compilable Foundry test case.
+3.3.1 Formal Translation Process. Let Π be the space of valid attack plans and𝒯 be the space of
+validFoundrytestcontracts.Thegeneratordefinesatranslationfunction 𝐹𝑔𝑒𝑛 ∶ 𝒞×Π → 𝒯.Given
+the vulnerable contract𝐶𝑣 𝑢𝑙 and the plan𝜋, the agent generates an initial attack contract𝐶(0)𝑎𝑡𝑡 :
+6
+
+===== PAGE 7 =====
+295
+296
+297
+298
+299
+300
+301
+302
+303
+304
+305
+306
+307
+308
+309
+310
+311
+312
+313
+314
+315
+316
+317
+318
+319
+320
+321
+322
+323
+324
+325
+326
+327
+328
+329
+330
+331
+332
+333
+334
+335
+336
+337
+338
+339
+340
+341
+342
+343
+Knowledge-Guided Attack Synthesis and Validation FSE 2027, July 12–16, 2027, Shenzhen, China
+Algorithm 1 Contextual retrieval and evidence selection
+Require: Queries 𝑄 = (𝑞 0, … , 𝑞𝑗 ), 𝑗 ≤ 2 ; target context𝑥; limits𝑃, 𝐵, and𝑘
+Ensure: Selected reports with evidence𝑆𝑟𝑒𝑡
+1: 𝑄 ← NoRmalizeQeRies(𝑄)
+2: 𝐷 ← [ ]; 𝑏 ← 0
+3: for each query𝑞 in 𝑄 do
+4: for 𝑝 = 1 to 𝑃 do
+5: if 𝑏 ≥ 𝐵 then
+6: break
+7: end if
+8: (𝐹 , 𝐿) ←SeaRchPage(𝑞, 𝑝) ▷ Reports and total pages
+9: 𝑏 ← 𝑏 + 1
+10: 𝐷 ← AppendUnseen(𝐷, 𝐹)
+11: if 𝐹 = ∅ or 𝑝 ≥ 𝐿 then
+12: break
+13: end if
+14: end for
+15: end for
+16: for each report𝑟 in 𝐷 do
+17: (𝑧𝑟 , 𝑒𝑟 ) ← ExtRactPoC(𝑟) ▷ Category and excerpt
+18: 𝑠𝑟 ← 𝑠(𝑟, 𝑥) using Equation (6)
+19: end for
+20: 𝑅 ← StableSoRtDescending(𝐷, 𝑠)
+21: 𝑆𝑟𝑒𝑡 ← [ ]
+22: for each report𝑟 in the first min(𝑘, |𝑅|) entries of𝑅 do
+23: 𝑔𝑟 ← ExtRactGuidance(𝑟, 𝑧𝑟 , 𝑒𝑟)
+24: Append (𝑟, 𝑠𝑟 , 𝑧𝑟 , 𝑒𝑟 , 𝑔𝑟 ) as a compact result to𝑆𝑟𝑒𝑡
+25: end for
+26: return 𝑆𝑟𝑒𝑡
+𝐶(0)𝑎𝑡𝑡 = 𝐹𝑔𝑒𝑛 (𝐶𝑣 𝑢𝑙, 𝜋) (7)
+To increase the likelihood that𝐶(0)𝑎𝑡𝑡 is a functionally viable test case rather than hallucinatory
+text, we embed a set of syntactic constraints into the agent’s system prompt. These constraints
+formally restrict the output space as follows.
+• Version Compatibility (𝒞𝑣 𝑒𝑟). The prompt enforcespragma consistency, requiring the com-
+piler version of the test to match the target:
+𝑉 𝑒𝑟(𝐶 (0)𝑎𝑡𝑡 ) ≡ 𝑉 𝑒𝑟(𝐶 𝑣 𝑢𝑙) (8)
+This prevents compilation errors caused by breaking changes across Solidity versions (e.g.,
+the deprecation ofSafeMath in v0.8 due to built-in overflow checks [12]).
+• Minimalism (𝒞𝑚𝑖𝑛). To reduce noise and potential side effects, the agent is constrained to
+avoid importing unnecessary contracts. This restricts the dependency graph𝐷(𝐶 (0)𝑎𝑡𝑡 )to the
+minimal set required to interface with𝐶𝑣 𝑢𝑙:
+𝐷(𝐶 (0)𝑎𝑡𝑡 ) ⊆ {𝐶 𝑣 𝑢𝑙,FoundryStd} (9)
+• OracleEmbedding( 𝒞𝑜𝑟𝑎𝑐𝑙𝑒 ).Theagentmustgenerateaverifiablesuccessconditionbytrans-
+lating the natural language descriptions in𝜋.𝑂 𝑏𝑗 and 𝜋.𝑆 𝑝𝑜𝑠𝑡 into a boolean predicate𝜙(𝑠)
+7
+
+===== PAGE 8 =====
+344
+345
+346
+347
+348
+349
+350
+351
+352
+353
+354
+355
+356
+357
+358
+359
+360
+361
+362
+363
+364
+365
+366
+367
+368
+369
+370
+371
+372
+373
+374
+375
+376
+377
+378
+379
+380
+381
+382
+383
+384
+385
+386
+387
+388
+389
+390
+391
+392
+FSE 2027, July 12–16, 2027, Shenzhen, China Anon.
+encoded as the finalrequire statement:
+𝜙(𝑠𝑓 𝑖𝑛𝑎𝑙 ) = {true, if 𝜋.𝑂 𝑏𝑗 is satisfiedrevert, otherwise (10)
+This predicate𝜙 serves as the definitive oracle for the subsequent testing stage.
+3.3.2 Structure-A ware Code Generation. The agent implements the translation by mapping the
+semantic fields of𝜋 to specific structural components of the Foundry test file (.t.sol):
+• 𝜋.𝑃 𝑝𝑟𝑒𝑝 → setUp(). The preparation phase of the plan is translated into thesetUp() func-
+tion, which includes deploying the target contract𝐶𝑣 𝑢𝑙 and utilizing Foundry cheatcodes
+such asdeal and prank to establish the initial environment𝑠0.
+• 𝜋.𝐼 𝑛𝑡 → testExploit(). The interaction sequence is translated into the primary test func-
+tion. The agent converts logical steps (e.g., borrow flash loan, invoke vulnerable function,
+withdraw funds) into precise Solidity function calls with encoded parameters.
+• Ambiguity Resolution. When explicit parameter values are missing in𝜋, the agent lever-
+ages its parametric knowledge of common vulnerability patterns [12] to infer reasonable
+defaults (e.g., assuming a standard ERC20approve amount if unspecified).
+Theoutputofthisstageconsistsoftwoartifacts:aTestContract( <vuln>_Attack.t.sol ),which
+is a Solidity file implementing𝐶(0)𝑎𝑡𝑡 that imports and interfaces with the vulnerable contract𝐶𝑣 𝑢𝑙;
+and an Execution Documentation (attack.md), a synthesized document explaining the mapping
+from 𝜋 to 𝐶(0)𝑎𝑡𝑡 , which aids interpretability and serves as a reference for the refinement loop in
+Stage 3.
+By enforcing these syntactic constraints, the PoC-Generator Agent significantly increases the
+probabilitythattheresultingcodeislocallycompilableandsemanticallyalignedwiththestrategic
+plan, providing a high-quality initialization for the iterative testing phase.
+3.4 Execution Validation and Refinement: The Foundry-Tester Agent
+The Foundry-Tester Agent evaluates generated attack tests against the target contract, the attack
+plan, and the generation constraints. A passing test alone does not establish that the intended
+vulnerability was exercised or that the specified attack effect occurred. We therefore incorporate
+a Failure Diagnosis component within the Tester to assess the available evidence and produce
+actionable feedback. In the dual loop, this feedback guides local test repair in the inner loop and
+revision of attack assumptions in the outer loop.
+3.4.1 Failure Diagnosis. For each candidate, the Tester collects an evidence record𝐸 containing
+compiler diagnostics and, when execution is possible, the result offorge test -vvvv , available
+call traces, and recorded states before and after the attack. These state observations cover the
+balances and storage values relevant to𝜋.𝑂 𝑏𝑗 and 𝜋.𝑆 𝑝𝑜𝑠𝑡. Compilation failures leave execution
+dependent checks unassessed.
+FailureDiagnosiscombinesdeterministiccheckswithLLMassessment.Thedeterministicchecks
+comparethe target sourceagainst its recorded hash, inspect declared versionsand imports against
+the configured policies, and read compiler and test results. The LLM examines the target code, at-
+tack plan, generated test, and execution evidence to assess whether the intended vulnerable be-
+havior was exercised and whether the assertions and observed effects support the stated objective.
+The generation constraints𝒞𝑣 𝑒𝑟, 𝒞𝑚𝑖𝑛, and𝒞𝑜𝑟𝑎𝑐𝑙𝑒 , together with target source integrity, form the
+constraint setΓ.
+8
+
+===== PAGE 9 =====
+393
+394
+395
+396
+397
+398
+399
+400
+401
+402
+403
+404
+405
+406
+407
+408
+409
+410
+411
+412
+413
+414
+415
+416
+417
+418
+419
+420
+421
+422
+423
+424
+425
+426
+427
+428
+429
+430
+431
+432
+433
+434
+435
+436
+437
+438
+439
+440
+441
+Knowledge-Guided Attack Synthesis and Validation FSE 2027, July 12–16, 2027, Shenzhen, China
+The component returns a verdict and a list of diagnostics:
+(𝑣 ,𝒟) = Diagnose(𝐶𝑎𝑡𝑡 , 𝐶𝑣 𝑢𝑙, 𝜋, Γ, 𝐸). (11)
+Each check is recorded as satisfied, violated, or not assessable from the available evidence. The
+overall verdict𝑣 is pass only when constraint compliance, successful test execution, the intended
+vulnerable behavior, and the expected attack effects are all supported. A detected violation pro-
+duces fail; otherwise, insufficient evidence produces inconclusive. For example, a compiler
+error establishes a compilation failure but does not establish that the attack strategy is infeasible.
+3.4.2 Structured Retry Feedback. Each diagnostic identifies itstype and location. It also records
+the applicable constraint, supporting evidence, and expected and observed behavior. A con-
+straint violation must identify both the violated requirement and its source location, using a file
+and source span or an enclosing function for a missing construct. If these cannot be established,
+the issue is reported as missing evidence. Other diagnostic locations follow the compiler output or
+executionframe;unavailablelocationsareexplicitlymarked.Table 2summarizesthefivefeedback
+categories.
+Table 2. Failure categories and diagnostic feedback for refinement.
+Failure category Diagnostic feedback
+Constraint violation The diagnostic names the violated constraint and the offending source location, such as an
+incompatible pragma declaration, or an assertion inconsistent with𝜋.𝑂 𝑏𝑗 and 𝜋.𝑆 𝑝𝑜𝑠𝑡. It
+includes the expected requirement and the observed code or source difference.
+Compilation error The feedback includes the original compiler error message, reported source location, and
+relevant code excerpt. Compilation must succeed before execution dependent checks can be
+completed.
+Runtime failure An unexpected revert or failed call is reported with the available revert reason, call frame, and
+associated source location. A revert expected by the attack objective, such as a denial of service
+outcome, is assessed against that objective instead of being treated as an implementation error.
+Outcome mismatch The feedback identifies the failed assertion or unsupported attack effect and contrasts the
+expected result with observed states or traces. This category also covers tests that pass without
+exercising the intended vulnerable behavior when the recorded evidence establishes that
+mismatch.
+Missing evidence When the available artifacts do not support a decision, the feedback specifies the missing
+observation, such as an unrecorded balance change or an absent trace segment, and the check
+that remains unresolved.
+The retry request includes these diagnostics, the current candidate, the attack plan, and the
+ordered attempt history. This gives the agent specific issues to address and retains the evidence
+behind each requested revision. Repairs must preserve the target source and the plan’s exploit
+objective; removing assertions or weakening their conditions merely to obtain a passing result is
+not an acceptable repair.
+3.4.3 Diagnosis Guided Dual Loop Refinement. Algorithm 2 organizes execution, diagnosis, and
+revision into two bounded loops.
+The inner loop allows up to𝑅 repairs after the initial candidate for each plan, with at most one
+confirmationrunperprimaryattempt.Ifitsbudgetisexhaustedwithoutvalidation,theouterloop
+supplies the accumulated diagnostics to the Planner to reconsider prerequisites and interaction
+choices,thengeneratesanewcandidate.Atmost 𝐾 suchreplanningstepsareallowed.Replanning
+9
+
+===== PAGE 10 =====
+442
+443
+444
+445
+446
+447
+448
+449
+450
+451
+452
+453
+454
+455
+456
+457
+458
+459
+460
+461
+462
+463
+464
+465
+466
+467
+468
+469
+470
+471
+472
+473
+474
+475
+476
+477
+478
+479
+480
+481
+482
+483
+484
+485
+486
+487
+488
+489
+490
+FSE 2027, July 12–16, 2027, Shenzhen, China Anon.
+Algorithm 2 Exploit refinement with Failure Diagnosis
+Require: Target 𝐶𝑣 𝑢𝑙, plan𝜋0, candidate𝐶(0)𝑎𝑡𝑡 , constraintsΓ, repair limit𝑅, replanning limit𝐾
+1: 𝐶 ← 𝐶 (0)𝑎𝑡𝑡 ; 𝜋 ← 𝜋 0; 𝐻 ← [ ]
+2: for 𝑘 = 0 to 𝐾 do
+3: for 𝑡 = 0 to 𝑅 do
+4: 𝐸 ← CompileAndRun(𝐶, 𝐶𝑣 𝑢𝑙)
+5: (𝑣 ,𝒟) ← Diagnose(𝐶, 𝐶𝑣 𝑢𝑙, 𝜋, Γ, 𝐸)
+6: Append (𝑘, 𝑡, 𝐶, 𝜋, 𝐸, 𝑣 , 𝒟) to 𝐻
+7: if 𝑣 = pass then
+8: (𝐸′, 𝑣′, 𝒟′) ← ConfiRm(𝐶, 𝐶𝑣 𝑢𝑙, 𝜋, Γ)
+9: Append the confirmation record to𝐻
+10: if 𝑣 ′ = pass then
+11: return (𝐶, 𝜋, 𝐻 )
+12: end if
+13: 𝒟 ← 𝒟′
+14: end if
+15: if 𝑡 < 𝑅 then
+16: 𝐶 ← Refine(𝐶, 𝜋, Γ, 𝒟, 𝐻)
+17: end if
+18: end for
+19: if 𝑘 < 𝐾 then
+20: 𝜋 ← Replan(𝐶𝑣 𝑢𝑙, 𝜋, Γ, 𝒟, 𝐻)
+21: 𝐶 ← GeneRate(𝐶𝑣 𝑢𝑙, 𝜋, Γ)
+22: end if
+23: end for
+24: return (unresolved, 𝐻 )
+changes the attack strategy while retaining the target contract, exploit objective, and validation
+requirements.
+Every primary execution and confirmation is recorded before a decision is made, including suc-
+cessfulattempts.ConfiRmrerunstheunchangedcandidatefromthesameinitialsetupandapplies
+Failure Diagnosis again; its failures are returned to the refinement loop. The history𝐻 preserves
+candidateandplanversions,diagnostics,executionoutput,andstateobservations,andisexplicitly
+supplied to both repair and replanning. The final artifacts include the validated test, its attack plan
+and attack.md, the original target source, required testing files, andLog.md.
+4 Evaluation
+Inthissection,wefirstdescribeourexperimentalsetup,includingresearchquestions,datasetselec-
+tion, baseline tools, evaluation metric and implementation details. We then present experimental
+results to answer five research questions.
+4.1 Experimental Setup
+4.1.1 Research Questions. We aim to answer the following research questions:
+• RQ1 (Intrinsic LLM Limitation): How well can LLMs perform AEG tasks relying solely
+on their pre-trained knowledge?
+• RQ2 (Effectiveness & Efficiency) : How effective and efficient is𝒦𝒜𝒮𝒞 in automated
+exploit generation tasks compared to state-of-the-art tools?
+• RQ3 (Ablation Study): How does each component of𝒦𝒜𝒮𝒞 contribute to overall per-
+formance?
+10
+
+===== PAGE 11 =====
+491
+492
+493
+494
+495
+496
+497
+498
+499
+500
+501
+502
+503
+504
+505
+506
+507
+508
+509
+510
+511
+512
+513
+514
+515
+516
+517
+518
+519
+520
+521
+522
+523
+524
+525
+526
+527
+528
+529
+530
+531
+532
+533
+534
+535
+536
+537
+538
+539
+Knowledge-Guided Attack Synthesis and Validation FSE 2027, July 12–16, 2027, Shenzhen, China
+• RQ4 (Exploitability Assessment) : Can 𝒦𝒜𝒮𝒞’s structured outputs support damage
+quantification and reduce false positives from static detection?
+4.1.2 Dataset. SmartBugs-Curated [19] is an established benchmark for smart contract security
+research.Weselect126contractsfromsixcategories:Reentrancy(31samples),Arithmetic(15sam-
+ples), Unchecked Low Level Calls (52 samples), Denial of Service (6 samples), Access Control (18
+samples), and Front Running (4 samples). We exclude Bad Randomness and Time Manipulation
+cases that require collusion with miners, as this capability falls outside our assumed threat model.
+To evaluate generalization beyond academic benchmarks, we searched public CVE databases
+for Solidity smart-contract vulnerabilities and manually retained 11 most recent cases with clear
+vulnerability descriptions and available matching source code. These CVE cases cover diverse con-
+tract types and code complexity, detailed information is reported in Table4.
+4.1.3 Baseline Selection. We use Claude Code [5], developed by Anthropic [4], with GLM-5.3 as
+a general purpose agentic coding baseline. We also evaluate pure prompting with each LLM back-
+bone to measure performance without knowledge retrieval or iterative refinement. REX [60] and
+AdvSCanner[58]areexcludedfromthequantitativecomparisonbecausewecouldnotobtaintheir
+implementations for reproduction. We excluded PoCo [1], which relies on guidance from vulner-
+ability audit reports and is not open source, and VeriExploit [55], which depends on detection
+results from formal analysis tools and requires manual upgrades to the target contracts’ Solidity
+versions.
+4.1.4 Evaluation Metric. Wemeasureexploitsuccessrateastheproportionofevaluatedcontracts
+for which a generated exploit is manually confirmed to succeed. For each case, we execute the
+generated Foundry artifacts and manually inspect the test code, execution traces, and resulting
+state changes to determine whether the intended vulnerability is actually exploited. The Claude
+Code baseline is evaluated using the same validation procedure and success criterion.
+4.1.5 Implementation. OuragentimplementationcombinesClaudeCode’ssubagentarchitecture[ 3]
+with Python scripts for workflow orchestration. The Solodit knowledge base is accessed through
+our extended version of the search-solodit-mcp tool [40], which incorporates the contextual re-
+trieval and evidence selection algorithm. Our experiments use four LLMs: GPT-5.1 [43], Gemini-3-
+Flash[25],DeepSeek-V3.2[ 15],andGLM-5.3[ 62].Table 3reportstheresultsforbothpureprompt-
+ing and𝒦𝒜𝒮𝒞 with each backbone, alongside Claude Code with GLM-5.3.
+4.2 RQ1 (Intrinsic LLM Limitation)
+ToassesshowwellLLMsperformAEGusingtheirpretrainedknowledge,weevaluatepureprompt-
+ing on all 126 contracts. Each model receives the vulnerable contract and its metadata and directly
+generates an attack candidate without external knowledge retrieval or iterative refinement.
+As shown in Table3, GPT-5.1 achieves the highest success rate at 28.57% (36/126), followed by
+GLM-5.3 at 22.22%, DeepSeek-V3.2 at 7.94%, and Gemini-3-Flash at 3.97%. Even the strongest pure
+prompting baseline therefore leaves 90 of 126 contracts without a validated exploit.
+Performance also varies substantially across vulnerability types. GPT-5.1 succeeds on 11/15
+arithmetic cases (73.33%) but only 4/31 reentrancy cases (12.90%). GLM-5.3 performs better on
+reentrancy, succeeding on 10/31 cases (32.26%), although its overall success rate is lower. Access
+control and front running remain challenging across all four models: the best access control re-
+sult is 2/18 (11.11%), and no model produces a validated exploit for any of the four front running
+contracts.
+Inspection of passing artifacts highlights the importance of explicit constraints on exploit objec-
+tives and expected outcomes. Without such constraints, generated tests may pass Foundry checks
+11
+
+===== PAGE 12 =====
+540
+541
+542
+543
+544
+545
+546
+547
+548
+549
+550
+551
+552
+553
+554
+555
+556
+557
+558
+559
+560
+561
+562
+563
+564
+565
+566
+567
+568
+569
+570
+571
+572
+573
+574
+575
+576
+577
+578
+579
+580
+581
+582
+583
+584
+585
+586
+587
+588
+FSE 2027, July 12–16, 2027, Shenzhen, China Anon.
+Table 3. Exploit success rates across six vulnerability categories. Cells report success counts and rates in
+parentheses; REX and AdvSCanner show published rates only.
+Method
+Reentrancy
+(𝑛 = 31)
+Arithmetic
+(𝑛 = 15)
+DoS
+(𝑛 = 6)
+Unchecked
+(𝑛 = 52)
+Access
+Control
+(𝑛 = 18)
+Front
+Running
+(𝑛 = 4)
+Total
+(𝑛 = 126)
+Pure Prompting
+GPT-5.1
+4
+(12.90%)
+11
+(73.33%)
+3
+(50.00%)
+17
+(32.69%)
+1
+(5.56%)
+0
+(0.00%)
+36
+(28.57%)
+Gemini-3-Flash
+0
+(0.00%)
+1
+(6.67%)
+1
+(16.67%)
+3
+(5.77%)
+0
+(0.00%)
+0
+(0.00%)
+5
+(3.97%)
+DeepSeek-V3.2
+2
+(6.45%)
+3
+(20.00%)
+1
+(16.67%)
+4
+(7.69%)
+0
+(0.00%)
+0
+(0.00%)
+10
+(7.94%)
+GLM-5.3
+10
+(32.26%)
+5
+(33.33%)
+0
+(0.00%)
+11
+(21.15%)
+2
+(11.11%)
+0
+(0.00%)
+28
+(22.22%)
+REX 71% 92.9% 100% 56.7% 65% 75% –
+AdvSCanner 76.41% – – – – – –
+Claude Code
+with GLM-5.3
+16
+(51.61%)
+10
+(66.67%)
+1
+(16.67%)
+24
+(46.15%)
+9
+(50.00%)
+2
+(50.00%)
+62
+(49.21%)
+𝒦𝒜𝒮𝒞
+w/ GPT-5.1
+29
+(93.55%)
+15
+(100.00%)
+5
+(83.33%)
+49
+(94.23%)
+17
+(94.44%)
+4
+(100.00%)
+119
+(94.44%)
+w/ Gemini-3-Flash
+25
+(80.65%)
+13
+(86.67%)
+3
+(50.00%)
+47
+(90.38%)
+17
+(94.44%)
+4
+(100.00%)
+109
+(86.51%)
+w/ DeepSeek-V3.2
+23
+(74.19%)
+15
+(100.00%)
+5
+(83.33%)
+45
+(86.54%)
+11
+(61.11%)
+1
+(25.00%)
+100
+(79.37%)
+w/ GLM-5.3
+31
+(100.00%)
+15
+(100.00%)
+5
+(83.33%)
+48
+(92.31%)
+18
+(100.00%)
+4
+(100.00%)
+121
+(96.03%)
+Note: Uncheckeddenotes Unchecked LowLevelCalls. Column samplesizes apply to ourexperiments, not tothe published
+REX and AdvSCanner rates.- indicates unavailable or inapplicable data.
+without constituting a valid exploit. For example, a test forodds_and_evens submits only the at-
+tacker’s first transaction, without a victim transaction, settlement, or an outcome assertion. The
+test passes, but it does not demonstrate front running. This motivates binding generated tests to
+explicit exploit objectives and postconditions, requiring evidence that the intended vulnerable be-
+havior is exercised and the corresponding security consequences are established.
+Answer to RQ1: Under the evaluated pure prompting setup, pretrained knowledge alone does
+not reliably yield validated exploits: success rates range from 3.97% to 28.57% and vary substan-
+tially across vulnerability types. These results motivate additional support for attack planning
+and explicit validation of the generated exploits.
+4.3 RQ2 (Effectiveness & Efficiency)
+RQ2evaluates 𝒦𝒜𝒮𝒞fromthreeperspectives:itseffectivenessrelativetotheevaluatedbaselines,
+its runtime and token efficiency, and the remaining failure cases that reveal current limitations.
+Comparison with Baselines. As shown in Table3, 𝒦𝒜𝒮𝒞 achieves its highest success rate
+with GLM-5.3 at 96.03% (121/126), followed by GPT-5.1 at 94.44% (119/126), Gemini-3-Flash at
+86.51% (109/126), and DeepSeek-V3.2 at 79.37% (100/126). Claude Code with the same GLM-5.3
+backbone achieves 49.21% (62/126) on the same six categories.𝒦𝒜𝒮𝒞 therefore validates 59 ad-
+ditional contracts, a gain of 46.83 percentage points computed from the unrounded rates. For
+12
+
+===== PAGE 13 =====
+589
+590
+591
+592
+593
+594
+595
+596
+597
+598
+599
+600
+601
+602
+603
+604
+605
+606
+607
+608
+609
+610
+611
+612
+613
+614
+615
+616
+617
+618
+619
+620
+621
+622
+623
+624
+625
+626
+627
+628
+629
+630
+631
+632
+633
+634
+635
+636
+637
+Knowledge-Guided Attack Synthesis and Validation FSE 2027, July 12–16, 2027, Shenzhen, China
+Table 4. Results on real-world CVE-tagged vulnerable contracts.
+CVE ID Funcs. Type Pass PoC Outcome
+CVE-2019-15080 15 ERC20 Token   Owner takeover; mint and blacklist
+CVE-2020-17752 25 ERC20 Token × -
+CVE-2020-17753 75 Crowdsale   Whitelist bypass; token theft
+CVE-2020-35962 43 Protocol Fee Vault   Unauthorized vault drain
+CVE-2021-3004 85 ERC20 Token   Recipient balance zeroed
+CVE-2021-33403 33 ERC20 Token × -
+CVE-2021-34272 18 ERC20 Token   Owner takeover; mint and freeze
+CVE-2021-34273 16 ERC20 Token   Owner takeover
+CVE-2024-51424 14 ERC20 Token   Owner takeover; token allocation
+CVE-2024-51425 27 ERC20 Token   Owner takeover; supply capture
+CVE-2025-56207 77 ERC721 NFT   Permanent NFT burn
+Unchecked Low Level Calls, Claude Code validates 24 of 52 contracts (46.15%), compared with
+48 (92.31%) for𝒦𝒜𝒮𝒞 with GLM-5.3.
+Qualitatively, 𝒦𝒜𝒮𝒞 combines knowledge retrieval, separate planning and generation agents,
+and exploit-specific validation. AdvSCanner uses templates tailored to reentrancy, while REX sup-
+ports exploitgeneration with execution feedback.𝒦𝒜𝒮𝒞retrievesaudit knowledge for the target
+contract and grounds generated PoCs in explicit attack objectives and postconditions across all six
+evaluated vulnerability categories.
+Compared with Claude Code,𝒦𝒜𝒮𝒞 adds explicit attack planning and outcome validation to
+a general coding workflow. The baseline succeeds on nearly half of the benchmark, showing that
+general coding agents can construct valid exploits.𝒦𝒜𝒮𝒞 achieves higher success rates in all six
+categories, with the Planner providing a structured exploit flow and the Tester checking exploit-
+specific postconditions.
+Real-World CVE Validation.Weevaluatewhether 𝒦𝒜𝒮𝒞canreproducevulnerabilitiesfrom
+real-world CVE disclosures, where descriptions are often less structured than benchmark annota-
+tions. We run𝒦𝒜𝒮𝒞 with DeepSeek-V3.2 on the 11-contract CVE dataset and judge each output
+using the same manual validation procedure and success criterion.
+As shown in Table4, 𝒦𝒜𝒮𝒞 successfully validates 9 of 11 CVE-tagged contracts. This result
+remains strong given the additional noise in real-world disclosures, including incomplete vulner-
+ability descriptions, heterogeneous contract styles, and cases where the exploit objective must be
+inferred from sparse CVE text.
+The PoC Outcome column summarizes the concrete security consequence demonstrated or tar-
+geted by each generated proof-of-concept. This shows that𝒦𝒜𝒮𝒞 goes beyond conventional vul-
+nerability detection and textual descriptions by making the practical impact and consequences of
+each vulnerability more explicit and intuitive.
+Efficiency Analysis. Figure 2 summarizes the recorded token consumption and elapsed time
+across the three agents with GLM-5.3. Across the 126 SmartBugs-Curated contracts, the Planner
+Agent is the most lightweight, consuming 5.62M tokens in total and averaging 134.2 seconds per
+contract in the plotted records, reflecting its focused task of generating structured attack plans.
+The PoC-Generator Agent requires more tokens (12.52M in total, approximately 99.4k per con-
+tract) as it translates these plans into executable Solidity tests, with an average elapsed time of
+243.8 seconds across its complete plotted records. The Foundry-Tester Agent dominates token
+consumption, using 60.48M tokens, or approximately 480.0k per contract, and accounts for 76.9%
+13
+
+===== PAGE 14 =====
+638
+639
+640
+641
+642
+643
+644
+645
+646
+647
+648
+649
+650
+651
+652
+653
+654
+655
+656
+657
+658
+659
+660
+661
+662
+663
+664
+665
+666
+667
+668
+669
+670
+671
+672
+673
+674
+675
+676
+677
+678
+679
+680
+681
+682
+683
+684
+685
+686
+FSE 2027, July 12–16, 2027, Shenzhen, China Anon.
+0.0
+0.5
+1.0
+1.5
+2.0
+2.5
+3.0
+0
+250
+500
+750
+1000
+1250
+Token count per contract (millions)
+Time taken per contract (seconds)
+Planner Agent
+PoC-Generator Agent
+Foundry-Tester Agent
+0
+250
+500
+750
+1000
+1250
+Planner
+ Agent
+PoC-Generator
+ Agent
+Foundry-Tester
+ Agent
+Time per contract (seconds)
+Fig. 2. Resource usage of GLM-5.3 agents: token consumption versus elapsed time (left) and elapsed time
+distributions by agent (right).
+of the overall 78.62M tokens. Its complete plotted records also show the longest average elapsed
+time, at 301.8 seconds per contract. This concentration of resource consumption is consistent with
+its repeated execution, trace analysis, and code refinement, making validation and refinement the
+main targets for reducing token overhead.
+The Pearson correlation [28] between token consumption and elapsed time is strong for the
+Planner Agent (𝑟 = 0.820 ), the PoC-Generator Agent (𝑟 = 0.821 ), and the Foundry-Tester Agent
+(𝑟 = 0.871 ), with 𝑝 < 0.001 for all three two-sided tests. These correlations use the complete
+records plotted in Figure 2 and describe associations within the observed runs. Based on the
+recorded input/output mix and a 60% input token cache hit rate (the observed rate is slightly
+higher), the average consumption of approximately 624k tokens per contract corresponds to an
+estimated API cost of US$0.61 [63].
+Failure Case and Limitation. To characterize 𝒦𝒜𝒮𝒞’s capability boundary, we examine a
+representative failure involving theWALLET contract [49]. As shown in Listing1, the contract con-
+tains a reentrancy pattern inCollect, but exploitability is guarded by a temporal constraint: de-
+posits invokePut(0), which setsacc.unlockTime to at least the current block timestamp, while
+Collect requires now > acc.unlockTime . The Planner Agent identified the reentrancy pattern
+but generated an atomic attack flow that deposited and withdrew in the same transaction context,
+causing the temporal guard to fail. A successful exploit would require explicit state manipulation,
+suchasinserting vm.warp(block.timestamp + 1) betweenpreparationandinteraction.Thiscase
+shows that 𝒦𝒜𝒮𝒞 remains less reliable when exploitability depends on subtle state-dependent
+temporal semantics.
+Answer to RQ2: 𝒦𝒜𝒮𝒞 with GLM-5.3 achieves a 96.03% success rate on 126 SmartBugs-
+Curatedcontracts,exceedingClaudeCodewiththesamebackbone(49.21%)by46.83percentage
+points and outperforming all pure prompting baselines. Even with DeepSeek-V3.2, which has
+the lowest benchmark success rate among the four evaluated𝒦𝒜𝒮𝒞 backbones, it success-
+fully validates 9 of 11 real world CVE cases (81.82%), showing effectiveness beyond the curated
+benchmark. Token consumption averages approximately 624k per contract, corresponding to
+an estimated API cost of US$0.61.
+14
+
+===== PAGE 15 =====
+687
+688
+689
+690
+691
+692
+693
+694
+695
+696
+697
+698
+699
+700
+701
+702
+703
+704
+705
+706
+707
+708
+709
+710
+711
+712
+713
+714
+715
+716
+717
+718
+719
+720
+721
+722
+723
+724
+725
+726
+727
+728
+729
+730
+731
+732
+733
+734
+735
+Knowledge-Guided Attack Synthesis and Validation FSE 2027, July 12–16, 2027, Shenzhen, China
+1 function Put(uint _unlockTime) public payable{
+2 var acc = Acc[msg.sender];
+3 acc.balance += msg.value;
+4 acc.unlockTime = _unlockTime > now ? _unlockTime : now;
+5 }
+6 function Collect(uint _am) public payable{
+7 var acc = Acc[msg.sender];
+8 if( acc.balance >= MinSum && acc.balance >= _am && now > acc.unlockTime){
+9 // REENTRANCY
+10 if(msg.sender.call.value(_am)()){
+11 acc.balance -= _am;
+12 }
+13 }
+14 }
+15 function() public payable{
+16 Put(0);
+17 }
+Listing 1. Key Functions of the W ALLET Contract.
+Table 5. Success rates and token consumption of GLM-5.3 under component ab-
+lations.
+Token consumption
+Config.
+Successes
+/ Total
+Success
+rate Planner Generator Tester Total
+no_mcp 112 / 126 88.89% 3.88M 14.81M 77.59M 96.28M
+no_require 111 / 126 88.10% 5.53M 16.04M 93.34M 114.91M
+full 121 / 126 96.03% 5.62M 12.52M 60.48M 78.62M
+no_mcp disables knowledge retrieval; no_require removes the requirement to generate
+explicit attack success assertions while retaining the other constraints.
+4.4 RQ3 (Ablation Study)
+RQ3 examines the contributions of knowledge retrieval, explicit attack success assertions, and
+the two refinement loops. Table5 reports success rates and token consumption for the GLM-5.3
+componentablations,whileTable 6summarizestherefinementresultsacrossfourLLMbackbones.
+Knowledge and Assertion Ablations.AsshowninTable 5,thefullconfigurationsucceedson
+121 of 126 contracts (96.03%), compared with 112 (88.89%) without MCP retrieval and 111 (88.10%)
+without mandatory attack success assertions during generation. These results support the contri-
+bution of both retrieval and explicit success assertions to exploit generation.
+Token Consumption. Enabling MCP retrieval increases Planner consumption from 3.88M to-
+kens in no_mcp to 5.62M in the full configuration, but reduces Tester consumption from 77.59M
+to 60.48M. The additional planning cost is therefore offset by savings in subsequent stages, low-
+ering total consumption from 96.28M to 78.62M tokens. This pattern is consistent with retrieved
+knowledge helping the system form better informed plans that may require fewer testing and re-
+pair iterations, although the table does not report iteration counts for these component variants.
+Removing mandatory success assertions also increases Tester consumption to 93.34M and total
+15
+
+===== PAGE 16 =====
+736
+737
+738
+739
+740
+741
+742
+743
+744
+745
+746
+747
+748
+749
+750
+751
+752
+753
+754
+755
+756
+757
+758
+759
+760
+761
+762
+763
+764
+765
+766
+767
+768
+769
+770
+771
+772
+773
+774
+775
+776
+777
+778
+779
+780
+781
+782
+783
+784
+FSE 2027, July 12–16, 2027, Shenzhen, China Anon.
+Table 6. Inner and outer loop ablation results.
+Inner loop Outer loop: success rate
+Config. SRw/o IL
+Avg.
+iterations
+w/o OL
+𝐾 = 0 𝐾 = 1 𝐾 = 2
+𝒦𝒜𝒮𝒞 w/ GPT 27.78% 3.11 74.60% 88.89% 94.44%
+𝒦𝒜𝒮𝒞 w/ Gemini 56.53% 3.08 49.21% 70.63% 86.51%
+𝒦𝒜𝒮𝒞 w/ DeepSeek 6.19% 3.50 64.29% 76.19% 79.37%
+𝒦𝒜𝒮𝒞 w/ GLM 39.68% 1.81 89.68% 94.44% 96.03%
+SRw/o ILdenotes success rate without inner-loop refinement. Avg. includes the ini-
+tial execution and code repair retries, excluding environment-only reruns and un-
+changedconfirmationruns.Outer-loopsuccessratescover126contracts; 𝐾 denotes
+the maximum number of replanning rounds.
+consumption to 114.91M tokens. Thus, the full configuration achieves both the highest success
+rate and the lowest total token consumption among the evaluated component configurations.
+Inner Loop Ablation. Table6 shows lower success rates without inner refinement for all four
+backbones. GPT-5.1 achieves 27.78% without this loop, compared with 94.44% for the full config-
+uration; the corresponding rates are 56.53% and 86.51% for Gemini-3-Flash, 6.19% and 79.37% for
+DeepSeek-V3.2, and 39.68% and 96.03% for GLM-5.3. The average iteration counts, including the
+initial execution, range from 1.81 for GLM-5.3 to 3.50 for DeepSeek-V3.2. These results support the
+role of local refinement in producing successful exploits across the evaluated backbones.
+Outer Loop Ablation. Success rates increase consistently as the replanning budget increases
+from 𝐾 = 0 to 𝐾 = 2 . GPT-5.1 improves from 74.60% to 88.89% and then 94.44%; Gemini-3-Flash
+improves from 49.21% to 70.63% and then 86.51%. DeepSeek-V3.2 follows the same pattern, with
+64.29%, 76.19%, and 79.37%, while GLM-5.3 achieves 89.68%, 94.44%, and 96.03%. This pattern sup-
+ports the contribution of additional strategy refinement beyond the initial attack plan.
+Answer to RQ3: The component ablations support the contributions of knowledge retrieval
+and mandatory success assertions: the full configuration achieves 96.03% success, compared
+with 88.89% and 88.10% for the respective ablations, while consuming the fewest total tokens
+(78.62M). MCP retrieval adds planning overhead but reduces testing and total token consump-
+tion. Both refinement loops also contribute to exploit generation success across the four evalu-
+ated backbones.
+4.5 RQ4 (Exploitability Assessment)
+Detection-centric tools still struggle to assess the practical severity of reported vulnerabilities and
+separateexploitableflawsfromfalsepositives.RQ4examineswhether 𝒦𝒜𝒮𝒞’sstructuredoutputs
+help address these limitations through two representative cases.
+Case 1: Exploit Generation with Damage Quantification. Beyond success rate metrics,
+𝒦𝒜𝒮𝒞’s structured attack plans document exploitation flows and quantify potential damage. For
+instance, when analyzing the BEC Token [20] integer overflow vulnerability,𝒦𝒜𝒮𝒞 generated
+a plan [2] with a 4-step preparation phase and a 6-step interaction process. ItsPost-Attack State
+analysis further shows that the attacker loses only gas fees, each receiver gains2255 BEC tokens
+(approximately 5.79×10 76),thesupplyinflatesby 2256 tokens,andthetokeneconomyisdestroyed
+byhyperinflation.Thus, 𝒦𝒜𝒮𝒞turnsan overflow detected warningintoanexplicitdamageassess-
+ment. The generated exploit was verified by Foundry under theOverflow to 0 attack vector, setting
+16
+
+===== PAGE 17 =====
+785
+786
+787
+788
+789
+790
+791
+792
+793
+794
+795
+796
+797
+798
+799
+800
+801
+802
+803
+804
+805
+806
+807
+808
+809
+810
+811
+812
+813
+814
+815
+816
+817
+818
+819
+820
+821
+822
+823
+824
+825
+826
+827
+828
+829
+830
+831
+832
+833
+Knowledge-Guided Attack Synthesis and Validation FSE 2027, July 12–16, 2027, Shenzhen, China
+1 function buy_fromContract() payable
+2 public returns (uint256 _amount_) {
+3 require (msg.value >= 0);
+4 _amount_ = msg.value / buyPrice;
+5 if (_amount_ > balances[this]) {
+6 _amount_ = balances[this];
+7 uint256 valueWei = _amount_ * buyPrice;
+8 msg.sender.transfer(msg.value - valueWei);
+9 }
+10 balances[msg.sender] += _amount_;
+11 balances[this] -= _amount_;
+12 Transfer(this, msg.sender, _amount_);
+13 return _amount_;
+14 }
+Listing 2. A false positive reported by Slither as a reentrancy vulnerability.
+_value = 2 255 and cnt = 2. Since 2 × 2 255 = 2 256 wraps to 0, the balance check passes and no
+balance is deducted from the attacker, while each receiver is credited2255 tokens from thin air.
+Case 2: Semantic False Positive Filtering. 𝒦𝒜𝒮𝒞 also shows potential as a post-analysis
+false positive filter. We illustrate this with a case [21] where Slither [22] reports a reentrancy vul-
+nerability that is, in practice, unexploitable. As shown in Listing2, Slither flags this function be-
+causestateupdatesoccur aftertheexternal transfer(),violatingthe Checks-Effects-Interactions
+pattern. However, transfer() and send() impose a 2,300 gas stipend, unlike call.value()
+which forwards all available gas. This makes profitable reentrancy infeasible, but syntactic de-
+tectors may still report the CEI violation without modeling the EVM gas constraint [67]. When
+we fed this contract to𝒦𝒜𝒮𝒞 using Slither’s vulnerability label as input metadata, the Planner
+Agentidentifiedthe2,300-gaslimitationasanecessarypreconditionduringplanning.Thisprecon-
+ditioncapturesthepracticalinfeasibilityofexploitationandsuggeststhat 𝒦𝒜𝒮𝒞cancomplement
+detection pipelines by checking whether reported vulnerabilities are genuinely exploitable.
+Answer to RQ4: 𝒦𝒜𝒮𝒞’s structured outputs go beyond binary detection by linking reported
+vulnerabilities to executable attack evidence. They document exploitation flows, quantify con-
+crete damage, and help identify unexploitable patterns such as gas-limitedtransfer() reen-
+trancy, making them useful for both impact assessment and semantic false positive filtering.
+5 Discussion
+5.1 Related Works
+Smartcontractvulnerabilitydetectionhasevolvedfromstaticanalyzers[ 8,22,52,53]andsymbolic
+execution engines [7, 17, 24, 39, 42] to coverage-guided fuzzers [14, 26, 33, 48, 59] and LLM-driven
+auditing frameworks [37, 41, 51, 56, 57]. Besides, LLMs have also been widely studied for code
+generation through structured prompting, self-planning, self-collaboration, multi-agent decompo-
+sition, and tool-integrated repository-level coding [18, 29, 32, 34, 36, 65].
+Traditional AEG systems [6, 38, 44, 46, 61] generate exploits for C/C++ memory vulnerabilities,
+noneofwhichtransfertosmartcontractenvironments.Inthesmartcontractdomain,teEther[ 35]
+17
+
+===== PAGE 18 =====
+834
+835
+836
+837
+838
+839
+840
+841
+842
+843
+844
+845
+846
+847
+848
+849
+850
+851
+852
+853
+854
+855
+856
+857
+858
+859
+860
+861
+862
+863
+864
+865
+866
+867
+868
+869
+870
+871
+872
+873
+874
+875
+876
+877
+878
+879
+880
+881
+882
+FSE 2027, July 12–16, 2027, Shenzhen, China Anon.
+synthesizes ETH-draining transactions via path-condition analysis but is limited to simple ETH-
+transfer bugs; AdvSCanner [58] targets reentrancy via LLM and static analysis but relies on hard-
+coded templates; REX [60] applies a general-purpose LLM pipeline without grounding in real-
+world attack semantics. PoCo [1] uses an agentic Reason-Act-Observe workflow to generate ex-
+ecutable Foundry PoC exploits from auditors’ natural-language vulnerability descriptions. Veri-
+Exploit [55] combines formal-analysis counterexamples with LLMs to generate and validate bug-
+reproduction contracts and concrete execution traces. General coding-agent frameworks such as
+Claude Code [5] automate code generation and execution workflows. Exploit assessment addition-
+ally requires evidence that generated tests exercise the vulnerable path and establish the intended
+attack effects.
+In contrast, 𝒦𝒜𝒮𝒞 goes beyond vulnerability detection by targeting executable exploit verifi-
+cation. Compared with general LLM-based code generation, smart contract AEG is substantially
+more complex because it must satisfy specific blockchain requirements.𝒦𝒜𝒮𝒞 addresses these
+challenges by integrating real-world audit knowledge, binding attack plans to formal generation
+and validation constraints, and using a hierarchical dual-loop mechanism to jointly refine code-
+level errors and strategy-level attack assumptions.
+5.2 Threats to Validity
+The main internal threat is LLM non-determinism: identical inputs may yield different outputs.
+We mitigate this by using consistent hyperparameters across experiments. Baseline coverage is
+limited to pure prompting and Claude Code, as we could not obtain the REX and AdvSCanner
+implementations for reproduction. We compare𝒦𝒜𝒮𝒞 and Claude Code using GLM-5.3 on the
+same 126 contracts with the same validation procedure and success criterion to reduce model and
+dataset confounding. Differences in prompts, orchestration, and execution budgets may still affect
+the comparison. External validity is limited by benchmark scope. Generalization to other deploy-
+ment settings should be considered in relation to their permissions, dependencies, and execution
+assumptions.
+6 Conclusion
+We presented 𝒦𝒜𝒮𝒞, a knowledge-augmented framework that bridges smart contract vulner-
+ability detection and executable exploit verification. 𝒦𝒜𝒮𝒞 relies on three core mechanisms:
+retrieval-augmented planning over real-world audit knowledge, formal generation and validation
+constraints that force PoCs to exercise vulnerable paths, and a hierarchical dual-loop that repairs
+codeerrorswhilereplanninginvalidattackstrategies.Thesemechanismsallow 𝒦𝒜𝒮𝒞withGLM-
+5.3 to achieve a 96.03% success rate across 126 contracts across six vulnerability categories, com-
+pared with 49.21% for Claude Code using the same backbone and evaluation protocol. On 11 real-
+world CVE-tagged contracts,𝒦𝒜𝒮𝒞 successfully validates 9 cases, further showing its ability to
+transferbeyondcuratedbenchmarks.Beyondexploitgeneration, 𝒦𝒜𝒮𝒞’sstructuredoutputsalso
+support damage quantification and semantic false positive filtering for static analysis pipelines.
+7 Data Availability
+To prevent misuse, access to the complete agent system will be restricted to verified security re-
+searchers and auditors. Users must agree to a terms-of-use agreement prohibiting unauthorized
+use. All experimental datasets, artifacts, results, and the source code for our MCP tool are publicly
+available athttps://anonymous.4open.science/r/KASC-7824/.
+18
+
+===== PAGE 19 =====
+883
+884
+885
+886
+887
+888
+889
+890
+891
+892
+893
+894
+895
+896
+897
+898
+899
+900
+901
+902
+903
+904
+905
+906
+907
+908
+909
+910
+911
+912
+913
+914
+915
+916
+917
+918
+919
+920
+921
+922
+923
+924
+925
+926
+927
+928
+929
+930
+931
+Knowledge-Guided Attack Synthesis and Validation FSE 2027, July 12–16, 2027, Shenzhen, China
+References
+[1] Vivi Andersson, Sofia Bobadilla, Harald Hobbelhagen, and Martin Monperrus. 2025. PoCo: agentic proof-of-concept
+exploit generation for smart contracts.ACM Transactions on Software Engineering and Methodology (2025).
+[2] Anonymous. 2026. KASC Replication Package: BEC Token Exploitation Plan.https://anonymous.4open.science/r/
+KASC-7824/Results/Smartbugs-curated/KASC/deepseek/arithmetic/BECToken/BECToken_exploitation_plan.json
+Accessed: 2026-10-02.
+[3] Anthropic. 2025. Claude code sub-agents.https://code.claude.com/docs/en/sub-agents Accessed: 2026-02-01.
+[4] Anthropic. 2026. Anthropic Official Website.https://www.anthropic.com/ Accessed: 2026-06-29.
+[5] Anthropic. 2026. Claude Code.https://claude.com/product/claude-code Accessed: 2026-06-29.
+[6] Thanassis Avgerinos, Sang Kil Cha, Alexandre Rebert, Edward J Schwartz, Maverick Woo, and David Brumley. 2014.
+Automatic exploit generation.Commun. ACM 57, 2 (2014), 74–84.
+[7] Priyanka Bose, Dipanjan Das, Yanju Chen, Yu Feng, Christopher Kruegel, and Giovanni Vigna. 2022. Sailfish: Vetting
+smart contract state-inconsistency bugs in seconds. In2022 IEEE Symposium on Security and Privacy (SP) . IEEE, 161–
+178.
+[8] Lexi Brent, Neville Grech, Sifis Lagouvardos, Bernhard Scholz, and Yannis Smaragdakis. 2020. Ethainter: a smart
+contract security analyzer for composite vulnerabilities. InProceedings of the 41st ACM SIGPLAN Conference on Pro-
+gramming Language Design and Implementation. 454–469.
+[9] Quang-Cuong Bui, Emanuele Iannone, Maria Camporese, Torge Hinrichs, Catherine Tony, László Tóth, Fabio
+Palomba, Péter Hegedűs, Fabio Massacci, and Riccardo Scandariato. 2025. A Systematic Literature Review on Au-
+tomated Exploit and Security Test Generation.arXiv preprint arXiv:2502.04953 (2025).
+[10] Vitalik Buterin et al. 2013. Ethereum white paper.GitHub repository 1, 22-23 (2013), 5–7.
+[11] Stefanos Chaliasos, Marcos Antonios Charalambous, Liyi Zhou, Rafaila Galanopoulou, Arthur Gervais, Dimitris
+Mitropoulos, and Benjamin Livshits. 2024. Smart contract and defi security tools: Do they meet the needs of practi-
+tioners?. InProceedings of the 46th IEEE/ACM International Conference on Software Engineering . 1–13.
+[12] Huashan Chen, Marcus Pendleton, Laurent Njilla, and Shouhuai Xu. 2020. A Survey on Ethereum Systems Security:
+Vulnerabilities,Attacks,andDefenses. ACM Comput. Surv.53,3,Article67(June2020),43pages. doi:10.1145/3391195
+[13] Longfei Chen, Ruibin Yan, Taiyu Wong, Yiyang Chen, Jialai Wang, and Chao Zhang. 2025. Smartpoc: Generating
+executable and validated pocs for smart contract bug reports.arXiv preprint arXiv:2511.12993 (2025).
+[14] Jaeseung Choi, Doyeon Kim, Soomin Kim, Gustavo Grieco, Alex Groce, and Sang Kil Cha. 2021. Smartian: Enhancing
+smart contract fuzzing with static and dynamic data-flow analyses. In2021 36th IEEE/ACM International Conference
+on Automated Software Engineering (ASE). IEEE, 227–239.
+[15] DeepSeek. 2025. DeepSeek DeepSeek-V3.2.https://api-docs.deepseek.com/news/news251201 Accessed: 2026-02-01.
+[16] DeFiLlama. 2026. DeFi Total Value Locked.https://defillama.com/ Accessed: 2026-06-30.
+[17] Consensys Diligence. 2025. Mythril.https://github.com/ConsenSysDiligence/mythril Accessed: 2026-02-01.
+[18] Yihong Dong, Xue Jiang, Zhi Jin, and Ge Li. 2024. Self-collaboration code generation via chatgpt.ACM Transactions
+on Software Engineering and Methodology 33, 7 (2024), 1–38.
+[19] Thomas Durieux, João F Ferreira, Rui Abreu, and Pedro Cruz. 2020. Empirical review of automated analysis tools on
+47,587ethereumsmartcontracts.In Proceedings of the ACM/IEEE 42nd International conference on software engineering.
+530–541.
+[20] Etherscan. 2026. BEC Token Contract on Etherscan.https://etherscan.io/address/0xc5d105e63711398af9bbff092d4
+b6769c82f793d#code Accessed: 2026-02-04.
+[21] Etherscan. 2026. Reentrancy False Positive Contract on Etherscan.https://etherscan.io/address/0xe9dc0ddddb093ad
+9c4ebb1b498bb92c157a6e229#code Accessed: 2026-02-04.
+[22] Josselin Feist, Gustavo Grieco, and Alex Groce. 2019. Slither: a static analysis framework for smart contracts. In2019
+IEEE/ACM 2nd International Workshop on Emerging Trends in Software Engineering for Blockchain (WETSEB) . IEEE,
+8–15.
+[23] Foundry. 2026. Foundry Repository.https://github.com/foundry-rs/foundry Accessed: 2026-02-01.
+[24] Joel Frank, Cornelius Aschermann, and Thorsten Holz. 2020.{ETHBMC}: A bounded model checker for smart con-
+tracts. In29th USENIX Security Symposium (USENIX Security 20) . 2757–2774.
+[25] Google. 2025. Gemini-3. https://ai.google.dev/gemini-api/docs/gemini-3 Accessed: 2026-02-01.
+[26] Gustavo Grieco, Will Song, Artur Cygan, Josselin Feist, and Alex Groce. 2020. Echidna: effective, usable, and fast
+fuzzing for smart contracts. InProceedings of the 29th ACM SIGSOFT international symposium on software testing and
+analysis. 557–560.
+[27] Hacken. 2025. Hacken Security Report 2025.https://hacken.io/insights/2025-security-report/ Accessed: 2026-02-04.
+[28] Jan Hauke and Tomasz Kossowski. 2011. Comparison of values of Pearson’s and Spearman’s correlation coefficients
+on the same sets of data.Quaestiones geographicae 30, 2 (2011), 87–93.
+19
+
+===== PAGE 20 =====
+932
+933
+934
+935
+936
+937
+938
+939
+940
+941
+942
+943
+944
+945
+946
+947
+948
+949
+950
+951
+952
+953
+954
+955
+956
+957
+958
+959
+960
+961
+962
+963
+964
+965
+966
+967
+968
+969
+970
+971
+972
+973
+974
+975
+976
+977
+978
+979
+980
+FSE 2027, July 12–16, 2027, Shenzhen, China Anon.
+[29] Sirui Hong, Mingchen Zhuge, Jonathan Chen, Xiawu Zheng, Yuheng Cheng, Jinlin Wang, Ceyao Zhang, Steven Yau,
+Zijuan Lin, Liyang Zhou, et al. 2024. MetaGPT: Meta programming for a multi-agent collaborative framework. In
+International Conference on Learning Representations, Vol. 2024. 23247–23275.
+[30] Tianyuan Hu, Jingyue Li, Bixin Li, and André Storhaug. 2024. Why smart contracts reported as vulnerable were not
+exploited? IEEE Transactions on Dependable and Secure Computing 22, 3 (2024), 2579–2596.
+[31] Eric M Hutchins, Michael J Cloppert, Rohan M Amin, et al. 2011. Intelligence-driven computer network defense
+informed by analysis of adversary campaigns and intrusion kill chains.Leading Issues in Information Warfare &
+Security Research 1, 1 (2011), 80.https://www.lockheedmartin.com/content/dam/lockheed-martin/rms/documents/c
+yber/LM-White-Paper-Intel-Driven-Defense.pdf
+[32] Md Ashraful Islam, Mohammed Eunus Ali, and Md Rizwan Parvez. 2024. Mapcoder: Multi-agent code generation for
+competitiveproblemsolving.In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics
+(Volume 1: Long Papers). 4912–4944.
+[33] Bo Jiang, Ye Liu, and Wing Kwong Chan. 2018. Contractfuzzer: Fuzzing smart contracts for vulnerability detection.
+In Proceedings of the 33rd ACM/IEEE international conference on automated software engineering . 259–269.
+[34] Xue Jiang, Yihong Dong, Lecheng Wang, Zheng Fang, Qiwei Shang, Ge Li, Zhi Jin, and Wenpin Jiao. 2024. Self-
+planning code generation with large language models.ACM Transactions on Software Engineering and Methodology
+33, 7 (2024), 1–30.
+[35] JohannesKruppandChristianRossow.2018. teEther:GnawingatEthereumtoAutomaticallyExploitSmartContracts.
+In 27th USENIX Security Symposium (USENIX Security 18) . USENIX Association, Baltimore, MD, 1317–1333.https:
+//www.usenix.org/conference/usenixsecurity18/presentation/krupp
+[36] Jia Li, Ge Li, Yongmin Li, and Zhi Jin. 2025. Structured chain-of-thought prompting for code generation.ACM
+Transactions on Software Engineering and Methodology 34, 2 (2025), 1–23.
+[37] Ye Liu, Yue Xue, Daoyuan Wu, Yuqiang Sun, Yi Li, Miaolei Shi, and Yang Liu. 2025. Propertygpt: Llm-driven formal
+verification of smart contracts through retrieval-augmented property generation. InNetwork and Distributed System
+Security Symposium (NDSS).
+[38] Zhehui Liu, Zhongru Wang, Yuntao Zhang, Tong Liu, Binxing Fang, and Zhengyuan Pang. 2022. Automated Crash
+Analysis and Exploit Generation with Extendable Exploit Model. In2022 7th IEEE International Conference on Data
+Science in Cyberspace (DSC). IEEE, 71–78.
+[39] Loi Luu, Duc-Hiep Chu, Hrishi Olickel, Prateek Saxena, and Aquinas Hobor. 2016. Making smart contracts smarter.
+In Proceedings of the 2016 ACM SIGSAC conference on computer and communications security . 254–269.
+[40] LyuboslavLyubenov. 2026. search-solodit-mcp: MCP Tool for the Solodit Knowledge Base.https://github.com/Lyu
+boslavLyubenov/search-solodit-mcp Accessed: 2026-02-04.
+[41] WeiMa,DaoyuanWu,YuqiangSun,TianwenWang,ShangqingLiu,JianZhang,YueXue,andYangLiu.2025. Combin-
+ing Fine-Tuning and LLM-Based Agents for Intuitive Smart Contract Auditing with Justifications. In2025 IEEE/ACM
+47th International Conference on Software Engineering (ICSE) . 1742–1754.doi:10.1109/ICSE55347.2025.00027
+[42] Mark Mossberg, Felipe Manzano, Eric Hennenfent, Alex Groce, Gustavo Grieco, Josselin Feist, Trent Brunson, and
+Artem Dinaburg. 2019. Manticore: A user-friendly symbolic execution framework for binaries and smart contracts.
+In 2019 34th IEEE/ACM International Conference on Automated Software Engineering (ASE) . IEEE, 1186–1189.
+[43] OpenAI. 2025. GPT-5.1. https://platform.openai.com/docs/models/gpt-5.1 Accessed: 2026-02-01.
+[44] JannikPewny,PhilippKoppe,andThorstenHolz.2019. STEROIDSforDOPedapplications:Acompilerforautomated
+data-oriented programming. In2019 IEEE European Symposium on Security and Privacy (EuroS&P) . IEEE, 111–126.
+[45] Sydney Runkle. 2026. The Art of Loop Engineering.https://www.langchain.com/blog/the-art-of-loop-engineering
+Accessed: 2026-06-30.
+[46] Edward J Schwartz, Thanassis Avgerinos, and David Brumley. 2011. Q: Exploit hardening made easy. In20th USENIX
+Security Symposium (USENIX Security 11) .
+[47] Cryptography Services. 2018. DASP Top 10: Decentralized Application Security Project.https://github.com/Crypt
+oServices/dasp Accessed: 2026-06-19.
+[48] ChaofanShou,ShangyinTan,andKoushikSen.2023. Ityfuzz:Snapshot-basedfuzzerforsmartcontract.In Proceedings
+of the 32nd ACM SIGSOFT International Symposium on Software Testing and Analysis . 322–333.
+[49] Smartbugs. 2026. WALLET Contract in SmartBugs-Curated Dataset. https://github.com/smartbugs/smartbugs-
+curated/blob/main/dataset/reentrancy/0xcead721ef5b11f1a7b530171aab69b16c5e66b6e.sol Accessed: 2026-02-04.
+[50] SmartContractSecurity. 2018. SWC Registry: Smart Contract Weakness Classification and Test Cases.https://swcr
+egistry.io Accessed: 2026-01-01.
+[51] Yuqiang Sun, Daoyuan Wu, Yue Xue, Han Liu, Haijun Wang, Zhengzi Xu, Xiaofei Xie, and Yang Liu. 2024. Gptscan:
+Detecting logic vulnerabilities in smart contracts by combining gpt with program analysis. InProceedings of the
+IEEE/ACM 46th International Conference on Software Engineering . 1–13.
+20
+
+===== PAGE 21 =====
+981
+982
+983
+984
+985
+986
+987
+988
+989
+990
+991
+992
+993
+994
+995
+996
+997
+998
+999
+1000
+1001
+1002
+1003
+1004
+1005
+1006
+1007
+1008
+1009
+1010
+1011
+1012
+1013
+1014
+1015
+1016
+1017
+1018
+1019
+1020
+1021
+1022
+1023
+1024
+1025
+1026
+1027
+1028
+1029
+Knowledge-Guided Attack Synthesis and Validation FSE 2027, July 12–16, 2027, Shenzhen, China
+[52] Sergei Tikhomirov, Ekaterina Voskresenskaya, Ivan Ivanitskiy, Ramil Takhaviev, Evgeny Marchenko, and Yaroslav
+Alexandrov. 2018. Smartcheck: Static analysis of ethereum smart contracts. InProceedings of the 1st international
+workshop on emerging trends in software engineering for blockchain . 9–16.
+[53] Petar Tsankov, Andrei Dan, Dana Drachsler-Cohen, Arthur Gervais, Florian Buenzli, and Martin Vechev. 2018. Se-
+curify: Practical security analysis of smart contracts. InProceedings of the 2018 ACM SIGSAC conference on computer
+and communications security. 67–82.
+[54] Haijun Wang, Ye Liu, Yi Li, Shang-Wei Lin, Cyrille Artho, Lei Ma, and Yang Liu. 2022. Oracle-Supported Dynamic
+Exploit Generation for Smart Contracts.IEEE Transactions on Dependable and Secure Computing 19, 3 (2022), 1795–
+1809. doi:10.1109/TDSC.2020.3037332
+[55] Chenfeng Wei, Shiyu Cai, Yiannis Charalambous, Tong Wu, Sangharatna Godboley, and Lucas Cordeiro. 2025. Ver-
+iExploit: Automatic Bug Reproduction in Smart Contracts via LLMs and Formal Methods. In2025 40th IEEE/ACM
+International Conference on Automated Software Engineering (ASE) . IEEE, 1415–1426.
+[56] Zhiyuan Wei, Jing Sun, Zhe Hou, Zijian Zhang, Zixiao Zhao, Chunmiao Li, Mingchao Wan, and Jin Dong. 2025. Smar-
+tAuditFlow:ADynamicPlan-ExecuteFrameworkforAdvancedSmartContractSecurityAnalysis. ACM Transactions
+on Software Engineering and Methodology (2025).
+[57] Zhiyuan Wei, Jing Sun, Yuqiang Sun, Ye Liu, Daoyuan Wu, Zijian Zhang, Xianhao Zhang, Meng Li, Yang Liu,
+Chunmiao Li, Mingchao Wan, Jin Dong, and Liehuang Zhu. 2025. Advanced Smart Contract Vulnerability Detec-
+tion via LLM-Powered Multi-Agent Systems. IEEE Transactions on Software Engineering 51, 10 (2025), 2830–2846.
+doi:10.1109/TSE.2025.3597319
+[58] Yin Wu, Xiaofei Xie, Chenyang Peng, Dijun Liu, Hao Wu, Ming Fan, Ting Liu, and Haijun Wang. 2024. Advscanner:
+Generating adversarial smart contracts to exploit reentrancy vulnerabilities using llm and static analysis. InProceed-
+ings of the 39th IEEE/ACM International Conference on Automated Software Engineering . 1019–1031.
+[59] Valentin Wüstholz and Maria Christakis. 2020. Harvey: A greybox fuzzer for smart contracts. InProceedings of the
+28th ACM Joint Meeting on European Software Engineering Conference and Symposium on the Foundations of Software
+Engineering. 1398–1409.
+[60] Zeke Xiao, Qin Wang, Yuekang Li, and Shiping Chen. 2026. Prompt to pwn: Automated exploit generation for smart
+contracts. InAustralasian Conference on Information Security and Privacy . Springer, 445–473.
+[61] Shenglin Xu and Yongjun Wang. 2022. Bofaeg: Automated stack buffer overflow vulnerability detection and exploit
+generation based on symbolic execution and dynamic analysis.Security and Communication Networks 2022, 1 (2022),
+1251987.
+[62] Z.ai. 2026. GLM-5.3. https://docs.z.ai/guides/llm/glm-5.3 Accessed: 2026-10-01.
+[63] Z.AI. 2026. Z.AI API Pricing.https://docs.z.ai/guides/overview/pricing Accessed: 2026-10-03.
+[64] Dirk A Zetzsche, Douglas W Arner, and Ross P Buckley. 2020. Decentralized finance.Journal of Financial Regulation
+6, 2 (2020), 172–203.
+[65] Kechi Zhang, Jia Li, Ge Li, Xianjie Shi, and Zhi Jin. 2024. Codeagent: Enhancing code generation with tool-integrated
+agentsystemsforreal-worldrepo-levelcodingchallenges.In Proceedings of the 62nd Annual Meeting of the Association
+for Computational Linguistics (Volume 1: Long Papers) . 13643–13658.
+[66] Zhuo Zhang, Brian Zhang, Wen Xu, and Zhiqiang Lin. 2023. Demystifying exploitable bugs in smart contracts. In
+2023 IEEE/ACM 45th International Conference on Software Engineering (ICSE) . IEEE, 615–627.
+[67] Zibin Zheng, Neng Zhang, Jianzhong Su, Zhijie Zhong, Mingxi Ye, and Jiachi Chen. 2023. Turn the rudder: A beacon
+of reentrancy detection for smart contracts on ethereum. In2023 IEEE/ACM 45th International Conference on Software
+Engineering (ICSE). IEEE, 295–306.
+[68] Liyi Zhou, Xihan Xiong, Jens Ernstberger, Stefanos Chaliasos, Zhipeng Wang, Ye Wang, Kaihua Qin, Roger Watten-
+hofer, Dawn Song, and Arthur Gervais. 2023. SoK: Decentralized Finance (DeFi) Attacks. In2023 IEEE Symposium on
+Security and Privacy (SP). 2444–2461.doi:10.1109/SP46215.2023.10179435
+21

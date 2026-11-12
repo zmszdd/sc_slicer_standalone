@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 pub mod closure;
 pub mod diagnostics;
 pub mod fallback;
@@ -11,6 +9,9 @@ pub mod slice_graph;
 pub mod source_db;
 pub mod source_index;
 pub mod validator;
+
+#[cfg(test)]
+mod core_tests;
 
 use std::path::PathBuf;
 
@@ -25,7 +26,7 @@ use renderer::SourceBackedRenderer;
 use slice_atom::SliceAtom;
 use slice_graph::SliceGraph;
 use source_db::SourceDatabase;
-use validator::{CompileStatus, CompileValidator};
+use validator::{CompileResult, CompileStatus, CompileValidator};
 
 const MAX_FEEDBACK_ITERATIONS: usize = 192;
 
@@ -89,6 +90,248 @@ pub struct ResurrectionV2Result {
     pub metadata: ResurrectionV2Metadata,
 }
 
+struct ResurrectionRunner<'a> {
+    request: &'a ResurrectionV2Request,
+    source_db: &'a SourceDatabase,
+    graph: SliceGraph,
+    closure: ClosureEngine<'a>,
+    renderer: SourceBackedRenderer<'a>,
+    validator: CompileValidator,
+    feedback: FeedbackController<'a>,
+    fallback: FallbackController,
+    budget: EffectiveSliceBudget,
+    last_command: Option<String>,
+    last_error_kind: Option<String>,
+    final_code: String,
+    iterations: usize,
+}
+
+impl<'a> ResurrectionRunner<'a> {
+    fn new(request: &'a ResurrectionV2Request, source_db: &'a SourceDatabase) -> Self {
+        let mut graph = SliceGraph::seed(
+            request.target_contract.clone(),
+            request.target_test.clone(),
+            request.focus_symbol.clone(),
+        );
+        let mut closure = ClosureEngine::new(source_db);
+        closure.apply_initial_closure(&mut graph);
+
+        Self {
+            request,
+            source_db,
+            graph,
+            closure,
+            renderer: SourceBackedRenderer::new(source_db),
+            validator: CompileValidator::new(
+                request.output_path.clone(),
+                request.project_root.clone(),
+                request.target_contract.clone(),
+                request.target_test.clone(),
+            ),
+            feedback: FeedbackController::new(source_db),
+            fallback: FallbackController::new(request.compile_guarantee),
+            budget: EffectiveSliceBudget::default(),
+            last_command: None,
+            last_error_kind: None,
+            final_code: String::new(),
+            iterations: 0,
+        }
+    }
+
+    fn render_current(&mut self) -> Result<()> {
+        let render_level = self.fallback.level();
+        self.graph.set_fallback_level(render_level);
+        self.final_code = self
+            .renderer
+            .render(&self.graph)
+            .with_context(|| format!("resurrect_v2 render failed at {:?}", render_level))?;
+        std::fs::write(&self.request.output_path, &self.final_code)
+            .with_context(|| format!("failed to write {}", self.request.output_path.display()))?;
+        crate::execution_log::detail(
+            "resurrection_v2_render",
+            format!(
+                "iteration={} level={} lines={} atoms={}",
+                self.iterations,
+                render_level.as_usize(),
+                self.final_code.lines().count(),
+                self.graph.atom_count()
+            ),
+        );
+        Ok(())
+    }
+
+    async fn compile_current(&self) -> CompileResult {
+        self.validator
+            .compile(&self.final_code, self.fallback.level())
+            .await
+    }
+
+    async fn handle_success(&mut self) -> Result<Option<ResurrectionV2Result>> {
+        let metadata = metadata_for(
+            self.source_db,
+            &self.graph,
+            &self.fallback,
+            &self.budget,
+            self.iterations,
+            &self.final_code,
+            self.last_command.clone(),
+            None,
+            false,
+        );
+        if !metadata.slice_effective {
+            crate::execution_log::detail(
+                "resurrection_v2_effective_gate",
+                format!(
+                    "compile_success=true slice_effective=false reason={} lines={}/{} ratio={:.3}",
+                    metadata
+                        .failure_reason
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    metadata.output_lines,
+                    metadata.input_lines,
+                    metadata.line_ratio
+                ),
+            );
+            if self.fallback.widen(&mut self.graph) {
+                let level = self.fallback.level();
+                self.closure.apply_fallback_level(&mut self.graph, level);
+                return Ok(None);
+            }
+        }
+
+        let summary = format!(
+            "compile_success={} slice_effective={} level={} iterations={}",
+            metadata.compile_success,
+            metadata.slice_effective,
+            metadata.fallback_level,
+            self.iterations
+        );
+        Ok(Some(self.finish(metadata, summary)?))
+    }
+
+    async fn handle_failed(
+        &mut self,
+        compile: CompileResult,
+    ) -> Result<Option<ResurrectionV2Result>> {
+        let action = self.feedback.analyze(&compile.errors, self.fallback.level());
+        let updated = self.closure.apply_feedback(&mut self.graph, &action);
+        crate::execution_log::detail(
+            "resurrection_v2_feedback",
+            format!(
+                "iteration={} level={} action={:?} updated={}",
+                self.iterations,
+                self.fallback.level().as_usize(),
+                action,
+                updated
+            ),
+        );
+
+        if !updated && !self.fallback.widen(&mut self.graph) {
+            let original_status = self.validator.check_original_project().await;
+            let original_project_uncompilable =
+                matches!(original_status.status, CompileStatus::Failed);
+            let failure_kind = if original_project_uncompilable {
+                "original_project_uncompilable".to_string()
+            } else {
+                self.last_error_kind
+                    .clone()
+                    .unwrap_or_else(|| "renderer_or_toolchain_mismatch".to_string())
+            };
+            let metadata = metadata_for(
+                self.source_db,
+                &self.graph,
+                &self.fallback,
+                &self.budget,
+                self.iterations,
+                &self.final_code,
+                original_status.command.or(self.last_command.clone()),
+                Some(failure_kind),
+                original_project_uncompilable,
+            );
+            let summary = format!(
+                "compile_success=false original_project_uncompilable={}",
+                original_project_uncompilable
+            );
+            return Ok(Some(self.finish(metadata, summary)?));
+        }
+
+        if !updated {
+            let level = self.fallback.level();
+            self.closure.apply_fallback_level(&mut self.graph, level);
+        }
+        Ok(None)
+    }
+
+    fn finish(
+        &mut self,
+        metadata: ResurrectionV2Metadata,
+        summary: String,
+    ) -> Result<ResurrectionV2Result> {
+        write_metadata(&self.request.output_path, &metadata)?;
+        crate::execution_log::phase_end("resurrection_v2", summary);
+        Ok(ResurrectionV2Result {
+            code: self.final_code.clone(),
+            metadata,
+        })
+    }
+
+    fn iteration_limit_result(&mut self) -> Result<ResurrectionV2Result> {
+        let metadata = metadata_for(
+            self.source_db,
+            &self.graph,
+            &self.fallback,
+            &self.budget,
+            self.iterations,
+            &self.final_code,
+            self.last_command.clone(),
+            Some("fallback_iteration_limit".to_string()),
+            false,
+        );
+        self.finish(metadata, "iteration_limit".to_string())
+    }
+
+    async fn run(mut self) -> Result<ResurrectionV2Result> {
+        loop {
+            self.iterations += 1;
+            self.render_current()?;
+            let compile = self.compile_current().await;
+            self.last_command = compile.command.clone();
+            self.last_error_kind = compile.primary_error_kind();
+
+            match compile.status {
+                CompileStatus::Success => {
+                    if let Some(result) = self.handle_success().await? {
+                        return Ok(result);
+                    }
+                }
+                CompileStatus::ForgeUnavailable => {
+                    let metadata = metadata_for(
+                        self.source_db,
+                        &self.graph,
+                        &self.fallback,
+                        &self.budget,
+                        self.iterations,
+                        &self.final_code,
+                        self.last_command.clone(),
+                        Some("forge_unavailable".to_string()),
+                        false,
+                    );
+                    return self.finish(metadata, "forge_unavailable".to_string());
+                }
+                CompileStatus::Failed => {
+                    if let Some(result) = self.handle_failed(compile).await? {
+                        return Ok(result);
+                    }
+                }
+            }
+
+            if self.iterations >= MAX_FEEDBACK_ITERATIONS {
+                return self.iteration_limit_result();
+            }
+        }
+    }
+}
+
 pub async fn run_resurrection_v2(request: ResurrectionV2Request) -> Result<ResurrectionV2Result> {
     crate::execution_log::phase_start("resurrection_v2");
     crate::execution_log::detail(
@@ -108,199 +351,8 @@ pub async fn run_resurrection_v2(request: ResurrectionV2Request) -> Result<Resur
         .with_context(|| "resurrect_v2 failed to build SourceDatabase")?;
     source_db.log_summary();
 
-    let mut graph = SliceGraph::seed(
-        request.target_contract.clone(),
-        request.target_test.clone(),
-        request.focus_symbol.clone(),
-    );
-    let mut closure = ClosureEngine::new(&source_db);
-    closure.apply_initial_closure(&mut graph);
-
-    let renderer = SourceBackedRenderer::new(&source_db);
-    let validator = CompileValidator::new(
-        request.output_path.clone(),
-        request.project_root.clone(),
-        request.target_contract.clone(),
-        request.target_test.clone(),
-    );
-    let feedback = FeedbackController::new(&source_db);
-    let mut fallback = FallbackController::new(request.compile_guarantee);
-
-    let mut last_command = None;
-    let mut last_error_kind = None;
-    let mut final_code = String::new();
-    let mut iterations = 0usize;
-    let budget = EffectiveSliceBudget::default();
-
-    loop {
-        iterations += 1;
-        let render_level = fallback.level();
-        graph.set_fallback_level(render_level);
-        final_code = renderer
-            .render(&graph)
-            .with_context(|| format!("resurrect_v2 render failed at {:?}", render_level))?;
-        std::fs::write(&request.output_path, &final_code)
-            .with_context(|| format!("failed to write {}", request.output_path.display()))?;
-
-        crate::execution_log::detail(
-            "resurrection_v2_render",
-            format!(
-                "iteration={} level={} lines={} atoms={}",
-                iterations,
-                render_level.as_usize(),
-                final_code.lines().count(),
-                graph.atom_count()
-            ),
-        );
-
-        let compile = validator.compile(&final_code, render_level).await;
-        last_command = compile.command.clone();
-        last_error_kind = compile.primary_error_kind();
-
-        match compile.status {
-            CompileStatus::Success => {
-                let metadata = metadata_for(
-                    &source_db,
-                    &graph,
-                    &fallback,
-                    &budget,
-                    iterations,
-                    &final_code,
-                    last_command,
-                    None,
-                    false,
-                );
-                if !metadata.slice_effective {
-                    crate::execution_log::detail(
-                        "resurrection_v2_effective_gate",
-                        format!(
-                            "compile_success=true slice_effective=false reason={} lines={}/{} ratio={:.3}",
-                            metadata
-                                .failure_reason
-                                .clone()
-                                .unwrap_or_else(|| "unknown".to_string()),
-                            metadata.output_lines,
-                            metadata.input_lines,
-                            metadata.line_ratio
-                        ),
-                    );
-                    if fallback.widen(&mut graph) {
-                        let level = fallback.level();
-                        closure.apply_fallback_level(&mut graph, level);
-                        continue;
-                    }
-                }
-                write_metadata(&request.output_path, &metadata)?;
-                crate::execution_log::phase_end(
-                    "resurrection_v2",
-                    format!(
-                        "compile_success={} slice_effective={} level={} iterations={}",
-                        metadata.compile_success,
-                        metadata.slice_effective,
-                        metadata.fallback_level,
-                        iterations
-                    ),
-                );
-                return Ok(ResurrectionV2Result {
-                    code: final_code,
-                    metadata,
-                });
-            }
-            CompileStatus::ForgeUnavailable => {
-                let metadata = metadata_for(
-                    &source_db,
-                    &graph,
-                    &fallback,
-                    &budget,
-                    iterations,
-                    &final_code,
-                    last_command,
-                    Some("forge_unavailable".to_string()),
-                    false,
-                );
-                write_metadata(&request.output_path, &metadata)?;
-                crate::execution_log::phase_end("resurrection_v2", "forge_unavailable");
-                return Ok(ResurrectionV2Result {
-                    code: final_code,
-                    metadata,
-                });
-            }
-            CompileStatus::Failed => {
-                let action = feedback.analyze(&compile.errors, fallback.level());
-                let updated = closure.apply_feedback(&mut graph, &action);
-                crate::execution_log::detail(
-                    "resurrection_v2_feedback",
-                    format!(
-                        "iteration={} level={} action={:?} updated={}",
-                        iterations,
-                        fallback.level().as_usize(),
-                        action,
-                        updated
-                    ),
-                );
-
-                if !updated && !fallback.widen(&mut graph) {
-                    let original_status = validator.check_original_project().await;
-                    let original_project_uncompilable =
-                        matches!(original_status.status, CompileStatus::Failed);
-                    let failure_kind = if original_project_uncompilable {
-                        "original_project_uncompilable".to_string()
-                    } else {
-                        last_error_kind
-                            .clone()
-                            .unwrap_or_else(|| "renderer_or_toolchain_mismatch".to_string())
-                    };
-                    let metadata = metadata_for(
-                        &source_db,
-                        &graph,
-                        &fallback,
-                        &budget,
-                        iterations,
-                        &final_code,
-                        original_status.command.or(last_command),
-                        Some(failure_kind),
-                        original_project_uncompilable,
-                    );
-                    write_metadata(&request.output_path, &metadata)?;
-                    crate::execution_log::phase_end(
-                        "resurrection_v2",
-                        format!(
-                            "compile_success=false original_project_uncompilable={}",
-                            original_project_uncompilable
-                        ),
-                    );
-                    return Ok(ResurrectionV2Result {
-                        code: final_code,
-                        metadata,
-                    });
-                }
-                if !updated {
-                    let level = fallback.level();
-                    closure.apply_fallback_level(&mut graph, level);
-                }
-            }
-        }
-
-        if iterations >= MAX_FEEDBACK_ITERATIONS {
-            let metadata = metadata_for(
-                &source_db,
-                &graph,
-                &fallback,
-                &budget,
-                iterations,
-                &final_code,
-                last_command,
-                Some("fallback_iteration_limit".to_string()),
-                false,
-            );
-            write_metadata(&request.output_path, &metadata)?;
-            crate::execution_log::phase_end("resurrection_v2", "iteration_limit");
-            return Ok(ResurrectionV2Result {
-                code: final_code,
-                metadata,
-            });
-        }
-    }
+    let runner = ResurrectionRunner::new(&request, &source_db);
+    runner.run().await
 }
 
 fn metadata_for(

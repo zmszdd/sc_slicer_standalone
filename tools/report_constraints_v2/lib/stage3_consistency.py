@@ -163,6 +163,12 @@ def consistency_verdict(contract, bindings, results):
     ``P AND T`` infeasible flags the *binding* (a report-supported P that
     cannot hold on real code is far more likely a mis-binding than a refuted
     report) instead of silently counting as "invariant holds".
+
+    The direct invariant contradiction (``P AND T AND NOT I``) is the primary
+    consistency signal, mirroring KASC's oracle discipline of verifying the
+    intended vulnerable behavior rather than trusting a passing test.
+    ``P AND T AND V`` remains a corroborating witness when the direct query
+    is unknown.
     """
     unbound = sorted(name for name, row in bindings.items()
                      if row['status'] != 'bound')
@@ -171,11 +177,74 @@ def consistency_verdict(contract, bindings, results):
     if results.get('P_and_T') == 'unsat':
         # P cannot hold on the bound code: suspect binding, not verdict.
         return 'preconditions_infeasible_on_code', unbound
+    if results.get('P_and_T_and_not_I') == 'sat':
+        return 'violation_reproduced', unbound
+    if results.get('P_and_T_and_not_I') == 'unsat':
+        # Invariant holds on code. A witnessed effect while the invariant
+        # holds is an outcome mismatch: likely a vacuous/weak I or a
+        # mis-binding, not proof of report-code agreement.
+        if results.get('P_and_T_and_V') == 'sat':
+            return 'effect_observed_invariant_holds', unbound
+        return 'violation_not_reproduced', unbound
     if results.get('P_and_T_and_V') == 'sat':
         return 'violation_reproduced', unbound
     if results.get('P_and_T_and_V') == 'unsat':
         return 'violation_not_reproduced', unbound
     return 'inconclusive', unbound
+
+
+def replan_diagnostic(record):
+    """KASC-style outer-loop diagnostic from a consistency record.
+
+    Every non-reproduced verdict carries an expected/observed/violated-gate
+    triple plus the next bounded action, so an orchestrator can reroute to
+    Stage-2 re-ruling or binding repair instead of terminating silently.
+    """
+    verdict = record.get('consistency_verdict')
+    unbound = record.get('unbound_symbols', [])
+    queries = record.get('code_query_results', {})
+    base = {
+        'schema_version': 'stage3-replan-diagnostic/1',
+        'claim_id': record.get('claim_id'),
+        'verdict': verdict,
+        'unbound_symbols': unbound,
+        'code_query_results': queries,
+    }
+    if verdict == 'violation_reproduced':
+        return {**base, 'action': 'accept',
+                'expected': 'report invariant is contradicted on code',
+                'observed': 'P AND T AND NOT I is sat',
+                'violated_gate': None}
+    if verdict == 'violation_not_reproduced':
+        return {**base, 'action': 'replan_rule',
+                'expected': 'reported violation should reproduce on code',
+                'observed': 'P AND T AND NOT I and P AND T AND V are unsat',
+                'violated_gate': 'stage3_differential_not_reproduced',
+                'hint': 'revisit Stage-2 I/V extraction or the PoC test range; '
+                        'the invariant may be too weak or the PoC too narrow.'}
+    if verdict == 'effect_observed_invariant_holds':
+        return {**base, 'action': 'rebind_or_restate_i',
+                'expected': 'observed effect should contradict the invariant',
+                'observed': 'P AND T AND NOT I unsat while P AND T AND V sat',
+                'violated_gate': 'stage3_outcome_mismatch',
+                'hint': 'I may be vacuous or bound to the wrong observable.'}
+    if verdict == 'preconditions_infeasible_on_code':
+        return {**base, 'action': 'rebind',
+                'expected': 'reported preconditions should hold on the bound code',
+                'observed': 'P AND T is unsat',
+                'violated_gate': 'stage3_preconditions_infeasible',
+                'hint': 'check binding.json against the Stage-2 binding_contract.'}
+    if verdict == 'partial_binding':
+        return {**base, 'action': 'rebind',
+                'expected': 'every appears_in symbol has a code binding',
+                'observed': 'unbound: ' + ', '.join(unbound),
+                'violated_gate': 'stage3_binding_incomplete',
+                'hint': 'complete binding.json or rerun binding-skeleton.'}
+    return {**base, 'action': 'collect_missing_evidence',
+            'expected': 'all four code queries resolvable',
+            'observed': 'one or more queries unknown',
+            'violated_gate': 'stage3_inconclusive',
+            'hint': 'collect missing forge traces or safety-path probe.'}
 
 
 def ingest_feedback(directory, feedback):
@@ -208,5 +277,6 @@ def ingest_feedback(directory, feedback):
         'adjudicates': 'the report-claimed invariant, not its translation fidelity',
         'model_calls': 0,
     }
+    record['replan_diagnostic'] = replan_diagnostic(record)
     target.write_text(json.dumps(record, ensure_ascii=False, indent=2) + '\n')
     return record

@@ -8,7 +8,8 @@ import unittest
 
 from prompts.versions import semantic_prompts_v316 as prompts
 from lib.plan_synthesizer import synthesize_id_formalization
-from cli.semantic_pipeline import request_formalization, validate_local_repair
+from cli.semantic_pipeline import (request_formalization, require_frozen_symbols_declared,
+                                   validate_local_repair)
 from tests.test_evidence_ids import id_inputs
 from tests.test_plan_synthesizer import plan
 
@@ -119,6 +120,16 @@ class PromptV316Tests(unittest.TestCase):
         repaired['relation_class'] = 'state_correspondence'
         with self.assertRaisesRegex(ValueError, 'changed frozen fields'):
             validate_local_repair(previous, repaired, ('pattern',))
+
+    def test_local_repair_cannot_remove_a_symbol_used_by_frozen_fields(self):
+        previous = fixed_plan()
+        repaired = copy.deepcopy(previous)
+        mutable = ('impact_outcome', 'impact_context_terms', 'symbols',
+                   'derived_definitions')
+        del repaired['symbols']['paid_fee']
+        with self.assertRaisesRegex(
+                ValueError, 'local repair removed a symbol referenced by a frozen field'):
+            require_frozen_symbols_declared(previous, repaired, mutable)
 
     def test_invalid_template_gets_a_field_scoped_retry(self):
         elements, _ = id_inputs()

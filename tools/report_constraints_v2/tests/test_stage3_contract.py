@@ -550,6 +550,35 @@ class IngestFeedbackTests(unittest.TestCase):
         self.assertEqual(record['model_calls'], 0)
         self.assertTrue((self.rundir / 'stage3-consistency.json').is_file())
 
+    def test_direct_invariant_contradiction_is_primary(self):
+        """P AND T AND NOT I sat alone proves the invariant is violated."""
+        record = ingest_feedback(self.rundir, self.feedback(
+            code_query_results={'P_and_T': 'sat',
+                                'P_and_T_and_not_I': 'sat',
+                                'P_and_T_and_V': 'unknown'}))
+        self.assertEqual(record['consistency_verdict'], 'violation_reproduced')
+
+    def test_invariant_holds_despite_observed_effect(self):
+        """Effect observed while invariant holds is an outcome mismatch."""
+        record = ingest_feedback(self.rundir, self.feedback(
+            code_query_results={'P_and_T': 'sat',
+                                'P_and_T_and_not_I': 'unsat',
+                                'P_and_T_and_V': 'sat'}))
+        self.assertEqual(record['consistency_verdict'],
+                         'effect_observed_invariant_holds')
+
+    def test_replan_diagnostic_attached(self):
+        record = ingest_feedback(self.rundir, self.feedback(
+            code_query_results={'P_and_T': 'sat',
+                                'P_and_T_and_not_I': 'unsat',
+                                'P_and_T_and_V': 'unsat'}))
+        self.assertEqual(record['consistency_verdict'],
+                         'violation_not_reproduced')
+        diagnostic = record['replan_diagnostic']
+        self.assertEqual(diagnostic['action'], 'replan_rule')
+        self.assertEqual(diagnostic['violated_gate'],
+                         'stage3_differential_not_reproduced')
+
     def test_display_form_query_names_are_normalized(self):
         """Real stage3-spec.json declares "P AND T"; ingest must accept either.
 

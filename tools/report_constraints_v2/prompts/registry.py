@@ -61,6 +61,12 @@ PROMPT_MODULES[_live22_snapshot.PROMPT_VERSION] = _live22_snapshot
 # trace in the same rule-generation call.
 from . import live23_snapshot as _live23_snapshot
 PROMPT_MODULES[_live23_snapshot.PROMPT_VERSION] = _live23_snapshot
+# Preserve semantic-live-24 before the unconditional-I prompt tightening.
+from . import live24_snapshot as _live24_snapshot
+PROMPT_MODULES[_live24_snapshot.PROMPT_VERSION] = _live24_snapshot
+# Preserve semantic-live-25 before softening the pending-fallback wording.
+from . import live25_snapshot as _live25_snapshot
+PROMPT_MODULES[_live25_snapshot.PROMPT_VERSION] = _live25_snapshot
 # ``VERSIONS`` contains only archived semantic-v3.x modules. The live-16
 # snapshot is selectable for exact replay, but is not part of those frozen
 # generation baselines or feature suffixes.
@@ -81,6 +87,8 @@ SELECTABLE_VERSIONS = VERSIONS + (_live16_snapshot.PROMPT_VERSION,
                                   _live20_snapshot.PROMPT_VERSION,
                                   _live22_snapshot.PROMPT_VERSION,
                                   _live23_snapshot.PROMPT_VERSION,
+                                  _live24_snapshot.PROMPT_VERSION,
+                                  _live25_snapshot.PROMPT_VERSION,
                                   LIVE_PROMPT_VERSION, LIVE_VERSION)
 
 # Single source of truth for "which version should people actually run".
@@ -141,6 +149,7 @@ FEATURE_NAMES = (
     'allowed_statement_ids',
     'protocol_identifier_exclusion',
     'assumption_numeric_relief',
+    'symbolic_numeric_relief',
     'duplicate_predicate_gate',
     'requirement_source_review',
     'intent_scope_review',
@@ -159,6 +168,9 @@ FEATURE_NAMES = (
     'fidelity_only_rules',
     'relation_context_generation',
     'relationship_trace',
+    'direct_v_prescreen',
+    'gate_direct_v_denominator',
+    'direct_witness_effects',
 )
 _LEGACY_FEATURE_SETS = {
     'strict_piv': STRICT_PIV_VERSIONS,
@@ -178,6 +190,10 @@ _LEGACY_FEATURE_SETS = {
     # No frozen version ships the assumption relief: old runs replay with the
     # strict numeric gate they were produced under.
     'assumption_numeric_relief': frozenset(),
+    # Symbolic/illustrative numeric abstraction relief: frozen v3.16 is the
+    # recommended line and the gate over-strictness it fixes was reproduced on
+    # v3.16 reruns, so the fix ships from v3.16 onward.
+    'symbolic_numeric_relief': _from('semantic-v3.16'),
     # Post-closure structural additions (semantic-live-5, 2026-10-08): the same
     # replay rule applies -- no frozen version enables them, so every recorded
     # run keeps the behaviour it was produced under.
@@ -224,6 +240,11 @@ _LEGACY_FEATURE_SETS = {
     # while preserving frozen prompt replay behavior for all earlier versions.
     'relation_context_generation': frozenset(),
     'relationship_trace': frozenset(),
+    # Applicability direct-V pre-screen is a live-prompt-only denominator
+    # refinement; frozen versions keep their historical applicability schema.
+    'direct_v_prescreen': frozenset(),
+    'gate_direct_v_denominator': frozenset(),
+    'direct_witness_effects': frozenset(),
 }
 
 

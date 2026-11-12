@@ -432,9 +432,7 @@ impl<'a> ClosureEngine<'a> {
                 {
                     selected.push(*statement_id);
                     for name in identifiers(text) {
-                        if selected_names.insert(name) {
-                            changed = true;
-                        }
+                        selected_names.insert(name);
                     }
                     changed = true;
                 }

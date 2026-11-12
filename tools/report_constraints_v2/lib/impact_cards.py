@@ -5,7 +5,8 @@ from lib.plan_synthesizer import impact_qualifier_types
 
 
 SCHEMA_VERSION = 'stage2-impact-semantic-card/1'
-APPLICABILITY_SCHEMA_VERSION = 'stage2-impact-applicability/1'
+APPLICABILITY_SCHEMA_VERSION = 'stage2-impact-applicability/2'
+APPLICABILITY_SCHEMA_VERSION_V1 = 'stage2-impact-applicability/1'
 # The compiled report-formalization schema accepts at most 64 claims. In the
 # multi-I pipeline each selected (Impact, I source) becomes one independent
 # claim, so reject an oversized selection before spending calls on rules.
@@ -13,9 +14,26 @@ MAX_SELECTED_INTENT_RULES = 64
 
 
 def validate_applicability(raw, elements):
-    """Validate a report-level selection of explicit P/I sources per Impact."""
-    if not isinstance(raw, dict) or raw.get('schema_version') != APPLICABILITY_SCHEMA_VERSION:
+    """Validate a report-level selection of explicit P/I sources per Impact.
+
+    v2 adds a per-selected-intent ``direct_v_feasibility`` pre-screen so the
+    pipeline can exclude report impacts whose V cannot directly falsify I from
+    the formalization denominator. v1 is still accepted for zero-call replay of
+    historical runs; legacy v1 selections treat every selected intent as
+    formalizable.
+    """
+    if not isinstance(raw, dict):
         raise ValueError('invalid Impact applicability schema')
+    schema_version = raw.get('schema_version')
+    if schema_version == APPLICABILITY_SCHEMA_VERSION:
+        return _validate_applicability_v2(raw, elements)
+    if schema_version == APPLICABILITY_SCHEMA_VERSION_V1:
+        return _validate_applicability_v1(raw, elements)
+    raise ValueError('invalid Impact applicability schema')
+
+
+def _validate_applicability_v1(raw, elements):
+    """Legacy applicability selection: exactly the v1 source IDs and status."""
     impacts = {row['id']: row for row in elements.get('statements', [])
                if row.get('kind') == 'impact'}
     statements = {row['id']: row for row in elements.get('statements', [])}
@@ -70,7 +88,160 @@ def validate_applicability(raw, elements):
         raise ValueError(
             'Impact applicability selects more than '
             f'{MAX_SELECTED_INTENT_RULES} independent I-source rules')
+    return {'schema_version': APPLICABILITY_SCHEMA_VERSION_V1, 'impacts': validated}
+
+
+def _validate_applicability_v2(raw, elements):
+    """v2 applicability: v1 source selection plus direct-V feasibility."""
+    impacts = {row['id']: row for row in elements.get('statements', [])
+               if row.get('kind') == 'impact'}
+    statements = {row['id']: row for row in elements.get('statements', [])}
+    rows = raw.get('impacts')
+    if not isinstance(rows, list) or len(rows) != len(impacts):
+        raise ValueError('Impact applicability must cover every Impact exactly once')
+    seen = set()
+    validated = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {
+                'impact_id', 'status', 'precondition_ids', 'intent_ids',
+                'direct_v_feasibility', 'reason'}:
+            raise ValueError('invalid Impact applicability entry')
+        impact_id = row['impact_id']
+        if impact_id not in impacts or impact_id in seen:
+            raise ValueError('unknown or duplicate applicability Impact ID')
+        seen.add(impact_id)
+        status = row['status']
+        p_ids, i_ids = row['precondition_ids'], row['intent_ids']
+        feasibility = row['direct_v_feasibility']
+        if status not in ('selected', 'explicit_but_insufficient', 'needs_review'):
+            raise ValueError('invalid Impact applicability status')
+        if not isinstance(p_ids, list) or not isinstance(i_ids, list):
+            raise ValueError('applicability source IDs must be arrays')
+        if len(set(p_ids)) != len(p_ids) or len(set(i_ids)) != len(i_ids):
+            raise ValueError('duplicate applicability source ID')
+        for source_id in p_ids:
+            source = statements.get(source_id)
+            if (source is None or source.get('kind') not in ('precondition', 'assumption')
+                    or not source.get('evidence_ids', source.get('evidence'))):
+                raise ValueError('P source is not an evidence-backed precondition/assumption')
+        for source_id in i_ids:
+            source = statements.get(source_id)
+            if (source is None or source.get('kind') != 'security_intent' or
+                    source.get('modality') not in ('asserted', 'potential') or
+                    not source.get('evidence_ids', source.get('evidence'))):
+                raise ValueError('I source is not an explicit evidence-backed intent')
+        if status == 'selected' and not i_ids:
+            raise ValueError('selected applicability requires at least one explicit I source')
+        if status != 'selected' and (p_ids or i_ids):
+            raise ValueError('unresolved applicability cannot select P/I sources')
+        if not isinstance(feasibility, dict):
+            raise ValueError('direct_v_feasibility must be an object')
+        if status == 'selected':
+            if set(feasibility) != set(i_ids):
+                raise ValueError(
+                    'direct_v_feasibility must key every selected I source exactly once')
+            if any(not isinstance(value, bool) for value in feasibility.values()):
+                raise ValueError('direct_v_feasibility values must be booleans')
+        elif feasibility:
+            raise ValueError(
+                'unresolved applicability cannot classify direct_v_feasibility')
+        if (not isinstance(row['reason'], str) or not row['reason'].strip() or
+                len(row['reason']) > 1000 or '\n' in row['reason'] or
+                '\r' in row['reason']):
+            raise ValueError('applicability reason is required')
+        validated.append({
+            'impact_id': impact_id, 'status': status,
+            'precondition_ids': p_ids, 'intent_ids': i_ids,
+            'direct_v_feasibility': dict(feasibility), 'reason': row['reason']})
+    if seen != set(impacts):
+        raise ValueError('Impact applicability does not match the Impact inventory')
+    selected_pair_count = sum(
+        len(row['intent_ids']) for row in validated
+        if row['status'] == 'selected')
+    if selected_pair_count > MAX_SELECTED_INTENT_RULES:
+        raise ValueError(
+            'Impact applicability selects more than '
+            f'{MAX_SELECTED_INTENT_RULES} independent I-source rules')
     return {'schema_version': APPLICABILITY_SCHEMA_VERSION, 'impacts': validated}
+
+
+def formalizable_intent_ids(disposition):
+    """Return selected intents whose direct-V feasibility pre-screen passes.
+
+    Legacy v1 selections carry no feasibility map, so every selected intent is
+    treated as formalizable (the post-generation gate remains authoritative).
+    """
+    if disposition.get('status') != 'selected':
+        return []
+    feasibility = disposition.get('direct_v_feasibility')
+    if not feasibility:
+        return list(disposition.get('intent_ids', []))
+    return [intent_id for intent_id in disposition.get('intent_ids', [])
+            if feasibility.get(intent_id) is True]
+
+
+def direct_v_infeasible_intent_ids(disposition):
+    """Return selected intents the v2 pre-screen classified as infeasible."""
+    if disposition.get('status') != 'selected':
+        return []
+    feasibility = disposition.get('direct_v_feasibility')
+    if not feasibility:
+        return []
+    return [intent_id for intent_id in disposition.get('intent_ids', [])
+            if feasibility.get(intent_id) is False]
+
+
+def formalization_scope(applicability):
+    """Map each impact to the selected intents it should actually formalize.
+
+    Impacts with no feasible intent are omitted, so the rule-success denominator
+    only contains impacts that can produce a direct P/I/V rule.
+    """
+    scope = {}
+    for row in applicability.get('impacts', []):
+        if row.get('status') != 'selected':
+            continue
+        intent_ids = formalizable_intent_ids(row)
+        if intent_ids:
+            scope[row['impact_id']] = intent_ids
+    return scope
+
+
+def not_applicable_impacts_for(applicability, plan_records=None):
+    """List selected impacts with no intent left in the denominator scope."""
+    scope = final_formalization_scope(applicability, plan_records)
+    return [
+        {
+            'impact_id': row['impact_id'],
+            'infeasible_intent_ids': list(row.get('intent_ids', [])),
+            'reason': ('No report-stated observable V directly falsifies any '
+                       'selected I under the reported mechanism.'),
+        }
+        for row in applicability.get('impacts', [])
+        if row.get('status') == 'selected' and row['impact_id'] not in scope
+    ]
+
+
+def final_formalization_scope(applicability, plan_records):
+    """Return the denominator scope after prescreen and gate classification.
+
+    ``plan_records`` may mark selected pairs with ``exclusion`` set to
+    ``prescreen_direct_v_infeasible`` or ``gate_direct_v_infeasible``. Those
+    pairs are removed from the success denominator so they are audited as
+    not-applicable rather than counted as rule-generation failures.
+    """
+    scope = {impact_id: list(intent_ids)
+             for impact_id, intent_ids in formalization_scope(applicability).items()}
+    for row in plan_records or []:
+        if row.get('exclusion') not in (
+                'prescreen_direct_v_infeasible', 'gate_direct_v_infeasible'):
+            continue
+        impact_id = row.get('impact_id')
+        intent_id = row.get('intent_id')
+        if intent_id and impact_id in scope and intent_id in scope[impact_id]:
+            scope[impact_id].remove(intent_id)
+    return {impact_id: intent_ids
+            for impact_id, intent_ids in scope.items() if intent_ids}
 
 
 def applicability_by_impact(validated):

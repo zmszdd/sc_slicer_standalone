@@ -7,12 +7,18 @@ import unittest
 
 from lib.salvage import (normalize_attack_step_roles, normalize_element_ids,
                                 drop_unused_invalid_symbols,
-                                merge_appended_relationship_trace)
+                                merge_appended_relationship_trace,
+                                salvage_formal_response,
+                                strip_deepseek_json_suffix,
+                                strip_duplicate_relationship_trace,
+                                strip_trailing_dangling_brace)
 from lib.plan_synthesizer import synthesize_id_formalization
 from lib.solving import direct_relation_feasible
 from lib.semantic_core import validate_elements
 from lib.ingest import build_catalog, hydrate_elements
 from cli.semantic_pipeline import request_formalization
+from tests.test_evidence_ids import id_inputs
+from tests.test_plan_synthesizer import plan as base_plan
 
 
 class MechanicalSalvageTests(unittest.TestCase):
@@ -268,6 +274,57 @@ class AppendedTraceSalvageTests(unittest.TestCase):
         unrelated = '{"schema_version":"report-formal-plan/8"} trailing notes'
         self.assertIsNone(merge_appended_relationship_trace(unrelated))
 
+    def test_deepseek_json_suffix_is_stripped(self):
+        text = ('{"schema_version":"report-formal-plan/8","precondition_ids":["p_one"]}'
+                ',"type":"json_object"}')
+        salvaged = strip_deepseek_json_suffix(text)
+        self.assertIsNotNone(salvaged)
+        claim, record = salvaged
+        self.assertEqual(claim['schema_version'], 'report-formal-plan/8')
+        self.assertEqual(claim['precondition_ids'], ['p_one'])
+        self.assertEqual(record['transform'], 'strip_deepseek_json_suffix')
+
+    def test_deepseek_json_suffix_rejects_unrelated_tail(self):
+        text = ('{"schema_version":"report-formal-plan/8"},"type":"json_object"} extra')
+        self.assertIsNone(strip_deepseek_json_suffix(text))
+
+    def test_trailing_dangling_brace_is_stripped(self):
+        text = ('{"schema_version":"report-formal-plan/8","precondition_ids":["p_one"]}}')
+        salvaged = strip_trailing_dangling_brace(text)
+        self.assertIsNotNone(salvaged)
+        claim, record = salvaged
+        self.assertEqual(claim['schema_version'], 'report-formal-plan/8')
+        self.assertEqual(record['transform'], 'strip_trailing_dangling_brace')
+
+    def test_trailing_dangling_brace_rejects_unrelated_tail(self):
+        text = ('{"schema_version":"report-formal-plan/8"}} extra')
+        self.assertIsNone(strip_trailing_dangling_brace(text))
+
+    def test_duplicate_relationship_trace_is_stripped(self):
+        text = ('{"formal_plan":{"schema_version":"report-formal-plan/8"},'
+                '"relationship_trace":{"status":"explicit","links":[],"gap":""}}'
+                ',"relationship_trace":{"status":"explicit","links":[],"gap":""}}')
+        salvaged = strip_duplicate_relationship_trace(text)
+        self.assertIsNotNone(salvaged)
+        claim, record = salvaged
+        self.assertIn('formal_plan', claim)
+        self.assertIn('relationship_trace', claim)
+        self.assertEqual(record['transform'], 'strip_duplicate_relationship_trace')
+
+    def test_duplicate_relationship_trace_requires_existing_trace(self):
+        text = ('{"formal_plan":{"schema_version":"report-formal-plan/8"}}'
+                ',"relationship_trace":{"status":"explicit","links":[],"gap":""}}')
+        self.assertIsNone(strip_duplicate_relationship_trace(text))
+
+    def test_salvage_formal_response_prefers_trace_then_suffix(self):
+        trace_text = ('{"schema_version":"report-formal-plan/8"}'
+                      ',"relationship_trace":{"status":"explicit","links":[],"gap":""}}')
+        claim, record = salvage_formal_response(trace_text)
+        self.assertEqual(record['transform'], 'merge_appended_relationship_trace')
+        suffix_text = ('{"schema_version":"report-formal-plan/8"},"type":"json_object"}')
+        claim, record = salvage_formal_response(suffix_text)
+        self.assertEqual(record['transform'], 'strip_deepseek_json_suffix')
+
     def test_non_dict_trace_value_is_not_salvaged(self):
         malformed = ('{"schema_version":"report-formal-plan/8"}'
                      ',"relationship_trace":"explicit"}')
@@ -393,10 +450,120 @@ class FormalPlanEnvelopeTests(unittest.TestCase):
 
 
 class DirectRelationGateTests(unittest.TestCase):
+    def _authorization_guard_plan(self):
+        elements = {
+            'scope': {'flow': 'request claim', 'environment': 'vault'},
+            'entities': [{'id': 'e1', 'name': 'Vault'}],
+            'statements': [
+                {'id': 'p_submit', 'kind': 'precondition',
+                 'text': 'operator submits request', 'evidence_ids': ['ev1'],
+                 'entity_ids': ['e1'], 'modality': 'potential'},
+                {'id': 'p_zero', 'kind': 'precondition',
+                 'text': 'controller is zero', 'evidence_ids': ['ev2'],
+                 'entity_ids': ['e1'], 'modality': 'potential'},
+                {'id': 'i_auth', 'kind': 'security_intent',
+                 'text': 'claim requires authenticated caller',
+                 'evidence_ids': ['ev3'], 'entity_ids': ['e1'],
+                 'modality': 'asserted'},
+                {'id': 'impact', 'kind': 'impact',
+                 'text': 'funds permanently locked', 'evidence_ids': ['ev4'],
+                 'entity_ids': ['e1'], 'modality': 'asserted'},
+            ],
+        }
+        plan = {
+            'schema_version': 'report-formal-plan/8',
+            'relation_class': 'access_control',
+            'precondition_ids': ['p_submit', 'p_zero'],
+            'intent_id': 'i_auth', 'impact_ids': ['impact'],
+            'symbols': {
+                'request_submitted': {'sort': 'bool', 'unit': None,
+                                      'meaning': 'submitted',
+                                      'checkpoint': 'before',
+                                      'entity_ids': ['e1'],
+                                      'source_ids': ['p_submit']},
+                'controller_zero': {'sort': 'bool', 'unit': None,
+                                    'meaning': 'zero', 'checkpoint': 'before',
+                                    'entity_ids': ['e1'],
+                                    'source_ids': ['p_zero']},
+                'effect': {'sort': 'bool', 'unit': None,
+                           'meaning': 'claim performable',
+                           'checkpoint': 'after', 'entity_ids': ['e1'],
+                           'source_ids': ['impact', 'i_auth']},
+                'auth': {'sort': 'bool', 'unit': None,
+                         'meaning': 'auth caller exists',
+                         'checkpoint': 'after', 'entity_ids': ['e1'],
+                         'source_ids': ['i_auth']},
+                'outcome': {'sort': 'bool', 'unit': None,
+                            'meaning': 'funds locked', 'checkpoint': 'after',
+                            'entity_ids': ['e1'], 'source_ids': ['impact']},
+            },
+            'precondition_terms': [
+                {'source_id': 'p_submit',
+                 'predicate': {'kind': 'truth', 'symbol': 'request_submitted',
+                               'value': True}},
+                {'source_id': 'p_zero',
+                 'predicate': {'kind': 'truth', 'symbol': 'controller_zero',
+                               'value': True}},
+            ],
+            'impact_outcome': {'source_id': 'impact',
+                               'predicate': {'kind': 'truth',
+                                             'symbol': 'outcome', 'value': True}},
+            'impact_context_terms': [],
+            'derived_definitions': [],
+            'pattern': {'kind': 'authorization_guard',
+                        'effect': {'kind': 'truth', 'symbol': 'effect',
+                                   'value': True},
+                        'authorization': {'kind': 'truth', 'symbol': 'auth',
+                                          'value': True}},
+            'assumptions': [], 'unresolved': [], 'limitations': [],
+        }
+        return elements, plan
+
+    def test_direct_witness_effects_makes_authorization_guard_feasible(self):
+        elements, plan = self._authorization_guard_plan()
+        for enabled, expected in ((False, False), (True, True)):
+            formal = synthesize_id_formalization(
+                plan, elements, claim_id='c', fidelity_only=True,
+                direct_witness_effects=enabled)
+            claim = dict(formal['claims'][0], symbols=formal['symbols'])
+            self.assertEqual(direct_relation_feasible(claim), expected)
+
+    def test_direct_witness_effects_collapse_double_negation(self):
+        elements, _ = id_inputs()
+        plan = base_plan()
+        plan['schema_version'] = 'report-formal-plan/8'
+        plan['relation_class'] = 'progress_or_liveness'
+        plan['derived_definitions'] = []
+        plan['impact_context_terms'] = []
+        plan['pattern'] = {
+            'kind': 'required_effect',
+            'condition': {'kind': 'comparison', 'left': 'paid_fee',
+                          'operator': 'gt', 'right': {'symbol': 'required_fee'}},
+            'effect': {'kind': 'truth', 'symbol': 'fee_revert', 'value': False},
+        }
+        plan['impact_outcome'] = {
+            'source_id': 'impact_revert',
+            'predicate': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+        }
+        formal = synthesize_id_formalization(
+            plan, elements, claim_id='c', direct_witness_effects=True)
+        effects = formal['claims'][0]['properties']['effects']['expression']
+
+        def has_double_not(node):
+            if not isinstance(node, dict):
+                return False
+            if node.get('op') == 'not':
+                args = node.get('args')
+                if (isinstance(args, list) and len(args) == 1 and
+                        isinstance(args[0], dict) and args[0].get('op') == 'not'):
+                    return True
+            return any(has_double_not(v) for v in node.values())
+
+        self.assertFalse(has_double_not(effects))
+
     def test_direct_contradiction_is_feasible(self):
         claim = {'symbols': {'v': {'sort': 'bool'}},
                  'properties': {
-                     'preconditions': {'expression': {'var': 'v'}},
                      'safety': {'expression': {'op': 'not',
                                                'args': [{'var': 'v'}]}},
                      'effects': {'expression': {'var': 'v'}},

@@ -1,6 +1,6 @@
 # SC_Slicer 阶段二工作交接
 
-更新时间：2026-10-20
+更新时间：2026-11-11
 
 项目目录：`/root/sc_slicer_standalone`  
 当前工作范围：`tools/report_constraints_v2/`  
@@ -9,7 +9,7 @@
 > **当前状态入口**：先读
 > [`STAGE2_CURRENT_STATUS.md`](tools/report_constraints_v2/docs/STAGE2_CURRENT_STATUS.md)。
 > 本交接文件保留了历史实施细节；其中旧版本号、测试计数和计划不得覆盖当前状态文档。
-> 当前工作树含未提交 S19 变更，开始操作前先看 `git status` 和对应 diff。
+> 当前工作树含未提交变更，开始操作前先看 `git status` 和对应 diff。
 
 ## 1. 当前正在做什么
 
@@ -32,8 +32,10 @@
 - 把 P/I/V 转换成有证据来源、变量类型、单位和作用域的 AST、SMT 与
   `stage3-spec.json`，供后续阶段消费。
 
-阶段二不负责执行 PoC，也不负责最终判断报告真假。`src/llm_completion.rs`、Rust slicer、
-`run.sh` 和阶段一切片逻辑不在当前修改范围内。
+阶段二不负责执行 PoC，也不负责最终判断报告真假。Rust 阶段一切片器已收敛为
+`resurrect-v2` 单引擎（旧的 `analyzer`/`semantic_slicer`/`noise_reduction`/
+`source_normalizer`/`llm_completion` 已删除），阶段一入口仍为 `./run.sh`；
+阶段二修改范围不覆盖阶段一切片逻辑。
 
 ## 2. 当前阶段二工作流
 
@@ -623,7 +625,7 @@ cd /root/sc_slicer_standalone
   -t tools/report_constraints_v2 -p 'test_*.py' -q
 ```
 
-当前基线应为：`Ran 276 tests ... OK`。
+当前基线应为：`Ran 484 tests ... OK`（阶段二）；另有阶段三 125、pipeline 35。
 
 ### 检查格式问题
 

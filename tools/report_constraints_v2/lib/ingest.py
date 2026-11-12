@@ -48,6 +48,21 @@ def _impact_heading_title(title):
                                    ('finding', 'description', 'vulnerability')))))
 
 
+# Conventional code4rena sections that carry the impact statement when a
+# dedicated ``Impact`` heading is absent. ``root cause`` is deliberately
+# excluded: it states the mechanism, not the impact, so including it would
+# pollute impact evidence and hurt fidelity.
+_FALLBACK_IMPACT_TITLES = {
+    'summary', 'description', 'detailed description',
+    'vulnerability details', 'vulnerability detail', 'finding description',
+}
+
+
+def _fallback_impact_heading_title(title):
+    cleaned = re.sub(r'[`*_]', '', title).strip().rstrip(':').strip().lower()
+    return cleaned in _FALLBACK_IMPACT_TITLES
+
+
 def explicit_impact_ranges(text):
     """Return character ranges covered by explicitly labeled Impact areas.
 
@@ -63,6 +78,7 @@ def explicit_impact_ranges(text):
     ranges = []
     active_start = None
     active_level = None
+    saw_explicit_impact = False
 
     def close_section(end):
         nonlocal active_start, active_level
@@ -85,9 +101,18 @@ def explicit_impact_ranges(text):
                 # Subheadings within a marked combined area remain in scope;
                 # the section ends at the next peer or parent heading.
                 continue
+            if (heading is None and active_start is not None and
+                    active_level is not None):
+                # Bold sub-labels inside a Markdown Impact section (for example
+                # `**Scenario 1...**` under `## Impact Analysis`) stay in scope.
+                # Bold headings only act as section boundaries when the Impact
+                # section itself was opened by a bold label, so the historical
+                # bold-only format keeps its peer-section termination.
+                continue
             close_section(start)
             title = heading.group(1) if heading else bold.group(1)
             if _impact_heading_title(title):
+                saw_explicit_impact = True
                 active_start = end
                 active_level = heading_level
             continue
@@ -107,7 +132,58 @@ def explicit_impact_ranges(text):
             # Direct/Multi-User Impact sublabels belong to their parent section.
             continue
     close_section(len(text))
-    return ranges
+    if ranges or saw_explicit_impact:
+        return ranges
+
+    # Fallback: no explicitly labeled Impact area exists. In code4rena
+    # submissions the impact is conventionally stated inside Summary or
+    # Description. Only promote those conventional sections when the report
+    # has no Impact heading at all, so reports with an explicit Impact area
+    # keep the strict, fidelity-preserving boundary.
+    fallback = []
+    active_start = None
+    active_level = None
+
+    def close_fallback(end):
+        nonlocal active_start, active_level
+        if active_start is not None and end > active_start:
+            fallback.append((active_start, end))
+        active_start = None
+        active_level = None
+
+    for start, end, line in lines:
+        content = line.rstrip('\r\n')
+        heading = _MARKDOWN_HEADING.match(content)
+        bold = _BOLD_HEADING.match(content)
+        if heading or bold:
+            heading_level = (len(heading.group(0).lstrip().split(maxsplit=1)[0])
+                             if heading else None)
+            if (heading is not None and active_start is not None and
+                    active_level is not None and heading_level > active_level):
+                continue
+            if (heading is None and active_start is not None and
+                    active_level is not None):
+                continue
+            close_fallback(start)
+            title = heading.group(1) if heading else bold.group(1)
+            if _fallback_impact_heading_title(title):
+                active_start = end
+                active_level = heading_level
+            continue
+        inline = _INLINE_IMPACT.match(content)
+        if inline:
+            close_fallback(start)
+            label_end = content.find(':') + 1
+            body_start = start + label_end
+            if content[label_end:].strip():
+                fallback.append((body_start, end))
+            else:
+                active_start = end
+            continue
+        if active_start is not None and content.strip().startswith('->'):
+            continue
+    close_fallback(len(text))
+    return fallback
 
 
 def explicit_impact_evidence_ids(catalog, text):

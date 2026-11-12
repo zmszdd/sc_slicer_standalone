@@ -54,6 +54,21 @@ class ExplicitImpactScopeTests(unittest.TestCase):
         self.assertEqual(explicit_impact_ranges(text), [])
         self.assertEqual(explicit_impact_evidence_ids(build_catalog(text), text), [])
 
+    def test_bold_scenario_labels_stay_inside_markdown_impact_section(self):
+        text = (
+            '## Impact Analysis\n'
+            '**Scenario 1: Targeted DOS**\n'
+            '- Users are canceled without consent.\n'
+            '**Scenario 2: Griefing**\n'
+            '- Users pay higher gas costs.\n'
+            '## Recommended Fix\n'
+            'Add a check.\n')
+        ranges = explicit_impact_ranges(text)
+        extracted = '\n'.join(text[start:end] for start, end in ranges)
+        self.assertIn('Users are canceled without consent.', extracted)
+        self.assertIn('Users pay higher gas costs.', extracted)
+        self.assertNotIn('Add a check.', extracted)
+
     def test_impact_evidence_ids_are_a_hard_boundary(self):
         text = ('## Description\nThe function has a bug.\n'
                 '## Impact\nUsers cannot withdraw.\n')
@@ -198,3 +213,32 @@ class ExplicitImpactScopeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ImpactSectionFallbackTests(unittest.TestCase):
+    def test_summary_fallback_when_no_impact_heading(self):
+        text = ('## Summary\nCause details.\nThis results in free withdrawal of funds.\n'
+                '## Root Cause\nA stale quote is read.\n')
+        ranges = explicit_impact_ranges(text)
+        extracted = '\n'.join(text[start:end] for start, end in ranges)
+        self.assertIn('This results in free withdrawal of funds.', extracted)
+        self.assertNotIn('A stale quote is read.', extracted)
+
+    def test_bold_description_fallback(self):
+        text = ('** Description **\nA swap executes at stale prices.\n'
+                '** Location **\nGaugeManager.sol\n')
+        ranges = explicit_impact_ranges(text)
+        extracted = '\n'.join(text[start:end] for start, end in ranges)
+        self.assertIn('A swap executes at stale prices.', extracted)
+        self.assertNotIn('GaugeManager.sol', extracted)
+
+    def test_explicit_impact_heading_disables_fallback(self):
+        text = ('## Description\nCause only.\n## Impact\nFunds are stuck.\n')
+        ranges = explicit_impact_ranges(text)
+        extracted = '\n'.join(text[start:end] for start, end in ranges)
+        self.assertIn('Funds are stuck.', extracted)
+        self.assertNotIn('Cause only.', extracted)
+
+    def test_root_cause_is_not_impact_fallback(self):
+        text = '## Root Cause\nupdateDebt allows negative deltas.\n'
+        self.assertEqual(explicit_impact_ranges(text), [])

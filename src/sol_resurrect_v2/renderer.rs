@@ -5,7 +5,9 @@ use anyhow::{bail, Result};
 use super::fallback::FallbackLevel;
 use super::slice_atom::SliceAtom;
 use super::slice_graph::SliceGraph;
-use super::source_db::{is_container_kind, DefId, DefinitionKind, FunctionId, SourceDatabase, StatementId};
+use super::source_db::{
+    is_container_kind, DefId, DefinitionKind, FunctionId, SourceDatabase, StatementId,
+};
 
 pub struct SourceBackedRenderer<'a> {
     source_db: &'a SourceDatabase,
@@ -56,6 +58,7 @@ impl<'a> SourceBackedRenderer<'a> {
         chunks: &mut Vec<String>,
         seen: &mut HashSet<String>,
     ) {
+        let mut top_level = Vec::new();
         for atom in &graph.atoms {
             match atom {
                 SliceAtom::TypeDefinition(def_id)
@@ -63,12 +66,16 @@ impl<'a> SourceBackedRenderer<'a> {
                 | SliceAtom::ContainerItem(def_id) => {
                     if let Some(def) = self.source_db.def_index.defs.get(def_id) {
                         if def.container.is_none() && !is_container_kind(def_id.kind) {
-                            let _ = self.push_def_text(*def_id, chunks, seen);
+                            top_level.push((def.span.start, *def_id));
                         }
                     }
                 }
                 _ => {}
             }
+        }
+        top_level.sort_by_key(|(start, _)| *start);
+        for (_, def_id) in top_level {
+            let _ = self.push_def_text(def_id, chunks, seen);
         }
     }
 
@@ -78,16 +85,20 @@ impl<'a> SourceBackedRenderer<'a> {
         chunks: &mut Vec<String>,
         seen: &mut HashSet<String>,
     ) -> Result<()> {
-        let mut full_containers = Vec::<DefId>::new();
-        let mut selected_containers = Vec::<DefId>::new();
-        let mut member_texts: HashMap<DefId, Vec<String>> = HashMap::new();
-        let mut statement_functions: HashMap<FunctionId, Vec<StatementId>> = HashMap::new();
+        let mut plan = self.collect_container_render_plan(graph)?;
+        self.render_container_plan(&mut plan, chunks, seen)
+    }
+
+    fn collect_container_render_plan(&self, graph: &SliceGraph) -> Result<ContainerRenderPlan> {
+        let mut plan = ContainerRenderPlan::default();
         let mut whole_functions = HashSet::<FunctionId>::new();
 
         for atom in &graph.atoms {
             if let SliceAtom::Function(function_id)
             | SliceAtom::LibraryMember(function_id)
-            | SliceAtom::StatementWindow { function: function_id } = atom
+            | SliceAtom::StatementWindow {
+                function: function_id,
+            } = atom
             {
                 whole_functions.insert(*function_id);
             }
@@ -95,19 +106,19 @@ impl<'a> SourceBackedRenderer<'a> {
 
         for atom in &graph.atoms {
             match atom {
-                SliceAtom::FullContainer(def_id) => full_containers.push(*def_id),
+                SliceAtom::FullContainer(def_id) => plan.full_containers.push(*def_id),
                 SliceAtom::Function(function_id) | SliceAtom::LibraryMember(function_id) => {
                     let def_id = function_id.def_id;
                     if let Some(def) = self.source_db.def_index.defs.get(&def_id) {
                         if let Some(container) = &def.container {
                             if let Some(container_id) = self.source_db.resolve_container(container)
                             {
-                                selected_containers.push(container_id);
+                                plan.selected_containers.push(container_id);
                                 if let Some(text) = self.source_db.get_function_text(*function_id) {
-                                    member_texts
+                                    plan.member_texts
                                         .entry(container_id)
                                         .or_default()
-                                        .push(indent_member(text));
+                                        .push((def.span.start, indent_member(text)));
                                 }
                             }
                         }
@@ -118,11 +129,14 @@ impl<'a> SourceBackedRenderer<'a> {
                     if whole_functions.contains(&function_id) {
                         continue;
                     }
-                    if let Some(function) = self.source_db.function_index.functions.get(&function_id) {
+                    if let Some(function) =
+                        self.source_db.function_index.functions.get(&function_id)
+                    {
                         if let Some(container) = &function.container {
-                            if let Some(container_id) = self.source_db.resolve_container(container) {
-                                selected_containers.push(container_id);
-                                statement_functions
+                            if let Some(container_id) = self.source_db.resolve_container(container)
+                            {
+                                plan.selected_containers.push(container_id);
+                                plan.statement_functions
                                     .entry(function_id)
                                     .or_default()
                                     .push(*statement_id);
@@ -131,17 +145,23 @@ impl<'a> SourceBackedRenderer<'a> {
                     }
                 }
                 SliceAtom::StatementWindow { function } => {
-                    if let Some(function_def) = self.source_db.function_index.functions.get(function) {
+                    if let Some(function_def) =
+                        self.source_db.function_index.functions.get(function)
+                    {
                         if let Some(container) = &function_def.container {
-                            if let Some(container_id) = self.source_db.resolve_container(container) {
-                                selected_containers.push(container_id);
+                            if let Some(container_id) = self.source_db.resolve_container(container)
+                            {
+                                plan.selected_containers.push(container_id);
                                 let ids = self
                                     .source_db
                                     .function_statements(*function)
                                     .into_iter()
                                     .map(|(statement_id, _)| statement_id)
                                     .collect::<Vec<_>>();
-                                statement_functions.entry(*function).or_default().extend(ids);
+                                plan.statement_functions
+                                    .entry(*function)
+                                    .or_default()
+                                    .extend(ids);
                             }
                         }
                     }
@@ -149,16 +169,16 @@ impl<'a> SourceBackedRenderer<'a> {
                 SliceAtom::ContainerItem(def_id) => {
                     if let Some(def) = self.source_db.def_index.defs.get(def_id) {
                         if is_container_kind(def_id.kind) {
-                            selected_containers.push(*def_id);
+                            plan.selected_containers.push(*def_id);
                         } else if let Some(container) = &def.container {
                             if let Some(container_id) = self.source_db.resolve_container(container)
                             {
-                                selected_containers.push(container_id);
+                                plan.selected_containers.push(container_id);
                                 if let Some(text) = self.source_db.get_source_text(*def_id) {
-                                    member_texts
+                                    plan.member_texts
                                         .entry(container_id)
                                         .or_default()
-                                        .push(indent_member(text));
+                                        .push((def.span.start, indent_member(text)));
                                 }
                             }
                         }
@@ -167,13 +187,14 @@ impl<'a> SourceBackedRenderer<'a> {
                 SliceAtom::TypeDefinition(def_id) | SliceAtom::UsingDirective(def_id) => {
                     if let Some(def) = self.source_db.def_index.defs.get(def_id) {
                         if let Some(container) = &def.container {
-                            if let Some(container_id) = self.source_db.resolve_container(container) {
-                                selected_containers.push(container_id);
+                            if let Some(container_id) = self.source_db.resolve_container(container)
+                            {
+                                plan.selected_containers.push(container_id);
                                 if let Some(text) = self.source_db.get_source_text(*def_id) {
-                                    member_texts
+                                    plan.member_texts
                                         .entry(container_id)
                                         .or_default()
-                                        .push(indent_member(text));
+                                        .push((def.span.start, indent_member(text)));
                                 }
                             }
                         }
@@ -183,24 +204,27 @@ impl<'a> SourceBackedRenderer<'a> {
             }
         }
 
-        for (function_id, mut statement_ids) in statement_functions {
+        for (function_id, mut statement_ids) in plan.statement_functions.clone() {
             statement_ids.sort_by_key(|id| id.node_id);
             statement_ids.dedup();
             if let Some(function) = self.source_db.function_index.functions.get(&function_id) {
                 if let Some(container) = &function.container {
                     if let Some(container_id) = self.source_db.resolve_container(container) {
                         let text = self.render_statement_function(function_id, &statement_ids)?;
-                        member_texts.entry(container_id).or_default().push(text);
+                        plan.member_texts
+                            .entry(container_id)
+                            .or_default()
+                            .push((function.span.start, text));
                     }
                 }
             }
         }
 
-        full_containers.sort_by_key(|id| container_bucket(id.kind));
-        full_containers.dedup();
-        let full_set = full_containers.iter().copied().collect::<HashSet<_>>();
+        for members in plan.member_texts.values_mut() {
+            members.sort_by_key(|(start, _)| *start);
+        }
 
-        selected_containers.sort_by_key(|id| {
+        plan.full_containers.sort_by_key(|id| {
             (
                 container_bucket(id.kind),
                 self.source_db
@@ -209,25 +233,56 @@ impl<'a> SourceBackedRenderer<'a> {
                     .get(id)
                     .map(|def| def.span.start)
                     .unwrap_or(usize::MAX),
-                !member_texts.contains_key(id),
             )
         });
-        selected_containers.dedup();
+        plan.full_containers.dedup();
 
-        for def_id in full_containers {
-            self.push_def_text(def_id, chunks, seen)?;
+        plan.selected_containers.sort_by_key(|id| {
+            (
+                container_bucket(id.kind),
+                self.source_db
+                    .def_index
+                    .defs
+                    .get(id)
+                    .map(|def| def.span.start)
+                    .unwrap_or(usize::MAX),
+                !plan.member_texts.contains_key(id),
+            )
+        });
+        plan.selected_containers.dedup();
+
+        Ok(plan)
+    }
+
+    fn render_container_plan(
+        &self,
+        plan: &mut ContainerRenderPlan,
+        chunks: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) -> Result<()> {
+        let full_set = plan.full_containers.iter().copied().collect::<HashSet<_>>();
+
+        for def_id in &plan.full_containers {
+            self.push_def_text(*def_id, chunks, seen)?;
         }
         let mut rendered_container_names = HashSet::new();
-        for def_id in selected_containers {
-            if full_set.contains(&def_id) {
+        for def_id in &plan.selected_containers {
+            if full_set.contains(def_id) {
                 continue;
             }
-            if let Some(def) = self.source_db.def_index.defs.get(&def_id) {
+            if let Some(def) = self.source_db.def_index.defs.get(def_id) {
                 if !rendered_container_names.insert(def.name.clone()) {
                     continue;
                 }
             }
-            let text = self.render_container_shell(def_id, member_texts.remove(&def_id).unwrap_or_default())?;
+            let members = plan
+                .member_texts
+                .remove(def_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect::<Vec<_>>();
+            let text = self.render_container_shell(*def_id, members)?;
             push_unique(chunks, seen, text);
         }
 
@@ -307,6 +362,14 @@ impl<'a> SourceBackedRenderer<'a> {
     }
 }
 
+#[derive(Default)]
+struct ContainerRenderPlan {
+    full_containers: Vec<DefId>,
+    selected_containers: Vec<DefId>,
+    member_texts: HashMap<DefId, Vec<(usize, String)>>,
+    statement_functions: HashMap<FunctionId, Vec<StatementId>>,
+}
+
 fn push_unique(chunks: &mut Vec<String>, seen: &mut HashSet<String>, text: String) {
     let normalized = text.trim().to_string();
     if !normalized.is_empty() && seen.insert(normalized.clone()) {
@@ -355,8 +418,6 @@ fn container_bucket(kind: DefinitionKind) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sol_resurrect_v2::frontend::SourceFrontend;
-    use crate::sol_resurrect_v2::slice_graph::SliceGraph;
 
     #[test]
     fn renderer_rejects_partial_statement_token() {

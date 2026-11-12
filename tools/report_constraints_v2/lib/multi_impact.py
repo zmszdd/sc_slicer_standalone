@@ -173,8 +173,16 @@ def merge_claim_formalizations(successful, elements, failures=(), *,
 
 
 def apply_multi_intent_coverage(bundle, applicability, plan_records, *,
-                                require_fidelity=False):
-    """Summarize generated rules and, when configured, their fidelity verdicts."""
+                                require_fidelity=False,
+                                formalization_scope=None,
+                                continue_on_review=False):
+    """Summarize generated rules and, when configured, their fidelity verdicts.
+
+    ``formalization_scope`` maps an impact to the selected intents that should
+    be formalized. Impacts omitted from the scope (for example, every selected
+    intent failed the applicability direct-V pre-screen) stay out of the rule
+    coverage summary and therefore out of the success denominator.
+    """
     records = {(row.get('impact_id'), row.get('intent_id')): row
                for row in plan_records if row.get('intent_id')}
     compiled = {row['id']: row for row in bundle.get('claims', [])}
@@ -185,7 +193,13 @@ def apply_multi_intent_coverage(bundle, applicability, plan_records, *,
         impact_id = selected['impact_id']
         if selected['status'] != 'selected':
             continue
-        pairs = [(impact_id, intent_id) for intent_id in selected['intent_ids']]
+        if formalization_scope is not None:
+            intent_ids = formalization_scope.get(impact_id)
+            if not intent_ids:
+                continue
+        else:
+            intent_ids = selected['intent_ids']
+        pairs = [(impact_id, intent_id) for intent_id in intent_ids]
         passed, generated, reasons, claim_ids = [], [], [], []
         for pair in pairs:
             record = records.get(pair)
@@ -196,8 +210,11 @@ def apply_multi_intent_coverage(bundle, applicability, plan_records, *,
             is_generated = bool(
                 record and record.get('status') == 'formalized_candidate' and
                 claim)
+            fidelity_status = record.get('fidelity_status') if record else None
             fidelity_passed = (not require_fidelity or bool(
-                record and record.get('fidelity_status') == 'passed'))
+                record and (fidelity_status == 'passed' or
+                            (continue_on_review and
+                             fidelity_status == 'needs_review'))))
             is_formalized = is_generated and fidelity_passed
             generated.append(is_generated)
             passed.append(is_formalized)
@@ -205,7 +222,7 @@ def apply_multi_intent_coverage(bundle, applicability, plan_records, *,
                 claim_ids.append(claim_id)
             elif is_generated and require_fidelity:
                 reasons.append('post-generation P/I/V fidelity audit ' +
-                               str(record.get('fidelity_status', 'unavailable')))
+                               str(fidelity_status or 'unavailable'))
             else:
                 reasons.append((record or {}).get('reason') or
                                (claim_coverage or {}).get('reason') or

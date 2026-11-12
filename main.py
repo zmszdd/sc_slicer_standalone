@@ -6,7 +6,7 @@
     python main.py <command> [参数...]          阶段二 / 工程命令（推荐写法）
     python main.py stage2 <command> [参数...]   同上，显式前缀写法
 
-阶段一（代码切片）不在本入口内，请直接用 `./run.sh`。阶段三尚未实现。
+阶段一（代码切片）不在本入口内，请直接用 `./run.sh`。阶段三用 `python main.py stage3 --case-dir ...`。
 
 模型
 ----
@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import importlib.util
 import json
@@ -39,6 +40,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 STAGE2_DIR = ROOT / 'tools' / 'report_constraints_v2'
+STAGE3_DIR = ROOT / 'tools' / 'stage3'
 STAGE2_ENV = ROOT / 'config' / 'stage2_deepseek.local.env'
 
 # 阶段二分两层：cli/（入口）与 lib/（共享库）。脚本查找顺序为
@@ -162,6 +164,17 @@ def _usage() -> str:
         '用法:\n'
         '    python main.py <command> [参数...]        # 阶段二 / 工程命令\n'
         '    python main.py stage2 <command> [参数...] # 同上，显式前缀写法\n'
+        '    python main.py stage3 --case-dir ...     # 阶段三单案例差分验证\n'
+        '    python main.py stage3 assemble ...       # 阶段一/二产物组装阶段三案例\n'
+        '    python main.py stage3 batch ...          # 批量运行阶段三案例\n'
+        '    python main.py stage3 autorun ...        # 一站式：组装→绑定→差分→裁决闭环→验收\n'
+        '    python main.py stage3 verdict-loop ...   # 可修复裁决重提绑定并重跑\n'
+        '    python main.py stage3 acceptance ...     # 验收门（复现率/终态率 gating）\n'
+        '    python main.py stage3 metrics-sync ...   # 裁决产物同步权威四指标\n'
+        '    python main.py pipeline ...              # 三阶段串联：组装+运行\n'
+        '    python main.py pipeline-run ...          # 并行编排：阶段一∥阶段二→阶段三\n'
+        '    python main.py case ...                 # 新扁平案例：阶段二+自动绑定+差分\n'
+        '    python main.py pipeline-batch ...        # 批量 manifest 并行 fan-in\n'
         '\n'
         '阶段二全流程默认使用 DeepSeek（deepseek-flash）；阶段一请直接用 ./run.sh。\n'
         '\n'
@@ -208,6 +221,157 @@ def _install_compat():
     """
     from lib import compat          # needs the stage-2 root on sys.path
     compat.install()
+
+
+STAGE3_SUBCOMMANDS = {
+    'assemble': 'stage3_assemble.py',
+    'eval-report': 'eval_report.py',
+    'full-metrics': 'full_metrics.py',
+    'full-flow-metrics': 'full_flow_metrics.py',
+    'batch': 'stage3_batch.py',
+    'eval-run': 'stage3_eval_run.py',
+    'negative-eval': 'stage3_negative_eval.py',
+    'negative-build': 'stage3_negative_build.py',
+    'full-flow': 'stage3_fullflow.py',
+    'fix-llm': 'stage3_fix_llm.py',
+    'binding-skeleton': 'stage3_binding_skeleton.py',
+    'bind': 'stage3_bind.py',
+    'multi': 'stage3_multi.py',
+    'replan': 'stage3_replan.py',
+    # 端到端闭环命令：一站式自动化、裁决闭环、验收门、指标同步。
+    'autorun': 'stage3_autorun.py',
+    'verdict-loop': 'stage3_verdict_loop.py',
+    'acceptance': 'stage3_acceptance.py',
+    'metrics-sync': 'stage3_metrics_sync.py',
+}
+
+STAGE3_PATH_ARGS = (
+    '--case-dir', '--stage2-run', '--src', '--binding', '--test', '--out',
+    '--foundry-toml', '--lib', '--remappings', '--expected', '--cases-root',
+    '--output', '--bindings-dir', '--consistency', '--runs-dir',
+    '--eval-run', '--stage2-summary', '--positive-eval',
+    '--negative-results', '--positive-eval', '--summary', '--report',
+    '--goldset-root', '--flatten-root', '--positive-case', '--fix-json',
+)
+
+
+def _resolve_stage3_path_args(argv):
+    """Resolve relative stage-3 paths against the caller's cwd.
+
+    The stage-3 child process runs with cwd=STAGE3_DIR, so any user-supplied
+    relative path must be anchored to the directory where ``main.py`` was
+    invoked, not to ``tools/stage3/``.
+    """
+    resolved = []
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument in STAGE3_PATH_ARGS and index + 1 < len(argv):
+            value = Path(argv[index + 1])
+            if not value.is_absolute():
+                value = Path.cwd() / value
+            resolved.extend([argument, str(value)])
+            index += 2
+        else:
+            resolved.append(argument)
+            index += 1
+    return resolved
+
+
+def _run_stage3_module(module, argv):
+    """Run one stage-3 module with cwd=tools/stage3, preserving exit code."""
+    if not STAGE3_DIR.is_dir():
+        print(f'stage3 directory missing: {STAGE3_DIR}', file=sys.stderr)
+        return 1
+    command = [sys.executable, '-m', f'cli.{module.removesuffix(".py")}', *_resolve_stage3_path_args(argv)]
+    return subprocess.call(command, cwd=str(STAGE3_DIR))
+
+
+def _delegate_stage3(argv):
+    """Dispatch ``main.py stage3 <subcommand>``.
+
+    Default subcommand is the single-case differential pipeline; ``assemble``
+    builds a case from stage-1/2 artifacts and ``batch`` runs every case under
+    a cases directory.
+    """
+    if not argv:
+        print(_usage())
+        return 0
+    if argv[0] in STAGE3_SUBCOMMANDS:
+        return _run_stage3_module(STAGE3_SUBCOMMANDS[argv[0]], argv[1:])
+    return _run_stage3_module('stage3_pipeline', argv)
+
+
+def _pipeline(argv):
+    """Three-stage integration channel: assemble a stage-3 case, then run it.
+
+    ``--src`` is normally a stage-1 slice (.sol) and ``--stage2-run`` a stage-2
+    run directory; ``--binding``/``--test`` complete the handoff. The command is
+    deliberately thin: it only moves artifacts and delegates, never re-implements
+    stage logic.
+    """
+    parser = argparse.ArgumentParser(
+        prog='main.py pipeline',
+        description='assemble and (optionally) run a stage-3 case from stage-1/2 artifacts')
+    parser.add_argument('--name', required=True)
+    parser.add_argument('--src', required=True, help='stage-1 slice .sol or a source directory')
+    parser.add_argument('--stage2-run', required=True, help='stage-2 run directory')
+    parser.add_argument('--binding', required=True, help='stage3 binding.json')
+    parser.add_argument('--test', required=True, help='PoC test file or directory')
+    parser.add_argument('--out', help='case output dir; default: tools/stage3/cases/<name>')
+    parser.add_argument('--foundry-toml')
+    parser.add_argument('--lib', help='dependency tree copied verbatim')
+    parser.add_argument('--remappings')
+    parser.add_argument('--expected')
+    parser.add_argument('--overwrite', action='store_true')
+    parser.add_argument('--run', action='store_true',
+                        help='also run the stage-3 differential pipeline')
+    parser.add_argument('--run-id')
+    args = parser.parse_args(argv)
+
+    out = Path(args.out) if args.out else (STAGE3_DIR / 'cases' / args.name)
+    assemble_argv = [
+        '--name', args.name, '--src', args.src, '--stage2-run', args.stage2_run,
+        '--binding', args.binding, '--test', args.test, '--out', str(out),
+    ]
+    for flag, value in (('--foundry-toml', args.foundry_toml), ('--lib', args.lib),
+                        ('--remappings', args.remappings), ('--expected', args.expected)):
+        if value is not None:
+            assemble_argv.extend([flag, value])
+    if args.overwrite:
+        assemble_argv.append('--overwrite')
+    code = _run_stage3_module('stage3_assemble', assemble_argv)
+    if code != 0:
+        return code
+    if not args.run:
+        return 0
+    run_argv = ['--case-dir', str(out)]
+    if args.run_id:
+        run_argv.extend(['--run-id', args.run_id])
+    return _run_stage3_module('stage3_pipeline', run_argv)
+
+def _delegate_pipeline_run(argv, module='pipeline_run'):
+    """Run the cross-stage parallel orchestrator from the repo root.
+
+    Relative --manifest / --run-dir values are resolved against the caller's
+    cwd, matching the other stage delegates.
+    """
+    script = ROOT / 'tools' / 'pipeline' / 'cli' / f'{module}.py'
+    resolved = []
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument in ('--manifest', '--run-dir', '--findings', '--out-dir',
+                        '--case-dir', '--stage2-run-dir', '--binding') and index + 1 < len(argv):
+            value = Path(argv[index + 1])
+            if not value.is_absolute():
+                value = Path.cwd() / value
+            resolved.extend([argument, str(value)])
+            index += 2
+        else:
+            resolved.append(argument)
+            index += 1
+    return subprocess.call([sys.executable, str(script), *resolved], cwd=str(ROOT))
 
 
 def _delegate(script: str, argv):
@@ -342,7 +506,8 @@ def _status(argv=()):
     print(f'           推荐稳定版 {getattr(registry, "RECOMMENDED_VERSION", "(未登记)")}，'
           f'实验版本 {getattr(registry, "EXPERIMENTAL_VERSION", "(未登记)")}')
     print('阶段一   : 不在本入口内，请直接用 ./run.sh')
-    print('阶段三   : 尚未实现，consistency_verdict 恒为 not_evaluated')
+    print('阶段三   : tools/stage3，用 `python main.py stage3 --case-dir ...` 运行')
+    print('            stage3-spec 默认 consistency_verdict=not_evaluated，跑阶段三后落盘真实判定')
     print()
     print('权威状态文档（本命令不复制其内容，避免文档漂移）:')
     print('  HANDOFF.md')
@@ -451,6 +616,16 @@ def _dispatch(argv, prefix=''):
         return 0
     if command in META_HANDLERS:
         return META_HANDLERS[command](rest)
+    if command == 'pipeline':
+        return _pipeline(rest)
+    if command == 'pipeline-run':
+        return _delegate_pipeline_run(rest)
+    if command == 'pipeline-batch':
+        return _delegate_pipeline_run(rest, module='pipeline_batch')
+    if command == 'manifest-gen':
+        return _delegate_pipeline_run(rest, module='manifest_gen')
+    if command == 'case':
+        return _delegate_pipeline_run(rest, module='case_run')
     if command in STAGE2_COMMANDS:
         prefix_args = STAGE2_ARG_PREFIX.get(command, ())
         return _delegate(STAGE2_COMMANDS[command][0],
@@ -464,6 +639,8 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == 'stage2':
         return _dispatch(argv[1:], prefix='stage2 ')
+    if argv and argv[0] == 'stage3':
+        return _delegate_stage3(argv[1:])
     return _dispatch(argv)
 
 

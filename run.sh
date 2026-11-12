@@ -33,11 +33,11 @@ usage() {
 
 运行模式:
       --v2                  使用 --resurrect-v2，默认
-  -q, --quick               仅切片，不复活
+  -q, --quick               与 v2 同一引擎（保留别名兼容）
   -f, --full                完整模式，等同默认 v2
       --compile-guarantee   给 v2 添加 --compile-guarantee
       --include-types       添加 --include-types
-      --semantic            添加 --semantic
+      --semantic            已弃用：切片恒为 v2，该选项不再生效
 
 验证:
       --no-rerun-test       不额外复跑 forge test
@@ -233,7 +233,7 @@ fi
 
 case "$RUN_MODE" in
     quick)
-        CMD+=(--max-level "$MAX_LEVEL" -o "$OUTPUT_FILE")
+        CMD+=(--aggressive-cleanup --resurrect-v2 --max-level "$MAX_LEVEL" -o "$OUTPUT_FILE")
         ;;
     v2|full)
         CMD+=(--aggressive-cleanup --resurrect-v2 --max-level "$MAX_LEVEL" -o "$OUTPUT_FILE")

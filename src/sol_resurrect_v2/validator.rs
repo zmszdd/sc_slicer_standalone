@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use tokio::process::Command;
 
@@ -545,17 +545,4 @@ fn enrich_message_with_code(
         message.push('^');
     }
     message
-}
-
-fn exact_identifier_regex(identifier: &str) -> String {
-    let escaped = identifier
-        .chars()
-        .flat_map(|ch| match ch {
-            '\\' | '^' | '$' | '.' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}' => {
-                vec!['\\', ch]
-            }
-            _ => vec![ch],
-        })
-        .collect::<String>();
-    format!("^{}$", escaped)
 }

@@ -24,6 +24,7 @@ from prompts.registry import (DEFAULT_VERSION, FEATURE_NAMES, LIVE_VERSION_NAMES
                               feature_enabled)
 from prompts.active import resolve_prompt_set
 from prompts.current import (IMPACT_APPLICABILITY_PROMPT,
+                             IMPACT_APPLICABILITY_PROMPT_V2,
                              IMPACT_APPLICABILITY_PROMPT_V15)
 from prompts.live16_snapshot import (
     IMPACT_APPLICABILITY_PROMPT as IMPACT_APPLICABILITY_PROMPT_V16)
@@ -31,7 +32,7 @@ from prompts.live16_snapshot import (
 from lib import report_only as r
 from lib.salvage import check_numeric_plan, check_address_plan
 from lib.salvage import (drop_unused_invalid_symbols, example_pinning_review,
-                         merge_appended_relationship_trace,
+                         salvage_formal_response,
                          mixed_unit_scaling_review)
 from lib.semantic_core import (compile_bundle, normalize_readiness,
                            impact_claim_set, normalize_truth_binding, require, symbols_for_claim,
@@ -44,7 +45,10 @@ from lib.multi_impact import (claim_id_for_impact,
 from lib.impact_cards import (applicability_by_impact, applicability_payload,
                               build_impact_card,
                               explicit_intent_ids, validate_applicability,
-                              target_elements, target_formal_input,
+                              final_formalization_scope, formalization_scope,
+                              target_elements,
+                              not_applicable_impacts_for,
+                              target_formal_input,
                               MAX_SELECTED_INTENT_RULES)
 from lib.impact_inventory import (MAX_IMPACTS, merge_impact_inventory,
                                   validate_impact_inventory)
@@ -69,6 +73,7 @@ from cli.semantic_pipeline import (allowed_statement_ids, compact_json,
                                    lean_formal_input, model_catalog,
                                    numeric_fact_inventory, referenced_evidence_ids,
                                    restore_frozen_repair_fields,
+                                   restore_frozen_referenced_symbols,
                                    stage2_assessment,
                                    validate_core_element_candidate)
 
@@ -109,7 +114,7 @@ def main():
     parser.add_argument('--concurrency', type=int, choices=(1, 2), default=2)
     parser.add_argument('--readiness-retries', type=int, choices=(0, 1), default=1)
     parser.add_argument('--element-retries', type=int, choices=(0, 1), default=1)
-    parser.add_argument('--formal-retries', type=int, choices=(0, 1), default=1)
+    parser.add_argument('--formal-retries', type=int, choices=(0, 1, 2), default=1)
     parser.add_argument('--lean-formal-input', action='store_true')
     parser.add_argument('--continue-on-review', action='store_true')
     parser.add_argument('--claim-verdict', choices=('legacy', 'signals'),
@@ -337,6 +342,8 @@ def verify_multi_intent_plans(directory, raw_elements, raw_formal, features,
         prompt_path = directory / 'impact-applicability' / 'prompt.txt'
         expected_payload = compact_json(applicability_payload(raw_elements, catalog))
         applicability_prompt = (
+            IMPACT_APPLICABILITY_PROMPT_V2
+            if features.get('direct_v_prescreen', False) else
             IMPACT_APPLICABILITY_PROMPT
             if features.get('multi_i_claims', False) else
             IMPACT_APPLICABILITY_PROMPT_V16
@@ -485,7 +492,7 @@ def verify_multi_intent_plans(directory, raw_elements, raw_formal, features,
         normalization_path = claim_path.parent / 'response-normalization.json'
         if normalization_path.exists():
             raw_response = (claim_path.parent / 'model-response.txt').read_text()
-            salvaged = merge_appended_relationship_trace(raw_response)
+            salvaged = salvage_formal_response(raw_response)
             require(salvaged is not None,
                     'response normalization record has no matching raw response')
             require(salvaged[0] == raw_claim,
@@ -527,16 +534,31 @@ def verify_multi_intent_plans(directory, raw_elements, raw_formal, features,
             # null-repair attempt (which produces no generated-rule artifact).
             # Walk backward so both paths replay the same repair_base.
             prev_attempt = None
+            prev_artifact = None
             for row in reversed(entry['attempts'][:accepted_index]):
-                if (target / row['artifact_dir'] /
-                        'generated-rule-candidate.json').is_file():
-                    prev_attempt = row
+                repair_base_path = (target / row['artifact_dir'] /
+                                    'repair-base.json')
+                generated_path = (target / row['artifact_dir'] /
+                                  'generated-rule-candidate.json')
+                if repair_base_path.is_file():
+                    prev_attempt, prev_artifact = row, repair_base_path
+                    break
+                if generated_path.is_file():
+                    prev_attempt, prev_artifact = row, generated_path
+                    break
+                model_claim_path = (target / row['artifact_dir'] /
+                                    'model-claim.json')
+                if model_claim_path.is_file():
+                    prev_attempt, prev_artifact = row, model_claim_path
                     break
             require(prev_attempt is not None,
                     'local repair accepted without a generated prior plan')
-            prev_plan = json.loads((target / prev_attempt['artifact_dir'] /
-                                    'generated-rule-candidate.json').read_text())[
-                'formal_plan']
+            prev_record = json.loads(prev_artifact.read_text())
+            prev_plan = (
+                prev_record['formal_plan']
+                if isinstance(prev_record, dict) and
+                isinstance(prev_record.get('formal_plan'), dict) else
+                prev_record)
             mutable_fields = tuple(accepted_attempt.get(
                 'mutable_top_level_fields') or ())
             if not mutable_fields:
@@ -548,6 +570,15 @@ def verify_multi_intent_plans(directory, raw_elements, raw_formal, features,
                 copy.deepcopy(prev_plan), raw_claim, mutable_fields)
             require(restored == accepted_attempt.get('restored_frozen_fields', []),
                     'local repair field restoration replay changed')
+            raw_claim, frozen_restores = restore_frozen_referenced_symbols(
+                copy.deepcopy(prev_plan), raw_claim, mutable_fields)
+            restore_log_path = claim_path.parent / 'frozen-symbol-restore.json'
+            if restore_log_path.exists():
+                require(frozen_restores == json.loads(restore_log_path.read_text()),
+                        'frozen symbol restoration replay changed')
+            else:
+                require(frozen_restores == [],
+                        'frozen symbol restoration replay missing')
         for filename, transform, message in (
                 ('normalization-log.json', lambda x: normalize_truth_binding(
                     x, scoped_elements,
@@ -569,11 +600,13 @@ def verify_multi_intent_plans(directory, raw_elements, raw_formal, features,
         model_formal = synthesize_id_formalization(
             normalized_model_plan, scoped_elements, claim_id=claim_id,
             include_unselected_limitations=False,
-            fidelity_only=features.get('fidelity_only_rules', False))
+            fidelity_only=features.get('fidelity_only_rules', False),
+            direct_witness_effects=features.get('direct_witness_effects', False))
         replayed_formal = synthesize_id_formalization(
             plan, scoped_elements, claim_id=claim_id,
             include_unselected_limitations=False,
-            fidelity_only=features.get('fidelity_only_rules', False))
+            fidelity_only=features.get('fidelity_only_rules', False),
+            direct_witness_effects=features.get('direct_witness_effects', False))
         # Fidelity-only synthesis applies deterministic schema hydration to
         # symbol entity/source bookkeeping. Compare the saved post-normalized
         # plan only after replaying that same normalization.
@@ -595,7 +628,9 @@ def verify_multi_intent_plans(directory, raw_elements, raw_formal, features,
                                exclude_protocol_identifiers=features[
                                    'protocol_identifier_exclusion'],
                                relax_assumptions=features.get(
-                                   'assumption_numeric_relief', False))
+                                   'assumption_numeric_relief', False),
+                               symbolic_numeric_relief=features.get(
+                                   'symbolic_numeric_relief', False))
         if features['address_guard']:
             check_address_plan(plan, scoped_elements)
         if features.get('duplicate_predicate_gate', False):
@@ -684,7 +719,9 @@ def verify_multi_intent_plans(directory, raw_elements, raw_formal, features,
                                plan, scoped_elements, claim_id=claim_id,
                                include_unselected_limitations=False,
                                fidelity_only=features.get(
-                                   'fidelity_only_rules', False))))
+                                   'fidelity_only_rules', False),
+                               direct_witness_effects=features.get(
+                                   'direct_witness_effects', False))))
 
     merged = merge_claim_formalizations(
         successful, raw_elements, failures, include_failed_claims=False)
@@ -753,6 +790,9 @@ def verify_multi_impact_plans(directory, raw_elements, raw_formal, features,
             prompt_path = directory / 'impact-applicability/prompt.txt'
             expected_payload = compact_json(applicability_payload(raw_elements, catalog))
             applicability_prompt = (
+                IMPACT_APPLICABILITY_PROMPT_V2
+                if provenance.get('prompt_features', {}).get(
+                    'direct_v_prescreen', False) else
                 IMPACT_APPLICABILITY_PROMPT
                 if provenance.get('prompt_features', {}).get('frozen_piv_sources', False)
                 else IMPACT_APPLICABILITY_PROMPT_V15)
@@ -967,13 +1007,15 @@ def verify_multi_impact_plans(directory, raw_elements, raw_formal, features,
         redundant.extend(identical_p_predicates(plan))
         require(synthesize_id_formalization(
             plan, audit_elements, claim_id=claim_id,
-            include_unselected_limitations=False) ==
+            include_unselected_limitations=False,
+            direct_witness_effects=features.get('direct_witness_effects', False)) ==
             json.loads((target / 'formalization-ids.json').read_text()),
             'impact formal synthesis changed')
         if features['numeric_guard']:
             check_numeric_plan(plan, audit_elements,
                                exclude_protocol_identifiers=features['protocol_identifier_exclusion'],
-                               relax_assumptions=features.get('assumption_numeric_relief', False))
+                               relax_assumptions=features.get('assumption_numeric_relief', False),
+                               symbolic_numeric_relief=features.get('symbolic_numeric_relief', False))
         if features['address_guard']:
             check_address_plan(plan, audit_elements)
         if features.get('duplicate_predicate_gate', False):
@@ -1014,7 +1056,8 @@ def verify_multi_impact_plans(directory, raw_elements, raw_formal, features,
             expected_reviews['example-pinning-review'][impact_id] = example_pinning_review(plan, raw_elements)
         successful.append((impact_id, synthesize_id_formalization(
             plan, audit_elements, claim_id=claim_id,
-            include_unselected_limitations=False)))
+            include_unselected_limitations=False,
+            direct_witness_effects=features.get('direct_witness_effects', False))))
 
     # complete-piv-v1 stores only fully formalized claims in the rule bundle;
     # failed impacts remain in the plan/status records. Older artifacts kept
@@ -1259,6 +1302,12 @@ def verify(directory):
                 name, feature_enabled(version, name) if version is not None else False)
             for name in FEATURE_NAMES
         }
+        # Runs recorded before a live feature existed must replay with that
+        # feature off, never with the current live default. Otherwise a later
+        # prompt/denominator change would silently rewrite historical replay.
+        for name in FEATURE_NAMES:
+            if name not in recorded_features:
+                features[name] = False
     else:
         version = provenance.get('prompt_version')
         features = ({name: False for name in FEATURE_NAMES} if version is None else
@@ -1508,9 +1557,16 @@ def verify(directory):
             elements)
         pair_records = json.loads(
             (directory / 'formal-plan.json').read_text()).get('claims', [])
+        if features.get('gate_direct_v_denominator', False):
+            coverage_scope = final_formalization_scope(
+                applicability_for_coverage, pair_records)
+        else:
+            coverage_scope = None
         bundle = apply_multi_intent_coverage(
             bundle, applicability_for_coverage, pair_records,
-            require_fidelity=features.get('fidelity_only_rules', False))
+            require_fidelity=features.get('fidelity_only_rules', False),
+            formalization_scope=coverage_scope,
+            continue_on_review=bool(provenance.get('continue_on_review')))
     bundle['provenance'] = provenance
     saved = json.loads((directory / 'constraints.json').read_text())
     if 'observability_review' in saved:
@@ -1563,22 +1619,36 @@ def verify(directory):
                      if readiness_path.is_file() else None)
         applicability_path = directory / 'impact-applicability.json'
         eligible_impact_ids = None
-        if applicability_path.is_file():
-            applicability = validate_applicability(
-                json.loads(applicability_path.read_text()), elements)
-            eligible_impact_ids = [
-                row['impact_id'] for row in applicability['impacts']
-                if row['status'] == 'selected']
+        applicability_for_assessment = None
+        not_applicable_impacts = None
+        assessment_scope = None
         impact_formalization_records = None
         if provenance.get('prompt_features', {}).get('frozen_piv_sources', False):
             plan_set_path = directory / 'formal-plan.json'
             if plan_set_path.is_file():
                 impact_formalization_records = json.loads(
                     plan_set_path.read_text()).get('claims', [])
+        if applicability_path.is_file():
+            applicability_for_assessment = validate_applicability(
+                json.loads(applicability_path.read_text()), elements)
+            if features.get('gate_direct_v_denominator', False):
+                assessment_scope = final_formalization_scope(
+                    applicability_for_assessment, impact_formalization_records)
+                eligible_impact_ids = list(assessment_scope)
+                not_applicable_impacts = not_applicable_impacts_for(
+                    applicability_for_assessment, impact_formalization_records)
+            else:
+                eligible_impact_ids = [
+                    row['impact_id'] for row in applicability_for_assessment['impacts']
+                    if row['status'] == 'selected']
         expected_assessment = stage2_assessment(
             readiness=readiness, bundle=bundle,
             eligible_impact_ids=eligible_impact_ids,
-            impact_formalization_records=impact_formalization_records)
+            impact_formalization_records=impact_formalization_records,
+            not_applicable_impacts=not_applicable_impacts,
+            formalization_scope=assessment_scope,
+            gate_direct_denominator=features.get(
+                'gate_direct_v_denominator', False))
         saved_assessment = json.loads(assessment_path.read_text())
         if replay_adjustments and expected_assessment.get('rule_formalization', {}).get(
                 'candidate_acceptance_status') == 'needs_review':
@@ -1697,7 +1767,10 @@ def verify(directory):
                     copy.deepcopy(claim), raw_elements)[1],
                     'partial formalization audit missing')
             require(claim == plan, 'neural formal plan changed')
-            require(synthesize_id_formalization(plan, raw_elements) == raw_formal,
+            require(synthesize_id_formalization(
+                plan, raw_elements,
+                direct_witness_effects=features.get(
+                    'direct_witness_effects', False)) == raw_formal,
                     'deterministic formal synthesis changed')
             if features['relation_alignment']:
                 require(classified_relation_alignment(plan, raw_elements) ==
@@ -1737,7 +1810,8 @@ def verify(directory):
                     # Runs recorded before the feature existed (their
                     # prompt_features predates the key) replay with the
                     # strict gate they were produced under.
-                    relax_assumptions=features.get('assumption_numeric_relief', False))
+                    relax_assumptions=features.get('assumption_numeric_relief', False),
+                    symbolic_numeric_relief=features.get('symbolic_numeric_relief', False))
             if features['address_guard']:
                 check_address_plan(plan, raw_elements)
             # semantic-live-5: the duplicate-predicate defect family was

@@ -4,8 +4,9 @@ import re
 
 from lib import report_only as r
 from lib.piv_contract import PIV_PROPERTY_NAMES
-from lib.semantic_core import identifier, predicate_paths, require, strings
-from lib.solving import direct_relation_feasible
+from lib.semantic_core import (identifier, predicate_paths, require, strings,
+                              MAX_PLAN_SYMBOLS)
+from lib.solving import direct_relation_diagnostics, direct_relation_feasible
 
 
 PLAN_VERSION = 'report-formal-plan/1'
@@ -79,6 +80,11 @@ EXPANDED_RELATION_CLASS_PATTERN = {
     'progress_or_liveness': 'required_effect',
     'range_capacity': 'bounded_relation',
 }
+
+
+_EXPANDED_PATTERN_TO_CLASSES = {}
+for _expanded_class, _expanded_kind in EXPANDED_RELATION_CLASS_PATTERN.items():
+    _EXPANDED_PATTERN_TO_CLASSES.setdefault(_expanded_kind, set()).add(_expanded_class)
 
 IMPACT_QUALIFIER_PATTERNS = {
     'temporal': re.compile(
@@ -173,7 +179,7 @@ def _quantity_expression(value, symbols, depth=0, enforce_units=True):
     expression = {'op': value['op'], 'args': [
         _quantity_expression(item, symbols, depth + 1, enforce_units)
         for item in value['args']]}
-    require(r.expr_type(expression, symbols, enforce_units=enforce_units)[0] == 'int',
+    require(r.expr_type(expression, symbols, enforce_units=enforce_units)[0] in ('int', 'literal'),
             'invalid quantity expression types')
     return expression
 
@@ -248,6 +254,31 @@ def _not(expression):
     return {'op': 'not', 'args': [expression]}
 
 
+def _collapse_double_negation(expression):
+    """Drop ``not(not(x))`` so cross-auditors read the witness literally.
+
+    ``_predicate`` encodes a false truth binding as ``not(x)``, and the
+    direct-witness effect then negates the pattern's effect once more.  The
+    result is logically equivalent to ``x`` but the redundant double negation
+    makes the faithfulness auditor misread the polarity of V.  Collapse only
+    under the live direct-witness feature so frozen plan schemas keep their
+    byte-for-byte replay shape.
+    """
+    if not isinstance(expression, dict):
+        return expression
+    if expression.get('op') == 'not':
+        args = expression.get('args')
+        if (isinstance(args, list) and len(args) == 1 and
+                isinstance(args[0], dict) and args[0].get('op') == 'not' and
+                isinstance(args[0].get('args'), list) and
+                len(args[0]['args']) == 1):
+            return _collapse_double_negation(args[0]['args'][0])
+    args = expression.get('args')
+    if isinstance(args, list):
+        return {**expression, 'args': [_collapse_double_negation(x) for x in args]}
+    return expression
+
+
 def _expression_variables(expression):
     if not isinstance(expression, dict):
         return set()
@@ -287,6 +318,36 @@ def _predicate_binding_symbols(value):
         return (_quantity_binding_symbols(value['left']) |
                 _quantity_binding_symbols(value['right']))
     raise ValueError('invalid predicate binding')
+
+
+def _plan_truth_literal(value):
+    """Return (symbol, boolean) for a truth atom; None otherwise."""
+    if not isinstance(value, dict) or value.get('kind') != 'truth':
+        return None
+    if not isinstance(value.get('symbol'), str) or not isinstance(value.get('value'), bool):
+        return None
+    return value['symbol'], value['value']
+
+
+def _negated_condition_outcome_symbol(plan):
+    """Detect the direct-witness contradiction where the impact outcome is the
+
+    negation of the pattern condition (V contains condition AND NOT condition).
+    Returns the shared Boolean symbol, or None when the shape is absent.
+    """
+    if not isinstance(plan, dict):
+        return None
+    pattern = plan.get('pattern') if isinstance(plan.get('pattern'), dict) else None
+    outcome = plan.get('impact_outcome') if isinstance(plan.get('impact_outcome'), dict) else None
+    if pattern is None or outcome is None:
+        return None
+    condition = pattern.get('condition')
+    predicate = outcome.get('predicate')
+    c = _plan_truth_literal(condition)
+    o = _plan_truth_literal(predicate)
+    if c and o and c[0] == o[0] and c[1] != o[1]:
+        return c[0]
+    return None
 
 
 def _multiplicative_symbols(value):
@@ -527,6 +588,11 @@ def _pattern_expressions(pattern, symbols, enforce_units=True):
         earlier, later = pattern['earlier_symbol'], pattern['later_symbol']
         require(earlier in symbols and later in symbols,
                 'unknown temporal order symbol')
+        if symbols[earlier]['sort'] != 'int' or symbols[later]['sort'] != 'int':
+            raise ValueError(
+                'temporal_order earlier/later symbols must be integer '
+                'quantities with units; for boolean event ordering use '
+                'progress_or_liveness/required_effect instead')
         condition = _predicate(pattern['condition'], symbols, enforce_units=enforce_units)
         relation = {'op': 'lt' if pattern['strict'] else 'le',
                     'args': [{'var': earlier}, {'var': later}]}
@@ -940,6 +1006,43 @@ def _referenced_plan_symbols(value, add):
             _referenced_plan_symbols(item, add)
 
 
+def plan_symbol_references(value, declared_symbols):
+    """Names from ``declared_symbols`` referenced anywhere inside ``value``.
+
+    Tolerant walk used by the local-repair guard: frozen fields (pattern,
+    precondition_terms) must still resolve after the model is allowed to edit
+    ``symbols``.  Unknown shapes are skipped instead of rejected.
+    """
+    names = set(declared_symbols)
+    referenced = set()
+
+    def add(name):
+        if isinstance(name, str) and name in names:
+            referenced.add(name)
+
+    _referenced_plan_symbols(value, add)
+    return referenced
+
+
+def report_impact_expression(plan, symbols, enforce_units=False):
+    """Compile the report-grounded V: impact_outcome conjoined with qualifiers.
+
+    Excludes the pattern's program-generated direct falsifier so the
+    faithfulness auditor sees the Impact statement's own observable, not the
+    SMT witness assembled for the continuation gate.
+    """
+    predicates = []
+    outcome = plan.get('impact_outcome')
+    if isinstance(outcome, dict) and outcome.get('predicate') is not None:
+        predicates.append(_predicate(outcome['predicate'], symbols,
+                                     enforce_units=enforce_units))
+    for term in plan.get('impact_context_terms') or []:
+        if isinstance(term, dict) and term.get('predicate') is not None:
+            predicates.append(_predicate(term['predicate'], symbols,
+                                         enforce_units=enforce_units))
+    return _and(predicates) if predicates else None
+
+
 def symbol_table_review(plan):
     """Flag declared plan symbols no predicate or definition ever uses.
 
@@ -1148,6 +1251,117 @@ def relax_unsupported_relation(plan, elements):
     return plan, changes
 
 
+def realign_expanded_relation_class(plan, elements):
+    """Deterministically realign relation_class to the plan's chosen pattern.
+
+    The expanded schema fixes ``pattern.kind`` per ``relation_class``.  When the
+    model names a class whose template differs from the class that UNIQUELY owns
+    the pattern.kind it actually produced, the pattern is the more concrete
+    choice, so flip the label to match it.  Ambiguous kinds (relation_obligation,
+    bounded_relation, required_effect map to multiple classes) stay untouched so
+    we never guess semantics.  This is a zero-call rebind aligned with KASC's
+    strategy-invalidation rebind loop.
+    """
+    if not isinstance(plan, dict) or not isinstance(elements, dict):
+        return plan, []
+    if plan.get('schema_version') not in EXPANDED_PLAN_VERSIONS:
+        return plan, []
+    relation_class = plan.get('relation_class')
+    pattern = plan.get('pattern') or {}
+    kind = pattern.get('kind')
+    if relation_class not in EXPANDED_RELATION_CLASS_PATTERN:
+        return plan, []
+    if kind == EXPANDED_RELATION_CLASS_PATTERN[relation_class]:
+        return plan, []
+    candidates = _EXPANDED_PATTERN_TO_CLASSES.get(kind)
+    if not candidates or len(candidates) != 1:
+        return plan, []
+    target = next(iter(candidates))
+    if target == relation_class:
+        return plan, []
+    plan['relation_class'] = target
+    changes = [{
+        'kind': 'realign_expanded_relation_class',
+        'from': relation_class, 'to': target,
+        'pattern_kind': kind,
+        'reason': (f"pattern.kind={kind!r} uniquely matches relation_class "
+                   f"{target!r}, not the declared {relation_class!r}"),
+    }]
+    return plan, changes
+
+
+def _is_same_symbol_equality(expression):
+    """Return True for ``eq(x, x)`` / ``ne(x, x)`` in the synthesized AST."""
+    if not isinstance(expression, dict) or expression.get('op') not in ('eq', 'ne'):
+        return False
+    args = expression.get('args')
+    return isinstance(args, list) and len(args) == 2 and args[0] == args[1]
+
+
+def _contains_expression(expression, predicate):
+    if not isinstance(expression, dict):
+        return False
+    if predicate(expression):
+        return True
+    return any(_contains_expression(child, predicate)
+               for child in expression.get('args', []))
+
+
+def _vacuous_safety_shapes(claim):
+    """Return human-readable reasons for the two gate-defeating shapes.
+
+    These are deterministic syntactic signatures of the observed 30-report
+    failures: an I whose consequent is a tautology (``A => x == x`` or
+    ``A => A``), and a program-generated V that contains the negation of a
+    self-equality (``not(x == x)``). The post-generation fidelity audit may
+    still mark such formulas consistent, so the gate must name them before the
+    expensive local repair loop runs.
+    """
+    reasons = []
+    safety = claim.get('properties', {}).get('safety', {}).get('expression')
+    effects = claim.get('properties', {}).get('effects', {}).get('expression')
+    if isinstance(safety, dict) and safety.get('op') == 'implies':
+        args = safety.get('args')
+        if isinstance(args, list) and len(args) == 2:
+            antecedent, consequent = args
+            if consequent == antecedent:
+                reasons.append('safety is a tautological self-implication')
+            elif _is_same_symbol_equality(consequent):
+                reasons.append(
+                    'safety consequent is a tautological self-equality')
+            elif (isinstance(consequent, dict) and
+                    consequent.get('op') == 'const' and
+                    consequent.get('const') is True):
+                reasons.append('safety consequent is the constant true')
+    if _is_same_symbol_equality(safety):
+        reasons.append('safety is a tautological self-equality')
+    if isinstance(effects, dict):
+        contradictory_not = (lambda node: (
+            isinstance(node, dict) and node.get('op') == 'not' and
+            isinstance(node.get('args'), list) and len(node['args']) == 1 and
+            _is_same_symbol_equality(node['args'][0])))
+        if _contains_expression(effects, contradictory_not):
+            reasons.append(
+                'effects contains an unsatisfiable negation of a self-equality')
+        def contradictory_pair(node):
+            if not isinstance(node, dict) or node.get('op') != 'and':
+                return False
+            args = node.get('args') or []
+            positives = []
+            negations = []
+            for child in args:
+                if (isinstance(child, dict) and child.get('op') == 'not' and
+                        isinstance(child.get('args'), list) and
+                        len(child['args']) == 1):
+                    negations.append(child['args'][0])
+                else:
+                    positives.append(child)
+            return any(neg == pos for neg in negations for pos in positives)
+        if _contains_expression(effects, contradictory_pair):
+            reasons.append('effects contains a term and its own negation')
+    return reasons
+
+
 def reject_vacuous_safety(plan, formal=None, claim_id='core_claim'):
     """Return blocking reasons when a generated safety property cannot satisfy
     the stage-2 handoff gate.
@@ -1179,6 +1393,10 @@ def reject_vacuous_safety(plan, formal=None, claim_id='core_claim'):
                 pattern.get('authorization') or {})
             if effect_symbols == authorization_symbols:
                 reasons.append('authorization guard is a tautological self-implication')
+    negated_symbol = _negated_condition_outcome_symbol(plan)
+    if negated_symbol:
+        reasons.append(
+            'impact outcome negates the pattern condition symbol: ' + negated_symbol)
     if formal is not None:
         claim = next((item for item in formal.get('claims', [])
                       if item.get('id') == claim_id), None)
@@ -1186,14 +1404,23 @@ def reject_vacuous_safety(plan, formal=None, claim_id='core_claim'):
             merged_claim = dict(claim)
             if 'symbols' not in merged_claim and isinstance(formal.get('symbols'), dict):
                 merged_claim['symbols'] = formal['symbols']
-            if not direct_relation_feasible(merged_claim):
-                reasons.append('compiled P/I/V gate does not admit a direct violation witness')
+            reasons.extend(_vacuous_safety_shapes(merged_claim))
+            diagnostics = direct_relation_diagnostics(merged_claim)
+            if not diagnostics['feasible']:
+                detail = '; '.join(
+                    f"{name}={info['status']} (expected {info['expected']})"
+                    for name, info in diagnostics['cells'].items()
+                    if not info['ok'])
+                reasons.append(
+                    'compiled P/I/V gate does not admit a direct violation witness: '
+                    + detail)
     return reasons
 
 
 def synthesize_id_formalization(plan, elements, claim_id='core_claim',
                                 include_unselected_limitations=True,
-                                fidelity_only=False):
+                                fidelity_only=False,
+                                direct_witness_effects=False):
     base_fields = {
         'schema_version', 'precondition_ids', 'intent_id', 'impact_ids', 'symbols',
         'precondition_terms', 'pattern', 'assumptions', 'unresolved', 'limitations'}
@@ -1263,8 +1490,15 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
             f"[{item['category']}] {item['description']}"
             for item in unresolved_review['items'] if item['blocks_formalization']
         ]
-    require(isinstance(plan['symbols'], dict) and 1 <= len(plan['symbols']) <= 8,
-            'invalid plan symbols')
+    if not isinstance(plan['symbols'], dict):
+        detail = 'got a non-object symbol table'
+    elif not (1 <= len(plan['symbols']) <= MAX_PLAN_SYMBOLS):
+        detail = f'got {len(plan["symbols"])} symbol declarations'
+    else:
+        detail = 'symbol table failed later validation'
+    require(isinstance(plan['symbols'], dict) and
+            1 <= len(plan['symbols']) <= MAX_PLAN_SYMBOLS,
+            'invalid plan symbols: expected 1..12 symbol declarations, ' + detail)
 
     symbols, output_symbols = {}, {}
     for name, item in plan['symbols'].items():
@@ -1320,13 +1554,13 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
                     set(item['source_ids']) <= allowed_definition_sources,
                     'invalid derived definition sources')
             expression = _quantity_expression(
-                item['expression'], symbols, enforce_units=not fidelity_only)
+                item['expression'], symbols, enforce_units=True)
             require(target not in _expression_variables(expression),
                     'recursive derived definition')
             targets.append(target)
             definition = {'op': 'eq', 'args': [{'var': target}, expression]}
             require(r.expr_type(definition, symbols,
-                                enforce_units=not fidelity_only) == ('bool', None),
+                                enforce_units=True) == ('bool', None),
                     'derived definition type/unit mismatch')
             definition_expressions.append(definition)
         # Keep the first implementation intentionally acyclic and auditable.
@@ -1344,7 +1578,7 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
                     'P term source not selected')
         term_sources.append(term['source_id'])
         expression = _predicate(term['predicate'], symbols,
-                                enforce_units=not fidelity_only)
+                                enforce_units=True)
         if version in EXPANDED_PLAN_VERSIONS and not fidelity_only:
             require(all(term['source_id'] in plan['symbols'][name]['source_ids']
                         for name in _expression_variables(expression)),
@@ -1371,8 +1605,9 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
     # Validate the selected template's exact fields before alignment walks
     # into symbols such as observed_symbol/earlier_symbol. Malformed model
     # plans must produce a retryable ValueError, never an unhandled KeyError.
-    safety, effects = _pattern_expressions(
-        plan['pattern'], symbols, enforce_units=not fidelity_only)
+    safety, pattern_effects = _pattern_expressions(
+        plan['pattern'], symbols, enforce_units=True)
+    effects = pattern_effects
     # live-16 defers this semantic source-alignment judgment until after P/I/V
     # generation. Frozen schemas keep their original validation behavior.
     if version not in LIVE_RELAXED_PLAN_VERSIONS and version in (
@@ -1398,7 +1633,7 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
                         set(term['qualifier_types']) <= set(IMPACT_QUALIFIER_PATTERNS),
                         'invalid impact qualifier types')
             expression = _predicate(term['predicate'], symbols,
-                                    enforce_units=not fidelity_only)
+                                    enforce_units=True)
             if not fidelity_only:
                 require(all(source_id in plan['symbols'][name]['source_ids']
                             for name in _expression_variables(expression)),
@@ -1435,12 +1670,16 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
                 require(len(plan['impact_ids']) == 1,
                         'direct impact outcome requires exactly one impact')
             outcome_expression = _predicate(
-                outcome['predicate'], symbols, enforce_units=not fidelity_only)
+                outcome['predicate'], symbols, enforce_units=True)
             if not fidelity_only:
                 require(all(source_id in plan['symbols'][name]['source_ids']
                             for name in _expression_variables(outcome_expression)),
                         'impact outcome symbol not grounded by its own source')
-            effects = _and([outcome_expression, *context_expressions])
+            if direct_witness_effects:
+                effects = _and([pattern_effects, outcome_expression,
+                                *context_expressions])
+            else:
+                effects = _and([outcome_expression, *context_expressions])
         elif context_expressions:
             # Historical plan schemas remain byte-for-byte replay compatible.
             context = _and(context_expressions)
@@ -1461,8 +1700,11 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
             # constructive negation under those same definitions.
             safety = {'op': 'implies', 'args': [definitions, safety]}
             effects = _and([definitions, effects])
-    require(r.expr_type(safety, symbols, enforce_units=not fidelity_only) == ('bool', None) and
-            r.expr_type(effects, symbols, enforce_units=not fidelity_only) == ('bool', None),
+    if direct_witness_effects:
+        safety = _collapse_double_negation(safety)
+        effects = _collapse_double_negation(effects)
+    require(r.expr_type(safety, symbols, enforce_units=True) == ('bool', None) and
+            r.expr_type(effects, symbols, enforce_units=True) == ('bool', None),
             'synthesized property is not Boolean')
 
     p_sources = plan['precondition_ids']

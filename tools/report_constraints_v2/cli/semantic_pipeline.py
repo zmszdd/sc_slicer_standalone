@@ -30,6 +30,7 @@ from prompts.registry import (DEFAULT_VERSION, PROMPT_MODULES, SELECTABLE_VERSIO
 from prompts.active import resolve_prompt_set
 from prompts.current import (FAITHFULNESS_AUDIT_PROMPT,
                              IMPACT_APPLICABILITY_PROMPT,
+                             IMPACT_APPLICABILITY_PROMPT_V2,
                              IMPACT_INVENTORY_PROMPT)
 from lib.ingest import build_catalog, hydrate_elements, hydrate_formalization
 from lib.impact_inventory import (MAX_IMPACTS, merge_impact_inventory,
@@ -37,9 +38,10 @@ from lib.impact_inventory import (MAX_IMPACTS, merge_impact_inventory,
 from lib.plan_synthesizer import (check_distinct_p_predicates, classified_relation_alignment,
                               faithfulness_mismatches, faithfulness_repair_mismatches,
                               faithfulness_status, intent_scope_review,
-                              predicate_binding_symbols, relax_unsupported_relation,
-                              placeholder_predicate_review,
-                              reject_vacuous_safety,
+                              plan_symbol_references, predicate_binding_symbols,
+                              relax_unsupported_relation, placeholder_predicate_review,
+                              realign_expanded_relation_class,
+                              reject_vacuous_safety, report_impact_expression,
                               requirement_source_review, structured_unresolved_review,
                               symbol_table_review, synthesize_id_formalization,
                               validate_faithfulness_verdict)
@@ -50,16 +52,21 @@ from lib.multi_impact import (claim_id_for_impact,
                               impact_intent_key,
                               merge_claim_formalizations)
 from lib.impact_cards import (APPLICABILITY_SCHEMA_VERSION,
+                              APPLICABILITY_SCHEMA_VERSION_V1,
                               applicability_by_impact, applicability_payload,
                               build_impact_card,
                               explicit_intent_ids, validate_applicability,
+                              final_formalization_scope,
+                              formalizable_intent_ids,
+                              not_applicable_impacts_for,
                               target_elements, target_formal_input)
 from lib.solving import attach_review
 from lib.solving import from_bundle as triage_bundle, from_failure as triage_failure
 from lib.salvage import (example_pinning_review, mixed_unit_scaling_review,
-                                merge_appended_relationship_trace,
+                                salvage_formal_response,
                                 normalize_attack_step_roles,
-                                normalize_element_ids, drop_unused_invalid_symbols)
+                                normalize_element_ids, drop_unused_invalid_symbols,
+                                normalize_one_to_one_rate)
 from lib.stage3_consistency import binding_contract
 from lib.ingest import (PROMPT as READINESS_PROMPT, explicit_impact_evidence_ids,
                         model_payload, validate_impact_evidence,
@@ -72,7 +79,10 @@ def write_json(path, value):
 
 def stage2_assessment(readiness=None, bundle=None, elements=None,
                       eligible_impact_ids=None,
-                      impact_formalization_records=None):
+                      impact_formalization_records=None,
+                      not_applicable_impacts=None,
+                      formalization_scope=None,
+                      gate_direct_denominator=False):
     """Separate report narrative sufficiency from the observed rule result.
 
     A ready input only means the report has enough narrative evidence to try
@@ -112,6 +122,10 @@ def stage2_assessment(readiness=None, bundle=None, elements=None,
                     'formalization_rate': None,
                     'impact_count': len(eligible_ids),
                     'formalized_impact_count': 0,
+                    'incomplete_piv_count': 0,
+                    'generator_defect_count': 0,
+                    'logically_complete_denominator': len(eligible_ids),
+                    'logically_complete_formalization_rate': None,
                     'pending_impacts': pending,
                 },
             }
@@ -149,20 +163,31 @@ def stage2_assessment(readiness=None, bundle=None, elements=None,
             row = coverage_by_id.get(impact_id)
             if row is not None and row.get('status') == 'formalized':
                 continue
+            reason = ((row or {}).get('reason') or
+                      omitted_reasons.get(impact_id) or
+                      'Complete P/I/V sources were selected, but no complete '
+                      'rule was produced.')
             pending.append({
                 'impact_id': impact_id,
                 'status': row.get('status') if row else 'unformalized',
-                'reason': ((row or {}).get('reason') or
-                           omitted_reasons.get(impact_id) or
-                           'Complete P/I/V sources were selected, but no complete '
-                           'rule was produced.'),
+                'reason': reason,
+                'failure_bucket': piv_failure_bucket(reason),
             })
+        incomplete_piv_ids = [item['impact_id'] for item in pending
+                              if item.get('failure_bucket') == 'incomplete_piv']
+        incomplete_piv_count = len(set(incomplete_piv_ids))
+        generator_defect_count = sum(
+            1 for item in pending
+            if item.get('failure_bucket') == 'generator_defect')
+        logically_complete_denominator = len(eligible_ids) - incomplete_piv_count
         assessment = {
             'schema_version': 'stage2-assessment/2',
             'narrative_sufficiency': narrative,
             'rule_formalization': {
                 'status': result,
-                'denominator_policy': 'complete_report_supported_piv_only',
+                'denominator_policy': ('gate_direct_v_feasible'
+                                       if gate_direct_denominator else
+                                       'complete_report_supported_piv_only'),
                 'eligibility_basis': 'selected_evidence_backed_piv_sources',
                 'eligible_complete_piv_impact_ids': eligible_ids,
                 'eligible_complete_piv_count': len(eligible_ids),
@@ -175,15 +200,41 @@ def stage2_assessment(readiness=None, bundle=None, elements=None,
                 'partial_impact_count': partial,
                 'candidate_acceptance_status': bundle.get('acceptance_status'),
                 'pending_impacts': pending,
+                'incomplete_piv_impact_ids': list(dict.fromkeys(incomplete_piv_ids)),
+                'incomplete_piv_count': incomplete_piv_count,
+                'generator_defect_count': generator_defect_count,
+                'logically_complete_denominator': logically_complete_denominator,
+                'logically_complete_formalization_rate': (
+                    formalized / logically_complete_denominator
+                    if logically_complete_denominator else None),
             },
         }
+        if not_applicable_impacts is not None:
+            assessment['rule_formalization']['direct_relation_not_applicable'] = (
+                list(not_applicable_impacts))
         if impact_formalization_records is not None:
+            direct_relation_infeasible = []
             pair_mode = any('intent_id' in row
                             for row in impact_formalization_records)
             if pair_mode:
+                direct_relation_infeasible = [
+                    {'impact_id': row.get('impact_id'),
+                     'intent_id': row.get('intent_id'),
+                     'reason': row.get('reason')}
+                    for row in impact_formalization_records
+                    if (row.get('failure_family') == 'direct_relation_infeasible' or
+                        row.get('exclusion') in (
+                            'prescreen_direct_v_infeasible',
+                            'gate_direct_v_infeasible') or
+                        row.get('prescreen') == 'direct_v_infeasible')
+                ]
                 records = {}
                 for row in impact_formalization_records:
                     if row.get('impact_id') in set(eligible_ids):
+                        if (formalization_scope is not None and
+                                row.get('intent_id') not in formalization_scope.get(
+                                    row.get('impact_id'), ())):
+                            continue
                         records.setdefault(row['impact_id'], []).append(row)
             else:
                 records = {row.get('impact_id'): [row]
@@ -246,6 +297,9 @@ def stage2_assessment(readiness=None, bundle=None, elements=None,
                      if has_fidelity_status_v2 else 0)),
                 'failure_counts_by_stage': failure_counts,
             })
+            if direct_relation_infeasible:
+                assessment['rule_formalization']['direct_relation_infeasible'] = (
+                    direct_relation_infeasible)
             if has_fidelity_status_v2:
                 assessment['rule_formalization'].update({
                     'fidelity_needs_review_count': fidelity_needs_review,
@@ -445,6 +499,65 @@ def formal_failure_family(message):
     return 'schema_or_validation'
 
 
+def piv_failure_bucket(message):
+    """Split an eligible-but-unformalized P/I/V into a diagnostic bucket.
+
+    ``incomplete_piv`` means we have positive evidence the produced P/I/V
+    triple is logically degenerate: P and I cannot both hold, P and V cannot
+    both hold, or the safety consequent / effects collapse into self-equality
+    or self-negation.  Those impacts are excluded from the logically-complete
+    denominator and audited as report-material incompleteness.
+
+    ``generator_defect`` covers every failure that never produced a judgeable
+    P/I/V (symbol-count overruns, unit/quantity/relation-template schema
+    errors, post-generation fidelity audits) plus the specific
+    negated-condition-symbol binding bug.  Those stay in the denominator
+    because the report material was complete and the generator failed.
+    """
+    value = str(message).lower()
+    if 'negates the pattern condition symbol' in value:
+        return 'generator_defect'
+    if ('direct p/i/v relationship is absent or infeasible' in value
+            or 'p_and_i=unsat' in value
+            or 'p_and_v=unsat' in value
+            or 'self-equality' in value
+            or 'self-negation' in value):
+        return 'incomplete_piv'
+    return 'generator_defect'
+
+
+
+def _degrade_impact_inventory(output, failure_family, expected, observed):
+    """Degrade an impact-inventory extraction defect to a clean abstention.
+
+    KASC-style missing-evidence handling: a deterministic extraction defect
+    never crashes the run.  Record expected/observed/violated-gate diagnostics
+    and return an empty inventory so downstream stages abstain cleanly.
+    """
+    write_json(output / 'impact-inventory-failure.json', {
+        'schema_version': 'stage2-impact-inventory-failure/1',
+        'failure_family': failure_family,
+        'expected': expected,
+        'observed': observed,
+        'violated_gate': failure_family,
+    })
+    return {
+        'schema_version': 'report-impact-inventory/2',
+        'impacts': [],
+        'ambiguities': [f'{failure_family}: {observed}'],
+    }
+
+
+def gate_direct_relation_infeasible(exc):
+    """Return True when the final gate failure is the direct-V no-witness case.
+
+    Only ``compiled P/I/V gate does not admit a direct violation witness`` is
+    treated as not-applicable. V-guarded-I and tautological authorization
+    shapes remain generator defects and stay in the rule-success denominator.
+    """
+    return 'compiled p/i/v gate does not admit a direct violation witness' in str(exc).lower()
+
+
 def compact_json(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
 
@@ -488,7 +601,12 @@ def _type_unit_hint(message):
     pointer = f'Failing comparison: {detail}\n' if detail else ''
     return ('\nRETRY FEEDBACK: The selected quantities have incompatible '
             'units. Do not relabel units or define a quotient with '
-            'multiplication. Keep intent_id and impact_ids fixed. For '
+            'multiplication. add/sub between two symbols requires identical '
+            'units: for "timestamp + duration", inline the duration as an '
+            'integer {"const": N} so it inherits the timestamp unit, or '
+            'declare both operands in one raw time unit; never add a '
+            'timestamp symbol to a seconds symbol. Keep intent_id and '
+            'impact_ids fixed. For '
             'share/price proportionality, express the invariant as the '
             'cross-multiplied relation (for example shares_received * '
             'total_assets <= deposit_amount * total_supply) and never '
@@ -539,6 +657,10 @@ _SYMBOL_SCOPE = ('symbols', 'precondition_terms', 'derived_definitions',
                  'impact_outcome', 'pattern', 'unresolved', 'limitations')
 _FAITHFULNESS_SCOPE = ('precondition_terms', 'symbols', 'derived_definitions',
                        'impact_context_terms', 'impact_outcome', 'pattern')
+#: A direct-witness failure may be caused by the chosen relation class
+#: itself (for example state_correspondence with observed == expected), so
+#: the focused repair is allowed to reclassify rather than spin in place.
+_DIRECT_WITNESS_SCOPE = _FAITHFULNESS_SCOPE + ('relation_class',)
 #: Preserve semantic selection/classification even for an unfamiliar local
 #: structural error. A later fresh run, rather than a repair, may reconsider it.
 _SEMANTIC_SCOPE = ('symbols', 'precondition_terms', 'derived_definitions', 'pattern',
@@ -557,6 +679,24 @@ def _audit_mismatch_hint(message):
     act on -- the same reason ``local_repair_payload`` already ships
     ``repair_error``.  Free prose from providers never travels here.
     """
+    lowered = message.lower()
+    condition_defect = (
+        any(token in lowered for token in (
+            'condition', 'conditional', 'implies', 'implication', 'tautolog',
+            'self-implication', 'guard')) and
+        (' i ' in message or message.startswith('semantic faithfulness mismatch: ')
+         or 'role: i' in lowered))
+    condition_guidance = (
+        '\nCONDITION/GUARD GUIDANCE: If the I finding says the predicate added '
+        'an unsupported guard/condition or is tautological, rebuild the I pattern '
+        'so its condition/trigger is the applicability scope stated by the '
+        'TARGET INTENT itself. If the intent has no condition, use the operation '
+        'or state it names (claim processing, distribution, deployment/init), '
+        'never a selected P attacker/permission symbol. For a forbidden action '
+        '("must not", "only at deployment", "not via X"), set the required guard '
+        'truth value to false when the report requires the guard to be absent. '
+        'Never keep a self-implication or an impact-derived guard.'
+        if condition_defect else '')
     return ('\nRETRY FEEDBACK: A semantic cross-audit found that a P, I, V, or '
             'P/I/V relation does not preserve its cited report statement. Repair '
             'the actual formula: for P, change the relevant precondition_terms; '
@@ -569,7 +709,7 @@ def _audit_mismatch_hint(message):
             'changing assumptions, limitations, or unresolved text. If the stated '
             'relation cannot be represented, do not retain a misleading formula; '
             'the impact must remain pending for review. Keep unrelated report facts '
-            'unchanged.\nAudit findings: ' + message + '\n')
+            'unchanged.' + condition_guidance + '\nAudit findings: ' + message + '\n')
 
 
 def _piv_relationship_hint(message):
@@ -587,7 +727,29 @@ def _piv_relationship_hint(message):
             + message + '\n')
 
 
+
 def _direct_witness_hint(message):
+    lowered = message.lower()
+    vacuity_guidance = ''
+    if 'safety consequent is a tautological self-equality' in lowered or \
+            'safety is a tautological self-implication' in lowered:
+        vacuity_guidance = (
+            '\nVACUOUS-I GUIDANCE: I must assert its own concrete requirement, '
+            'not an implication whose consequent is x == x or whose antecedent '
+            'repeats the consequent. If the selected intent has no condition, '
+            'write I as the required state/operation directly (for example '
+            'feeWallet != zero_address), not as A => (x == x).')
+    if 'p_and_v=' in lowered and 'unsat' in lowered:
+        vacuity_guidance += (
+            '\nP_AND_V_GUIDANCE: P∧V is UNSAT, so V itself contradicts P. '
+            'Remove any not(x == x) or A and not A from the generated witness; '
+            'V must be the report-stated observable, not a copy of I with its '
+            'tautological consequent negated.')
+    if 'p_and_v_and_i=' in lowered and 'sat' in lowered:
+        vacuity_guidance += (
+            '\nP_AND_V_AND_I_GUIDANCE: P∧V∧I is SAT, meaning V does not falsify '
+            'I. Make I an unconditional assertion that the report-stated V denies, '
+            'rather than an implication rendered true by P.')
     return ('\nRETRY FEEDBACK: The generated V does not directly falsify I under P. '
             'Repair impact_outcome (and only when necessary its supporting '
             'impact_context_terms, pattern, symbols, or derived_definitions) so '
@@ -603,8 +765,10 @@ def _direct_witness_hint(message):
             'If the report gives only an indirect consequence and no stated V '
             'directly contradicts I under the frozen P, do not weaken V or invent '
             'a bridge predicate; keep the frozen IDs and let this candidate be '
-            'rejected rather than accepting an indirect-consequence V.\n'
-            'Check findings: ' + message + '\n')
+            'rejected rather than accepting an indirect-consequence V. '
+            'relation_class may now be reclassified when the current template '
+            'cannot represent a direct witness.' + vacuity_guidance +
+            '\nCheck findings: ' + message + '\n')
 
 _FORMAL_ERROR_RULES = (
     (('missing plan quantity unit'), _SYMBOL_SCOPE,
@@ -633,6 +797,12 @@ _FORMAL_ERROR_RULES = (
      '(e.g. epoch_duration_seconds); every symbol object must have '
      'exactly sort, unit, meaning, checkpoint, entity_ids, source_ids. '
      'Use the same renamed key in predicates. Keep report semantics unchanged.\n'),
+    (('prefix', 'invalid plan symbols'), _SYMBOL_SCOPE,
+     '\nRETRY FEEDBACK: The symbol table is missing, empty, or over the '
+     '1..12 declaration limit. Declare exactly the observables your P/I/V '
+     'predicates reference, with the exact required object fields, and keep '
+     'the same keys in predicates. A local repair must not delete symbols '
+     'that the restored frozen fields still reference.\n'),
     (('invalid truth binding', 'truth binding requires bool symbol'), _SYMBOL_SCOPE,
      '\nRETRY FEEDBACK: Audit every predicate reference before returning. '
      'Every referenced symbol must be declared in symbols. A '
@@ -663,6 +833,16 @@ _FORMAL_ERROR_RULES = (
      'expected_symbol) or a relation_obligation relation, not a '
      'quantity slot. Change only the malformed expression and its '
      'directly required symbols/definitions.\n'),
+    ('quantity expression requires integer', _SYMBOL_SCOPE,
+     '\nRETRY FEEDBACK: The quantity slots of bounded_relation, '
+     'proportional_relation, conservation, and monotonicity accept only '
+     'integer-valued QEXPR operands. A bool symbol or a comparison '
+     'predicate is not a quantity. If the report only supports a boolean '
+     'condition or event, use relation_obligation, required_effect, or '
+     'authorization_guard with truth predicates instead. Declare an int '
+     'symbol only when the report gives a concrete numeric value, bound, '
+     'or numeric relation. Do not relabel a bool as int. Keep report '
+     'semantics unchanged.\n'),
     (('invalid quantity relation', 'invalid predicate binding'), _SYMBOL_SCOPE, None),
     ('relation class and pattern mismatch', _PATTERN_ONLY,
      '\nRETRY FEEDBACK: relation_class and pattern must be compatible. '
@@ -712,13 +892,32 @@ _FORMAL_ERROR_RULES = (
      _audit_mismatch_hint),
     (('prefix', 'P/I/V relationship check failed:'), _FAITHFULNESS_SCOPE,
      _piv_relationship_hint),
+    (('contains', 'impact outcome negates the pattern condition symbol'),
+     _DIRECT_WITNESS_SCOPE,
+     '\nRETRY FEEDBACK: The impact_outcome uses the same Boolean symbol as the '
+     'pattern condition with the opposite truth value, so the generated V '
+     'contains both the condition and its negation and is unsatisfiable. '
+     'Change impact_outcome to the report-stated concrete effect (for a '
+     'bounded_relation, the observed out-of-bounds value or the mismatched '
+     'before/after state). Make the pattern condition a real applicability '
+     'condition that is NOT the negation of the outcome; do not reuse the '
+     'outcome symbol as the condition. Keep the selected impact and intent '
+     'IDs frozen.\n'),
     (('prefix', 'direct P/I/V relationship is absent or infeasible'),
-     _FAITHFULNESS_SCOPE, _direct_witness_hint),
+     _DIRECT_WITNESS_SCOPE, _direct_witness_hint),
     ('local repair did not change P/I/V formula fields', _FAITHFULNESS_SCOPE,
      '\nRETRY FEEDBACK: The focused repair changed metadata but left the failing '
      'P/I/V expression unchanged. Change the relevant precondition_terms for P '
      'or pattern for I/V, preserving report wording, comparator direction, units, '
      'exact constants, and logical connectives.\n'),
+    (('prefix', 'local repair did not change the failed formula field'),
+     _FAITHFULNESS_SCOPE,
+     '\nRETRY FEEDBACK: The focused repair changed supporting fields but left '
+     'the formula field named in the error unchanged. Change that exact '
+     'field: precondition_terms for P, pattern for I, impact_outcome or '
+     'impact_context_terms for V. A symbol-only edit cannot fix a P/I/V '
+     'fidelity mismatch. Preserve report wording, comparator direction, '
+     'units, exact constants, and logical connectives.\n'),
     ('P terms must cover selected preconditions exactly once', _NUMERIC_P, None),
     ('impact context symbol not grounded by its own source', _IMPACT_CONTEXT,
      '\nRETRY FEEDBACK: Every symbol in an impact_context_terms predicate '
@@ -774,6 +973,13 @@ _FORMAL_ERROR_RULES = (
      '\nRETRY FEEDBACK: This is a local repair. Return the complete plan '
      'but change only mutable_top_level_fields. All frozen fields must '
      'remain structurally identical to previous_plan.\n'),
+    (('prefix', 'local repair removed a symbol referenced by a frozen field'),
+     _SYMBOL_SCOPE,
+     '\nRETRY FEEDBACK: A frozen field still references the named symbols. '
+     'Keep those symbols declared exactly as they were; rename or remove only '
+     'symbols that are not referenced by any frozen field. If the frozen field '
+     'itself is the defect, move that fact into assumptions/unresolved instead '
+     'of deleting its supporting symbol.\n'),
     (('prefix', 'numeric P '), _NUMERIC_P, _numeric_p_hint),
     (('prefix', 'zero-address '), _SEMANTIC_SCOPE,
      '\nRETRY FEEDBACK: A report claim explicitly mentions '
@@ -857,7 +1063,7 @@ def formal_repair_fields(exc):
 
 
 def validate_local_repair(previous, repaired, mutable_fields,
-                          require_formula_change=False):
+                          require_formula_change=False, required_fields=None):
     """Reject a retry that silently changes unrelated semantic decisions."""
     if not isinstance(previous, dict) or not isinstance(repaired, dict):
         raise ValueError('local repair requires plan objects')
@@ -869,11 +1075,97 @@ def validate_local_repair(previous, repaired, mutable_fields,
         raise ValueError('local repair made no change')
     if not changed <= mutable:
         raise ValueError('local repair changed frozen fields')
+    if required_fields is not None:
+        missing = set(required_fields) - changed
+        if missing:
+            raise ValueError(
+                'local repair did not change the failed formula field: ' +
+                ', '.join(sorted(missing)))
     formula_fields = {'precondition_terms', 'pattern', 'symbols',
                       'derived_definitions', 'impact_context_terms', 'impact_outcome'}
     if require_formula_change and not changed.intersection(formula_fields):
         raise ValueError('local repair did not change P/I/V formula fields')
     return sorted(changed)
+
+
+def repair_role_core_fields(exc):
+    """Top-level formula field(s) that must change for a role-scoped audit repair."""
+    if not isinstance(exc, SemanticFaithfulnessMismatch):
+        return None
+    roles = {row.get('role') for row in exc.mismatches
+             if row.get('role') in ('P', 'I', 'V', 'PIV')}
+    core = set()
+    for role in roles:
+        if role == 'P':
+            core.add('precondition_terms')
+        elif role == 'I':
+            core.add('pattern')
+        elif role == 'V':
+            core.update(('impact_outcome', 'impact_context_terms'))
+        elif role == 'PIV':
+            core.update(('precondition_terms', 'pattern',
+                         'impact_outcome', 'impact_context_terms'))
+    return sorted(core) or None
+
+
+def require_frozen_symbols_declared(previous, repaired, mutable_fields):
+    """Reject a local repair whose mutable ``symbols`` edit strands a frozen field.
+
+    ``restore_frozen_repair_fields`` restores the frozen top-level fields, but
+    ``symbols`` is allowed to change for P/I/V repairs.  If the model renamed or
+    removed a symbol that a restored field still references, deterministic
+    synthesis would later die with a confusing ``invalid truth binding``.  Detect
+    the dangling reference here and fail with the named symbol instead.
+    """
+    declared = set(repaired.get('symbols') or {})
+    previous_declared = set(previous.get('symbols') or {})
+    referenced = set()
+    for key in set(previous) - set(mutable_fields):
+        referenced |= plan_symbol_references(previous[key], previous_declared)
+    missing = referenced - declared
+    if missing:
+        raise ValueError('local repair removed a symbol referenced by a frozen field: ' +
+                         ', '.join(sorted(missing)))
+
+
+def restore_frozen_referenced_symbols(previous, repaired, mutable_fields):
+    """Re-declare symbols a restored frozen field still references.
+
+    A local repair may edit ``symbols`` while the frozen fields are restored
+    byte-for-byte from ``previous``.  If the model renamed or removed a symbol
+    those restored fields still reference, the repair is otherwise valid and
+    should not be discarded: restoring the exact previous declaration (and its
+    derived definition) is a deterministic, content-gated salvage that does not
+    change any formula field.  The raw response stays untouched and the
+    restoration is logged for offline replay.
+    """
+    candidate = copy.deepcopy(repaired)
+    previous_declared = set(previous.get('symbols') or {})
+    referenced = set()
+    for key in set(previous) - set(mutable_fields):
+        referenced |= plan_symbol_references(previous[key], previous_declared)
+    declared = set(candidate.get('symbols') or {})
+    missing = sorted(referenced - declared)
+    if not missing:
+        return candidate, []
+    restored = []
+    for name in missing:
+        if name in previous.get('symbols', {}):
+            candidate.setdefault('symbols', {})[name] = copy.deepcopy(
+                previous['symbols'][name])
+            restored.append({'kind': 'restore_frozen_referenced_symbol',
+                             'symbol': name,
+                             'reason': 'a restored frozen field still references this symbol'})
+        for definition in previous.get('derived_definitions', []) or []:
+            if (isinstance(definition, dict) and definition.get('symbol') == name):
+                definitions = candidate.setdefault('derived_definitions', [])
+                if not any(isinstance(row, dict) and row.get('symbol') == name
+                           for row in definitions):
+                    definitions.append(copy.deepcopy(definition))
+                    restored.append({'kind': 'restore_frozen_referenced_definition',
+                                     'symbol': name,
+                                     'reason': 'a restored frozen field still references this derived symbol'})
+    return candidate, restored
 
 
 def restore_frozen_repair_fields(previous, repaired, mutable_fields):
@@ -917,6 +1209,9 @@ def local_repair_payload(original_payload, previous, exc, mutable_fields):
         ('Keep intent_id and impact_ids fixed. relation_class may change only '
          'to resolve the stated type/unit conflict.' if may_reclassify else
          'Keep relation_class, intent_id, precondition_ids and impact_ids byte-for-byte equivalent.'),
+        'Do not change pattern.kind unless relation_class may change.',
+        'Do not rename or remove any symbol still referenced by a frozen '
+        'top-level field; frozen fields are restored byte-for-byte.',
         'Correct only the stated deterministic validation failure.',
     ]
     requirements.extend(role_requirements[role] for role in roles)
@@ -931,7 +1226,8 @@ def local_repair_payload(original_payload, previous, exc, mutable_fields):
         'requirements': requirements,
         'normalization_note': ('The caller restores every top-level field outside '
                                'mutable_top_level_fields from previous_plan; edits '
-                               'outside the allow-list have no effect.'),
+                               'outside the allow-list have no effect. Symbols '
+                               'referenced by a restored field must stay declared.'),
     })
 
 
@@ -1007,9 +1303,16 @@ def faithfulness_audit_input(elements, plan, formal=None, include_relations=Fals
         if formal is None or len(formal.get('claims', [])) != 1:
             raise ValueError('P/I/V faithfulness audit requires one synthesized claim')
         claim = formal['claims'][0]
+        # V is the report's own impact observation (impact_outcome plus its
+        # qualifiers).  The full effects expression also carries the
+        # program-generated direct falsifier of I; auditing that would blame V
+        # for the I condition, which a V-scoped repair cannot change.
+        report_v = report_impact_expression(plan, formal['symbols'])
+        if report_v is None:
+            report_v = claim['properties']['effects']['expression']
         expressions = {
             'I': (plan['intent_id'], claim['properties']['safety']['expression']),
-            'V': (plan['impact_ids'][0], claim['properties']['effects']['expression']),
+            'V': (plan['impact_ids'][0], report_v),
         }
         for role, (source_id, expression) in expressions.items():
             names = _expression_symbols(expression)
@@ -1193,7 +1496,9 @@ def request_impact_inventory(payload, prompt, model, output, retries,
         payload, prompt, model, output, retries, 'impact-inventory',
         'impact-inventory-attempts.json', accept,
         lambda _exc: ('\nRETRY FEEDBACK: Return the exact Impact inventory schema. '
-                      'Use only the supplied Impact fragment IDs; do not infer or '
+                      'Impact IDs must be lowercase snake_case and start with a '
+                      'letter (for example "pool_loses_funds", never a leading '
+                      'digit). Use only the supplied Impact fragment IDs; do not infer or '
                       'include evidence from other report sections. Copy each text '
                       'as an exact continuous excerpt; do not paraphrase, summarize, '
                       'or join separated wording. Only whitespace and Markdown '
@@ -1203,8 +1508,13 @@ def request_impact_inventory(payload, prompt, model, output, retries,
 
 
 def request_impact_applicability(elements, catalog, model, output, extract_fn=None,
-                                 on_attempt=None):
-    """Select report-grounded P/I sources for each explicit Impact once."""
+                                 on_attempt=None, prescreen=False):
+    """Select report-grounded P/I sources for each explicit Impact once.
+
+    With ``prescreen``, the applicability model also classifies each selected
+    intent's direct-V feasibility so the run can exclude infeasible pairs from
+    the formalization denominator before spending rule-generation calls.
+    """
     impacts = [row for row in elements.get('statements', [])
                if row.get('kind') == 'impact']
     i_sources = [row for row in elements.get('statements', [])
@@ -1213,24 +1523,41 @@ def request_impact_applicability(elements, catalog, model, output, extract_fn=No
                  row.get('evidence_ids', row.get('evidence'))]
     payload = compact_json(applicability_payload(elements, catalog))
     if not i_sources:
-        return {'schema_version': APPLICABILITY_SCHEMA_VERSION, 'impacts': [
+        rows = [
             {'impact_id': row['id'], 'status': 'explicit_but_insufficient',
              'precondition_ids': [], 'intent_ids': [],
              'reason': 'No report-supported, non-inferred security intent is available.'}
-            for row in impacts]}, []
+            for row in impacts]
+        if prescreen:
+            for row in rows:
+                row['direct_v_feasibility'] = {}
+            return {'schema_version': APPLICABILITY_SCHEMA_VERSION, 'impacts': rows}, []
+        return {'schema_version': APPLICABILITY_SCHEMA_VERSION_V1, 'impacts': rows}, []
 
     def accept(raw, _call_dir, _record):
         return validate_applicability(raw, elements)
 
+    applicability_prompt = (IMPACT_APPLICABILITY_PROMPT_V2 if prescreen
+                            else IMPACT_APPLICABILITY_PROMPT)
+    retry_feedback = (
+        '\nRETRY FEEDBACK: Return exactly one valid entry for every Impact. '
+        'Use only evidence-backed P/assumption IDs and explicit asserted/'
+        'potential I IDs from the payload. Do not infer. The total number '
+        'of selected (Impact, I) pairs cannot exceed 64; if the report '
+        'supports more, return a schema error rather than omitting or '
+        'truncating any source. For a selected entry, direct_v_feasibility '
+        'must key every selected I ID exactly once with a boolean.\n'
+        if prescreen else
+        '\nRETRY FEEDBACK: Return exactly one valid entry for every Impact. '
+        'Use only evidence-backed P/assumption IDs and explicit asserted/'
+        'potential I IDs from the payload. Do not infer. The total number '
+        'of selected (Impact, I) pairs cannot exceed 64; if the report '
+        'supports more, return a schema error rather than omitting or '
+        'truncating any source.\n')
     result, attempts = _bounded_model_call(
-        payload, IMPACT_APPLICABILITY_PROMPT, model, output, 1,
+        payload, applicability_prompt, model, output, 1,
         'impact-applicability', 'impact-applicability-attempts.json', accept,
-        lambda _exc: ('\nRETRY FEEDBACK: Return exactly one valid entry for every Impact. '
-                      'Use only evidence-backed P/assumption IDs and explicit asserted/'
-                      'potential I IDs from the payload. Do not infer. The total number '
-                      'of selected (Impact, I) pairs cannot exceed 64; if the report '
-                      'supports more, return a schema error rather than omitting or '
-                      'truncating any source.\n'),
+        lambda _exc: retry_feedback,
         'accepted_for_validation', extract_fn=extract_fn, on_attempt=on_attempt)
     return result, attempts
 
@@ -1278,6 +1605,7 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                           mechanical_salvage=False, local_repair=False,
                           exclude_protocol_identifiers=False,
                           relax_assumptions=False, duplicate_predicate_gate=False,
+                          symbolic_numeric_relief=False,
                           partial_formalization=False, on_attempt=None,
                           faithfulness_audit=None, faithfulness_audit_model=None,
                           faithfulness_audit_on_attempt=None,
@@ -1286,7 +1614,8 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                           fidelity_only_rules=False,
                           relation_context=None,
                           relationship_trace_enabled=False,
-                          synthesis_claim_id='core_claim'):
+                          synthesis_claim_id='core_claim',
+                          direct_witness_effects=False):
     """Retry malformed responses or perform a bounded, field-scoped plan repair.
 
     Each attempt keeps its own raw model artifacts. A rejected plan is never
@@ -1349,7 +1678,7 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                 raw_path = call_dir / 'model-response.txt'
                 salvaged = None
                 if raw_path.is_file():
-                    salvaged = merge_appended_relationship_trace(
+                    salvaged = salvage_formal_response(
                         raw_path.read_text())
                 if salvaged is None:
                     raise
@@ -1415,13 +1744,26 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                 require_formula_change = bool(
                     repair_error and str(repair_error).startswith(
                         'semantic faithfulness mismatch'))
+                required_role_fields = (
+                    repair_role_core_fields(repair_error)
+                    if isinstance(repair_error, SemanticFaithfulnessMismatch)
+                    else None)
                 candidate, restored = restore_frozen_repair_fields(
                     repair_base, candidate, mutable_fields)
                 if restored:
                     record['restored_frozen_fields'] = restored
                 record['changed_top_level_fields'] = validate_local_repair(
                     repair_base, candidate, mutable_fields,
-                    require_formula_change=require_formula_change)
+                    require_formula_change=require_formula_change,
+                    required_fields=required_role_fields)
+                candidate, frozen_restores = restore_frozen_referenced_symbols(
+                    repair_base, candidate, mutable_fields)
+                if frozen_restores:
+                    write_json(call_dir / 'frozen-symbol-restore.json',
+                               frozen_restores)
+                    record['frozen_symbol_restorations'] = frozen_restores
+                require_frozen_symbols_declared(
+                    repair_base, candidate, mutable_fields)
             if plan_mode:
                 # Boundary NORMALIZE: the model named the boolean after the
                 # precondition that asserts it and only forgot to declare it.
@@ -1436,10 +1778,21 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                         'changes': normalized})
                     record['normalizations'] = normalized
                     candidate = amended
+                candidate, rate_repairs = normalize_one_to_one_rate(
+                    candidate, elements)
+                if rate_repairs:
+                    write_json(call_dir / 'one-to-one-rate-normalization.json',
+                               rate_repairs)
+                    record['one_to_one_rate_normalizations'] = rate_repairs
                 if mechanical_salvage and not fidelity_only_rules:
                     candidate, repairs = drop_unused_invalid_symbols(candidate)
                     if repairs:
                         write_json(call_dir / 'mechanical-salvage.json', repairs)
+                candidate, realignments = realign_expanded_relation_class(
+                    candidate, elements)
+                if realignments:
+                    record['expanded_relation_realignments'] = realignments
+                    write_json(call_dir / 'expanded-relation-realignment.json', realignments)
                 if partial_formalization and not fidelity_only_rules:
                     # Boundary-normalize the unsupported_relation contradiction:
                     # a plan that already represents the relation as a bool
@@ -1449,7 +1802,8 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                         write_json(call_dir / 'partial-formalization.json', relaxed)
                 formal = synthesize_id_formalization(
                     candidate, elements, claim_id=synthesis_claim_id,
-                    fidelity_only=fidelity_only_rules)
+                    fidelity_only=fidelity_only_rules,
+                    direct_witness_effects=direct_witness_effects)
                 record['rule_generated'] = True
                 # Save the rule before any post-generation audit. An audit
                 # verdict must never erase a successfully generated candidate.
@@ -1563,7 +1917,8 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                     check_numeric_plan(
                         candidate, elements,
                         exclude_protocol_identifiers=exclude_protocol_identifiers,
-                        relax_assumptions=relax_assumptions)
+                        relax_assumptions=relax_assumptions,
+                        symbolic_numeric_relief=symbolic_numeric_relief)
                 if address_guard and not fidelity_only_rules:
                     check_address_plan(candidate, elements)
                 if candidate_gate is not None and not fidelity_only_rules:
@@ -1597,8 +1952,11 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                            'error': 'model timeout' if isinstance(exc, subprocess.TimeoutExpired)
                            else str(exc)})
             write_json(output / 'formalization-attempts.json', attempts)
-            if (local_repair and str(exc) == 'local repair made no change'
-                    and not null_reprompt_granted and repair_error is not None):
+            if (local_repair and repair_error is not None and
+                    not null_reprompt_granted and
+                    (str(exc) == 'local repair made no change' or
+                     str(exc).startswith(
+                         'local repair did not change the failed formula field'))):
                 # A byte-identical local repair cannot answer the feedback.
                 # Grant one full restatement with the original defect retained.
                 null_reprompt_granted = True
@@ -1628,6 +1986,10 @@ def request_formalization(payload, prompt, model, output, retries, plan_mode,
                         can_promote = False
                 if can_promote:
                     repair_base = copy.deepcopy(candidate)
+                    write_json(call_dir / 'repair-base.json', {
+                        'schema_version': 'stage2-repair-base/1',
+                        'formal_plan': repair_base,
+                    })
                 mutable_fields = tuple(sorted(
                     set(mutable_fields) | set(formal_repair_fields(exc))))
                 if str(exc) != 'local repair made no change':
@@ -1689,7 +2051,7 @@ def configured_model():
     raise ValueError('configured model identifier missing')
 
 
-def main():
+def _build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--case-dir', type=Path)
@@ -1723,7 +2085,7 @@ def main():
                         help='neural mode defaults to source IDs; quotes is legacy compatibility')
     parser.add_argument('--formalization-scope', choices=('core', 'full'), default='core',
                         help='neural request scope: core formulas by default; deferred impacts remain review warnings')
-    parser.add_argument('--formal-retries', type=int, choices=(0, 1), default=None,
+    parser.add_argument('--formal-retries', type=int, choices=(0, 1, 2), default=None,
                         help='allow at most one repair attempt; repair only the failed formula fields')
     parser.add_argument('--element-retries', type=int, choices=(0, 1), default=0,
                         help='optional one retry for first-step timeout or invalid JSON; preserves both attempts')
@@ -1744,7 +2106,11 @@ def main():
                              'informational fields instead (main.py run/batch inject '
                              'signals)')
     parser.add_argument('--output', type=Path, required=True)
-    args = parser.parse_args()
+    return parser
+
+
+def _parse_args(parser, argv=None):
+    args = parser.parse_args(argv)
     neural_formalization = args.extract or args.formalize_only
     if args.formal_retries is None:
         args.formal_retries = 1 if neural_formalization else 0
@@ -1789,6 +2155,85 @@ def main():
                 parser.error(str(exc))
     elif not args.elements or (not args.elements_only and not args.formalization):
         parser.error('offline mode requires elements and formalization (or elements-only)')
+    return args, features, neural_formalization
+
+
+def _configure_neural_runtime(args, features, provenance, output):
+    """Resolve transport/prompts for neural paths and record their identity."""
+    provenance.update({'requested_formalization_scope': args.formalization_scope,
+                       'formal_retries_allowed': args.formal_retries,
+                       'element_retries_allowed': args.element_retries,
+                       'lean_formal_input': args.lean_formal_input,
+                       'mechanical_salvage': args.mechanical_salvage,
+                       'model_catalog_view': 'exact_id_text_without_offsets',
+                       'neural_mode': 'two_step' if args.extract else 'formalization_only',
+                       'formalization_generation': ('deterministic_from_plan'
+                                                    if features['plan_synthesis']
+                                                    else 'model_full_formalization'),
+                       'reference_answers_provided_to_model': False})
+    model = args.model or (DEFAULT_DEEPSEEK_MODEL if args.provider == 'deepseek'
+                           else configured_model())
+    extract_fn = (functools.partial(extract_deepseek,
+                                    proxy=args.deepseek_proxy)
+                  if args.provider == 'deepseek' else r.extract)
+    audit_extract_fn, audit_model = None, None
+    if features['semantic_faithfulness_audit']:
+        audit_provider = (args.provider if args.audit_provider == 'pipeline'
+                          else args.audit_provider)
+        audit_model = (args.audit_model or
+                       (DEFAULT_DEEPSEEK_MODEL if audit_provider == 'deepseek'
+                        else configured_model()))
+        if (audit_provider == 'deepseek' and
+                audit_model not in DEEPSEEK_MODELS):
+            raise ValueError('unsupported audit model for deepseek transport')
+        audit_extract_fn = (functools.partial(extract_deepseek,
+                                              proxy=args.deepseek_proxy)
+                            if audit_provider == 'deepseek' else r.extract)
+        provenance.update({'audit_provider': audit_provider,
+                           'audit_model': audit_model})
+    provenance.update({'model_provider': args.provider, 'model_name': model})
+    if features.get('impact_level_claims') and features.get('impact_inventory_stage'):
+        provenance['impact_semantic_card_contract'] = (
+            'impact-applicability-multi-i-v1'
+            if features.get('multi_i_claims') else
+            'impact-applicability-v1')
+    if args.provider == 'deepseek':
+        provenance['deepseek_proxy_policy'] = args.deepseek_proxy
+        endpoint = proxy_in_effect(args.deepseek_proxy)
+        if endpoint:
+            provenance['deepseek_proxy_endpoint'] = endpoint
+    resolved_prompts = resolve_prompt_set(
+        args.prompt_version, args.evidence_mode, args.formalization_scope)
+    provenance.update({
+        'prompt_resolution': 'prompts.active/1',
+        'requested_evidence_mode': args.evidence_mode,
+        'element_prompt_sha256': resolved_prompts.sha256('element'),
+        'formal_prompt_sha256': resolved_prompts.sha256('formal'),
+    })
+    if features.get('impact_inventory_stage'):
+        provenance['impact_inventory_prompt_sha256'] = r.sha(
+            IMPACT_INVENTORY_PROMPT.encode())
+    # Snapshot the exact prompt text into the run directory so offline
+    # replay never has to re-resolve an editable live prompt.
+    (output / 'prompt-element.txt').write_text(
+        resolved_prompts.element_prompt)
+    (output / 'prompt-formal.txt').write_text(
+        resolved_prompts.formal_prompt)
+    if features.get('impact_inventory_stage'):
+        (output / 'prompt-impact.txt').write_text(
+            IMPACT_INVENTORY_PROMPT)
+    return {
+        'model': model,
+        'extract_fn': extract_fn,
+        'audit_extract_fn': audit_extract_fn,
+        'audit_model': audit_model,
+        'resolved_prompts': resolved_prompts,
+    }
+
+
+def main():
+    parser = _build_parser()
+    args, features, neural_formalization = _parse_args(parser)
     args.output.mkdir(parents=True, exist_ok=False)
     calls = 0
     readiness = None
@@ -1801,74 +2246,13 @@ def main():
                            'prompt_features': features})
         unresolved_review = None
         if neural_formalization:
-            provenance.update({'requested_formalization_scope': args.formalization_scope,
-                               'formal_retries_allowed': args.formal_retries,
-                               'element_retries_allowed': args.element_retries,
-                               'lean_formal_input': args.lean_formal_input,
-                               'mechanical_salvage': args.mechanical_salvage,
-                               'model_catalog_view': 'exact_id_text_without_offsets',
-                               'neural_mode': 'two_step' if args.extract else 'formalization_only',
-                               'formalization_generation': ('deterministic_from_plan'
-                                                            if features['plan_synthesis']
-                                                            else 'model_full_formalization'),
-                               'reference_answers_provided_to_model': False})
-            model = args.model or (DEFAULT_DEEPSEEK_MODEL if args.provider == 'deepseek'
-                                   else configured_model())
-            # partial keeps the three call sites' positional arity intact while
-            # pinning the transport switch; tests patch deepseek.extract_deepseek
-            # and their fakes must therefore accept the extra keyword.
-            extract_fn = (functools.partial(extract_deepseek,
-                                            proxy=args.deepseek_proxy)
-                          if args.provider == 'deepseek' else r.extract)
-            # S17: the cross-audit call is independently parameterizable so a
-            # different model family can audit the generator (build phase:
-            # GLM auditing DeepSeek; production: both DeepSeek, disclosed).
-            audit_extract_fn, audit_model = None, None
-            if features['semantic_faithfulness_audit']:
-                audit_provider = (args.provider if args.audit_provider == 'pipeline'
-                                  else args.audit_provider)
-                audit_model = (args.audit_model or
-                               (DEFAULT_DEEPSEEK_MODEL if audit_provider == 'deepseek'
-                                else configured_model()))
-                if (audit_provider == 'deepseek' and
-                        audit_model not in DEEPSEEK_MODELS):
-                    raise ValueError('unsupported audit model for deepseek transport')
-                audit_extract_fn = (functools.partial(extract_deepseek,
-                                                      proxy=args.deepseek_proxy)
-                                    if audit_provider == 'deepseek' else r.extract)
-                provenance.update({'audit_provider': audit_provider,
-                                   'audit_model': audit_model})
-            provenance.update({'model_provider': args.provider, 'model_name': model})
-            if features.get('impact_level_claims') and features.get('impact_inventory_stage'):
-                provenance['impact_semantic_card_contract'] = (
-                    'impact-applicability-multi-i-v1'
-                    if features.get('multi_i_claims') else
-                    'impact-applicability-v1')
-            if args.provider == 'deepseek':
-                provenance['deepseek_proxy_policy'] = args.deepseek_proxy
-                endpoint = proxy_in_effect(args.deepseek_proxy)
-                if endpoint:
-                    provenance['deepseek_proxy_endpoint'] = endpoint
-            resolved_prompts = resolve_prompt_set(
-                args.prompt_version, args.evidence_mode, args.formalization_scope)
-            provenance.update({
-                'prompt_resolution': 'prompts.active/1',
-                'requested_evidence_mode': args.evidence_mode,
-                'element_prompt_sha256': resolved_prompts.sha256('element'),
-                'formal_prompt_sha256': resolved_prompts.sha256('formal'),
-            })
-            if features.get('impact_inventory_stage'):
-                provenance['impact_inventory_prompt_sha256'] = r.sha(
-                    IMPACT_INVENTORY_PROMPT.encode())
-            # Snapshot the exact prompt text into the run directory so offline
-            # replay never has to re-resolve an editable live prompt.
-            (args.output / 'prompt-element.txt').write_text(
-                resolved_prompts.element_prompt)
-            (args.output / 'prompt-formal.txt').write_text(
-                resolved_prompts.formal_prompt)
-            if features.get('impact_inventory_stage'):
-                (args.output / 'prompt-impact.txt').write_text(
-                    IMPACT_INVENTORY_PROMPT)
+            runtime = _configure_neural_runtime(args, features, provenance, args.output)
+            model = runtime['model']
+            extract_fn = runtime['extract_fn']
+            audit_extract_fn = runtime['audit_extract_fn']
+            audit_model = runtime['audit_model']
+            resolved_prompts = runtime['resolved_prompts']
+        provenance['continue_on_review'] = args.continue_on_review
         provenance['claim_verdict_policy'] = (
             'signals-v2' if args.claim_verdict == 'signals' else 'legacy')
         provenance['acceptance_policy_version'] = 'complete-piv-v1'
@@ -1885,8 +2269,6 @@ def main():
             write_json(args.output / 'provenance.json', provenance)
 
         if args.extract and args.provider == 'deepseek':
-            # Mandatory semantic input gate for the supported production path.
-            # It sees only numbered report prose and runs before P/I/V extraction.
             screen_payload = model_payload(catalog)
             readiness, normalized = request_readiness(
                 screen_payload, READINESS_PROMPT, model, args.output,
@@ -1923,19 +2305,31 @@ def main():
         impact_inventory = None
         eligible_impact_ids = None
         plan_records = None
+        not_applicable_impacts = None
         if args.extract:
             if args.evidence_mode == 'ids':
                 impact_sources = (explicit_impact_evidence_ids(catalog, text)
                                   if features.get('impact_section_scope') else None)
                 if features.get('impact_inventory_stage'):
                     if impact_sources:
-                        impact_inventory = request_impact_inventory(
-                            compact_json(model_catalog(
-                                catalog, allowed_ids=impact_sources)),
-                            IMPACT_INVENTORY_PROMPT, model, args.output,
-                            args.element_retries, impact_sources, catalog,
-                            extract_fn=extract_fn,
-                            on_attempt=record_model_attempt)
+                        try:
+                            impact_inventory = request_impact_inventory(
+                                compact_json(model_catalog(
+                                    catalog, allowed_ids=impact_sources)),
+                                IMPACT_INVENTORY_PROMPT, model, args.output,
+                                args.element_retries, impact_sources, catalog,
+                                extract_fn=extract_fn,
+                                on_attempt=record_model_attempt)
+                        except ValueError as exc:
+                            if ('must quote its cited Impact evidence '
+                                    'verbatim' in str(exc)):
+                                impact_inventory = _degrade_impact_inventory(
+                                    args.output, 'impact_inventory_verbatim',
+                                    'Impact inventory text must be a verbatim '
+                                    'excerpt of its cited Impact fragments',
+                                    str(exc))
+                            else:
+                                raise
                     else:
                         impact_inventory = {
                             'schema_version': 'report-impact-inventory/2',
@@ -1993,8 +2387,22 @@ def main():
                         'reason': 'Impact statements are sourced only from the restricted inventory pass.',
                         'statements': core_impacts,
                     })
-                elements_raw = merge_impact_inventory(elements_raw,
-                                                      impact_inventory)
+                try:
+                    elements_raw = merge_impact_inventory(elements_raw,
+                                                          impact_inventory)
+                except ValueError as exc:
+                    if ('duplicate statement ID across core and Impact '
+                            'inventory' in str(exc)):
+                        impact_inventory = _degrade_impact_inventory(
+                            args.output, 'impact_inventory_duplicate_id',
+                            'Impact inventory IDs must be disjoint from core '
+                            'statement IDs', str(exc))
+                        write_json(args.output / 'impact-inventory.json',
+                                   impact_inventory)
+                        elements_raw = merge_impact_inventory(elements_raw,
+                                                              impact_inventory)
+                    else:
+                        raise
         else:
             elements_raw = json.loads(args.elements.read_text())
         element_normalizations = []
@@ -2121,11 +2529,10 @@ def main():
                         f'impact-level claims require one to {MAX_IMPACTS} grounded impacts')
                 applicability, applicability_attempts = request_impact_applicability(
                     elements_raw, catalog, model, args.output, extract_fn=extract_fn,
-                    on_attempt=record_model_attempt)
+                    on_attempt=record_model_attempt,
+                    prescreen=features.get('direct_v_prescreen', False))
                 write_json(args.output / 'impact-applicability.json', applicability)
-                eligible_impact_ids = [
-                    row['impact_id'] for row in applicability['impacts']
-                    if row['status'] == 'selected']
+                gate_denominator = features.get('gate_direct_v_denominator', False)
                 successful, failures, plan_records, semantic_cards = [], [], [], []
                 review_records = {name: {} for name in (
                     'relation_alignment', 'requirement_source_review',
@@ -2164,6 +2571,7 @@ def main():
                         continue
 
                     selected_p = disposition['precondition_ids']
+                    feasible_intents = formalizable_intent_ids(disposition)
                     for intent_id in disposition['intent_ids']:
                         claim_id = claim_id_for_impact_intent(impact_id, intent_id)
                         record_key = impact_intent_key(impact_id, intent_id)
@@ -2173,6 +2581,32 @@ def main():
                             elements_raw, impact_id, applicability,
                             intent_id=intent_id)
                         write_json(target_output / 'semantic-card.json', pair_card)
+                        if intent_id not in feasible_intents:
+                            reason = (
+                                'direct P/I/V relationship is absent or infeasible: '
+                                'applicability pre-screen found no report-stated '
+                                'observable V directly falsifies this I')
+                            failures.append((impact_id, intent_id, reason))
+                            write_json(target_output / 'status.json', {
+                                'status': 'unformalized',
+                                'impact_id': impact_id,
+                                'intent_id': intent_id,
+                                'claim_id': claim_id,
+                                'failure_family': 'direct_relation_infeasible',
+                                'prescreen': 'direct_v_infeasible',
+                                'exclusion': 'prescreen_direct_v_infeasible',
+                                'reason': reason,
+                                'attempts': []})
+                            write_json(target_output / 'formalization-attempts.json', [])
+                            plan_records.append({
+                                'impact_id': impact_id, 'intent_id': intent_id,
+                                'claim_id': claim_id, 'status': 'unformalized',
+                                'failure_family': 'direct_relation_infeasible',
+                                'prescreen': 'direct_v_infeasible',
+                                'exclusion': 'prescreen_direct_v_infeasible',
+                                'reason': reason, 'attempts': [],
+                                'semantic_card_path': str((target_output / 'semantic-card.json').relative_to(args.output))})
+                            continue
                         target_elements_raw = target_elements(
                             elements_raw, impact_id, pair_card)
                         target_input = target_formal_input(
@@ -2220,6 +2654,7 @@ def main():
                                 local_repair=features['local_repair'],
                                 exclude_protocol_identifiers=features['protocol_identifier_exclusion'],
                                 relax_assumptions=features['assumption_numeric_relief'],
+                                symbolic_numeric_relief=features.get('symbolic_numeric_relief', False),
                                 duplicate_predicate_gate=features['duplicate_predicate_gate'],
                                 partial_formalization=features['partial_formalization'],
                                 on_attempt=record_model_attempt,
@@ -2238,7 +2673,9 @@ def main():
                                 relation_context=relation_context,
                                 relationship_trace_enabled=features.get(
                                     'relationship_trace', False),
-                                synthesis_claim_id=claim_id)
+                                synthesis_claim_id=claim_id,
+                                direct_witness_effects=features.get(
+                                    'direct_witness_effects', False))
                             # request_formalization already returns the exact rule
                             # whose generated representation was fidelity-audited.
                             # Do not synthesize it a second time after the audit.
@@ -2305,20 +2742,42 @@ def main():
                                     audit_path.read_text())
                         except ValueError as exc:
                             reason = f'No rule candidate produced after bounded generation: {exc}'
-                            failure_family = formal_failure_family(exc)
+                            gate_infeasible = (gate_denominator and
+                                               gate_direct_relation_infeasible(exc))
+                            failure_family = ('direct_relation_infeasible'
+                                              if gate_infeasible else
+                                              formal_failure_family(exc))
+                            exclusion = ('gate_direct_v_infeasible'
+                                         if gate_infeasible else None)
                             failures.append((impact_id, intent_id, reason))
-                            write_json(target_output / 'status.json', {
+                            status_record = {
                                 'status': 'unformalized', 'impact_id': impact_id,
                                 'intent_id': intent_id, 'claim_id': claim_id,
                                 'failure_family': failure_family, 'reason': reason,
-                                'attempts': target_attempts})
-                            plan_records.append({
+                                'attempts': target_attempts}
+                            record = {
                                 'impact_id': impact_id, 'intent_id': intent_id,
                                 'claim_id': claim_id, 'status': 'unformalized',
                                 'failure_family': failure_family, 'reason': reason,
                                 'attempts': target_attempts,
-                                'semantic_card_path': str((target_output / 'semantic-card.json').relative_to(args.output))})
+                                'semantic_card_path': str((target_output / 'semantic-card.json').relative_to(args.output))}
+                            if exclusion is not None:
+                                status_record['exclusion'] = exclusion
+                                record['exclusion'] = exclusion
+                            write_json(target_output / 'status.json', status_record)
+                            plan_records.append(record)
 
+                if gate_denominator:
+                    scope = final_formalization_scope(applicability, plan_records)
+                    eligible_impact_ids = list(scope)
+                    not_applicable_impacts = not_applicable_impacts_for(
+                        applicability, plan_records)
+                else:
+                    scope = None
+                    eligible_impact_ids = [
+                        row['impact_id'] for row in applicability['impacts']
+                        if row['status'] == 'selected']
+                    not_applicable_impacts = None
                 model_candidate = {'schema_version': 'report-formal-plan-set/2',
                                    'claims': plan_records}
                 write_json(args.output / 'semantic-cards.json', {
@@ -2454,6 +2913,7 @@ def main():
                             local_repair=features['local_repair'],
                             exclude_protocol_identifiers=features['protocol_identifier_exclusion'],
                             relax_assumptions=features['assumption_numeric_relief'],
+                            symbolic_numeric_relief=features.get('symbolic_numeric_relief', False),
                             duplicate_predicate_gate=features['duplicate_predicate_gate'],
                             partial_formalization=features['partial_formalization'],
                             on_attempt=record_model_attempt,
@@ -2465,7 +2925,9 @@ def main():
                             frozen_source_ids={
                                 'precondition_ids': selected_p,
                                 'intent_id': selected_i[0],
-                                'impact_ids': [impact_id]})
+                                'impact_ids': [impact_id]},
+                            direct_witness_effects=features.get(
+                                'direct_witness_effects', False))
                         if (set(target_plan.get('precondition_ids', [])) !=
                                 set(selected_p) or
                                 len(target_plan.get('precondition_ids', [])) !=
@@ -2480,7 +2942,9 @@ def main():
                         claim_id = claim_id_for_impact(impact_id)
                         target_formal = synthesize_id_formalization(
                             target_plan, target_elements_raw, claim_id=claim_id,
-                            include_unselected_limitations=False)
+                            include_unselected_limitations=False,
+                            direct_witness_effects=features.get(
+                                'direct_witness_effects', False))
                         successful.append((impact_id, target_formal))
                         write_json(target_output / 'formal-plan.json', target_plan)
                         write_json(target_output / 'formalization-ids.json', target_formal)
@@ -2574,13 +3038,16 @@ def main():
                     local_repair=features['local_repair'],
                     exclude_protocol_identifiers=features['protocol_identifier_exclusion'],
                     relax_assumptions=features['assumption_numeric_relief'],
+                    symbolic_numeric_relief=features.get('symbolic_numeric_relief', False),
                     duplicate_predicate_gate=features['duplicate_predicate_gate'],
                     partial_formalization=features['partial_formalization'],
                     on_attempt=record_model_attempt,
                     faithfulness_audit=audit_extract_fn,
                     faithfulness_audit_model=audit_model,
                     faithfulness_audit_on_attempt=record_model_attempt,
-                    candidate_gate=candidate_gate)
+                    candidate_gate=candidate_gate,
+                    direct_witness_effects=features.get(
+                        'direct_witness_effects', False))
             if plan_mode:
                 if not features.get('impact_level_claims'):
                     write_json(args.output / 'formal-plan.json', model_candidate)
@@ -2638,7 +3105,9 @@ def main():
                 'applicability' in locals() and 'plan_records' in locals()):
             bundle = apply_multi_intent_coverage(
                 bundle, applicability, plan_records,
-                require_fidelity=features.get('fidelity_only_rules', False))
+                require_fidelity=features.get('fidelity_only_rules', False),
+                formalization_scope=(scope if 'scope' in locals() else None),
+                continue_on_review=args.continue_on_review)
         observability = attach_review(bundle, formal)
         write_json(args.output / 'observability-review.json', observability)
         bundle['provenance'] = provenance
@@ -2679,7 +3148,11 @@ def main():
         assessment = stage2_assessment(
             readiness=readiness, bundle=bundle,
             eligible_impact_ids=eligible_impact_ids,
-            impact_formalization_records=plan_records)
+            impact_formalization_records=plan_records,
+            not_applicable_impacts=not_applicable_impacts,
+            formalization_scope=(scope if 'scope' in locals() else None),
+            gate_direct_denominator=features.get(
+                'gate_direct_v_denominator', False))
         write_json(args.output / 'stage2-assessment.json', assessment)
         write_json(args.output / 'constraints.json', bundle)
         write_json(args.output / 'auto-triage.json', triage)
@@ -2767,10 +3240,24 @@ def main():
                     'not_applicable' if impact_count == 0 else
                     'complete' if formalized_count == impact_count else 'partial'),
                 'impact_denominator_policy':
-                    'complete_report_supported_piv_only',
+                    ('gate_direct_v_feasible'
+                     if features.get('gate_direct_v_denominator', False)
+                     else 'complete_report_supported_piv_only'),
                 'impact_count': impact_count,
                 'formalized_impact_count': formalized_count,
                 'formalization_rate': rule_result.get('formalization_rate'),
+                'incomplete_piv_count': rule_result.get('incomplete_piv_count', 0),
+                'generator_defect_count': rule_result.get('generator_defect_count', 0),
+                'logically_complete_denominator': rule_result.get(
+                    'logically_complete_denominator', 0),
+                'logically_complete_formalization_rate': rule_result.get(
+                    'logically_complete_formalization_rate'),
+                'direct_relation_not_applicable_count': len(
+                    rule_result.get('direct_relation_not_applicable', [])),
+                'gate_direct_relation_infeasible_count': sum(
+                    1 for row in (plan_records or [])
+                    if (row.get('failure_family') == 'direct_relation_infeasible'
+                        and row.get('prescreen') != 'direct_v_infeasible')),
             })
         write_json(args.output / 'status.json', status)
         print(json.dumps(status))

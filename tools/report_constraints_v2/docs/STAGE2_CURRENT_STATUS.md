@@ -1,8 +1,97 @@
 # 阶段二现状与收口计划
 
-状态摘要更新于 2026-10-24。下文按时间顺序保留实验记录；若历史记录中的“下一步”与本节冲突，以本节为准。
+状态摘要更新于 2026-10-28。下文按时间顺序保留实验记录；若历史记录中的“下一步”与本节冲突，以本节为准。最终状态：`direct_v_prescreen` 回滚为默认 `False`。同一 20 份报告配对对照显示 prescreen OFF 优于 ON：Impact 规则化率 45/75（60.0%）vs 30/66（45.5%）、`candidate_checks_passed` 8/20 vs 6/20、`stage2_can_continue=true` 17/18（94.4%）vs 14/18（77.8%）、模型调用 362 vs 211。省调用不能以主链覆盖率与交接稳定性为代价，故保留 OFF。
 
 # 阶段二当前状态
+
+## direct_v_prescreen 先导与配对对照，最终回滚（2026-10-28）
+
+先导变化是把已有的 `direct_v_prescreen` 从 False 改为 True，并同步修复
+`verify` 重放端两处预筛分支，使生成端 pre-screen 只省调用、不改变权威
+direct-relation gate 与分母政策：
+
+- `prompts/current.py`：`direct_v_prescreen=True`（配对后已恢复 `False`）。
+- `cli/batch_verify.py`：移除 prescreen 对 assessment 分母与 coverage_scope 的
+  额外收缩，重放与生成端一致。
+- `tests/test_prompt_live.py`：对应断言先改 `True`，配对后恢复 `False`。
+
+全量回归 472/472 通过。30 份全新报告盲测（与预筛前 30 份不同留出集）：
+
+| 指标 | 预筛前 30 | 预筛后 30 |
+| --- | ---: | ---: |
+| 有分母报告 | 28 | 25 |
+| 有分母 Impact | 86 | 61 |
+| 规则化 Impact | 46/86（53.5%） | 38/61（62.3%） |
+| candidate 通过报告 | 13/30（43.3%） | 10/30（33.3%） |
+| stage2_can_continue=true | 26/28（92.9%） | 23/25（92.0%） |
+| 实际模型调用 | 511 | 291（-43%） |
+| 零调用 verify | 29/30 | 30/30 |
+
+结论：30 份先导样本曾显示规则化率 +9 个百分点、调用 -43%、主链续跑保持 92%，
+但该比较不是同一样本的配对对照。后续在同一 20 份报告上做 prescreen ON/OFF 配对：
+
+| 指标 | prescreen ON | prescreen OFF |
+| --- | ---: | ---: |
+| 有分母 Impact | 66 | 75 |
+| 规则化 Impact | 30/66（45.5%） | 45/75（60.0%） |
+| candidate 通过报告 | 6/20 | 8/20 |
+| stage2_can_continue=true | 14/18（77.8%） | 17/18（94.4%） |
+| 实际模型调用 | 211 | 362 |
+
+配对结果证明 prescreen 省调用是以主链覆盖率与阶段三交接稳定性为代价的，4 个被
+prescreen 直接弃权的报告在 OFF 后 3 个恢复可继续。因此 `direct_v_prescreen`
+回滚为 `False`，权威 direct-relation gate 与分母政策不变。逐案数据见
+`evaluation/prompt_live24_prescreen_blind_20_confirm_prescreen_off/REPORT.md`。
+
+## 机械抢救收口与最新 10 份盲测（2026-10-27）
+
+围绕主线连续跑了两轮盲测后，把阶段二的机械失败族逐项收口，不做任何放宽门禁：
+
+- `cli/semantic_pipeline.py`：local-repair 增加角色作用域校验，P/I/V 审计修复必须
+  改动对应公式字段（P 改 `precondition_terms`、I 改 `pattern`、V 改
+  `impact_outcome/impact_context_terms`），拒绝“只改 symbols 不改公式”的无效修复。
+- `cli/semantic_pipeline.py`：local-repair 在 frozen field 被恢复后，确定性回填仍被
+  引用的符号声明与 derived definition，落盘 `frozen-symbol-restore.json`；
+  `cli/batch_verify.py` 同步重放，旧产物 15/15 仍可零调用 verify。
+- `lib/salvage.py`：新增 DeepSeek 尾随 `}` 与重复 `relationship_trace` 两种机械
+  抢救，统一走 `salvage_formal_response` 与离线重放日志。
+- `cli/semantic_pipeline.py`：impact-inventory 重试提示明确 ID 必须为小写
+  snake_case 且首字符是字母；type/unit 重试提示明确 timestamp+duration 的编码方式。
+
+全量回归 472 项通过。最新 10 份全新报告盲测：
+
+- 有分母 Impact 31，formalized 24（77.4%）；`candidate_checks_passed` 5/10；
+  `stage2_can_continue=true` 10/10；真实模型调用 142；零调用 verify 10/10。
+- 剩余 7 个 pending 全部是生成后 P/I/V 忠实度审查：3 个 `needs_review` 是报告
+  缺显式 bridge（按设计留 review），4 个 `failed` 是谓词方向/语义与引用陈述不一致
+  （按设计留档为未规则化）。本轮没有 `Extra data`、`local repair removed a symbol`
+  或 `type/unit mismatch`。
+- 逐案数据见
+  `evaluation/prompt_live24_trailingbracefix_blind_10/REPORT.md`。
+
+## 忠实度修复与新盲测（2026-10-27）
+
+围绕主线做了一次 10 份全新报告的 DeepSeek 盲测，定位到主要瓶颈不是重放契约，
+而是生成端把 P 前置符号写进 I 条件/触发词、以及 access_control 否定授权的极性写反。
+本轮修改全部沿主线收紧，不改变分母政策与零调用重放契约：
+
+- `prompts/current.py`：I 的 condition/trigger 必须来自 TARGET INTENT 自身的适用
+  范围；无条件的 I 从 Intent 命名的操作/状态取触发词，禁止用 P attacker/权限符号
+  当条件。access_control 的 `authorization_guard` 明确支持“必须为假”的否定授权。
+- `cli/semantic_pipeline.py`：忠实度修复反馈在审计指出“多加 guard/恒真/反向授权”时
+  给出定向重写指引，仍只允许改动公式字段。
+- `lib/ingest.py`：Markdown Impact 区域内的粗体子标签（如 `**Scenario 1...**`）
+  不再提前关闭区域，避免只截到标题行。
+- `cli/semantic_pipeline.py`/`cli/batch_verify.py`：local-repair 的修复基底落盘为
+  `repair-base.json`，verify 按 `repair-base → generated-rule-candidate →
+  model-claim` 顺序回放，覆盖“前一次尝试未成功合成规则”的 fresh_restate 路径。
+
+全量回归 465 项通过。新盲测（10 份全新报告）Impact 规则化率 24/32（75.0%）、
+`candidate_checks_passed` 3/10、`stage2_can_continue=true` 9/10、零调用 verify
+10/10。剩余未完成项中 4 项是 `direct_relation_infeasible`——主线直接关系门禁按设计
+拦截下游/间接后果，不通过弱化 V 来通过；2 项数量表达式修复、1 项忠实度 failed、
+1 项忠实度 needs_review。逐案数据见
+`evaluation/prompt_live24_fidelityfix_blind_10/REPORT.md`。
 
 ## 主链生成/重放契约修复（2026-10-24）
 

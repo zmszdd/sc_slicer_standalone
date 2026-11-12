@@ -4,30 +4,58 @@ SC_Slicer 是一个面向 Solidity 合约的目标导向代码切片工具。当
 
 ## 统一入口
 
-仓库根目录的 `main.py` 是**阶段二**的唯一命令行入口（阶段一请直接用 `./run.sh`）：
+仓库根目录的 `main.py` 是**阶段二 / 阶段三 / 三阶段 pipeline** 的统一命令行入口；
+阶段一（Rust 切片器，唯一引擎 `resurrect-v2`）请直接用 `./run.sh`：
 
-当前已验证的阶段二解释器是 `/root/.local/share/uv/tools/halmos/bin/python`；系统
-`/usr/bin/python` 未安装 Z3。若已在含 Z3 的虚拟环境中，下面的 `python` 可直接使用，
-否则请把它替换成上述完整路径。
+## 环境准备（可移植）
+
+依赖：Python 3.10+、`z3-solver`、Foundry(`forge`)、Rust(`cargo`/`rustc`)。
 
 ```bash
-cd /root/sc_slicer_standalone
+./scripts/doctor.sh              # 只读自检，列出缺失项
+./scripts/bootstrap.sh install   # 一键补齐依赖
+# 或等价：make doctor / make install
+```
+
+若使用自定义解释器或 forge，可用环境变量覆盖：
+
+```bash
+PYTHON=/path/to/python ./scripts/doctor.sh
+FORGE=/path/to/forge make test-stage3
+```
+
+阶段二入口（需要已安装 `z3-solver`）：
+
+```bash
 python main.py --help          # 列出全部命令
 python main.py doctor          # 环境与配置自检
 python main.py run --case-dir ...   # 阶段二：报告 → P/I/V 规则化
 python main.py verify <目录>   # 阶段二：零模型调用重放
 python main.py test            # 阶段二回归
 python main.py frozen          # 校验阶段一/v1 冻结资产未被改写
+python main.py stage3 ...      # 阶段三：单案例差分验证
+python main.py pipeline ...    # 三阶段串联：组装 + 运行
 ```
 
 `main.py` 只做分发，不实现阶段逻辑；阶段实现仍在 `run.sh`、`src/` 和 `tools/report_constraints_v2/`。下面的 `./run.sh` 写法继续有效。详见 [tools/report_constraints_v2/STRUCTURE.md](tools/report_constraints_v2/STRUCTURE.md)。
+
+## 工程门禁
+
+```bash
+make doctor        # 只读自检
+make test          # cargo test + 阶段二/三/pipeline 回归
+make e2e           # 阶段一切片 + forge test 端到端闭环
+```
+
+CI（`.github/workflows/ci.yml`）包含 `stage1-rust`、`stage1-e2e`、`stage2-offline`、
+`stage3-unit` 和 `pipeline-e2e` 五个 job。
 
 ## 快速运行
 
 在项目根目录执行：
 
 ```bash
-cd /root/sc_slicer_standalone
+cd "$(git rev-parse --show-toplevel)"
 ./run.sh
 ```
 
@@ -232,7 +260,7 @@ forge test --root ./foundry_runs/<run-id> \
 ./run.sh --v2
 ```
 
-只做快速切片，不做复活：
+`--quick` 现在是 v2 引擎的别名，不再走旧切片器：
 
 ```bash
 ./run.sh --quick

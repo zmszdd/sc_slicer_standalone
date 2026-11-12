@@ -434,11 +434,12 @@ REJECT = 'reject'
 WARN = 'warn'
 
 #: Mirrors the schema cap enforced by ``lib/plan_synthesizer.py``
-#: (``1 <= len(plan['symbols']) <= 8``).  Duplicated on purpose: this is
-#: the lower layer -- ``plan_synthesizer`` imports THIS module, so the
+#: (``1 <= len(plan['symbols']) <= MAX_PLAN_SYMBOLS``).  Duplicated on purpose:
+#: this is the lower layer -- ``plan_synthesizer`` imports THIS module, so the
 #: reverse import would be circular.  Declaring more symbols than the
-#: schema allows would trade one rejection for another.
-MAX_PLAN_SYMBOLS = 8
+#: schema allows would trade one rejection for another.  Raised from 8 to 12
+#: so nine-symbol plans the model already emits stop being rejected on count.
+MAX_PLAN_SYMBOLS = 12
 
 #: ``(message, mode, note?)``.  Matched by exact equality first, then by prefix,
 #: so dynamic messages such as ``f'unknown evidence ID {x}'`` (which the guard
@@ -555,6 +556,7 @@ BOUNDARY = (
     ('invalid plan symbol sort', REJECT),
     ('invalid plan symbol sources', REJECT),
     ('invalid plan symbols', REJECT),
+    ('invalid plan symbols: expected 1..12 symbol declarations, ', REJECT),
     ('invalid predicate binding', REJECT),
     ('invalid predicate operand', REJECT),
     ('invalid preservation pattern', REJECT),
@@ -583,6 +585,9 @@ BOUNDARY = (
     ('invalid symbol count', REJECT),
     ('invalid symbols', REJECT),
     ('invalid temporal order pattern', REJECT),
+    ('temporal_order earlier/later symbols must be integer quantities with '
+     'units; for boolean event ordering use progress_or_liveness/required_effect '
+     'instead', REJECT),
     ('invalid/deep AST', REJECT),
     ('invalid/duplicate evidence IDs', REJECT),
     ('invalid/reserved symbol name', REJECT),

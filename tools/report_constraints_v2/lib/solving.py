@@ -40,6 +40,44 @@ def setup(claim):
     return variables, conditions
 
 
+DIRECT_RELATION_CELLS = (
+    ('P_and_I', 'sat'),
+    ('P_and_V', 'sat'),
+    ('P_and_V_and_not_I', 'sat'),
+    ('P_and_V_and_I', 'unsat'),
+)
+
+
+def direct_relation_diagnostics(claim):
+    """Return the four SAT/UNSAT cells of the stage-2 handoff gate.
+
+    The gate is feasible only when every cell matches its expected status.
+    Keeping the cell-level result lets ``reject_vacuous_safety`` and the
+    retry feedback say exactly which relation failed (for example ``P_and_V``
+    UNSAT means the synthesized V is contradictory, while ``P_and_V_and_I``
+    SAT means I is vacuous under P).
+    """
+    _, conditions = setup(claim)
+    cells = {}
+    for name, expected in DIRECT_RELATION_CELLS:
+        if name not in conditions:
+            cells[name] = {'expected': expected, 'status': 'missing',
+                           'ok': False}
+            continue
+        solver = z3.Solver()
+        solver.set(timeout=5000)
+        solver.add(*conditions[name])
+        status = str(solver.check())
+        cells[name] = {'expected': expected, 'status': status,
+                       'ok': status == expected}
+    failing = [name for name, expected in DIRECT_RELATION_CELLS
+               if not cells[name]['ok']]
+    missing = [name for name, _ in DIRECT_RELATION_CELLS
+               if cells[name]['status'] == 'missing']
+    return {'cells': cells, 'failing': failing, 'missing': missing,
+            'feasible': not failing and not missing}
+
+
 def direct_relation_feasible(claim):
     """Return True when one claim satisfies the stage-2 handoff gate.
 
@@ -47,19 +85,7 @@ def direct_relation_feasible(claim):
     satisfiable with P, satisfiable with P and NOT I, and unsatisfiable with
     P and I (V falsifies I under P).
     """
-    _, conditions = setup(claim)
-    required = ('P_and_V', 'P_and_V_and_not_I', 'P_and_V_and_I')
-    if any(name not in conditions for name in required):
-        return False
-    for name, expected in (('P_and_V', 'sat'),
-                           ('P_and_V_and_not_I', 'sat'),
-                           ('P_and_V_and_I', 'unsat')):
-        solver = z3.Solver()
-        solver.set(timeout=5000)
-        solver.add(*conditions[name])
-        if str(solver.check()) != expected:
-            return False
-    return True
+    return direct_relation_diagnostics(claim)['feasible']
 
 
 def solve_queries(claim, text):

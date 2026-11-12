@@ -11,7 +11,7 @@ import json
 import re
 from decimal import Decimal, InvalidOperation
 
-from lib.semantic_core import identifier, normalize_truth_binding
+from lib.semantic_core import MAX_PLAN_SYMBOLS, identifier, normalize_truth_binding
 from lib.plan_synthesizer import synthesize_id_formalization
 # NOTE(S8): `from fidelity import check_address_plan, check_numeric_plan` was DROPPED:
 # both names are defined in THIS file now, so that import became a self-import via the
@@ -213,8 +213,79 @@ def _numeric_detail(source_id, literals=(), bounds=(), plan_constants=()):
     return ': ' + '; '.join(parts)
 
 
+SYMBOLIC_MARKERS = re.compile(
+    r'symbolic|illustrative|hypothetical|positivity|'
+    r'not independently established|non-operative|'
+    r'treated as a symbolic', re.I)
+
+
+def _predicate_symbol(predicate):
+    if isinstance(predicate, dict) and predicate.get('kind') == 'comparison':
+        left = predicate.get('left')
+        if isinstance(left, str):
+            return left
+    return None
+
+
+def _sign_abstraction(predicate, literals):
+    """A plan-side comparison that keeps only the strict sign of the report
+    literal(s): ``x > 0`` for positive literals, ``x < 0`` for negative ones.
+
+    This is the only symbolic rewrites allowed under relief: ``>= 0`` (which
+    admits zero) or ``!= 0`` (which admits the opposite sign) are not sign-
+    preserving and stay strict.
+    """
+    if not literals or not isinstance(predicate, dict):
+        return False
+    if predicate.get('kind') != 'comparison':
+        return False
+    signs = {0 if value == 0 else (1 if value > 0 else -1) for value in literals}
+    if len(signs) != 1 or 0 in signs:
+        return False
+    sign = next(iter(signs))
+    left, right = predicate.get('left'), predicate.get('right')
+    if not isinstance(left, str) or not isinstance(right, dict):
+        return False
+    if set(right) != {'const'}:
+        return False
+    try:
+        const = number(right['const'])
+    except ValueError:
+        return False
+    if const != 0:
+        return False
+    return predicate.get('operator') == ('gt' if sign > 0 else 'lt')
+
+
+def _declared_symbolic(plan, source_id, symbol):
+    """Whether the plan itself explicitly declares a numeric non-operative.
+
+    The plan's ``unresolved`` records carry ``source_ids`` and the free-text
+    ``limitations``/``assumptions`` name the source or symbol.  Relief is
+    granted only when that declaration is present, so the gate never invents
+    an abstraction the plan did not state.
+    """
+    for item in plan.get('unresolved') or []:
+        if not isinstance(item, dict):
+            continue
+        if source_id in (item.get('source_ids') or []) and \
+                SYMBOLIC_MARKERS.search(item.get('description') or ''):
+            return True
+    for text in [entry for entry in (plan.get('limitations') or [])
+                 if isinstance(entry, str)]:
+        if SYMBOLIC_MARKERS.search(text) and \
+                (source_id in text or (symbol and symbol in text)):
+            return True
+    for text in [entry for entry in (plan.get('assumptions') or [])
+                 if isinstance(entry, str)]:
+        if SYMBOLIC_MARKERS.search(text) and \
+                (source_id in text or (symbol and symbol in text)):
+            return True
+    return False
+
+
 def check_numeric_plan(plan, elements, exclude_protocol_identifiers=False,
-                       relax_assumptions=False):
+                       relax_assumptions=False, symbolic_numeric_relief=False):
     """Assumption statements carry context, not constraints: with
     ``relax_assumptions`` an un-encoded assumption no longer has to enter P
     (its numbers may merely restate literals already bound in P terms or name
@@ -223,29 +294,38 @@ def check_numeric_plan(plan, elements, exclude_protocol_identifiers=False,
     statements = {row['id']: row for row in elements['statements']
                   if row['kind'] in ('precondition', 'assumption')}
     terms = {row['source_id']: row['predicate'] for row in plan['precondition_terms']}
+    has_precondition_ids = isinstance(plan.get('precondition_ids'), list)
     for source_id, statement in statements.items():
         unencoded_assumption = (relax_assumptions and
                                 statement['kind'] == 'assumption' and
                                 source_id not in terms)
+        selected_context = (symbolic_numeric_relief and has_precondition_ids and
+                            source_id not in plan['precondition_ids'])
         bounds = explicit_bounds(statement['text'])
         literals = explicit_numbers(
             statement['text'],
             exclude_protocol_identifiers=exclude_protocol_identifiers)
         if not bounds:
             if source_id not in terms:
-                if literals and not unencoded_assumption:
+                if literals and not unencoded_assumption and not selected_context:
                     raise ValueError('numeric P source missing from plan'
                                      + _numeric_detail(source_id, literals))
                 continue
             constants = predicate_constants(terms[source_id])
             if literals and constants and not constants <= literals:
+                symbol = _predicate_symbol(terms[source_id])
+                symbolic_abstraction = (symbolic_numeric_relief and
+                                        _declared_symbolic(plan, source_id, symbol) and
+                                        _sign_abstraction(terms[source_id], literals))
+                if symbolic_abstraction:
+                    continue
                 raise ValueError('numeric P literal changed'
                                  + _numeric_detail(source_id, literals,
                                                    plan_constants=(
                                                        constants - literals)))
             continue
         if source_id not in terms:
-            if not unencoded_assumption:
+            if not unencoded_assumption and not selected_context:
                 raise ValueError('numeric P source missing from plan'
                                  + _numeric_detail(source_id, bounds=bounds))
             continue
@@ -616,6 +696,125 @@ def drop_unused_invalid_symbols(raw):
                             'reason': 'empty entity_ids and no structured predicate reference'})
     return result, changes
 
+_ONE_TO_ONE_PATTERNS = (
+    re.compile(r'\b1\s*:\s*1\b'),
+    re.compile(r'\bone[- ]?to[- ]?one\b', re.IGNORECASE),
+    re.compile(r'\bone[- ]?for[- ]?one\b', re.IGNORECASE),
+    re.compile(r'\b1\s+[a-z_][a-z0-9_]*\s+per\s+1\s+[a-z_][a-z0-9_]*\b',
+               re.IGNORECASE),
+)
+
+_IDENTIFIER_RE = re.compile(r'^[a-z][a-z0-9_]*$')
+
+
+def _one_to_one_rate_rewrite(predicate, source_id, symbols, added, statements,
+                               changes):
+    if not isinstance(predicate, dict):
+        return predicate
+    kind = predicate.get('kind')
+    if kind in ('all_of', 'any_of'):
+        terms = predicate.get('terms')
+        if isinstance(terms, list):
+            rewritten = [_one_to_one_rate_rewrite(term, source_id, symbols, added,
+                                                  statements, changes)
+                         for term in terms]
+            if any(new_term is not old_term
+                   for new_term, old_term in zip(rewritten, terms)):
+                return {**predicate, 'terms': rewritten}
+        return predicate
+    if kind != 'comparison' or predicate.get('operator') != 'eq':
+        return predicate
+    left = predicate.get('left')
+    right = predicate.get('right')
+    if not (isinstance(left, str) and isinstance(right, dict) and set(right) == {'symbol'}):
+        return predicate
+    left_meta = symbols.get(left)
+    right_meta = symbols.get(right['symbol'])
+    if not (isinstance(left_meta, dict) and isinstance(right_meta, dict)):
+        return predicate
+    if left_meta.get('sort') != 'int' or right_meta.get('sort') != 'int':
+        return predicate
+    left_unit = left_meta.get('unit')
+    right_unit = right_meta.get('unit')
+    if not (isinstance(left_unit, str) and left_unit and
+            isinstance(right_unit, str) and right_unit and left_unit != right_unit):
+        return predicate
+    if not (_IDENTIFIER_RE.match(left) and _IDENTIFIER_RE.match(right_unit)):
+        return predicate
+    statement = statements.get(source_id)
+    text = statement.get('text') if isinstance(statement, dict) else ''
+    if not isinstance(text, str) or not any(pattern.search(text)
+                                            for pattern in _ONE_TO_ONE_PATTERNS):
+        return predicate
+    rate_name = f'{left}_per_{right_unit}'
+    if rate_name not in symbols and rate_name not in added:
+        if len(symbols) + len(added) >= MAX_PLAN_SYMBOLS:
+            return predicate
+        checkpoint = left_meta.get('checkpoint')
+        entity_ids = []
+        if isinstance(statement, dict) and isinstance(statement.get('entity_ids'), list):
+            entity_ids = [entity for entity in statement['entity_ids']
+                          if isinstance(entity, str)]
+        added[rate_name] = {
+            'sort': 'int', 'unit': None,
+            'meaning': (f'{left} per {right_unit}, normalized to 1 by the 1:1 '
+                        f'ratio stated in {source_id}'),
+            'checkpoint': (checkpoint if isinstance(checkpoint, str)
+                           else rate_name),
+            'entity_ids': entity_ids,
+            'source_ids': [source_id],
+        }
+    changes.append({
+        'kind': 'normalize_one_to_one_rate',
+        'source_id': source_id,
+        'symbol': rate_name,
+        'from_units': [left_unit, right_unit],
+        'reason': 'source states a 1:1 ratio; encoded as a dimensionless per-unit rate',
+    })
+    return {'kind': 'comparison', 'left': rate_name, 'operator': 'eq',
+            'right': {'const': 1}}
+
+
+def normalize_one_to_one_rate(candidate, elements):
+    """Rewrite a source-stated 1:1 unit-crossing equality as a per-unit rate.
+
+    Reports often state the first-deposit invariant as ``1 share per 1 wei``.
+    The generator then writes ``eq(shares, wei)``, which the quantity validator
+    rejects as a unit mismatch. The source-grounded encoding compares a
+    dimensionless rate symbol to 1: ``eq(shares_per_wei, 1)``. The rewrite only
+    fires when the enclosing source statement explicitly states the ratio, so
+    it restates the report instead of inventing a conversion factor. The input
+    candidate is returned unchanged (same object) when nothing applies.
+    """
+    if not isinstance(candidate, dict) or not isinstance(elements, dict):
+        return candidate, []
+    symbols = candidate.get('symbols')
+    if not isinstance(symbols, dict):
+        return candidate, []
+    statements = {row['id']: row for row in elements.get('statements') or []
+                  if isinstance(row, dict) and isinstance(row.get('id'), str)}
+    added = {}
+    changes = []
+    for field in ('precondition_terms', 'impact_context_terms'):
+        terms = candidate.get(field)
+        if not isinstance(terms, list):
+            continue
+        for term in terms:
+            if not isinstance(term, dict):
+                continue
+            predicate = term.get('predicate')
+            if not isinstance(predicate, dict):
+                continue
+            term['predicate'] = _one_to_one_rate_rewrite(
+                predicate, term.get('source_id'), symbols, added, statements,
+                changes)
+    if not changes:
+        return candidate, []
+    result = copy.deepcopy(candidate)
+    if added:
+        result['symbols'].update(added)
+    return result, changes
+
 
 def merge_appended_relationship_trace(text):
     """Deterministically repair a formalization response that closes its JSON
@@ -668,3 +867,122 @@ def merge_appended_relationship_trace(text):
                    'relocated inside without changing any plan field'),
     }
     return claim, record
+
+
+def strip_deepseek_json_suffix(text):
+    """Drop the official DeepSeek ``response_format`` marker when it leaks after
+    a valid JSON object.
+
+    The DeepSeek endpoint has been observed appending ``,"type":"json_object"}``
+    after a complete top-level object.  The leading object is already valid;
+    the trailing fragment adds no report, source, or formula content.  Strip
+    only this exact metadata shape and leave unrelated extra data alone so a
+    genuinely malformed response still fails.
+
+    Returns ``(claim, record)`` or ``None`` when the text does not match.
+    """
+    if not isinstance(text, str) or '"type"' not in text:
+        return None
+    stripped = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip())
+    decoder = json.JSONDecoder()
+    try:
+        claim, end = decoder.raw_decode(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(claim, dict):
+        return None
+    rest = stripped[end:]
+    if not re.fullmatch(r'\s*,\s*"type"\s*:\s*"json_object"\s*\}?\s*', rest):
+        return None
+    record = {
+        'transform': 'strip_deepseek_json_suffix',
+        'appended_key': 'type',
+        'reason': ('DeepSeek response_format metadata leaked after the valid '
+                   'JSON object; the marker was dropped without changing any '
+                   'plan field'),
+    }
+    return claim, record
+
+
+def strip_trailing_dangling_brace(text):
+    """Drop a single stray closing brace after a complete JSON object.
+
+    Some DeepSeek responses close the top-level object and then emit one extra
+    ``}``.  The leading object is already balanced; the extra brace adds no
+    field or content, so it is safe to drop.  Anything other than whitespace
+    plus exactly one ``}`` is left alone so malformed responses still fail.
+    """
+    if not isinstance(text, str) or '}' not in text:
+        return None
+    stripped = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip())
+    decoder = json.JSONDecoder()
+    try:
+        claim, end = decoder.raw_decode(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(claim, dict):
+        return None
+    rest = stripped[end:]
+    if not re.fullmatch(r'\s*\}\s*', rest):
+        return None
+    record = {
+        'transform': 'strip_trailing_dangling_brace',
+        'reason': ('model emitted one stray closing brace after a balanced '
+                   'top-level object; the brace was dropped without changing '
+                   'any plan field'),
+    }
+    return claim, record
+
+
+def strip_duplicate_relationship_trace(text):
+    """Drop a duplicate ``,"relationship_trace":...}`` appended after an object
+    that already contains ``relationship_trace``.
+
+    The first object is complete and already carries the audit-only trace; the
+    appended fragment duplicates that key and adds no report, source, or
+    formula content.  Only this exact shape is dropped.
+    """
+    if not isinstance(text, str) or 'relationship_trace' not in text:
+        return None
+    stripped = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip())
+    decoder = json.JSONDecoder()
+    try:
+        claim, end = decoder.raw_decode(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(claim, dict) or 'relationship_trace' not in claim:
+        return None
+    rest = stripped[end:].lstrip()
+    prefix = ',"relationship_trace":'
+    if not rest.startswith(prefix):
+        return None
+    value_part = rest[len(prefix):]
+    try:
+        trace, trace_end = decoder.raw_decode(value_part)
+    except json.JSONDecodeError:
+        return None
+    if value_part[trace_end:].strip() != '}':
+        return None
+    if not isinstance(trace, dict):
+        return None
+    record = {
+        'transform': 'strip_duplicate_relationship_trace',
+        'appended_key': 'relationship_trace',
+        'reason': ('model appended a duplicate audit-only relationship_trace '
+                   'after the object already contained one; the duplicate was '
+                   'dropped without changing any plan field'),
+    }
+    return claim, record
+
+
+def salvage_formal_response(text):
+    """Deterministically repair the known DeepSeek response wrappers.
+
+    Order matters: the relationship-trace merge is most specific, followed by
+    the duplicate-trace strip, the stray-brace strip, and the generic
+    response_format-marker strip.
+    """
+    return (merge_appended_relationship_trace(text) or
+            strip_duplicate_relationship_trace(text) or
+            strip_trailing_dangling_brace(text) or
+            strip_deepseek_json_suffix(text))

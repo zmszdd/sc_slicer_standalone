@@ -327,7 +327,9 @@ class FeatureDecouplingTests(unittest.TestCase):
                          'multi_i_claims', 'strict_piv', 'structured_unresolved',
                          'numeric_guard', 'address_guard', 'relation_alignment',
                          'local_repair', 'unit_guard', 'fidelity_only_rules',
-                         'relation_context_generation', 'relationship_trace'}
+                         'relation_context_generation', 'relationship_trace',
+                         'direct_v_prescreen', 'gate_direct_v_denominator',
+                         'direct_witness_effects'}
         inherited = [name for name in registry.FEATURE_NAMES
                      if name not in post_baseline]
         for version in ('semantic-v3.16', 'semantic-v3.20'):
@@ -357,6 +359,22 @@ class FeatureDecouplingTests(unittest.TestCase):
                                                  'frozen_piv_sources'))
         self.assertTrue(registry.feature_enabled('semantic-live',
                                                  'multi_i_claims'))
+        self.assertFalse(registry.feature_enabled('semantic-live',
+                                                  'direct_v_prescreen'))
+        self.assertFalse(registry.feature_enabled('semantic-v3.16',
+                                                  'direct_v_prescreen'))
+        self.assertFalse(registry.feature_enabled('semantic-v3.20',
+                                                  'direct_v_prescreen'))
+        self.assertFalse(registry.feature_enabled('semantic-live',
+                                                  'gate_direct_v_denominator'))
+        self.assertTrue(registry.feature_enabled('semantic-live',
+                                                 'direct_witness_effects'))
+        self.assertFalse(registry.feature_enabled('semantic-v3.20',
+                                                  'direct_witness_effects'))
+        self.assertFalse(registry.feature_enabled('semantic-v3.16',
+                                                  'gate_direct_v_denominator'))
+        self.assertFalse(registry.feature_enabled('semantic-v3.20',
+                                                  'gate_direct_v_denominator'))
         self.assertFalse(registry.feature_enabled('semantic-live',
                                                   'partial_formalization'))
         self.assertTrue(registry.feature_enabled('semantic-live',

@@ -52,6 +52,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "c4_pipeline_output"
 DEFAULT_FIX_SCRIPT = ROOT / "c4_pipeline_output" / "_tools" / "identity_fix_flatten_order.py"
+PROXY_VARS = [
+    "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+    "ALL_PROXY", "all_proxy", "ftp_proxy", "FTP_PROXY",
+]
 
 
 @dataclass
@@ -375,6 +379,11 @@ def normalize_submission(project_id: str, item: dict[str, Any]) -> FindingRecord
     index = item.get("_index") or item.get("submission_index") or item.get("number") or ""
     handle = item.get("handle") or user.get("handle") or ""
 
+    lines_of_code = split_code_urls(item.get("linesOfCode") or item.get("lines_of_code") or item.get("loc"))
+    if not lines_of_code:
+        # Older contests only embed the "# Lines of code" URLs in the report body.
+        lines_of_code = split_code_urls(item.get("body") or "")
+
     return FindingRecord(
         project_id=project_id,
         submission_index=str(index),
@@ -386,7 +395,7 @@ def normalize_submission(project_id: str, item: dict[str, Any]) -> FindingRecord
         validity=str(latest_eval.get("validity") or item.get("validity") or ""),
         quality=str(latest_eval.get("quality") or item.get("quality") or ""),
         handle=str(handle),
-        lines_of_code=split_code_urls(item.get("linesOfCode") or item.get("lines_of_code") or item.get("loc")),
+        lines_of_code=lines_of_code,
         body=str(item.get("body") or ""),
         proof_of_concept=str(item.get("proofOfConcept") or item.get("proof_of_concept") or ""),
         detail_url=f"{CODE4RENA_API}/audits/{project_id}/submissions/{index}" if index else "",
@@ -457,10 +466,16 @@ def flatten_output_base(finding_key: str, blob: GitHubBlobRef, used_names: set[s
 
 
 def run_command(cmd: list[str], cwd: Path | None = None, timeout_s: int = 300) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    for key in PROXY_VARS:
+        env.pop(key, None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env.setdefault("GIT_ASKPASS", "true")
     try:
         return subprocess.run(
             cmd,
             cwd=str(cwd) if cwd else None,
+            env=env,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -512,12 +527,19 @@ def ensure_github_checkout(
             return None, (checkout_proc.stderr or checkout_proc.stdout).strip()
 
     if submodule_mode != "none":
-        submodule_cmd = ["git", "submodule", "update", "--init"]
+        submodule_cmd = ["git", "submodule", "update", "--init", "--depth", "1"]
         if submodule_mode == "recursive":
             submodule_cmd.append("--recursive")
         submodule_proc = run_command(submodule_cmd, cwd=checkout, timeout_s=command_timeout)
         if submodule_proc.returncode != 0:
-            return None, (submodule_proc.stderr or submodule_proc.stdout).strip()
+            # Some submodules pin a commit that is not reachable by a depth-1
+            # clone of their default branch/tag; retry with a full clone.
+            fallback_cmd = ["git", "submodule", "update", "--init"]
+            if submodule_mode == "recursive":
+                fallback_cmd.append("--recursive")
+            fallback_proc = run_command(fallback_cmd, cwd=checkout, timeout_s=command_timeout)
+            if fallback_proc.returncode != 0:
+                return None, (fallback_proc.stderr or fallback_proc.stdout).strip()
 
     return checkout, ""
 
@@ -584,6 +606,50 @@ def write_markdown_reports(report_dir: Path, records: list[FindingRecord]) -> No
         (report_dir / f"{key}.md").write_text("\n".join(md), encoding="utf-8")
 
 
+def find_forge_root(source_file: Path, source_root: Path) -> Path:
+    """Return the nearest ancestor of ``source_file`` that contains a Foundry
+    project marker (foundry.toml, remappings.txt, then package.json). Falls back
+    to the git checkout root so repos without a nested project keep working."""
+    source_root = source_root.resolve()
+    current = source_file.resolve().parent
+    candidates: list[Path] = []
+    while True:
+        candidates.append(current)
+        if current == source_root:
+            break
+        if current.parent == current:
+            break
+        current = current.parent
+    for marker in ("foundry.toml", "remappings.txt", "package.json"):
+        for cand in candidates:
+            if (cand / marker).exists():
+                return cand
+    return source_root
+
+
+def install_npm_deps(project_root: Path, command_timeout: int) -> str:
+    """Install npm dependencies for Hardhat projects (proxy already stripped by
+    run_command). Missing package.json or an existing node_modules directory is
+    treated as already satisfied; any install failure is returned as an error
+    string so flatten can still be attempted."""
+    if not (project_root / "package.json").exists():
+        return ""
+    if (project_root / "node_modules").exists():
+        return ""
+    npm_bin = shutil.which("npm") or "npm"
+    install_cmd = [npm_bin, "install", "--no-audit", "--no-fund", "--loglevel=error"]
+    proc = run_command(
+        install_cmd,
+        cwd=project_root,
+        timeout_s=command_timeout,
+    )
+    if proc.returncode != 0:
+        return (proc.stderr or proc.stdout).strip()
+    if not (project_root / "node_modules").exists():
+        return "npm install exited 0 but node_modules was not created"
+    return ""
+
+
 def flatten_targets(
     project_id: str,
     repo: Path | None,
@@ -608,6 +674,7 @@ def flatten_targets(
     seen: set[tuple[str, str, str, str, str]] = set()
     flatten_cache: dict[tuple[str, str, str, str], FlattenRecord] = {}
     source_root_cache: dict[tuple[str, str, str], tuple[Path | None, str]] = {}
+    npm_install_cache: set[Path] = set()
     used_output_names: set[str] = set()
     results: list[FlattenRecord] = []
 
@@ -695,24 +762,39 @@ def flatten_targets(
             shutil.copy2(source_file, original_source_path)
             record_kwargs["original_source_path"] = str(original_source_path)
 
+            forge_root = find_forge_root(source_file, source_root)
+            has_package_json = (forge_root / "package.json").exists()
+            is_hardhat = has_package_json and not (forge_root / "foundry.toml").exists()
+
             if dry_run:
-                print(f"DRY RUN: {forge_bin} flatten {source_file} -o {raw_out}")
+                hardhat_flag = " --hardhat" if is_hardhat else ""
+                print(f"DRY RUN: {forge_bin} flatten{hardhat_flag} {source_file} -o {raw_out}")
                 result = FlattenRecord(project_id, finding_key, record.title, record.severity, record.validity, code_url, blob.path, blob.line, str(raw_out), str(sorted_out), "planned", **record_kwargs)
                 flatten_cache[cache_key] = result
                 results.append(result)
                 continue
 
-            flatten_cmd = [forge_bin, "flatten", str(source_file), "-o", str(raw_out)]
-            flatten_proc = run_command(flatten_cmd, cwd=source_root, timeout_s=command_timeout)
+            npm_install_error = ""
+            if has_package_json and forge_root not in npm_install_cache:
+                npm_install_error = install_npm_deps(forge_root, command_timeout)
+                npm_install_cache.add(forge_root)
+
+            flatten_cmd = [forge_bin, "flatten"]
+            if is_hardhat:
+                flatten_cmd.append("--hardhat")
+            flatten_cmd.extend([str(source_file), "-o", str(raw_out)])
+            flatten_proc = run_command(flatten_cmd, cwd=forge_root, timeout_s=command_timeout)
             if flatten_proc.returncode != 0:
                 err = (flatten_proc.stderr or flatten_proc.stdout).strip()
+                if npm_install_error:
+                    err = f"npm install: {npm_install_error}\n{err}"
                 result = FlattenRecord(project_id, finding_key, record.title, record.severity, record.validity, code_url, blob.path, blob.line, str(raw_out), str(sorted_out), "forge_failed", err, **record_kwargs)
                 flatten_cache[cache_key] = result
                 results.append(result)
                 continue
 
             fix_cmd = [python_bin, str(fix_script), str(raw_out), str(sorted_out)]
-            fix_proc = run_command(fix_cmd, cwd=source_root, timeout_s=command_timeout)
+            fix_proc = run_command(fix_cmd, cwd=forge_root, timeout_s=command_timeout)
             if fix_proc.returncode != 0:
                 err = (fix_proc.stderr or fix_proc.stdout).strip()
                 result = FlattenRecord(project_id, finding_key, record.title, record.severity, record.validity, code_url, blob.path, blob.line, str(raw_out), str(sorted_out), "fix_failed", err, **record_kwargs)
