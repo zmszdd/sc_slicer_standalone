@@ -1,9 +1,13 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from cli.stage3_fullflow import compose_report, select_negative_targets
+from cli.stage3_fullflow import (BLIND_INVALID_EVALS, METRICS_DIR,
+                                 compose_report, select_negative_targets,
+                                 _judge_anchor_args, _run_script)
 
 
 class SelectNegativeTargetsTest(unittest.TestCase):
@@ -70,6 +74,44 @@ class ComposeReportTest(unittest.TestCase):
         self.assertEqual(report['judge_anchored'], {'precision': 0.9})
         self.assertEqual(report['negative_build'], {'targets': 1})
         self.assertIn('metrics', report)
+
+
+class RunScriptTest(unittest.TestCase):
+    def test_run_script_invokes_file_directly_not_as_module(self):
+        captured = {}
+        original = subprocess.run
+
+        class _Proc:
+            returncode = 0
+
+        def fake_run(cmd, **kwargs):
+            captured['cmd'] = cmd
+            captured['kwargs'] = kwargs
+            return _Proc()
+
+        subprocess.run = fake_run
+        try:
+            self.assertEqual(
+                _run_script(Path('/x/metrics/judge_anchor.py'),
+                            ['--out', '/tmp/o']),
+                0)
+        finally:
+            subprocess.run = original
+        self.assertEqual(captured['cmd'][:2],
+                         [sys.executable, '/x/metrics/judge_anchor.py'])
+        self.assertEqual(captured['kwargs']['cwd'], '/x/metrics')
+
+    def test_judge_anchor_args_include_blind_invalid_evals(self):
+        args = _judge_anchor_args(Path('/x/gt.json'), Path('/y/pe.json'),
+                                  Path('/z/out.json'))
+        self.assertIn('--judge-ground-truth', args)
+        self.assertIn('--positive-eval', args)
+        self.assertIn('--out', args)
+        for name in BLIND_INVALID_EVALS:
+            blind = METRICS_DIR / name
+            if blind.is_file():
+                self.assertIn('--blind-invalid-eval', args)
+                self.assertIn(str(blind), args)
 
 
 if __name__ == '__main__':

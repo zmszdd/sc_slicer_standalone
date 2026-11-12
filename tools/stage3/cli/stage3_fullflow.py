@@ -27,6 +27,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]  # tools/stage3
 DEFAULT_JUDGE_GT = ROOT / 'evaluation' / 'metrics' / 'judge_ground_truth.json'
+METRICS_DIR = ROOT / 'evaluation' / 'metrics'
+BLIND_INVALID_EVALS = (
+    'positive_eval_blind_invalid.json',
+    'positive_eval_blind_invalid_remaining.json',
+    'positive_eval_blind_invalid_sukukfi_p1.json',
+)
 
 from lib.metrics_sync import reconcile_positive_eval
 from lib.verdict_loop import REPAIR_LOOP_VERDICTS
@@ -35,6 +41,31 @@ from lib.verdict_loop import REPAIR_LOOP_VERDICTS
 def _run(args: list[str]) -> int:
     proc = subprocess.run([sys.executable, '-m'] + args, cwd=str(ROOT))
     return proc.returncode
+
+
+def _run_script(path: Path, args: list[str]) -> int:
+    """Run a standalone script by file path (``python <path>``), not as a module.
+
+    ``_run`` prepends ``-m`` for stage-3 CLI modules, which fails for file paths
+    such as ``evaluation/metrics/judge_anchor.py``.
+    """
+    proc = subprocess.run([sys.executable, str(path)] + args,
+                          cwd=str(path.parent))
+    return proc.returncode
+
+
+def _judge_anchor_args(judge_gt: Path, positive_eval: Path,
+                       out: Path) -> list[str]:
+    args = [
+        '--judge-ground-truth', str(judge_gt),
+        '--positive-eval', str(positive_eval),
+        '--out', str(out),
+    ]
+    for name in BLIND_INVALID_EVALS:
+        blind = METRICS_DIR / name
+        if blind.is_file():
+            args += ['--blind-invalid-eval', str(blind)]
+    return args
 
 
 def _read(path: Path) -> dict | list:
@@ -222,10 +253,11 @@ def main(argv=None):
         negative = []
 
     judge_out = out_dir / 'judge_anchored_metrics.json'
-    _run([str(ROOT / 'evaluation' / 'metrics' / 'judge_anchor.py'),
-          '--judge-ground-truth', str(args.judge_ground_truth),
-          '--positive-eval', str(positive_path),
-          '--out', str(judge_out)])
+    code = _run_script(
+        METRICS_DIR / 'judge_anchor.py',
+        _judge_anchor_args(args.judge_ground_truth, positive_path, judge_out))
+    if code != 0:
+        raise SystemExit(f'judge_anchor failed with exit code {code}')
     judge_metrics = _read(judge_out) if judge_out.is_file() else None
 
     report = compose_report(positive, negative, judge_metrics, negative_build)
