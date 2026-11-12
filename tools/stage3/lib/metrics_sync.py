@@ -112,14 +112,20 @@ def run_metrics_scripts(python: str = sys.executable) -> list[tuple[str, int]]:
     return results
 
 
-def reconcile_positive_eval(runs_dir: Path) -> int:
+def reconcile_positive_eval(runs_dir: Path,
+                            positive_eval: Path | None = None,
+                            judge_ground_truth: Path | None = None) -> int:
     """Mark judge-valid cases whose latest auto run reproduced as reproduced=1.
 
     ``judge_anchor.py`` derives TP from ``positive_eval_105.json``; this closes
     the gap between latest run artifacts and the hand-maintained eval snapshot.
     """
-    pe = read_json(METRICS / 'positive_eval_105.json')
-    gt = read_json(METRICS / 'judge_ground_truth.json')
+    positive_eval = Path(positive_eval) if positive_eval else \
+        METRICS / 'positive_eval_105.json'
+    pe = read_json(positive_eval)
+    judge_ground_truth = Path(judge_ground_truth) if judge_ground_truth else \
+        METRICS / 'judge_ground_truth.json'
+    gt = read_json(judge_ground_truth)
     valid = {row['case'] for row in gt.get('cases', [])
              if row.get('validity') in VALID_STATES}
     changed = 0
@@ -155,7 +161,7 @@ def reconcile_positive_eval(runs_dir: Path) -> int:
         row['verdicts'] = ['violation_reproduced'] + [
             v for v in verdicts if v != 'violation_reproduced']
         changed += 1
-    write_json(METRICS / 'positive_eval_105.json', pe)
+    write_json(positive_eval, pe)
     return changed
 
 

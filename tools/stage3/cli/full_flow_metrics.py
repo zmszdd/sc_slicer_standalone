@@ -28,6 +28,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from lib.verdict_loop import TERMINAL_VERDICTS
+
 ROOT = Path(__file__).resolve().parents[1]  # tools/stage3
 
 
@@ -42,7 +44,7 @@ def _wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     return ((center - m) / d, (center + m) / d)
 
 
-DYNAMIC_VERDICTS = ('violation_reproduced', 'violation_not_reproduced')
+DYNAMIC_VERDICTS = tuple(TERMINAL_VERDICTS)
 NOT_EVALUABLE_VERDICTS = ('not_dynamically_expressible', 'halt_witness_required')
 
 BLOCKED_STATUSES = {

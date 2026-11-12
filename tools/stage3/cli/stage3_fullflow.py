@@ -28,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]  # tools/stage3
 DEFAULT_JUDGE_GT = ROOT / 'evaluation' / 'metrics' / 'judge_ground_truth.json'
 
+from lib.metrics_sync import reconcile_positive_eval
 from lib.verdict_loop import REPAIR_LOOP_VERDICTS
 
 
@@ -193,6 +194,9 @@ def main(argv=None):
         if code != 0:
             raise SystemExit(f'positive eval failed with exit code {code}')
         positive = _read(positive_path)
+    # 出数前强制把 positive-eval 快照与最新 runs 对账，避免手工快照漂移。
+    reconcile_positive_eval(ROOT / 'runs', positive_path, args.judge_ground_truth)
+    positive = _read(positive_path)
 
     negative_build = None
     if args.negative_results:

@@ -16,9 +16,11 @@ import json
 import math
 from pathlib import Path
 
+from lib.verdict_loop import TERMINAL_VERDICTS
+
 ROOT = Path(__file__).resolve().parents[1]
 
-DYNAMIC = ('violation_reproduced', 'violation_not_reproduced')
+DYNAMIC = tuple(TERMINAL_VERDICTS)
 BLOCKED_STATUSES = {'no_stage2_run', 'stage2_blocked', 'zero_claims',
                     'no_flatten', 'no_bound_claims'}
 VERDICT_ALIASES = {

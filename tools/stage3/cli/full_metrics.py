@@ -28,8 +28,10 @@ import json
 from collections import Counter
 from pathlib import Path
 
-TERMINAL = {'violation_reproduced', 'violation_not_reproduced'}
-VERIFIABLE = TERMINAL | {'inconclusive'}
+from lib.verdict_loop import EVIDENCE_VERDICTS, TERMINAL_VERDICTS
+
+TERMINAL = TERMINAL_VERDICTS
+VERIFIABLE = EVIDENCE_VERDICTS
 
 
 def _read_json(path: Path):

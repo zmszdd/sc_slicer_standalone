@@ -16,16 +16,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]  # tools/stage3
+sys.path.insert(0, str(ROOT))
+from lib.verdict_loop import TERMINAL_VERDICTS
+
 DEFAULT_EVAL = ROOT / 'evaluation' / 'metrics' / 'positive_eval_105.json'
 DEFAULT_GT = ROOT / 'evaluation' / 'metrics' / 'judge_ground_truth.json'
 RUNS = ROOT / 'runs'
 P2_AUTO = ROOT / 'evaluation' / 'metrics' / 'p2_auto_reproductions_20261110.json'
 VALID = {'valid', 'fixed', 'wontfix'}
-DYNAMIC = ('violation_reproduced', 'violation_not_reproduced')
+DYNAMIC = tuple(TERMINAL_VERDICTS)
 
 
 def latest_summary(case: str) -> dict | None:

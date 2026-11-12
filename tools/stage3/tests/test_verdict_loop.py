@@ -1,7 +1,8 @@
 import unittest
 
-from lib.verdict_loop import BINDING_FIXABLE_VERDICTS, NON_FIXABLE_VERDICTS, \
-    REPAIR_LOOP_VERDICTS, TERMINAL_VERDICTS, repair_hint, verdict_action
+from lib.verdict_loop import BINDING_FIXABLE_VERDICTS, EVIDENCE_VERDICTS, \
+    NON_FIXABLE_VERDICTS, REPAIR_LOOP_VERDICTS, TERMINAL_VERDICTS, \
+    repair_hint, verdict_action
 
 
 class VerdictLoopTest(unittest.TestCase):
@@ -126,6 +127,17 @@ class VerdictLoopTest(unittest.TestCase):
                       REPAIR_LOOP_VERDICTS)
         self.assertIs(stage3_autorun.REPAIR_LOOP_VERDICTS,
                       REPAIR_LOOP_VERDICTS)
+
+    def test_terminal_verdict_sets_derive_from_single_source(self):
+        from cli import (full_flow_metrics, full_metrics, metrics_report,
+                         stage3_negative_batch, stage3_negative_eval)
+        self.assertEqual(metrics_report.DYNAMIC, tuple(TERMINAL_VERDICTS))
+        self.assertIs(full_metrics.TERMINAL, TERMINAL_VERDICTS)
+        self.assertIs(full_metrics.VERIFIABLE, EVIDENCE_VERDICTS)
+        self.assertEqual(full_flow_metrics.DYNAMIC_VERDICTS,
+                         tuple(TERMINAL_VERDICTS))
+        self.assertIs(stage3_negative_batch.TERMINAL, TERMINAL_VERDICTS)
+        self.assertIs(stage3_negative_eval.VERDICTS, EVIDENCE_VERDICTS)
 
 
 if __name__ == '__main__':

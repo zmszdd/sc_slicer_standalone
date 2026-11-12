@@ -23,8 +23,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from lib.verdict_loop import TERMINAL_VERDICTS
+
 ROOT = Path(__file__).resolve().parents[1]  # tools/stage3
-TERMINAL = {'violation_reproduced', 'violation_not_reproduced'}
+
+TERMINAL = TERMINAL_VERDICTS
 
 
 def _reproduced_claims(case_name: str, runs_dir: Path) -> list[str]:

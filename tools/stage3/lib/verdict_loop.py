@@ -5,6 +5,9 @@ TERMINAL_VERDICTS = {
     'violation_reproduced',
     'violation_not_reproduced',
 }
+# Dynamic terminal verdicts plus ``inconclusive``: the shared "evidence /
+# verifiable" core used by metrics, acceptance and negative-sample scripts.
+EVIDENCE_VERDICTS = TERMINAL_VERDICTS | {'inconclusive'}
 BINDING_FIXABLE_VERDICTS = {
     'partial_binding',
     'preconditions_infeasible_on_code',

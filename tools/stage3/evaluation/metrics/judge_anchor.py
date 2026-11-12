@@ -19,12 +19,15 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from collections import Counter
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from lib.verdict_loop import TERMINAL_VERDICTS
 
 VALID_STATES = {'valid', 'fixed', 'wontfix'}
-DYNAMIC = ('violation_reproduced', 'violation_not_reproduced')
+DYNAMIC = tuple(TERMINAL_VERDICTS)
 CEILING_VERDICTS = {'reference_patch_required', 'not_dynamically_expressible'}
 
 
@@ -103,9 +106,17 @@ def main(argv=None) -> int:
                         help='JSON {"cases": [...]} of impact-insufficient FP case ids.')
     parser.add_argument('--out', type=Path,
                         default=Path(__file__).with_name('judge_anchored_metrics.json'))
+    parser.add_argument('--reconcile-runs', action='store_true',
+                        help='reconcile positive-eval snapshot against the latest '
+                             'stage-3 runs before computing metrics')
     args = parser.parse_args(argv)
 
     impact_gate = load_impact_gate(args.impact_gate)
+
+    if args.reconcile_runs:
+        from lib.metrics_sync import reconcile_positive_eval
+        reconcile_positive_eval(Path(__file__).resolve().parents[2] / 'runs',
+                                args.positive_eval, args.judge_ground_truth)
 
     judges = judge_map(args.judge_ground_truth)
     positive = load_eval(args.positive_eval)

@@ -7,7 +7,8 @@ import time
 from pathlib import Path
 from unittest import TestCase
 
-from lib.metrics_sync import discover_auto_reproductions, latest_run_summary
+from lib.metrics_sync import (discover_auto_reproductions, latest_run_summary,
+                              reconcile_positive_eval)
 
 
 def _write_summary(run_dir: Path, case: str, claim: str, verdict: str,
@@ -77,6 +78,51 @@ class MetricsSyncTest(TestCase):
                                            existing_auto={case_c})
         self.assertEqual({r['case'] for r in rows}, {case_a})
         self.assertEqual(rows[0]['run_id'], run_a.name)
+
+
+class ReconcilePositiveEvalTest(TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.runs = self.tmp / 'runs'
+        self.runs.mkdir()
+        self.eval_path = self.tmp / 'positive_eval.json'
+        self.gt_path = self.tmp / 'judge_ground_truth.json'
+
+    def _write_eval(self, cases):
+        self.eval_path.write_text(json.dumps({'cases': cases}) + '\n')
+
+    def _write_gt(self, cases):
+        self.gt_path.write_text(json.dumps({'cases': cases}) + '\n')
+
+    def test_flips_reproduced_for_valid_case_with_latest_run(self):
+        case = 'Proj_A__sub'
+        run = self.runs / f'{case}__impact_claim_x__20261111T000000Z'
+        _write_summary(run, case, 'c1', 'violation_reproduced', 'Success',
+                       'Failure', 'panic: assertion failed (0x01)')
+        self._write_gt([{'case': case, 'validity': 'valid'}])
+        self._write_eval([{'case': case, 'status': 'done', 'reproduced': 0,
+                           'verdicts': ['violation_not_reproduced'],
+                           'claim_ids': ['c1']}])
+        changed = reconcile_positive_eval(self.runs, self.eval_path, self.gt_path)
+        self.assertEqual(changed, 1)
+        row = json.loads(self.eval_path.read_text())['cases'][0]
+        self.assertEqual(row['reproduced'], 1)
+        self.assertIn('violation_reproduced', row['verdicts'])
+        # 幂等：第二次对账不应再变化
+        self.assertEqual(reconcile_positive_eval(self.runs, self.eval_path,
+                                                 self.gt_path), 0)
+
+    def test_ignores_invalid_case(self):
+        case = 'Proj_B__sub'
+        run = self.runs / f'{case}__impact_claim_x__20261111T000000Z'
+        _write_summary(run, case, 'c1', 'violation_reproduced', 'Success',
+                       'Failure', 'panic')
+        self._write_gt([{'case': case, 'validity': 'invalid'}])
+        self._write_eval([{'case': case, 'status': 'done', 'reproduced': 0,
+                           'verdicts': ['violation_not_reproduced'],
+                           'claim_ids': ['c1']}])
+        self.assertEqual(reconcile_positive_eval(self.runs, self.eval_path,
+                                                 self.gt_path), 0)
 
 
 if __name__ == '__main__':

@@ -29,10 +29,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from lib.verdict_loop import EVIDENCE_VERDICTS, TERMINAL_VERDICTS
+
 ROOT = Path(__file__).resolve().parents[1]  # tools/stage3
 RUNS = ROOT / 'runs'
 
-VERDICTS = {'violation_reproduced', 'violation_not_reproduced', 'inconclusive'}
+VERDICTS = EVIDENCE_VERDICTS
 
 
 def _binding_files(case_dir: Path) -> list[Path]:
@@ -85,7 +87,7 @@ def _existing_summary(case_dir: Path, claim_id: str | None) -> dict | None:
         if claim_id and summary.get('claim_id') != claim_id:
             continue
         verdict = summary.get('consistency_verdict')
-        rank = 0 if verdict in {'violation_reproduced', 'violation_not_reproduced'} else 1
+        rank = 0 if verdict in TERMINAL_VERDICTS else 1
         matches.append((rank, summary_path.stat().st_mtime, summary))
     if not matches:
         return None
