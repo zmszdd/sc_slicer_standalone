@@ -25,6 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]  # tools/stage3
 METRICS = ROOT / 'evaluation' / 'metrics'
 P2_AUTO = METRICS / 'p2_auto_reproductions_20261110.json'
+REFPATCH = METRICS / 'reference_patch_reproductions_20261110.json'
 VALID_STATES = {'valid', 'fixed', 'wontfix'}
 
 
@@ -377,6 +378,20 @@ def sync(runs_dir: Path | None = None) -> dict:
     p2['generated'] = '2026-11-11'
     write_json(P2_AUTO, p2)
 
+    refpatch = read_json(REFPATCH)
+    refpatch_rows = discover_reference_patch_reproductions(
+        runs_dir, judge.get('cases', []))
+    refpatch_cases = list(refpatch.get('cases', []))
+    refpatch_known = {row['case'] for row in refpatch_cases}
+    for row in refpatch_rows:
+        if row['case'] in refpatch_known:
+            continue
+        refpatch_cases.append(row)
+    refpatch['cases'] = refpatch_cases
+    refpatch['count'] = len(refpatch_cases)
+    refpatch['generated'] = '2026-11-13'
+    write_json(REFPATCH, refpatch)
+
     reconciled = reconcile_positive_eval(runs_dir)
 
     judge_cmd = [sys.executable, str(METRICS / 'judge_anchor.py')]
@@ -398,7 +413,9 @@ def sync(runs_dir: Path | None = None) -> dict:
     script_results = run_metrics_scripts()
     return {
         'new_auto_cases': new_rows,
+        'new_refpatch_cases': refpatch_rows,
         'p2_auto_count': len(cases),
+        'refpatch_count': len(refpatch_cases),
         'positive_eval_reconciled': reconciled,
         'judge_anchor_exit': judge.returncode,
         'metrics_report_exit': report.returncode,

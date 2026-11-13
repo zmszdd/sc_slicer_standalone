@@ -1,16 +1,15 @@
 # 复现失败（FN）根因分层
 
-判例有效但未复现：**35** 例
+判例有效但未复现：**33** 例
 
 | 根因 | 数量 |
 | --- | ---: |
 | mixed_non_dynamic | 13 |
-| partial_binding | 7 |
+| partial_binding | 6 |
 | poc_not_witnessed | 4 |
 | inconclusive | 3 |
 | invariant_holds_on_exploit_path | 3 |
 | not_dynamically_expressible | 2 |
-| patch_no_effect | 1 |
 | reference_patch_required | 1 |
 | stage2:no_stage2_run | 1 |
 
@@ -39,14 +38,12 @@
 | Panoptic__Next_Core_iqcUwAhCZyD__SXv7e4wnnbo__aSN55Rnh4p8 | mixed_non_dynamic | compile_error:2; partial_binding:2 |
 | Hybra_Finance_xo4hapwL2Jy__F4rfhrN24eF__f549enU39vL | not_dynamically_expressible | not_dynamically_expressible:1 |
 | Kinetiq_k8aVPPVguSE__YdUkynebFvW__FCU4bMUR3hY | not_dynamically_expressible | not_dynamically_expressible:2 |
-| Blackhole_GUT9Y3UVuWn__ZyhZwQzWzbf__bc6LVb2Kvjn | partial_binding | partial_binding:2 |
 | Brix_Money_qy7NXr77sDh__PGwVR6CTD6U__5pt4vrEZuyz | partial_binding | partial_binding:4 |
 | Ekubo_3FTodhsvBkM__uPQxpkt7qin__5cvoTowJqyq | partial_binding | partial_binding:1 |
 | Hybra_Finance_xo4hapwL2Jy__fsfqfuE2eMf__nb9hn2hBQ2b | partial_binding | partial_binding:1 |
 | Monetrix_L3gNZDymiju__vbdhAfq36PC__NaDr87ezifs | partial_binding | partial_binding:3 |
 | Panoptic__Next_Core_iqcUwAhCZyD__CUEQdPu878N__ayGYSR98MV8 | partial_binding | partial_binding:1 |
 | Virtuals_Protocol_hzMS6ZZkBTg__uRCNRZgiUjz__j6HuVHjfaBC | partial_binding | partial_binding:1 |
-| Ekubo_3FTodhsvBkM__NCCWNLzZ86f__bKb5Sm2R6Jq | patch_no_effect | patch_no_effect:1 |
 | Covenant_d4uY8y2AMSs__CF5ba95T4KR__5atNeQZ3fR4 | poc_not_witnessed | poc_not_witnessed:2 |
 | Covenant_d4uY8y2AMSs__otmbJXz4irq__h23uU6Ai3Mx | poc_not_witnessed | poc_not_witnessed:1 |
 | GTE_Perps_and_Launchpad_gtn2Umg6KsC__FbQktkofz8X__yG32SUkqYGK | poc_not_witnessed | poc_not_witnessed:1 |

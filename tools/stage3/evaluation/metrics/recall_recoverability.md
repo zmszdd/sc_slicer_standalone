@@ -1,11 +1,11 @@
 # 自动召回可恢复性分层
 
-判例有效但自动口径未复现：**35** 例
+判例有效但自动口径未复现：**33** 例
 
 | PoC 形态 | 数量 | 自动可修性 |
 | --- | ---: | --- |
 | state_assert_test | 14 | 首选：绑定/快照修复 |
-| revert_expected_test | 13 | 部分可修，多数走参考补丁上限 |
+| revert_expected_test | 11 | 部分可修，多数走参考补丁上限 |
 | other_test | 7 | 逐例判断 |
 | no_body | 1 | 先补 stage2 产物 |
 
@@ -21,12 +21,10 @@
 | Hybra_Finance_xo4hapwL2Jy__jegipCJB5Kv__dQUWyfXRnAP | other_test | inconclusive |  | 2 |
 | Intuition_2VUsxVJwReb__6YNDfbQYkTa__KcTHtNrsMFs | other_test | partial_binding |  | 4 |
 | Virtuals_Protocol_hzMS6ZZkBTg__bp8cZknNbnC__eSjbpXjKeUJ | other_test | inconclusive |  | 0 |
-| Blackhole_GUT9Y3UVuWn__ZyhZwQzWzbf__bc6LVb2Kvjn | revert_expected_test | effect_observed_invariant_holds |  | 0 |
-| Brix_Money_qy7NXr77sDh__9zdYSJrejx4__wsQo6qFtVdZ | revert_expected_test | partial_binding |  | 3 |
+| Brix_Money_qy7NXr77sDh__9zdYSJrejx4__wsQo6qFtVdZ | revert_expected_test | compile_error | binding_compile_failure | 1 |
 | Brix_Money_qy7NXr77sDh__PGwVR6CTD6U__5pt4vrEZuyz | revert_expected_test | compile_error | binding_compile_failure | 0 |
 | Covenant_d4uY8y2AMSs__CF5ba95T4KR__5atNeQZ3fR4 | revert_expected_test | compile_error | binding_compile_failure | 0 |
 | Ekubo_3FTodhsvBkM__NCCWNLzZ86f__2fRwZrwxdmF | revert_expected_test | partial_binding |  | 15 |
-| Ekubo_3FTodhsvBkM__NCCWNLzZ86f__bKb5Sm2R6Jq | revert_expected_test | effect_observed_invariant_holds |  | 0 |
 | Forte__Float128_Solidity_Library_evjHaYmvKxh__kAkKE5sSeTR__G9JhCyBVTcC | revert_expected_test | binding_error |  | 0 |
 | GTE_Spot_CLOB_and_Router_qa8y3zjgyCn__vcmNqStwjRg__6bECv5mp6yL | revert_expected_test | partial_binding |  | 3 |
 | Hybra_Finance_xo4hapwL2Jy__XgPnfi6S3qh__TJzbsr7Tbkg | revert_expected_test | binding_error |  | 2 |

@@ -1,6 +1,6 @@
 # 自动召回 FN 工作队列
 
-判例有效但自动口径未复现：**35** 例；可恢复 **31** / 天花板 **4**。
+判例有效但自动口径未复现：**33** 例；可恢复 **29** / 天花板 **4**。
 
 | 优先级 | 动作 | 数量 |
 | --- | --- | ---: |
@@ -8,7 +8,6 @@
 | P9 | stage2_rerun | 4 |
 | P9 | witness_poc | 4 |
 | P9 | retry_inconclusive | 3 |
-| P9 | effect_predicate | 2 |
 | P9 | reference_patch | 4 |
 
 ## 队列
@@ -17,7 +16,7 @@
 | --- | --- | --- | --- | ---: | --- |
 | Ekubo_3FTodhsvBkM__uPQxpkt7qin__5cvoTowJqyq | rebind | other_test | partial_binding | 3 | binding repairable: run stage3_verdict_loop to re-propose (['ced3e7f5f_exactin_fee_paid', 'ced3e7f5f_exactout_fee_paid', 'ced3e7f5f_paths_fee_mismatch'] UNBOUND, compile=-) |
 | Intuition_2VUsxVJwReb__6YNDfbQYkTa__KcTHtNrsMFs | rebind | other_test | partial_binding | 4 | binding repairable: run stage3_verdict_loop to re-propose (['c6c0a8f28_time_window_modified_by_third_party', 'c6c0a8f28_signature_invalidated_by_modification', 'c6c0a8f28_time_window_bound_to_signature', 'c6c0a8f28_victim_userop_permanently_blocked'] UNBOUND, compile=-) |
-| Brix_Money_qy7NXr77sDh__9zdYSJrejx4__wsQo6qFtVdZ | rebind | revert_expected_test | partial_binding | 3 | binding repairable: run stage3_verdict_loop to re-propose (['c68174298_channel_permanently_blocked_for_other_users', 'c68174298_other_users_cannot_receive_unstaked_funds', 'cb327fb04_channel_permanently_blocked_for_others'] UNBOUND, compile=-) |
+| Brix_Money_qy7NXr77sDh__9zdYSJrejx4__wsQo6qFtVdZ | rebind | revert_expected_test | compile_error | 1 | binding repairable: run stage3_verdict_loop to re-propose (['cb327fb04_channel_permanently_blocked_for_others'] UNBOUND, compile=binding_compile_failure) |
 | Brix_Money_qy7NXr77sDh__PGwVR6CTD6U__5pt4vrEZuyz | rebind | revert_expected_test | compile_error | 0 | binding repairable: run stage3_verdict_loop to re-propose (0 UNBOUND, compile=binding_compile_failure) |
 | Ekubo_3FTodhsvBkM__NCCWNLzZ86f__2fRwZrwxdmF | rebind | revert_expected_test | partial_binding | 15 | binding repairable: run stage3_verdict_loop to re-propose (['c827f3dbf_nonzero_debt_count_at_lock_completion', 'ca4e0701f_nonzero_debt_count_at_lock_completion', 'cfff479f8_nonzero_debt_count_at_lock_completion', 'c8ba3f1d6_nonzero_debt_count_at_lock_completion', 'c544fa1fd_nonzero_debt_count_at_lock_completion', 'cdf81248c_nonzero_debt_count_at_lock_completion', 'cdf81248c_position_withdrawal_blocked', 'cc3ea6ab2_nonzero_debt_count_at_lock_completion', 'cb91800b1_nonzero_debt_count_at_lock_completion', 'c865f93cc_nonzero_debt_count_at_lock_completion', 'c85ff672d_nonzero_debt_count_at_lock_completion', 'c6b8782eb_nonzero_debt_count_after_lock', 'c6b8782eb_pool_usable_after_attack', 'cf9991bbb_nonzero_debt_count_is_zero_at_lock_completion', 'c476d2827_nonzero_debt_count_at_lock_completion'] UNBOUND, compile=-) |
 | Forte__Float128_Solidity_Library_evjHaYmvKxh__kAkKE5sSeTR__G9JhCyBVTcC | rebind | revert_expected_test | binding_error | 0 | binding repairable: run stage3_verdict_loop to re-propose (0 UNBOUND, compile=-) |
@@ -44,8 +43,6 @@
 | Hybra_Finance_xo4hapwL2Jy__jegipCJB5Kv__dQUWyfXRnAP | retry_inconclusive | other_test | inconclusive | 2 | LLM verdict abstained: retry with repair hint |
 | Virtuals_Protocol_hzMS6ZZkBTg__bp8cZknNbnC__eSjbpXjKeUJ | retry_inconclusive | other_test | inconclusive | 0 | LLM verdict abstained: retry with repair hint |
 | Hybra_Finance_xo4hapwL2Jy__XgPnfi6S3qh__TJzbsr7Tbkg | retry_inconclusive | revert_expected_test | binding_error | 2 | LLM verdict abstained: retry with repair hint |
-| Blackhole_GUT9Y3UVuWn__ZyhZwQzWzbf__bc6LVb2Kvjn | effect_predicate | revert_expected_test | effect_observed_invariant_holds | 0 | revert_expected_test: effect V must be witnessed independently; otherwise route to reference-patch ceiling |
-| Ekubo_3FTodhsvBkM__NCCWNLzZ86f__bKb5Sm2R6Jq | effect_predicate | revert_expected_test | effect_observed_invariant_holds | 0 | revert_expected_test: effect V must be witnessed independently; otherwise route to reference-patch ceiling |
 | Hybra_Finance_xo4hapwL2Jy__F4rfhrN24eF__f549enU39vL | reference_patch | other_test | not_dynamically_expressible | 1 | multi-contract / unobservable should-be semantics: build an M1 reference patch rather than auto-assert |
 | Hybra_Finance_xo4hapwL2Jy__fsfqfuE2eMf__nb9hn2hBQ2b | reference_patch | other_test | binding_error | 0 | multi-contract / unobservable should-be semantics: build an M1 reference patch rather than auto-assert |
 | Kinetiq_k8aVPPVguSE__YdUkynebFvW__FCU4bMUR3hY | reference_patch | revert_expected_test | not_dynamically_expressible | 6 | multi-contract / unobservable should-be semantics: build an M1 reference patch rather than auto-assert |
