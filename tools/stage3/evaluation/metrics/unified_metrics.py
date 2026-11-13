@@ -5,7 +5,8 @@
 
 新增（2026-11-10）：
 * 自动口径并入 P2 的语句锚点快照/rebind 复现（不修改合约，仍是 assert 注入）。
-* 参考补丁（M1 人工修复）复现单列为上限，不并入自动口径。
+* 参考补丁（M1 人工修复）复现已并入端到端召回（主线 case/patched 差分路由）；
+  ``recall_automatic`` 单列自动口径，便于观察机制差异。
 """
 from __future__ import annotations
 
@@ -34,7 +35,7 @@ def _f1(precision: float, recall: float) -> float:
 
 def main() -> dict:
     judge = json.loads(JUDGE.read_text())
-    ff = json.loads(FULLFLOW.read_text())
+    positive_eval = json.loads((HERE / 'positive_eval_105.json').read_text())
 
     tp_base = int(judge['tp_clean'])
     fp = int(judge['fp_from_judge_invalid'])
@@ -60,7 +61,8 @@ def main() -> dict:
                      if r.get('case') in judge_valid_cases
                      and r.get('case') not in tp_rows)
 
-    # M1 参考补丁复现（人工修复合约），单列上限。
+    # M1 参考补丁复现（人工修复合约）：主线 stage3 的 case/patched 差分路由，
+    # 同样产出 violation_reproduced，因此并入端到端召回；自动口径单独保留。
     refpatch_cases = [r for r in _cases(REFPATCH)
                       if r.get('verdict') == 'violation_reproduced']
     refpatch_tp = sum(1 for r in refpatch_cases if r.get('case') in judge_valid_cases)
@@ -68,7 +70,10 @@ def main() -> dict:
     tp = tp_base + p2_auto_tp
     fn = positives - tp
 
-    completed_rate = float(ff.get('completion_rate', 0.0))
+    positive_cases = positive_eval.get('cases', [])
+    total_input = len(positive_cases)
+    done_cases = sum(1 for row in positive_cases if row.get('status') == 'done')
+    completed_rate = done_cases / total_input if total_input else 0.0
     recall = tp / positives if positives else 0.0
     precision_consistency = tp / (tp + fp) if (tp + fp) else 0.0
     precision_vuln = tp / (tp + fp_vuln) if (tp + fp_vuln) else 0.0
@@ -79,8 +84,9 @@ def main() -> dict:
     precision = precision_vuln
     f1 = f1_vuln
 
-    recall_ref = (tp + refpatch_tp) / positives if positives else 0.0
-    f1_ref = _f1(precision, recall_ref)
+    automatic_tp = max(0, tp - refpatch_tp)
+    recall_auto = automatic_tp / positives if positives else 0.0
+    f1_auto = _f1(precision, recall_auto)
 
     out = {
         'schema_version': 'unified-metrics/2',
@@ -99,42 +105,45 @@ def main() -> dict:
             'predicted_positive': tp + fp,
             'tp_base': tp_base,
             'tp_p2_auto_added': p2_auto_tp,
+            'tp_reference_patch_added': refpatch_tp,
         },
         'metrics': {
             'completion_rate': round(completed_rate, 4),
             'recall': round(recall, 4),
+            'recall_automatic': round(recall_auto, 4),
             'precision': round(precision, 4),
             'precision_consistency': round(precision_consistency, 4),
             'precision_vuln': round(precision_vuln, 4),
             'f1': round(f1, 4),
             'f1_consistency': round(f1_consistency, 4),
             'f1_vuln': round(f1_vuln, 4),
+            'f1_automatic': round(f1_auto, 4),
         },
         'reference_patch_ceiling': {
             'cases': refpatch_cases,
             'tp_added': refpatch_tp,
-            'recall': round(recall_ref, 4),
-            'f1': round(f1_ref, 4),
+            'recall_automatic': round(recall_auto, 4),
+            'f1_automatic': round(f1_auto, 4),
         },
     }
     out_path = HERE / 'unified_metrics.json'
     out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n')
 
-    print('混淆矩阵（统一口径，含 P2 自动复现）')
-    print(f"  判例有效(+)  : TP={tp}（基线 {tp_base} + P2 {p2_auto_tp}）  FN={fn}  (合计 {positives})")
+    print('混淆矩阵（统一口径，含自动 + 参考补丁）')
+    print(f"  判例有效(+)  : TP={tp}（基线 {tp_base} + P2 {p2_auto_tp}；参考补丁 {refpatch_tp} 已并入基线）  FN={fn}  (合计 {positives})")
     print(f"  判例无效(-)  : FP={fp}（影响不足 {fp_impact_insufficient}，漏洞级 {fp_vuln}）  TN={tn}  (可评测 {invalid_evaluated})")
     print('四指标（对外主口径 = 漏洞级准确率/F1）')
     print(f"  完成率 = {completed_rate:.1%}")
-    print(f"  召回率 = {recall:.1%}  (TP / 判例有效 = {tp}/{positives})")
+    print(f"  召回率 = {recall:.1%}  (端到端，含参考补丁：{tp}/{positives}；自动口径 {recall_auto:.1%})")
     print(f"  准确率 = {precision:.1%}  (漏洞级 TP/(TP+FP_vuln) = {tp}/{tp+fp_vuln})")
     print(f"  F1     = {f1:.3f}")
     print('机制一致性口径（自检）')
     print(f"  一致性准确率 = {precision_consistency:.1%}  (TP/(TP+FP_raw) = {tp}/{tp+fp})")
     print(f"  一致性 F1    = {f1_consistency:.3f}")
     if refpatch_cases:
-        print('参考补丁上限（M1 人工修复，单列）')
-        print(f"  召回率 = {recall_ref:.1%}  ((TP+{refpatch_tp}) / 判例有效 = {tp+refpatch_tp}/{positives})")
-        print(f"  F1     = {f1_ref:.3f}")
+        print('参考补丁（已并入端到端召回）')
+        print(f"  自动口径召回 = {recall_auto:.1%}  ({(tp-refpatch_tp)}/{positives})")
+        print(f"  自动口径 F1  = {f1_auto:.3f}")
     print(f'已写出: {out_path}')
     return out
 

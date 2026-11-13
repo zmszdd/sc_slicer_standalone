@@ -2,7 +2,7 @@
 PY ?= python3
 FORGE ?= forge
 
-.PHONY: doctor install build test test-stage2 test-stage3 test-pipeline e2e metrics metrics-sync
+.PHONY: doctor install build test test-stage2 test-stage3 test-pipeline test-code4rena e2e fmt prune-dry-run metrics metrics-sync
 
 doctor:
 	./scripts/doctor.sh
@@ -13,7 +13,7 @@ install:
 build:
 	cargo build --release
 
-test: test-stage2 test-stage3 test-pipeline
+test: test-stage2 test-stage3 test-pipeline test-code4rena
 	cargo test
 
 test-stage2:
@@ -25,8 +25,17 @@ test-stage3:
 test-pipeline:
 	cd tools/pipeline && $(PY) -m unittest discover -s tests -q
 
+test-code4rena:
+	cd scripts/code4rena && $(PY) -m unittest discover -s tests -q
+
 e2e:
 	./run.sh
+
+fmt:
+	cargo fmt
+
+prune-dry-run:
+	./scripts/prune_evaluation_artifacts.sh
 
 metrics:
 	cd tools/stage3/evaluation/metrics && $(PY) unified_metrics.py
@@ -34,3 +43,6 @@ metrics:
 
 metrics-sync:
 	$(PY) main.py stage3 metrics-sync
+
+metrics-check:
+	cd tools/stage3 && $(PY) -m cli.stage3_metrics_sync --check

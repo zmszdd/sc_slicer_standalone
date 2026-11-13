@@ -33,7 +33,7 @@ from pathlib import Path
 
 from lib.spec_loader import SpecError, claim_binding_contract, load_stage2_run
 from lib.solidity_scan import (scan_src, function_owner, state_var_owner,
-                              poc_test_contract)
+                              poc_test_contract, contract_decl_kind)
 
 ANCHOR_SCHEMA = 'stage3-anchor-resolver/1'
 
@@ -124,10 +124,21 @@ def resolve_anchors(stage2_dir: Path, claim_id: str, src: Path,
     for sym in symbols:
         candidates, observability = candidates_fn(sym, declared)
         anchors = _strong_anchors(raw, candidates, index)
-        anchor = next((a for a in anchors if poc in a['owners']), None) \
-            if poc else None
-        if anchor is None:
-            anchor = anchors[0] if anchors else None
+        # A PoC ``test_*`` function is a probe, never an invariant anchor:
+        # choosing it pulls the injection point into the test harness even
+        # though the invariant lives in a business contract.
+        anchors = [a for a in anchors
+                   if not a['identifier'].startswith('test_')]
+        if anchors:
+            # Prefer a business anchor over one owned only by the PoC test
+            # harness. Name collisions between a business state variable and a
+            # harness-local identifier must resolve to the business contract.
+            business = [a for a in anchors
+                        if not (poc and poc in a['owners']
+                                and len(a['owners']) == 1)]
+            anchor = business[0] if business else anchors[0]
+        else:
+            anchor = None
         contract_owners = ({o for o in anchor['owners'] if o is not None}
                            if anchor else set())
         file_level = bool(anchor and None in anchor['owners'])
@@ -165,10 +176,20 @@ def resolve_anchors(stage2_dir: Path, claim_id: str, src: Path,
             bindability = 'file_level'
             suggested = None
         else:
-            union = set().union(*non_empty)
-            if len(union) == 1:
+            # An interface and its implementation declare the same function:
+            # they are one logical owner, not a cross-contract reference. Use
+            # the intersection of every anchor's owner set; pick the most
+            # concrete contract when several share the anchor identifier.
+            common = set(non_empty[0])
+            for owners in non_empty[1:]:
+                common &= owners
+            if common:
+                def _kind_rank(contract: str) -> int:
+                    kind = contract_decl_kind(raw, contract)
+                    return {'contract': 0, 'abstract contract': 1,
+                            'library': 2, 'interface': 3}.get(kind, 4)
                 bindability = 'single_anchor'
-                suggested = next(iter(union))
+                suggested = sorted(common, key=_kind_rank)[0]
             else:
                 bindability = 'multi_contract'
                 suggested = None

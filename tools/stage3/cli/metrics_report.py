@@ -189,6 +189,13 @@ def analyze(positive: dict, negative: list[dict],
         fp_impact = int(judge_metrics.get('fp_impact_insufficient_count', 0))
         fp_remaining = int(judge_metrics.get('fp_remaining_count',
                                               max(0, fp_judge - fp_impact)))
+        claim_total = int(judge_metrics.get('claim_total', 0))
+        claim_dynamic = int(judge_metrics.get('claim_dynamic', 0))
+        claim_reproduced = int(judge_metrics.get('claim_reproduced', 0))
+        claim_dynamic_rate = judge_metrics.get('claim_dynamic_rate')
+        claim_reproduced_rate = judge_metrics.get('claim_reproduced_rate')
+        mixed_non_dynamic_cases = int(
+            judge_metrics.get('mixed_non_dynamic_cases', 0))
         recall_e2e = tp_clean / relevant if relevant else 0.0
         recall_e2e_ci = (tuple(judge_metrics['recall_end_to_end_ci'])
                          if judge_metrics.get('recall_end_to_end_ci')
@@ -232,6 +239,12 @@ def analyze(positive: dict, negative: list[dict],
             'fp_remaining_count': fp_remaining,
             'f1_vuln_end_to_end': f1_vuln_e2e,
             'f1_vuln_evaluable': f1_vuln_eval,
+            'claim_total': claim_total,
+            'claim_dynamic': claim_dynamic,
+            'claim_reproduced': claim_reproduced,
+            'claim_dynamic_rate': claim_dynamic_rate,
+            'claim_reproduced_rate': claim_reproduced_rate,
+            'mixed_non_dynamic_cases': mixed_non_dynamic_cases,
         }
     else:
         recall_e2e = tp_n / total if total else 0.0
@@ -368,6 +381,8 @@ def render_md(r: dict) -> str:
         lines.append(f"| 召回(端到端) | {_pct(ja['recall_end_to_end'])} | TP={tp} / 判例相关样本 {ja['judge_valid_cases']}，95% CI {_pct(ja['recall_end_to_end_ci'][0])}–{_pct(ja['recall_end_to_end_ci'][1])} |")
         lines.append(f"| 召回(可评测) | {_pct(ja['recall_evaluable'])} | TP={tp} / 判例相关动态样本 {ja['judge_valid_dynamic']}，95% CI {_pct(ja['recall_evaluable_ci'][0])}–{_pct(ja['recall_evaluable_ci'][1])} |")
         lines.append(f"| 召回(端到端天花板) | {_pct(ja['recall_end_to_end_ceiling'])} | 判例相关样本扣除 {ja['ceiling_count']} 例机制天花板（缺参考补丁/不可动态表达）后可达上限 |")
+        if ja.get('claim_total'):
+            lines.append(f"| claim级回收(复现/claim) | {_pct(ja['claim_reproduced_rate'])} | {ja['claim_reproduced']}/{ja['claim_total']} claim，动态率 {_pct(ja['claim_dynamic_rate'])}，mixed_non_dynamic {ja['mixed_non_dynamic_cases']} 例 |")
         if ja.get('precision_vuln_level') is not None:
             lines.append(f"| 准确率(漏洞级·对外主口径) | {_pct(ja['precision_vuln_level'])} | TP={tp} / 剔除影响不足FP后的判复现 {tp+ja.get('fp_remaining_count', fpj)}，95% CI {_pct(ja['precision_vuln_level_ci'][0])}–{_pct(ja['precision_vuln_level_ci'][1])} |")
             lines.append(f"| F1(漏洞级/端到端) | {ja['f1_vuln_end_to_end']:.3f} | 漏洞级准确率 × 端到端召回 |")

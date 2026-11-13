@@ -20,10 +20,20 @@ class CompileError(RuntimeError):
         super().__init__(f'forge compile failed for {self.project_root}')
 
 
+def _no_tests_found(stdout: str) -> bool:
+    """Forge prints a human message (not JSON) when the harness declares no
+    ``test_*`` function; that is a distinct blocker from a compile failure."""
+    return 'No tests found' in (stdout or '')
+
+
 def run_forge(project_root: Path) -> dict:
     proc = subprocess.run(
         [FORGE_BIN, 'test', '--root', str(project_root), '--json'],
         capture_output=True, text=True)
+    if _no_tests_found(proc.stdout):
+        raise RuntimeError(
+            f'no test entrypoint in {project_root}: harness must declare a '
+            'test_* function to drive the differential')
     if proc.returncode != 0 and not proc.stdout.strip():
         raise CompileError(proc.stderr.strip()[:2000], project_root)
     try:
@@ -67,6 +77,15 @@ def run_forge_safe(project_root: Path) -> dict:
     proc = subprocess.run(
         [FORGE_BIN, 'test', '--root', str(project_root), '--json'],
         capture_output=True, text=True)
+    if _no_tests_found(proc.stdout):
+        return {
+            'ok': False,
+            'project': str(project_root),
+            'no_tests': True,
+            'compile_error': ('no test entrypoint found; the harness must '
+                              'declare a test_* function to run the '
+                              'differential'),
+        }
     if proc.returncode != 0 and not proc.stdout.strip():
         return {
             'ok': False,

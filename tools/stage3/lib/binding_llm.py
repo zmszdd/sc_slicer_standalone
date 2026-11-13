@@ -22,7 +22,8 @@ from lib.spec_loader import (SpecError, claim_binding_contract, load_stage2_run,
                              safety_symbols_for_claim)
 from lib.binding import CHECKPOINTS, KINDS, BINDING_SCHEMA
 from lib.solidity_scan import (base_identifiers, contract_has_function,
-                               function_owner, poc_test_function)
+                               contract_instances, function_owner,
+                               poc_test_function)
 
 PROPOSAL_SCHEMA = 'stage3-binding-proposal/1'
 MAX_SOURCE_CHARS = 160000
@@ -172,6 +173,10 @@ _SYSTEM = (
     '- Boolean preconditions that hold on the exploit path may be bound to the '
     'literal "true". An effect that is the negation of the safety property may '
     'use "!".\n'
+    '- NEVER bind a SAFETY (I-side) symbol to a bare "true"/"false" literal: a '
+    'constant invariant is vacuous and the binding will be REJECTED. For an '
+    'unobservable I-side symbol, emit "UNBOUND". A bare "true" is allowed ONLY '
+    'for a P-side precondition that genuinely holds on the exploit path.\n'
     '- For numeric values, prefer a public getter or public storage variable; '
     'do not invent a comparison you cannot ground in the source.\n\n'
     'PATCH/PROBE RULES\n'
@@ -362,6 +367,24 @@ def _migrate_patch_contract(raw_source: str, binding: dict, anchor: dict | None,
         functions[0]['file'] = src_file_name
     else:
         functions.append({'name': target_fn, 'file': src_file_name})
+
+    # The invariant is now injected inside ``suggested``, so any expression
+    # that reached members through the PoC harness instance variable (for
+    # example ``liquidRon.operator(msg.sender)``) must be re-anchored to the
+    # bare member visible inside the owning contract (``operator(msg.sender)``).
+    # Only rewrite when exactly one harness variable has the owning type; with
+    # multiple instances the bare-name rewrite would be ambiguous.
+    if poc_contract:
+        instances = contract_instances(raw_source, poc_contract)
+        matching = [name for name, typ in instances.items()
+                    if typ == suggested]
+        if len(matching) == 1:
+            instance = matching[0]
+            pattern = re.compile(r'\b' + re.escape(instance) + r'\.')
+            for entry in (binding.get('bindings') or {}).values():
+                if isinstance(entry, dict):
+                    expr = str(entry.get('solidity_expr') or '')
+                    entry['solidity_expr'] = pattern.sub('', expr)
     return {'migrated_to': suggested, 'function': target_fn}
 
 
@@ -449,9 +472,10 @@ def propose_binding(stage2_dir: Path, claim_id: str, src_dir: Path,
     if injection:
         user += ('\n\nINJECTION_POINT_ON_DISK: contract ' + injection[0] +
                  ', test function ' + injection[1] +
-                 '. Set patch.contract/probe.contract to this contract and '
-                 'patch.functions[0].name/probe.exploit_test to this function '
-                 'exactly.')
+                 '. Set probe.contract to this contract and '
+                 'probe.exploit_test to this function exactly. Do NOT use this '
+                 'contract for patch.contract when SUGGESTED_PATCH_CONTRACT is '
+                 'present: patch.contract must be the business owner.')
         try:
             from lib.solidity_scan import contract_instances
             raw_source = '\n'.join(sol.read_text() for sol in src_files)
@@ -465,12 +489,12 @@ def propose_binding(stage2_dir: Path, claim_id: str, src_dir: Path,
                 '\n\nCROSS_CONTRACT_INSTANCES: the PoC test harness declares '
                 'these contract-typed state variables (instance name -> contract '
                 'type):\n' + table +
-                '\nWhen a symbol maps to a member declared in one of these '
-                'contracts (state variable or function), bind it as '
-                '<instance>.<member> (for example snft.owner()) instead of the '
-                'bare member name. This is required: a bare member of another '
-                'contract is not visible from the injection point and will fail '
-                'lint.')
+                '\nWhen SUGGESTED_PATCH_CONTRACT is present, bind each symbol '
+                'with a bare identifier declared inside that business contract '
+                '(for example operator(msg.sender), not liquidRon.operator(...)). '
+                'Only bind as <instance>.<member> (for example snft.owner()) '
+                'when SUGGESTED_PATCH_CONTRACT is absent and the injection point '
+                'is the harness itself.')
     user += ('\n\nSOURCE_FILE_ON_DISK: ' + src_file_name +
              '\nUse SOURCE_FILE_ON_DISK as patch.file and the file part of every '
              '"source" field, and set patch.functions[].file to SOURCE_FILE_ON_DISK.')

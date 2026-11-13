@@ -13,21 +13,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from lib.spec_loader import SpecError, load_stage2_run
-from lib.binding_validate import lint_binding
+from lib.case_runner import bind_claims
 
 ROOT = Path(__file__).resolve().parents[1]  # tools/stage3
-
-
-def _round_hint(claim_id: str, round_no: int, problems: list[str]) -> str:
-    items = '; '.join(str(problem) for problem in problems[:12])
-    return (f'round {round_no} failed for claim {claim_id}. '
-            f'Fix these problems: {items}.')
 
 
 def main(argv=None):
@@ -61,95 +54,26 @@ def main(argv=None):
     if not claims:
         raise SystemExit('no claims in stage3-spec.json')
 
-    bindings_dir = case_dir / 'bindings'
-    bindings_dir.mkdir(parents=True, exist_ok=True)
+    result = bind_claims(
+        case_dir=case_dir, stage2_dir=stage2_dir, src_dir=src_dir,
+        claims=claims, formal=stage2['formal'],
+        max_rounds=args.max_rounds, reuse=args.reuse,
+        strict=True, apply_ceiling=False, run_fn=subprocess.run)
 
     rows = []
-    reused = 0
     for claim_id in claims:
-        binding_path = bindings_dir / f'{claim_id}.json'
-        if args.reuse and binding_path.is_file():
-            reused += 1
-            rows.append({'claim_id': claim_id, 'status': 'reused',
-                         'rounds_used': 0, 'unbound': [],
-                         'binding': str(binding_path), 'detail': None})
-            continue
-        proposal_dir = case_dir / 'llm_proposal'
-        hint = None
-        accepted = False
-        bound_counted = False
-        unbound = []
-        rounds_used = 0
-        for round_no in range(1, args.max_rounds + 1):
-            rounds_used = round_no
-            cmd = [sys.executable, '-m', 'cli.stage3_binding_llm',
-                   '--stage2-run', str(stage2_dir), '--claim-id', claim_id,
-                   '--src', str(src_dir), '--out', str(proposal_dir)]
-            if hint:
-                cmd += ['--hint', hint]
-            if round_no > 1 and binding_path.is_file():
-                cmd += ['--existing', str(binding_path)]
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  cwd=str(ROOT))
-            try:
-                proposal = json.loads(proc.stdout)
-            except ValueError:
-                proposal = None
-            if proposal is None or not isinstance(proposal, dict):
-                hint = _round_hint(claim_id, round_no,
-                                   ['transport: ' + (proc.stderr or proc.stdout)[:200]])
-                continue
-            if proposal.get('partial') and not proposal.get('problems'):
-                written = proposal_dir / 'binding.proposal.json'
-                if written.is_file():
-                    shutil.copy2(written, binding_path)
-                    accepted = True
-                    if not bound_counted:
-                        bound_counted = True
-                    unbound = list(proposal.get('unbound') or [])
-                    if round_no < args.max_rounds:
-                        detail = proposal.get('unbound_detail') or {}
-                        rebindable = [s for s in unbound
-                                      if detail.get(s, {}).get('observability') != 'low'
-                                      or detail.get(s, {}).get('candidates')]
-                        if rebindable:
-                            hint = None
-                            continue
-                    break
-            if not proposal.get('ok'):
-                problems = list(proposal.get('problems') or [])
-                if proposal.get('partial'):
-                    problems.append('unbound: ' + ', '.join(
-                        proposal.get('unbound', [])))
-                hint = _round_hint(claim_id, round_no, problems)
-                continue
-            written = proposal_dir / 'binding.proposal.json'
-            if not written.is_file():
-                hint = _round_hint(claim_id, round_no, ['no proposal file written'])
-                continue
-            binding = json.loads(written.read_text())
-            lint = lint_binding(binding, src_dir,
-                                test_dir=case_dir / 'test', strict=True)
-            if lint['summary']['errors']:
-                problems = [f"{problem['where']}: {problem['message']}"
-                            for problem in lint['problems']]
-                hint = _round_hint(claim_id, round_no, problems)
-                continue
-            shutil.copy2(written, binding_path)
-            accepted = True
-            bound_counted = True
-            break
-
+        record = result['records'][claim_id]
         rows.append({
             'claim_id': claim_id,
-            'status': 'bound' if accepted else 'failed',
-            'rounds_used': rounds_used,
-            'unbound': unbound,
-            'binding': str(binding_path) if accepted else None,
-            'detail': hint if not accepted else None,
+            'status': record['status'],
+            'rounds_used': record['rounds_used'],
+            'unbound': record['unbound'],
+            'binding': record['binding'],
+            'detail': record['detail'],
         })
 
     bound = sum(1 for row in rows if row['status'] == 'bound')
+    reused = sum(1 for row in rows if row['status'] == 'reused')
     payload = {
         'schema_version': 'stage3-bind-summary/1',
         'case': str(case_dir),

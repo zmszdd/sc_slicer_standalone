@@ -38,6 +38,28 @@ class ScaleExpansionVerifyTest(unittest.TestCase):
         self.assertTrue(rows[0]['ready'])
         self.assertEqual(rows[0]['sorted_sol_count'], 1)
 
+    def test_discover_candidates_joins_slices_and_submissions(self):
+        proj = self.flatten / 'Recall_MW5DuS6ehpj'
+        (proj / 'flatten_sorted').mkdir(parents=True)
+        (proj / 'flatten_sorted' / 'a.sorted.sol').write_text('')
+        sub = self.reports / 'Recall_MW5DuS6ehpj'
+        sub.mkdir(parents=True)
+        (sub / 'submission_1.json').write_text('{}')
+        rows = self.mod.discover_candidates(self.flatten, self.reports)
+        by_id = {r['project_id']: r for r in rows}
+        self.assertIn('MW5DuS6ehpj', by_id)
+        self.assertTrue(by_id['MW5DuS6ehpj']['ready'])
+        self.assertEqual(by_id['MW5DuS6ehpj']['submissions_count'], 1)
+
+    def test_discover_marks_slice_only_not_ready(self):
+        proj = self.flatten / 'NoReports_ZZZzzz12345'
+        (proj / 'flatten_sorted').mkdir(parents=True)
+        (proj / 'flatten_sorted' / 'a.sorted.sol').write_text('')
+        rows = self.mod.discover_candidates(self.flatten, self.reports)
+        by_id = {r['project_id']: r for r in rows}
+        self.assertFalse(by_id['ZZZzzz12345']['ready'])
+        self.assertIn('no submission dump', by_id['ZZZzzz12345']['blocker'])
+
     def test_missing_sorted_sol_not_ready(self):
         rows = self.mod.verify(
             {'queue': [{'project_id': 'X1', 'project': 'Proj_X1'}]},

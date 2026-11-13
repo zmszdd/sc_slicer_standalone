@@ -281,6 +281,29 @@ def contract_instances(source: str, contract: str) -> dict[str, str]:
     return out
 
 
+def contract_decl_kind(source: str, contract: str) -> str | None:
+    """Return the declaration kind for ``contract`` in ``source``.
+
+    One of ``contract``, ``abstract contract``, ``interface`` or ``library``;
+    ``None`` when the identifier is not a top-level contract/interface/library
+    declaration. Used to pick the most concrete owner when several contracts
+    share the same anchor identifier (for example an interface and its
+    implementation both declaring a function).
+    """
+    clean = _strip_comments_and_strings(source)
+    marker = re.search(
+        rf'\b(abstract\s+)?(contract|interface|library)\s+'
+        rf'{re.escape(contract)}\b', clean)
+    if not marker:
+        return None
+    kind = marker.group(2)
+    if kind == 'interface':
+        return 'interface'
+    if kind == 'library':
+        return 'library'
+    return 'abstract contract' if marker.group(1) else 'contract'
+
+
 def _contract_functions_clean(clean: str, contract: str) -> set[str]:
     """Function names declared directly inside ``contract``."""
     marker = re.search(

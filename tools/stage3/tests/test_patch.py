@@ -7,7 +7,8 @@ from lib.patch import (_render_expr, _snapshot_decls, function_has_halt,
                        function_has_stop, function_has_selfdestruct,
                        _rewrite_stop_globally, inject_patched_sources,
                        injection_has_halt, injection_selfdestruct_targets,
-                       local_decl_statements, relocate_before_snapshots)
+                       local_decl_statements, relocate_before_snapshots,
+                       _contract_region, _function_body)
 
 CASE = Path(__file__).resolve().parents[1] / 'cases' / 'mint_supply'
 
@@ -44,6 +45,33 @@ class PatchInjectionTest(unittest.TestCase):
         self.assertNotIn('stage3:precondition_unwitnessed', source)
         self.assertIn('assert(!((stage3_supply_before) >= (stage3_balance_before))', source)
         self.assertIn('(totalSupply) >= (balanceOf[to])', source)
+
+
+class ContractRegionTest(unittest.TestCase):
+    def test_contract_region_matches_contract(self):
+        source = 'contract A { uint x; }'
+        start, end = _contract_region(source, 'A')
+        self.assertEqual(start, source.index('{'))
+        self.assertEqual(end, source.index('}'))
+
+    def test_contract_region_matches_library(self):
+        # code4rena targets are frequently libraries; patch injection must
+        # locate a library body just like a contract body.
+        source = 'library A { uint x; }'
+        start, end = _contract_region(source, 'A')
+        self.assertEqual(start, source.index('{'))
+        self.assertEqual(end, source.index('}'))
+
+    def test_function_body_inside_library(self):
+        source = 'library A {\n  function f() internal pure returns (uint) { return 1; }\n}\n'
+        open_idx, close_idx = _function_body(source, 'f', 'A')
+        self.assertIn('return 1;', source[open_idx + 1:close_idx])
+
+    def test_contract_region_abstract_contract(self):
+        source = 'abstract contract A { uint x; }'
+        start, end = _contract_region(source, 'A')
+        self.assertEqual(start, source.index('{'))
+        self.assertEqual(end, source.index('}'))
 
 
 class SnapshotRelocationTest(unittest.TestCase):

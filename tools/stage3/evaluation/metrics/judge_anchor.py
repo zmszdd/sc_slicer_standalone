@@ -173,11 +173,40 @@ def main(argv=None) -> int:
     ceiling = ceiling_rows(positive, judges)
     ceiling_count = len(ceiling)
     recoverable_fn = max(0, fn_judge_valid - ceiling_count)
+
+    # Claim-level recovery rail: a case-level TP only flips when the case is
+    # fully reproduced, so progress inside mixed cases (some claims dynamic,
+    # others stuck) is invisible in end-to-end recall.  These totals make that
+    # partial progress observable so the case-level metric stops swallowing it.
+    claim_total = 0
+    claim_dynamic = 0
+    claim_reproduced = 0
+    mixed_non_dynamic_cases = 0
+    for row in judge_valid:
+        verdicts = [v for v in (row.get('verdicts') or []) if v]
+        claim_total += len(verdicts)
+        dynamic = sum(1 for v in verdicts if v in DYNAMIC)
+        claim_dynamic += dynamic
+        claim_reproduced += sum(
+            1 for v in verdicts if v == 'violation_reproduced')
+        if 0 < dynamic < len(verdicts):
+            mixed_non_dynamic_cases += 1
+    claim_dynamic_rate = claim_dynamic / claim_total if claim_total else 0.0
+    claim_reproduced_rate = (
+        claim_reproduced / claim_total if claim_total else 0.0)
     recall_end_to_end_ceiling = (
         (relevant - ceiling_count) / relevant if relevant else 0.0)
     fp_project_counts = dict(Counter(
         (row['case'].split('__')[0] if '__' in row['case'] else row['case'])
         for row in fp_in_pool + fp_blind))
+    fp_projects = sorted(fp_project_counts)
+    fp_family_count = len(fp_projects)
+    fp_duplicate_cases = max(0, fp_total - fp_family_count)
+    precision_family = (
+        len(tp_clean) / (len(tp_clean) + fp_family_count)
+        if len(tp_clean) + fp_family_count else 0.0)
+    fp_concentration = (
+        max(fp_project_counts.values()) / fp_total if fp_total else 0.0)
 
     fp_impact_insufficient, fp_remaining = split_fp(
         fp_in_pool + fp_blind, impact_gate)
@@ -197,12 +226,25 @@ def main(argv=None) -> int:
         'fp_rate_over_invalid_evaluated': (
             fp_total / invalid_evaluated_total if invalid_evaluated_total else 0.0),
         'fp_project_counts': fp_project_counts,
+        'fp_projects': fp_projects,
+        'fp_family_count': fp_family_count,
+        'fp_duplicate_cases': fp_duplicate_cases,
+        'fp_concentration': fp_concentration,
+        'precision_family_level': precision_family,
+        'precision_family_level_ci': _wilson(len(tp_clean),
+                                              len(tp_clean) + fp_family_count),
         'precision': precision,
         'precision_ci': _wilson(len(tp_clean), denom),
         'judge_valid_cases': relevant,
         'judge_valid_dynamic': relevant_dynamic,
         'fn_judge_valid': fn_judge_valid,
         'tn_invalid': tn_invalid,
+        'claim_total': claim_total,
+        'claim_dynamic': claim_dynamic,
+        'claim_reproduced': claim_reproduced,
+        'claim_dynamic_rate': claim_dynamic_rate,
+        'claim_reproduced_rate': claim_reproduced_rate,
+        'mixed_non_dynamic_cases': mixed_non_dynamic_cases,
         'recall_end_to_end_ceiling': recall_end_to_end_ceiling,
         'ceiling_count': ceiling_count,
         'ceiling_rows': ceiling,
@@ -231,8 +273,13 @@ def main(argv=None) -> int:
           f"{report['recall_end_to_end_ci'][1]:.3f})  可评测={recall_evaluable:.3f}")
     print(f"端到端天花板={recall_end_to_end_ceiling:.3f}  "
           f"(机制天花板 {ceiling_count} 例，可恢复 FN {recoverable_fn})")
+    print(f"claim 级：动态 {claim_dynamic}/{claim_total} "
+          f"({claim_dynamic_rate:.3f})，复现 {claim_reproduced}/{claim_total} "
+          f"({claim_reproduced_rate:.3f})，mixed_non_dynamic {mixed_non_dynamic_cases} 例")
     print(f"判例锚定准确率={precision:.3f}  95% CI=({report['precision_ci'][0]:.3f}, "
           f"{report['precision_ci'][1]:.3f})")
+    print(f"FP 项目族={fp_family_count}，重复 FP={fp_duplicate_cases}，"
+          f"集中度={fp_concentration:.2f}，项目族级准确率={precision_family:.3f}")
     print(f"漏洞级准确率={precision_vuln_level:.3f}  (排除影响不足 FP "
           f"{len(fp_impact_insufficient)}, 剩余 FP {len(fp_remaining)})  "
           f"95% CI=({report['precision_vuln_level_ci'][0]:.3f}, "

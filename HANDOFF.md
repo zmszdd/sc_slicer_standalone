@@ -1,6 +1,6 @@
 # SC_Slicer 阶段二工作交接
 
-更新时间：2026-11-11
+更新时间：2026-11-12
 
 项目目录：`/root/sc_slicer_standalone`  
 当前工作范围：`tools/report_constraints_v2/`  
@@ -9,7 +9,7 @@
 > **当前状态入口**：先读
 > [`STAGE2_CURRENT_STATUS.md`](tools/report_constraints_v2/docs/STAGE2_CURRENT_STATUS.md)。
 > 本交接文件保留了历史实施细节；其中旧版本号、测试计数和计划不得覆盖当前状态文档。
-> 当前工作树含未提交变更，开始操作前先看 `git status` 和对应 diff。
+> 工作树应与最新主线提交一致（`git status` 干净）；若出现未提交变更，先看 `git status` 和对应 diff。
 
 ## 1. 当前正在做什么
 

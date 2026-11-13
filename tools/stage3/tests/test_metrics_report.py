@@ -186,6 +186,35 @@ class JudgeAnchoredTest(unittest.TestCase):
         md = render_md(m)
         self.assertIn('召回(端到端天花板)', md)
 
+    def test_claim_level_recovery_rail_propagates(self):
+        jm = {
+            'tp_clean': 43,
+            'judge_valid_cases': 101,
+            'judge_valid_dynamic': 57,
+            'fn_judge_valid': 58,
+            'fp_from_judge_invalid': 15,
+            'tn_invalid': 60,
+            'precision': 43 / 58,
+            'precision_ci': [0.6, 0.8],
+            'recall_end_to_end_ci': [0.3, 0.5],
+            'recall_evaluable_ci': [0.6, 0.9],
+            'claim_total': 363,
+            'claim_dynamic': 173,
+            'claim_reproduced': 87,
+            'claim_dynamic_rate': 173 / 363,
+            'claim_reproduced_rate': 87 / 363,
+            'mixed_non_dynamic_cases': 34,
+        }
+        m = analyze(self._pos(), [], judge_metrics=jm)
+        ja = m['metrics']['judge_anchored']
+        self.assertEqual(ja['claim_total'], 363)
+        self.assertEqual(ja['claim_dynamic'], 173)
+        self.assertEqual(ja['claim_reproduced'], 87)
+        self.assertAlmostEqual(ja['claim_reproduced_rate'], 87 / 363)
+        self.assertEqual(ja['mixed_non_dynamic_cases'], 34)
+        md = render_md(m)
+        self.assertIn('claim级回收(复现/claim)', md)
+
     def test_f1_no_longer_uses_constructed_fp_zero(self):
         # 构造负样本 FP=0 不能把 F1 抬到 1；判例锚定 precision 必须主导 F1。
         jm = {

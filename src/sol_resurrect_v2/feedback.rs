@@ -84,9 +84,27 @@ impl<'a> FeedbackController<'a> {
 }
 
 const NOISY_TOKENS: &[&str] = &[
-    "Error", "Identifier", "not", "found", "or", "unique", "Relevant", "source", "part",
-    "starts", "here", "and", "spans", "across", "multiple", "lines", "contract", "abstract",
-    "interface", "library", "is",
+    "Error",
+    "Identifier",
+    "not",
+    "found",
+    "or",
+    "unique",
+    "Relevant",
+    "source",
+    "part",
+    "starts",
+    "here",
+    "and",
+    "spans",
+    "across",
+    "multiple",
+    "lines",
+    "contract",
+    "abstract",
+    "interface",
+    "library",
+    "is",
 ];
 
 fn extract_missing_symbol(message: &str) -> Option<String> {
@@ -128,7 +146,8 @@ fn extract_missing_member(message: &str) -> Option<(Option<String>, String)> {
 
 fn extract_missing_implementation(message: &str) -> Option<(String, String)> {
     let lower = message.to_ascii_lowercase();
-    if !lower.contains("should be marked as abstract") || !lower.contains("missing implementation") {
+    if !lower.contains("should be marked as abstract") || !lower.contains("missing implementation")
+    {
         return None;
     }
     let contract_marker = "Contract \"";
@@ -212,7 +231,9 @@ fn symbol_under_caret(message: &str) -> Option<String> {
                 left -= 1;
             }
             let mut right = start;
-            while right < bytes.len() && (bytes[right].is_ascii_alphanumeric() || bytes[right] == b'_') {
+            while right < bytes.len()
+                && (bytes[right].is_ascii_alphanumeric() || bytes[right] == b'_')
+            {
                 right += 1;
             }
             if left < right {

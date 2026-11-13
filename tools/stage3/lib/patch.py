@@ -134,10 +134,14 @@ def _matching_brace(source: str, open_idx: int) -> int:
     raise SpecError('unbalanced braces in source')
 
 
+_CONTRACT_KIND = r'(?:abstract\s+contract|contract|library)'
+
+
 def _contract_region(source: str, contract: str) -> tuple[int, int]:
-    marker = re.search(r'\bcontract\s+' + re.escape(contract) + r'\b', source)
+    marker = re.search(r'\b' + _CONTRACT_KIND + r'\s+'
+                       + re.escape(contract) + r'\b', source)
     if not marker:
-        raise SpecError(f'contract not found: {contract}')
+        raise SpecError(f'contract/library not found: {contract}')
     open_idx = source.find('{', marker.end())
     if open_idx < 0:
         raise SpecError(f'contract {contract} has no body')

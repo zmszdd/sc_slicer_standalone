@@ -213,7 +213,9 @@ impl<'a> ResurrectionRunner<'a> {
         &mut self,
         compile: CompileResult,
     ) -> Result<Option<ResurrectionV2Result>> {
-        let action = self.feedback.analyze(&compile.errors, self.fallback.level());
+        let action = self
+            .feedback
+            .analyze(&compile.errors, self.fallback.level());
         let updated = self.closure.apply_feedback(&mut self.graph, &action);
         crate::execution_log::detail(
             "resurrection_v2_feedback",
@@ -374,7 +376,8 @@ fn metadata_for(
     let line_ratio = output_lines as f64 / input_lines as f64;
     let byte_ratio = output_bytes as f64 / input_bytes as f64;
     let compile_success = last_error_kind.is_none() && !original_project_uncompilable;
-    let full_source_unit_used = level == FallbackLevel::FullSourceUnit || line_ratio >= 0.95 || byte_ratio >= 0.95;
+    let full_source_unit_used =
+        level == FallbackLevel::FullSourceUnit || line_ratio >= 0.95 || byte_ratio >= 0.95;
     let target_contract_full_restored = graph.container_fallback_used();
     let target_function_full_restored = target_contract_full_restored
         || source_db
@@ -387,7 +390,8 @@ fn metadata_for(
             });
     let mut failure_reason = last_error_kind.clone();
     if compile_success {
-        failure_reason = if line_ratio > budget.max_line_ratio || byte_ratio > budget.max_byte_ratio {
+        failure_reason = if line_ratio > budget.max_line_ratio || byte_ratio > budget.max_byte_ratio
+        {
             Some("compile_artifact_not_effective_slice".to_string())
         } else if full_source_unit_used {
             Some("full_source_unit_restored".to_string())

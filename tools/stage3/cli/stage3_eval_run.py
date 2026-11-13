@@ -14,21 +14,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from lib.spec_loader import SpecError, load_stage2_run, safety_symbols_for_claim
-from lib.binding_validate import lint_binding
+from lib.spec_loader import SpecError, load_stage2_run
+from lib.case_runner import (bind_claims, ceiling_verdict_for_bindability,
+                             derive_verdicts, run_multi, verdict_counts)
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _round_hint(claim_id: str, round_no: int, problems: list[str]) -> str:
-    items = '; '.join(str(problem) for problem in problems[:12])
-    return (f'round {round_no} failed for claim {claim_id}. '
-            f'Fix these problems: {items}.')
+_ceiling_verdict_for_bindability = ceiling_verdict_for_bindability
 
 
 def _assemble(name, flatten, stage2_dir, cases_root, src_name):
@@ -102,156 +99,37 @@ def main(argv=None):
         case_dir = _assemble(cid, flatten, stage2_dir, cases_root,
                              'Contract.sol')
         bindings_dir = case_dir / 'bindings'
-        bindings_dir.mkdir(parents=True, exist_ok=True)
 
-        bound = 0
-        failed = []
-        unobservable_symbols = []
-        bindabilities = []
-        bindability_by_claim = {}
-        bound_claim_ids: list[str] = []
-        for claim_id in claims:
-            binding_path = bindings_dir / f'{claim_id}.json'
-            if args.skip_llm and binding_path.is_file():
-                bound += 1
-                bound_claim_ids.append(claim_id)
-                bindabilities.append('reused')
-                continue
-            try:
-                from lib.binding_skeleton import build_skeleton
-                skeleton = build_skeleton(stage2_dir, claim_id,
-                                          src=case_dir / 'src')
-                for sym, entry in skeleton.get('bindings', {}).items():
-                    if entry.get('observability') == 'low':
-                        unobservable_symbols.append(sym)
-            except Exception:
-                pass
-            try:
-                from lib.anchor_resolver import resolve_anchors
-                anchor = resolve_anchors(stage2_dir, claim_id, case_dir / 'src')
-                bindabilities.append(anchor['bindability'])
-                bindability_by_claim[claim_id] = anchor['bindability']
-            except Exception:
-                bindabilities.append('unknown')
-            hint = None
-            accepted = False
-            bound_counted = False
-            for round_no in range(1, args.max_binding_rounds + 1):
-                cmd = [sys.executable, '-m', 'cli.stage3_binding_llm',
-                       '--stage2-run', str(stage2_dir), '--claim-id', claim_id,
-                       '--src', str(case_dir / 'src'),
-                       '--out', str(case_dir / 'llm_proposal')]
-                if hint:
-                    cmd += ['--hint', hint]
-                if round_no > 1 and binding_path.is_file():
-                    cmd += ['--existing', str(binding_path)]
-                proposal = subprocess.run(cmd, capture_output=True, text=True,
-                                          cwd=str(ROOT))
-                try:
-                    proposal_json = json.loads(proposal.stdout)
-                except ValueError:
-                    proposal_json = None
-                if proposal_json is None or not isinstance(proposal_json, dict):
-                    problems = ['transport: ' +
-                                (proposal.stderr or proposal.stdout)[:200]]
-                    hint = _round_hint(claim_id, round_no, problems)
-                    continue
-                if proposal_json.get('partial') and not proposal_json.get('problems'):
-                    proposal_path = case_dir / 'llm_proposal' / 'binding.proposal.json'
-                    if proposal_path.is_file():
-                        shutil.copy2(proposal_path, binding_path)
-                        accepted = True
-                        if claim_id not in bound_claim_ids:
-                            bound_claim_ids.append(claim_id)
-                        if not bound_counted:
-                            bound += 1
-                            bound_counted = True
-                        if round_no < args.max_binding_rounds:
-                            detail = proposal_json.get('unbound_detail') or {}
-                            rebindable = [s for s in (proposal_json.get('unbound') or [])
-                                          if detail.get(s, {}).get('observability') != 'low'
-                                          or detail.get(s, {}).get('candidates')]
-                            if rebindable:
-                                hint = None
-                                continue
-                        break
-                if not proposal_json.get('ok'):
-                    problems = list(proposal_json.get('problems') or [])
-                    if proposal_json.get('partial'):
-                        problems.append('unbound: ' + ', '.join(
-                            proposal_json.get('unbound', [])))
-                    hint = _round_hint(claim_id, round_no, problems)
-                    continue
-                proposal_path = case_dir / 'llm_proposal' / 'binding.proposal.json'
-                if not proposal_path.is_file():
-                    problems = ['no proposal file written']
-                    hint = _round_hint(claim_id, round_no, problems)
-                    continue
-                binding = json.loads(proposal_path.read_text())
-                safety_symbols = safety_symbols_for_claim(
-                    spec['formal'], claim_id)
-                lint = lint_binding(binding, case_dir / 'src',
-                                    test_dir=case_dir / 'test', strict=False,
-                                    safety_symbols=safety_symbols)
-                if lint['summary']['errors']:
-                    problems = [f"{problem['where']}: {problem['message']}"
-                                for problem in lint['problems']]
-                    hint = _round_hint(claim_id, round_no, problems)
-                    continue
-                shutil.copy2(proposal_path, binding_path)
-                bound += 1
-                bound_claim_ids.append(claim_id)
-                accepted = True
-                break
-            if not accepted:
-                failed.append({'claim': claim_id, 'reason': 'binding_exhausted',
-                               'rounds': args.max_binding_rounds,
-                               'detail': hint})
+        bind_result = bind_claims(
+            case_dir=case_dir, stage2_dir=stage2_dir, src_dir=case_dir / 'src',
+            claims=claims, formal=spec['formal'],
+            max_rounds=args.max_binding_rounds, reuse=args.skip_llm,
+            strict=False, apply_ceiling=True, run_fn=subprocess.run)
+        bound_claim_ids = bind_result['bound_claim_ids']
+        routed_verdicts = bind_result['routed_verdicts']
+        failed = bind_result['failed']
+        bindabilities = [
+            bind_result['records'][claim_id]['bindability'] for claim_id in claims
+        ]
 
-        bound = len(set(bound_claim_ids))
-        bound_claim_ids = list(dict.fromkeys(bound_claim_ids))
-        (case_dir / 'stage3-bindability.json').write_text(
-            json.dumps({
-                'schema_version': 'stage3-bindability-feedback/1',
-                'case': cid,
-                'bindabilities': bindability_by_claim,
-            }, ensure_ascii=False, indent=2) + '\n')
+        from lib.bindability_contract import write_contract
+        write_contract(case_dir, stage2_dir, claims)
 
-        multi_verdicts: dict[str, str] = {}
-        if bound_claim_ids:
-            multi = subprocess.run(
-                [sys.executable, '-m', 'cli.stage3_multi',
-                 '--case-dir', str(case_dir), '--bindings-dir', str(bindings_dir),
-                 '--stage2-run', str(case_dir / 'stage2_run'),
-                 '--run-id-prefix', cid,
-                 '--claims', ','.join(bound_claim_ids)],
-                capture_output=True, text=True, cwd=str(ROOT))
-            try:
-                payload = json.loads(multi.stdout)
-                for row in payload.get('claims', []):
-                    multi_verdicts[row.get('claim_id')] = (
-                        row.get('consistency_verdict') or 'binding_failed')
-            except ValueError:
-                pass
+        multi_verdicts = run_multi(
+            case_dir=case_dir, bindings_dir=bindings_dir,
+            stage2_run_dir=case_dir / 'stage2_run',
+            bound_claim_ids=bound_claim_ids, run_id_prefix=cid,
+            run_fn=subprocess.run)
+        verdicts = derive_verdicts(
+            claims=claims, routed_verdicts=routed_verdicts,
+            bound_claim_ids=bound_claim_ids, multi_verdicts=multi_verdicts)
+        counts = verdict_counts(verdicts)
+        bound = len(bound_claim_ids)
 
-        verdicts = []
-        for claim_id in claims:
-            if claim_id in bound_claim_ids:
-                verdicts.append(multi_verdicts.get(claim_id, 'binding_failed'))
-            else:
-                verdicts.append('binding_failed')
-
-        reproduced = verdicts.count('violation_reproduced')
-        compile_blocked = verdicts.count('compile_blocked')
-        compile_error = verdicts.count('compile_error')
-        not_expressible = verdicts.count('not_dynamically_expressible')
-        reference_required = verdicts.count('reference_patch_required')
-        halt_required = verdicts.count('halt_witness_required')
-
-        if bound == 0:
+        if bound == 0 and not routed_verdicts:
             rows.append({'case': cid, 'status': 'no_bound_claims',
                          'claims': len(claims), 'failed': failed,
-                         'unobservable_symbols': sorted(set(unobservable_symbols))})
+                         'unobservable_symbols': []})
             continue
 
         rows.append({
@@ -259,16 +137,16 @@ def main(argv=None):
             'claims': len(claims), 'bound': bound,
             'claim_ids': claims,
             'verdicts': verdicts,
-            'reproduced': reproduced,
-            'compile_blocked': compile_blocked,
-            'compile_error': compile_error,
-            'not_dynamically_expressible': not_expressible,
-            'reference_patch_required': reference_required,
-            'halt_witness_required': halt_required,
+            'reproduced': counts['reproduced'],
+            'compile_blocked': counts['compile_blocked'],
+            'compile_error': counts['compile_error'],
+            'not_dynamically_expressible': counts['not_dynamically_expressible'],
+            'reference_patch_required': counts['reference_patch_required'],
+            'halt_witness_required': counts['halt_witness_required'],
             'bound_claim_ids': bound_claim_ids,
             'bindabilities': bindabilities,
             'failed_bindings': failed,
-            'unobservable_symbols': sorted(set(unobservable_symbols)),
+            'unobservable_symbols': [],
         })
         print(json.dumps(rows[-1], ensure_ascii=False), flush=True)
 

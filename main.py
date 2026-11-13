@@ -171,8 +171,9 @@ def _usage() -> str:
         '    python main.py stage3 verdict-loop ...   # 可修复裁决重提绑定并重跑\n'
         '    python main.py stage3 acceptance ...     # 验收门（复现率/终态率 gating）\n'
         '    python main.py stage3 metrics-sync ...   # 裁决产物同步权威四指标\n'
-        '    python main.py pipeline ...              # 三阶段串联：组装+运行\n'
-        '    python main.py pipeline-run ...          # 并行编排：阶段一∥阶段二→阶段三\n'
+        '    python main.py mainline ...              # 唯一主线：manifest 驱动 阶段一∥阶段二→阶段三\n'
+        '    python main.py pipeline ...              # 旧别名：三阶段串联：组装+运行\n'
+        '    python main.py pipeline-run ...          # 主线同义别名：阶段一∥阶段二→阶段三\n'
         '    python main.py case ...                 # 新扁平案例：阶段二+自动绑定+差分\n'
         '    python main.py pipeline-batch ...        # 批量 manifest 并行 fan-in\n'
         '\n'
@@ -618,7 +619,7 @@ def _dispatch(argv, prefix=''):
         return META_HANDLERS[command](rest)
     if command == 'pipeline':
         return _pipeline(rest)
-    if command == 'pipeline-run':
+    if command in ('pipeline-run', 'mainline'):
         return _delegate_pipeline_run(rest)
     if command == 'pipeline-batch':
         return _delegate_pipeline_run(rest, module='pipeline_batch')

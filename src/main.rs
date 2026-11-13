@@ -188,8 +188,14 @@ fn parse_cli() -> CliConfig {
     let matches = build_cli().get_matches();
 
     let input_path = matches.get_one::<String>("input").unwrap().to_string();
-    let contract_name = matches.get_one::<String>("contract_name").unwrap().to_string();
-    let variable_name = matches.get_one::<String>("variable_name").unwrap().to_string();
+    let contract_name = matches
+        .get_one::<String>("contract_name")
+        .unwrap()
+        .to_string();
+    let variable_name = matches
+        .get_one::<String>("variable_name")
+        .unwrap()
+        .to_string();
     let function_name = matches
         .get_one::<String>("target_test")
         .or_else(|| matches.get_one::<String>("function_name"))

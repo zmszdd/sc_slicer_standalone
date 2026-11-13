@@ -232,7 +232,9 @@ fn renderer_output_is_deterministic_across_independent_databases() {
 #[tokio::test]
 async fn full_pipeline_is_deterministic_when_forge_available() {
     if !forge_available() {
-        eprintln!("skipping full_pipeline_is_deterministic_when_forge_available: forge unavailable");
+        eprintln!(
+            "skipping full_pipeline_is_deterministic_when_forge_available: forge unavailable"
+        );
         return;
     }
 

@@ -112,6 +112,27 @@ def repair_hint(summary: dict, consistency: dict | None) -> str:
     if verdict == 'poc_not_witnessed':
         return ('PoC did not witness P on code: fix the PoC or stage-1 slice, '
                 'not the binding')
+    if verdict == 'inconclusive':
+        forge = (summary or {}).get('forge') or {}
+        exploit = forge.get('exploit') or {}
+        original = exploit.get('original') or {}
+        patched = exploit.get('patched') or {}
+        original_ok = original.get('status') == 'Success'
+        patched_ok = patched.get('status') == 'Success'
+        reason = str(patched.get('reason') or '')
+        if original_ok and not patched_ok and reason and \
+                'assertion' not in reason and 'panic' not in reason.lower():
+            return ('patched PoC reverted with a business error '
+                    f'{reason!r}, not the injected safety assertion: the '
+                    'injection point is not on the PoC path. Relocate '
+                    'patch.functions[].name / patch.contract to the function '
+                    'the PoC test actually calls, or fix the PoC test to '
+                    'reach the patched code.')
+        return ('no dynamic witness was observed on either the original '
+                'or patched project: restate I to a sharper observable effect '
+                '(or bind V to a value the code actually materializes), and add '
+                'the missing test state that witnesses the effect. Do not rebind '
+                'the same expression unchanged.')
     if isinstance(consistency, dict):
         diagnostic = consistency.get('replan_diagnostic')
         if isinstance(diagnostic, dict) and diagnostic.get('hint'):

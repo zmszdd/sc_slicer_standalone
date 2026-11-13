@@ -60,6 +60,9 @@ def _normalize_solidity_output(code: str) -> str:
     code = _ensure_known_solidity_schemas(code)
     code, _ = _downgrade_external_contract_params_called_with_address(code)
     code = _remove_nested_errors_shadowing_globals(code)
+    code, _ = _repair_zero_arg_custom_errors(code)
+    code, _ = _repair_duplicate_placeholder_modifiers(code)
+    code, _ = _repair_keyword_param_names(code)
     code = _ensure_base_contracts_precede_derived(code)
     lines = code.splitlines()
     spdx = None
@@ -541,7 +544,7 @@ def _shrink_to_effective_slice(
             candidates.append((priority, -line_count, atom))
         if not candidates:
             break
-        candidates.sort()
+        candidates.sort(key=lambda item: (item[0], item[1]))
 
         changed = False
         for _, _, atom in candidates:
@@ -791,6 +794,7 @@ def _ensure_known_solidity_schemas(code: str) -> str:
 }""",
         "Errors": """library Errors {
     error AccountInsolvent();
+    error InsufficientBalance(uint256 available, uint256 required);
     error EffectiveLiquidityAboveThreshold();
     error InputListFail();
     error InvalidTokenIdParameter(uint256);
@@ -1587,6 +1591,182 @@ def _ensure_base_contracts_precede_derived(code: str) -> str:
                 break
     return "\n".join(lines)
 
+
+
+def _repair_duplicate_placeholder_modifiers(code: str) -> tuple[str, list[str]]:
+    """Drop placeholder ``modifier X() { _; }`` when a real X modifier exists."""
+    changes: list[str] = []
+    lines = code.splitlines()
+    real = set()
+    placeholder_index: dict[str, list[int]] = {}
+    for index, line in enumerate(lines):
+        m = re.match(r"\s*modifier\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*(?:virtual\s+)?\{", line)
+        if m:
+            real.add(m.group(1))
+        m = re.match(r"\s*modifier\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*\)\s*\{\s*_;\s*\}\s*", line)
+        if m:
+            placeholder_index.setdefault(m.group(1), []).append(index)
+    for name, indexes in placeholder_index.items():
+        if name in real:
+            for index in indexes:
+                lines[index] = None
+            changes.append(f'dropped placeholder modifier {name} x{len(indexes)}')
+    result = '\n'.join(line for line in lines if line is not None)
+    if code.endswith('\n'):
+        result += '\n'
+    return result, changes
+
+
+_SOLIDITY_KEYWORDS = {
+    'address', 'bool', 'string', 'bytes', 'byte', 'bytes1', 'bytes2', 'bytes3',
+    'bytes4', 'bytes8', 'bytes16', 'bytes32', 'uint', 'uint8', 'uint16',
+    'uint24', 'uint32', 'uint40', 'uint48', 'uint56', 'uint64', 'uint72',
+    'uint80', 'uint88', 'uint96', 'uint104', 'uint112', 'uint120', 'uint128',
+    'uint136', 'uint144', 'uint152', 'uint160', 'uint168', 'uint176', 'uint184',
+    'uint192', 'uint200', 'uint208', 'uint216', 'uint224', 'uint232', 'uint240',
+    'uint248', 'uint256', 'int', 'int8', 'int16', 'int24', 'int32', 'int40',
+    'int48', 'int56', 'int64', 'int72', 'int80', 'int88', 'int96', 'int104',
+    'int112', 'int120', 'int128', 'int136', 'int144', 'int152', 'int160',
+    'int168', 'int176', 'int184', 'int192', 'int200', 'int208', 'int216',
+    'int224', 'int232', 'int240', 'int248', 'int256', 'mapping', 'calldata',
+    'memory', 'storage', 'payable', 'external', 'public', 'internal', 'private',
+    'view', 'pure', 'returns', 'function', 'contract', 'library', 'struct',
+    'enum', 'event', 'error', 'modifier', 'if', 'else', 'for', 'while', 'do',
+    'new', 'delete', 'return', 'require', 'assert', 'revert', 'indexed',
+}
+
+
+def _repair_keyword_param_names(code: str) -> tuple[str, list[str]]:
+    """Rename function parameters that shadow a Solidity type/keyword.
+
+    A generated mock such as ``function toBytes32(address address)`` is invalid
+    because the parameter is named after the type.  This renames the parameter
+    token when it is a Solidity keyword and the preceding token is a plausible
+    type, leaving multi-token types intact.
+    """
+    changes: list[str] = []
+    lines = code.splitlines()
+
+    def fix_line(line: str) -> str:
+        if 'function' not in line:
+            return line
+        m = re.match(r"^(\s*function\s+[A-Za-z_$][A-Za-z0-9_$]*\s*)\(([^)]*)\)(.*)$", line)
+        if not m:
+            return line
+        prefix, params, suffix = m.group(1) + '(', m.group(2), ')' + m.group(3)
+        parts = []
+        changed = False
+        for raw in params.split(','):
+            stripped = raw.strip()
+            tokens = stripped.split()
+            if len(tokens) >= 2 and tokens[-1] in _SOLIDITY_KEYWORDS:
+                new_name = '_' + tokens[-1]
+                tokens[-1] = new_name
+                changed = True
+                changes.append(f'renamed param {raw.strip()} -> {" ".join(tokens)}')
+            parts.append(' '.join(tokens) if changed else raw)
+        return prefix + ', '.join(parts) + suffix if changed else line
+
+    new_lines = [fix_line(line) for line in lines]
+    result = '\n'.join(new_lines)
+    if code.endswith('\n'):
+        result += '\n'
+    return result, changes
+
+def _infer_error_arg_type(expr: str, code: str) -> str:
+    """Best-effort Solidity type for one revert error argument expression."""
+    expr = expr.strip()
+    if not expr:
+        return 'uint256'
+    if re.match(r'^address\s*\(', expr):
+        return 'address'
+    if re.match(r'^address\s+payable\s*\(', expr):
+        return 'address payable'
+    if re.match(r'^bytes32\s*\(', expr):
+        return 'bytes32'
+    if re.match(r'^bytes\s*\(', expr):
+        return 'bytes memory'
+    if re.match(r'^string\s*\(', expr):
+        return 'string memory'
+    if re.match(r'^\d+$', expr):
+        return 'uint256'
+    if re.match(r'^(true|false)$', expr):
+        return 'bool'
+    if expr in ('_msgSender()', 'msg.sender', 'tx.origin'):
+        return 'address'
+    # Bare identifier: scan declarations anywhere in the file (best effort).
+    ident = re.match(r'^([A-Za-z_$][A-Za-z0-9_$]*)$', expr)
+    if ident:
+        name = ident.group(1)
+        for type_token in ('address', 'address payable', 'bool', 'uint256',
+                           'int256', 'bytes32', 'uint32', 'uint64', 'uint128'):
+            if re.search(rf'\b{re.escape(type_token)}\s+{re.escape(name)}\b',
+                         code):
+                return type_token
+    return 'uint256'
+
+
+def _repair_zero_arg_custom_errors(code: str) -> tuple[str, list[str]]:
+    """Expand zero-arg ``error X();`` placeholders to match their revert sites.
+
+    The assembler collapses OpenZeppelin/user custom errors into zero-arg
+    placeholders while the generated harness still calls ``revert X(args...)``,
+    which fails with "wrong argument count".  This restores the declarations
+    from the call sites (best-effort type inference) so the harness compiles.
+    """
+    changes: list[str] = []
+    lines = code.splitlines()
+
+    decl_index = {}
+    for index, line in enumerate(lines):
+        m = re.match(r"\s*error\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*\)\s*;", line)
+        if m:
+            decl_index.setdefault(m.group(1), index)
+
+    if not decl_index:
+        return code, changes
+
+    # Find revert call sites per error name.
+    usage = {}
+    for line in lines:
+        for m in re.finditer(
+                rf"\brevert\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
+                line):
+            name = m.group(1)
+            if name not in decl_index:
+                continue
+            # Capture arguments until the matching close paren on this line.
+            open_idx = m.end() - 1
+            depth = 0
+            close_idx = None
+            for j in range(open_idx, len(line)):
+                if line[j] == '(':
+                    depth += 1
+                elif line[j] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        close_idx = j
+                        break
+            if close_idx is None:
+                continue
+            args_text = line[open_idx + 1:close_idx]
+            args = [a.strip() for a in args_text.split(',') if a.strip()]
+            usage.setdefault(name, args)
+
+    for name, index in sorted(decl_index.items(), key=lambda kv: kv[1],
+                              reverse=True):
+        args = usage.get(name)
+        if not args:
+            continue
+        types = [_infer_error_arg_type(arg, code) for arg in args]
+        params = ', '.join(f'{typ} arg{i}' if typ.endswith(' memory')
+                           else f'{typ} arg{i}'
+                           for i, typ in enumerate(types))
+        new_line = f'error {name}({params});'
+        lines[index] = new_line
+        changes.append(f'expanded error {name} with {len(types)} arg(s)')
+
+    return '\n'.join(lines), changes
 
 def _remove_nested_errors_shadowing_globals(code: str) -> str:
     global_errors = set()

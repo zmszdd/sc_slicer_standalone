@@ -1,5 +1,5 @@
-use super::feedback::FeedbackAction;
 use super::fallback::FallbackLevel;
+use super::feedback::FeedbackAction;
 use super::slice_atom::SliceAtom;
 use super::slice_graph::SliceGraph;
 use super::source_db::{DefinitionKind, FunctionId, SourceDatabase, StatementId};
@@ -28,7 +28,10 @@ impl<'a> ClosureEngine<'a> {
                 graph.add_statement(*statement_id);
             }
             self.add_calls_from_statements(graph, &target_statements);
-            if let Some(setup) = self.source_db.resolve_function(&graph.target_contract, "setUp") {
+            if let Some(setup) = self
+                .source_db
+                .resolve_function(&graph.target_contract, "setUp")
+            {
                 self.add_function_with_context(graph, setup);
             }
         }
@@ -53,7 +56,10 @@ impl<'a> ClosureEngine<'a> {
             }
             FallbackLevel::FullHarnessHelpers => {
                 for helper in ["setUp", "_setupDefaultOracles", "_setupDefaultMocks"] {
-                    if let Some(fid) = self.source_db.resolve_function(&graph.target_contract, helper) {
+                    if let Some(fid) = self
+                        .source_db
+                        .resolve_function(&graph.target_contract, helper)
+                    {
                         changed |= self.add_function_with_context(graph, fid);
                     }
                 }
@@ -110,7 +116,12 @@ impl<'a> ClosureEngine<'a> {
                 }
                 return changed;
             }
-            if let Some(def_ids) = self.source_db.def_index.members_by_container.get(receiver_type) {
+            if let Some(def_ids) = self
+                .source_db
+                .def_index
+                .members_by_container
+                .get(receiver_type)
+            {
                 let mut changed = false;
                 for def_id in def_ids {
                     let Some(def) = self.source_db.def_index.defs.get(def_id) else {
@@ -187,7 +198,10 @@ impl<'a> ClosureEngine<'a> {
             }
             changed |= graph.add_atom(SliceAtom::UsingDirective(*using_id));
             let using_text = text.trim();
-            if using_text.strip_prefix("using ").is_some_and(|rest| rest.trim_start().starts_with('{')) {
+            if using_text
+                .strip_prefix("using ")
+                .is_some_and(|rest| rest.trim_start().starts_with('{'))
+            {
                 for function_name in using_function_names(using_text) {
                     for provider in self.source_db.providers_for_symbol(&function_name) {
                         changed |= self.add_def_for_feedback(graph, provider);
@@ -258,7 +272,10 @@ impl<'a> ClosureEngine<'a> {
                     changed |= self.add_inheritance(graph, container_id);
                     changed |= self.add_base_members_named(graph, container_id, &function.name);
                     for call in &function.calls {
-                        for called in self.source_db.resolve_functions_in_container(container, call) {
+                        for called in self
+                            .source_db
+                            .resolve_functions_in_container(container, call)
+                        {
                             if called != fid {
                                 changed |= self.add_function_with_context(graph, called);
                             }
@@ -357,7 +374,12 @@ impl<'a> ClosureEngine<'a> {
         let Some(container) = self.source_db.def_index.defs.get(&container_id) else {
             return false;
         };
-        let Some(member_ids) = self.source_db.def_index.members_by_container.get(&container.name) else {
+        let Some(member_ids) = self
+            .source_db
+            .def_index
+            .members_by_container
+            .get(&container.name)
+        else {
             return false;
         };
         for member_id in member_ids {
@@ -529,7 +551,11 @@ fn identifiers(text: &str) -> Vec<String> {
     text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
         .filter(|part| !part.is_empty())
         .filter(|part| !SOLIDITY_WORDS.contains(part))
-        .filter(|part| part.chars().next().is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_'))
+        .filter(|part| {
+            part.chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        })
         .map(|part| part.to_string())
         .collect()
 }
@@ -577,9 +603,9 @@ fn using_library_name(text: &str) -> Option<String> {
 
 const SOLIDITY_WORDS: &[&str] = &[
     "if", "for", "while", "return", "require", "assert", "revert", "emit", "new", "delete",
-    "mapping", "function", "modifier", "event", "error", "memory", "storage", "calldata",
-    "public", "private", "internal", "external", "view", "pure", "payable", "returns",
-    "uint", "uint256", "uint128", "uint64", "uint32", "uint24", "uint16", "uint8",
-    "int", "int256", "int128", "int64", "int32", "int24", "int16", "int8", "address",
-    "bool", "bytes", "bytes32", "string", "true", "false",
+    "mapping", "function", "modifier", "event", "error", "memory", "storage", "calldata", "public",
+    "private", "internal", "external", "view", "pure", "payable", "returns", "uint", "uint256",
+    "uint128", "uint64", "uint32", "uint24", "uint16", "uint8", "int", "int256", "int128", "int64",
+    "int32", "int24", "int16", "int8", "address", "bool", "bytes", "bytes32", "string", "true",
+    "false",
 ];

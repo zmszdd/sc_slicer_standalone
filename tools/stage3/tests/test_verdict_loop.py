@@ -65,6 +65,35 @@ class VerdictLoopTest(unittest.TestCase):
         self.assertEqual(repair_hint(summary, None),
                          'unbound symbols: a, b')
 
+    def test_inconclusive_business_revert_hint_targets_injection_point(self):
+        summary = {
+            'consistency_verdict': 'inconclusive',
+            'forge': {'exploit': {
+                'original': {'status': 'Success'},
+                'patched': {'status': 'Failure',
+                            'reason': 'ERC721NonexistentToken(1)'},
+            }},
+        }
+        hint = repair_hint(summary, None)
+        self.assertIn('ERC721NonexistentToken(1)', hint)
+        self.assertIn('injection point', hint)
+
+    def test_inconclusive_no_revert_falls_back_to_restate_i(self):
+        summary = {
+            'consistency_verdict': 'inconclusive',
+            'forge': {'exploit': {
+                'original': {'status': 'Success'},
+                'patched': {'status': 'Success'},
+            }},
+        }
+        hint = repair_hint(summary, None)
+        self.assertIn('restate I', hint)
+
+    def test_inconclusive_hint_asks_to_restate_i(self):
+        hint = repair_hint({'consistency_verdict': 'inconclusive'}, None)
+        self.assertIn('restate I', hint)
+        self.assertIn('witness', hint)
+
     def test_effect_observed_invariant_holds_routes_to_rebind(self):
         self.assertEqual(verdict_action('effect_observed_invariant_holds'),
                          'rebind')
@@ -143,6 +172,26 @@ class VerdictLoopTest(unittest.TestCase):
 if __name__ == '__main__':
     unittest.main()
 
+
+class VerdictLoopTerminalRecordTest(unittest.TestCase):
+    def test_reproduced_flag_distinguishes_terminal_verdicts(self):
+        from cli.stage3_verdict_loop import _terminal_record
+        reproduced = _terminal_record('c1', 'violation_reproduced', [])
+        not_reproduced = _terminal_record('c2', 'violation_not_reproduced', [])
+        self.assertTrue(reproduced['reproduced'])
+        self.assertFalse(not_reproduced['reproduced'])
+        self.assertEqual(reproduced['status'], 'accepted')
+        self.assertEqual(not_reproduced['status'], 'accepted')
+
+
+class VerdictLoopRunPrefixTest(unittest.TestCase):
+    def test_fresh_prefix_includes_timestamp_and_varies(self):
+        from cli.stage3_verdict_loop import _fresh_run_prefix
+        a = _fresh_run_prefix(None, 'case_name')
+        b = _fresh_run_prefix(None, 'case_name')
+        self.assertIn('case_name', a)
+        self.assertNotEqual(a, b)
+        self.assertTrue(a.split('__')[-1].startswith('20'))
 
 class Stage3MultiDigTest(unittest.TestCase):
     def test_dig_returns_leaf(self):

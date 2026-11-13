@@ -281,7 +281,12 @@ impl SourceDatabase {
     pub fn total_nonblank_lines(&self) -> usize {
         self.files
             .iter()
-            .map(|file| file.text.lines().filter(|line| !line.trim().is_empty()).count())
+            .map(|file| {
+                file.text
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .count()
+            })
             .sum()
     }
 
@@ -579,7 +584,10 @@ impl SourceDatabase {
         source_id: SourceId,
         span: SourceSpan,
     ) -> Option<String> {
-        if !matches!(kind, DefinitionKind::StateVariable | DefinitionKind::Constant) {
+        if !matches!(
+            kind,
+            DefinitionKind::StateVariable | DefinitionKind::Constant
+        ) {
             return None;
         }
         self.span_text(source_id, span).and_then(read_variable_name)
@@ -989,7 +997,10 @@ mod tests {
             .expect("Tx1559 source text should be available");
         assert!(text.trim_start().starts_with("struct Tx1559 {"), "{text}");
         assert!(text.contains("Tx1559Detail txDetail;"), "{text}");
-        assert!(!text.trim_start().starts_with("struct Tx1559Detail {"), "{text}");
+        assert!(
+            !text.trim_start().starts_with("struct Tx1559Detail {"),
+            "{text}"
+        );
     }
 
     #[test]

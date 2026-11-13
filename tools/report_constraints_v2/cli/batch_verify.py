@@ -192,9 +192,31 @@ def main():
         proc = subprocess.run(command, capture_output=True, text=True,
                               cwd=str(HERE))
         # stdout contains pipeline status, not credentials or environment dumps.
+        output.mkdir(parents=True, exist_ok=True)
         (output / 'pipeline-stdout.txt').write_text(proc.stdout)
+        (output / 'pipeline-stderr.txt').write_text(proc.stderr)
         path = output / 'status.json'
-        status = json.loads(path.read_text()) if path.exists() else {'error': 'missing pipeline status'}
+        if path.exists():
+            status = json.loads(path.read_text())
+        else:
+            # A fidelity/readiness rejection can exit before writing status.json;
+            # preserve the machine-readable stdout line so the batch still
+            # records the rejection instead of dropping the case.
+            status = None
+            for line in (proc.stdout or '').splitlines():
+                line = line.strip()
+                if line.startswith('{'):
+                    try:
+                        parsed = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(parsed, dict) and 'core_formalization_status' in parsed:
+                        status = parsed
+                        break
+            if status is None:
+                status = {'error': 'missing pipeline status',
+                          'stderr_tail': (proc.stderr or '')[-500:]}
+            path.write_text(json.dumps(status, ensure_ascii=False, indent=2) + '\n')
         result = {'case_id': row['id'], 'exit_code': proc.returncode, 'status': status}
         print(json.dumps(result), flush=True)
         return result

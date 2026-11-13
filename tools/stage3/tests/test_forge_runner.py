@@ -1,6 +1,16 @@
 import unittest
 
-from lib.forge_runner import first_failure_reason, test_result
+from lib.forge_runner import first_failure_reason, test_result, _no_tests_found
+
+
+class NoTestsDetectionTest(unittest.TestCase):
+    def test_no_tests_found_message(self):
+        self.assertTrue(_no_tests_found(
+            'No tests found in project! Forge looks for functions that '
+            'start with `test`'))
+        self.assertTrue(_no_tests_found('No tests found'))
+        self.assertFalse(_no_tests_found(''))
+        self.assertFalse(_no_tests_found('{"test_results": {}}'))
 
 
 class ForgeRunnerTest(unittest.TestCase):

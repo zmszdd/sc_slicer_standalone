@@ -354,10 +354,14 @@ def main(argv=None):
         }
 
     if not original_run['ok'] or not patched_run['ok']:
-        compile_kind = ('slice_compile_failure' if not original_run['ok']
-                        else 'binding_compile_failure')
-        verdict = ('compile_blocked' if not original_run['ok']
-                   else 'compile_error')
+        if original_run.get('no_tests') or patched_run.get('no_tests'):
+            compile_kind = 'no_test_entrypoint'
+            verdict = 'compile_blocked'
+        else:
+            compile_kind = ('slice_compile_failure' if not original_run['ok']
+                            else 'binding_compile_failure')
+            verdict = ('compile_blocked' if not original_run['ok']
+                       else 'compile_error')
         if original_run['ok'] and not expressibility['dynamically_expressible']:
             compile_kind = 'not_dynamically_expressible'
             verdict = 'not_dynamically_expressible'
