@@ -67,6 +67,9 @@ PROMPT_MODULES[_live24_snapshot.PROMPT_VERSION] = _live24_snapshot
 # Preserve semantic-live-25 before softening the pending-fallback wording.
 from . import live25_snapshot as _live25_snapshot
 PROMPT_MODULES[_live25_snapshot.PROMPT_VERSION] = _live25_snapshot
+# Preserve semantic-live-26 before adding the observability contract.
+from . import live26_snapshot as _live26_snapshot
+PROMPT_MODULES[_live26_snapshot.PROMPT_VERSION] = _live26_snapshot
 # ``VERSIONS`` contains only archived semantic-v3.x modules. The live-16
 # snapshot is selectable for exact replay, but is not part of those frozen
 # generation baselines or feature suffixes.
@@ -89,6 +92,7 @@ SELECTABLE_VERSIONS = VERSIONS + (_live16_snapshot.PROMPT_VERSION,
                                   _live23_snapshot.PROMPT_VERSION,
                                   _live24_snapshot.PROMPT_VERSION,
                                   _live25_snapshot.PROMPT_VERSION,
+                                  _live26_snapshot.PROMPT_VERSION,
                                   LIVE_PROMPT_VERSION, LIVE_VERSION)
 
 # Single source of truth for "which version should people actually run".

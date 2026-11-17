@@ -1,11 +1,15 @@
 """Explicit Impact-area parsing and evidence boundary tests."""
 
 import unittest
+import json
+import tempfile
+from pathlib import Path
 
 from cli.semantic_pipeline import validate_core_element_candidate
 from lib.ingest import (build_catalog, explicit_impact_evidence_ids,
                         explicit_impact_ranges, validate_impact_evidence)
 from lib.impact_inventory import (merge_impact_inventory,
+                                  repair_verbatim_texts,
                                   validate_impact_inventory)
 from tests.test_evidence_ids import TEXT, id_inputs
 
@@ -242,3 +246,131 @@ class ImpactSectionFallbackTests(unittest.TestCase):
     def test_root_cause_is_not_impact_fallback(self):
         text = '## Root Cause\nupdateDebt allows negative deltas.\n'
         self.assertEqual(explicit_impact_ranges(text), [])
+
+
+class ImpactInventoryEmptyRetryTests(unittest.TestCase):
+    def test_empty_inventory_retries_when_impact_area_has_text(self):
+        from cli.semantic_pipeline import request_impact_inventory
+        text = '## Impact\nUsers lose funds.\n'
+        catalog = build_catalog(text)
+        allowed = explicit_impact_evidence_ids(catalog, text)
+        self.assertTrue(allowed)
+
+        def fake_extract(payload, call_dir, model, prompt):
+            if 'RETRY FEEDBACK' in prompt:
+                return {
+                    'schema_version': 'report-impact-inventory/2',
+                    'impacts': [{
+                        'id': 'users_lose_funds',
+                        'text': 'Users lose funds.',
+                        'modality': 'asserted',
+                        'evidence_ids': [allowed[0]],
+                    }],
+                    'ambiguities': [],
+                }
+            return {
+                'schema_version': 'report-impact-inventory/2',
+                'impacts': [],
+                'ambiguities': [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            accepted = request_impact_inventory(
+                'payload', 'prompt', None, Path(tmp), 0, allowed, catalog,
+                extract_fn=fake_extract)
+        self.assertEqual(len(accepted['impacts']), 1)
+        self.assertEqual(accepted['impacts'][0]['id'], 'users_lose_funds')
+
+    def test_ambiguities_only_inventory_retries(self):
+        from cli.semantic_pipeline import request_impact_inventory
+        text = '## Impact\nUsers lose funds.\n'
+        catalog = build_catalog(text)
+        allowed = explicit_impact_evidence_ids(catalog, text)
+        self.assertTrue(allowed)
+
+        def fake_extract(payload, call_dir, model, prompt):
+            if 'RETRY FEEDBACK' in prompt:
+                return {
+                    'schema_version': 'report-impact-inventory/2',
+                    'impacts': [{
+                        'id': 'users_lose_funds',
+                        'text': 'Users lose funds.',
+                        'modality': 'asserted',
+                        'evidence_ids': [allowed[0]],
+                    }],
+                    'ambiguities': [],
+                }
+            return {
+                'schema_version': 'report-impact-inventory/2',
+                'impacts': [],
+                'ambiguities': ['fragment states a violation but no distinct harm'],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            accepted = request_impact_inventory(
+                'payload', 'prompt', None, Path(tmp), 0, allowed, catalog,
+                extract_fn=fake_extract)
+        self.assertEqual(len(accepted['impacts']), 1)
+
+    def test_no_retry_when_impact_area_is_empty(self):
+        from cli.semantic_pipeline import request_impact_inventory
+        text = '## Impact\n'
+        catalog = build_catalog(text)
+        allowed = explicit_impact_evidence_ids(catalog, text)
+        self.assertFalse(allowed)
+
+        calls = {'count': 0}
+
+        def fake_extract(payload, call_dir, model, prompt):
+            calls['count'] += 1
+            return {
+                'schema_version': 'report-impact-inventory/2',
+                'impacts': [],
+                'ambiguities': [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            accepted = request_impact_inventory(
+                'payload', 'prompt', None, Path(tmp), 0, allowed, catalog,
+                extract_fn=fake_extract)
+        self.assertEqual(accepted['impacts'], [])
+        self.assertEqual(calls['count'], 1)
+
+
+class ImpactInventoryVerbatimRepairTests(unittest.TestCase):
+    def test_repair_replaces_paraphrase_with_verbatim(self):
+        text = '## Impact\nUsers lose funds when withdrawing.\n'
+        catalog = build_catalog(text)
+        ids = explicit_impact_evidence_ids(catalog, text)
+        candidate = {
+            'schema_version': 'report-impact-inventory/2',
+            'impacts': [{
+                'id': 'users_lose_funds',
+                'text': 'users end up losing their funds',
+                'modality': 'asserted',
+                'evidence_ids': ids,
+            }],
+            'ambiguities': [],
+        }
+        repaired = repair_verbatim_texts(candidate, catalog)
+        self.assertIsNotNone(repaired)
+        from lib.impact_inventory import _normalized_source_text
+        self.assertEqual(
+            _normalized_source_text(repaired['impacts'][0]['text']),
+            'Users lose funds when withdrawing.')
+
+    def test_repair_skips_already_verbatim(self):
+        text = '## Impact\nUsers lose funds.\n'
+        catalog = build_catalog(text)
+        ids = explicit_impact_evidence_ids(catalog, text)
+        candidate = {
+            'schema_version': 'report-impact-inventory/2',
+            'impacts': [{
+                'id': 'users_lose_funds',
+                'text': 'Users lose funds.',
+                'modality': 'asserted',
+                'evidence_ids': ids,
+            }],
+            'ambiguities': [],
+        }
+        self.assertIsNone(repair_verbatim_texts(candidate, catalog))

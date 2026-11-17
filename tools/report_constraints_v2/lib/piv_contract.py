@@ -74,7 +74,11 @@ PIV_PROPERTY_BY_SYMBOL = {
 }
 PIV_PROPERTY_NAMES = tuple(PIV_PROPERTY_BY_SYMBOL.values())
 PIV_PROPERTY_SOURCE_KINDS = {
-    'preconditions': frozenset({'precondition', 'assumption'}),
+    # A program-synthesized scenario trigger may be grounded by the intent or
+    # impact statement that declared it; plan synthesis still enforces the
+    # stricter P-term grounding before the final property is emitted.
+    'preconditions': frozenset({'precondition', 'assumption',
+                                'security_intent', 'impact'}),
     'safety': frozenset({'security_intent'}),
     'effects': frozenset({'impact'}),
 }

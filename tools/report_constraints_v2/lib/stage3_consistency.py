@@ -77,8 +77,15 @@ def _binding_kind(sort):
     return 'numeric_value'
 
 
-def binding_contract(formal, claim):
-    """The per-symbol binding checklist one claim hands to stage 3."""
+def binding_contract(formal, claim, observability=None):
+    """The per-symbol binding checklist one claim hands to stage 3.
+
+    ``observability`` is the optional ``observability-contract/1`` symbol map
+    produced by the plan layer.  It is kept separate from the report-only
+    formal symbol schema and is copied onto the binding rows only when the
+    caller supplies it, so historical contracts stay byte-stable.
+    """
+    observability = observability if isinstance(observability, dict) else {}
     used = {role: _variables(claim['properties'][key]['expression'])
             for key, role in ROLES if claim['properties'].get(key)}
     symbols = []
@@ -89,7 +96,7 @@ def binding_contract(formal, claim):
         # core_claim contract byte-stable for offline replay of old bundles.
         if claim['id'].startswith('impact_claim_') and not appears_in:
             continue
-        symbols.append({
+        row = {
             'symbol': name,
             'sort': item['sort'],
             'unit': item['unit'],
@@ -98,7 +105,15 @@ def binding_contract(formal, claim):
             'entity_ids': item['entity_ids'],
             'appears_in': appears_in,
             'binding_kind': _binding_kind(item['sort']) if appears_in else 'not_required',
-        })
+        }
+        meta = observability.get(name)
+        if isinstance(meta, dict):
+            for key in ('observable_kind', 'scope', 'receiver',
+                        'contract_type', 'binding_risk'):
+                row[key] = meta.get(key)
+            if meta.get('missing'):
+                row['observability_missing'] = list(meta['missing'])
+        symbols.append(row)
     return {
         'schema_version': BINDING_SCHEMA,
         'claim_id': claim['id'],

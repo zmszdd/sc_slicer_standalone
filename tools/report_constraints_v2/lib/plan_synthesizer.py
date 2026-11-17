@@ -2,11 +2,14 @@
 import json
 import re
 
+import z3
+
 from lib import report_only as r
 from lib.piv_contract import PIV_PROPERTY_NAMES
 from lib.semantic_core import (identifier, predicate_paths, require, strings,
                               MAX_PLAN_SYMBOLS)
-from lib.solving import direct_relation_diagnostics, direct_relation_feasible
+from lib.solving import (direct_relation_diagnostics, direct_relation_feasible,
+                         setup as relation_setup)
 
 
 PLAN_VERSION = 'report-formal-plan/1'
@@ -51,6 +54,16 @@ RELATION_CLASS_PATTERNS = {
     'progress_or_liveness': {'condition_forbids_effect', 'condition_requires_effect'},
     'range_capacity': {'relation_obligation'},
 }
+
+PLAN_SYMBOL_REQUIRED_FIELDS = {
+    'sort', 'unit', 'meaning', 'checkpoint', 'entity_ids', 'source_ids'}
+PLAN_SYMBOL_OPTIONAL_FIELDS = {
+    'scope', 'observable_kind', 'receiver', 'contract_type', 'binding_risk'}
+OBSERVABLE_KINDS = {
+    'state', 'getter', 'call', 'derived', 'timestamp', 'balance', 'mapping',
+    'struct_field'}
+SYMBOL_SCOPES = {'business', 'poc_instance', 'cross_contract'}
+BINDING_RISKS = {'low', 'medium', 'high'}
 
 # v4 deliberately removes template selection from the model.  The model still
 # identifies the semantic relation class and binds report observables, while the
@@ -148,6 +161,91 @@ def _unique(values):
         if value not in result:
             result.append(value)
     return result
+
+
+def _plan_referenced_symbols(plan):
+    """Symbols referenced by a plan predicate, pattern, or derived expression."""
+    symbols = plan.get('symbols') if isinstance(plan, dict) else None
+    symbols = symbols if isinstance(symbols, dict) else {}
+    names = set(symbols)
+    referenced = set()
+
+    def add(name):
+        if isinstance(name, str) and name in names:
+            referenced.add(name)
+
+    for term in list(plan.get('precondition_terms') or []) + \
+            list(plan.get('impact_context_terms') or []):
+        if isinstance(term, dict):
+            _referenced_plan_symbols(term.get('predicate'), add)
+    outcome = plan.get('impact_outcome')
+    if isinstance(outcome, dict):
+        _referenced_plan_symbols(outcome.get('predicate'), add)
+    _referenced_plan_symbols(plan.get('pattern'), add)
+    for item in plan.get('derived_definitions') or []:
+        if isinstance(item, dict):
+            _referenced_plan_symbols(item.get('expression'), add)
+    return referenced
+
+
+def observability_contract(plan):
+    """Return per-symbol stage-3 observability metadata declared by a plan.
+
+    The contract is deliberately separate from ``formalization.json``: the
+    report-only formal claim schema stays byte-compatible, while stage 3 can
+    receive the extra routing metadata through ``binding_contract``.  Old plans
+    carry no observability fields; those rows keep ``binding_risk: null`` so
+    replay of historical bundles is unchanged.
+    """
+    symbols = plan.get('symbols') if isinstance(plan, dict) else None
+    symbols = symbols if isinstance(symbols, dict) else {}
+    definitions = plan.get('derived_definitions') if isinstance(plan, dict) else None
+    derived_targets = {
+        item.get('symbol') for item in (definitions or [])
+        if isinstance(item, dict)}
+    contract_present = any(
+        isinstance(item, dict) and
+        (set(item) & PLAN_SYMBOL_OPTIONAL_FIELDS)
+        for item in symbols.values())
+    referenced = _plan_referenced_symbols(plan)
+    rows = {}
+    high_risk = []
+    for name in sorted(symbols):
+        item = symbols[name] if isinstance(symbols[name], dict) else {}
+        kind = item.get('observable_kind')
+        scope = item.get('scope')
+        missing = []
+        if contract_present and name in referenced:
+            if kind not in OBSERVABLE_KINDS:
+                missing.append('observable_kind')
+            if scope not in SYMBOL_SCOPES:
+                missing.append('scope')
+            if kind == 'derived' and name not in derived_targets:
+                missing.append('derived_definition')
+            if scope == 'cross_contract' and not (
+                    isinstance(item.get('receiver'), str) and
+                    item['receiver'].strip()):
+                missing.append('receiver')
+        risk = item.get('binding_risk')
+        if risk not in BINDING_RISKS:
+            risk = ('high' if (contract_present and missing) else
+                    'low' if contract_present else None)
+        if risk == 'high':
+            high_risk.append(name)
+        rows[name] = {
+            'observable_kind': kind,
+            'scope': scope,
+            'receiver': item.get('receiver'),
+            'contract_type': item.get('contract_type'),
+            'binding_risk': risk,
+            'missing': missing,
+        }
+    return {
+        'schema_version': 'observability-contract/1',
+        'contract_present': contract_present,
+        'symbols': rows,
+        'high_risk': high_risk,
+    }
 
 
 def _operand(value, symbols):
@@ -286,6 +384,28 @@ def _expression_variables(expression):
         return {expression['var']}
     return {name for child in expression.get('args', [])
             for name in _expression_variables(child)}
+
+
+def _numeric_relation_ops(expression):
+    """Return the numeric arithmetic/comparison ops present in an expression."""
+    ops = set()
+
+    def walk(node):
+        if not isinstance(node, dict):
+            return
+        if isinstance(node.get('op'), str):
+            ops.add(node['op'])
+        for child in (node.get('args') or []):
+            walk(child)
+    walk(expression)
+    return ops & {'lt', 'gt', 'lte', 'gte', 'add', 'sub', 'mul', 'div', 'mod'}
+
+
+def _numeric_symbols(claim):
+    """Return symbol names whose declared sort is numeric (int/real)."""
+    symbols = claim.get('symbols') or {}
+    return {name for name, item in symbols.items()
+            if isinstance(item, dict) and item.get('sort') in ('int', 'real')}
 
 
 def _quantity_binding_symbols(value):
@@ -521,17 +641,68 @@ def structured_unresolved_review(plan, elements):
     }
 
 
-def _pattern_expressions(pattern, symbols, enforce_units=True):
+def _relocated_trigger_predicates(plan, symbols):
+    """Return ``truth`` condition/effect predicates that are P-scope triggers.
+
+    For implication-shaped patterns the antecedent must be witnessed by the
+    PoC precondition, not asserted inside the injected invariant.  When a
+    boolean event condition is grounded by the intent/impact instead of an
+    explicit precondition, it is a scenario trigger and must move to P so the
+    safety property stays unconditional (otherwise ``trigger=False`` makes the
+    invariant vacuously true).
+
+    This covers every implication-shaped template:
+    * ``condition``-based templates (required_effect, correspondence, ...)
+    * ``trigger``-based templates (monotonicity, conservation, preservation)
+    * ``effect``-based authorization templates (authorization_guard and
+      effect_requires_any_authorization) where the guarded effect is the
+      scenario trigger.
+    """
+    pattern = plan.get('pattern') or {}
+    kind = pattern.get('kind')
+    candidate = pattern.get('condition')
+    if kind in ('monotonicity', 'conservation', 'preservation'):
+        candidate = pattern.get('trigger')
+    if not (isinstance(candidate, dict) and candidate.get('kind') == 'truth'):
+        return []
+    name = candidate.get('symbol')
+    if name not in symbols or symbols[name].get('sort') != 'bool':
+        return []
+    sources = set(symbols[name].get('source_ids') or [])
+    preconditions = set(plan.get('precondition_ids') or [])
+    if sources & preconditions:
+        return []
+    return [candidate]
+
+
+def _pattern_expressions(pattern, symbols, enforce_units=True,
+                         trigger_symbols=None):
     require(isinstance(pattern, dict) and pattern.get('kind') in PATTERNS,
             'unknown synthesis pattern')
+    trigger_symbols = trigger_symbols or set()
+
+    def _scoped(condition_dict, condition_expr, consequent, negate=False):
+        """Build ``condition -> consequent`` unless the condition is a P-scope
+        trigger, in which case the bare consequent is returned (the trigger
+        moves to P so the injected invariant stays unconditional).
+        """
+        atom = None
+        if (isinstance(condition_dict, dict) and condition_dict.get('kind') == 'truth'
+                and condition_dict.get('symbol') in trigger_symbols):
+            atom = consequent if not negate else _not(consequent)
+        else:
+            atom = {'op': 'implies', 'args': [condition_expr, consequent if not negate
+                                              else _not(consequent)]}
+        return atom
+
     kind = pattern['kind']
     if kind in ('condition_forbids_effect', 'condition_requires_effect'):
         require(set(pattern) == {'kind', 'condition', 'effect'}, 'invalid condition pattern')
         condition = _predicate(pattern['condition'], symbols, enforce_units=enforce_units)
         effect = _predicate(pattern['effect'], symbols, enforce_units=enforce_units)
         if kind == 'condition_forbids_effect':
-            return {'op': 'implies', 'args': [condition, _not(effect)]}, _and([condition, effect])
-        return {'op': 'implies', 'args': [condition, effect]}, _and([condition, _not(effect)])
+            return _scoped(pattern['condition'], condition, effect, negate=True), _and([condition, effect])
+        return _scoped(pattern['condition'], condition, effect), _and([condition, _not(effect)])
     if kind == 'effect_requires_any_authorization':
         require(set(pattern) == {'kind', 'effect', 'authorization_terms'} and
                 isinstance(pattern['authorization_terms'], list) and
@@ -553,7 +724,7 @@ def _pattern_expressions(pattern, symbols, enforce_units=True):
                 'invalid relation obligation pattern')
         condition = _predicate(pattern['condition'], symbols, enforce_units=enforce_units)
         relation = _predicate(pattern['relation'], symbols, enforce_units=enforce_units)
-        return {'op': 'implies', 'args': [condition, relation]}, \
+        return _scoped(pattern['condition'], condition, relation), \
             _and([condition, _not(relation)])
     if kind == 'bounded_relation':
         require(set(pattern) == {'kind', 'condition', 'value', 'operator', 'bound'} and
@@ -565,7 +736,7 @@ def _pattern_expressions(pattern, symbols, enforce_units=True):
             _quantity_expression(pattern['bound'], symbols, enforce_units=enforce_units)]}
         require(r.expr_type(relation, symbols, enforce_units=enforce_units) == ('bool', None),
                 'bounded relation type/unit mismatch')
-        return {'op': 'implies', 'args': [condition, relation]}, \
+        return _scoped(pattern['condition'], condition, relation), \
             _and([condition, _not(relation)])
     if kind == 'correspondence':
         require(set(pattern) == {'kind', 'condition', 'observed_symbol',
@@ -578,7 +749,7 @@ def _pattern_expressions(pattern, symbols, enforce_units=True):
         relation = {'op': 'eq', 'args': [{'var': observed}, {'var': expected}]}
         require(r.expr_type(relation, symbols, enforce_units=enforce_units) == ('bool', None),
                 'correspondence type/unit mismatch')
-        return {'op': 'implies', 'args': [condition, relation]}, \
+        return _scoped(pattern['condition'], condition, relation), \
             _and([condition, _not(relation)])
     if kind == 'temporal_order':
         require(set(pattern) == {'kind', 'condition', 'earlier_symbol',
@@ -598,14 +769,14 @@ def _pattern_expressions(pattern, symbols, enforce_units=True):
                     'args': [{'var': earlier}, {'var': later}]}
         require(r.expr_type(relation, symbols, enforce_units=enforce_units) == ('bool', None),
                 'temporal order type/unit mismatch')
-        return {'op': 'implies', 'args': [condition, relation]}, \
+        return _scoped(pattern['condition'], condition, relation), \
             _and([condition, _not(relation)])
     if kind == 'required_effect':
         require(set(pattern) == {'kind', 'condition', 'effect'},
                 'invalid required effect pattern')
         condition = _predicate(pattern['condition'], symbols, enforce_units=enforce_units)
         effect = _predicate(pattern['effect'], symbols, enforce_units=enforce_units)
-        return {'op': 'implies', 'args': [condition, effect]}, \
+        return _scoped(pattern['condition'], condition, effect), \
             _and([condition, _not(effect)])
     if kind == 'proportional_relation':
         require(set(pattern) == {'kind', 'condition', 'left', 'operator', 'right'} and
@@ -617,7 +788,7 @@ def _pattern_expressions(pattern, symbols, enforce_units=True):
             _quantity_expression(pattern['right'], symbols, enforce_units=enforce_units)]}
         require(r.expr_type(relation, symbols, enforce_units=enforce_units) == ('bool', None),
                 'proportional relation type/unit mismatch')
-        return {'op': 'implies', 'args': [condition, relation]}, \
+        return _scoped(pattern['condition'], condition, relation), \
             _and([condition, _not(relation)])
     if kind == 'monotonicity':
         require(set(pattern) == {'kind', 'trigger', 'before_symbol', 'after_symbol',
@@ -632,7 +803,7 @@ def _pattern_expressions(pattern, symbols, enforce_units=True):
                              {'var': pattern['before_symbol']}]}
         require(r.expr_type(relation, symbols, enforce_units=enforce_units) == ('bool', None),
                 'monotonicity type/unit mismatch')
-        return {'op': 'implies', 'args': [trigger, relation]}, \
+        return _scoped(pattern['trigger'], trigger, relation), \
             _and([trigger, _not(relation)])
     if kind == 'conservation':
         require(set(pattern) == {'kind', 'trigger', 'before', 'after'},
@@ -643,7 +814,7 @@ def _pattern_expressions(pattern, symbols, enforce_units=True):
         relation = {'op': 'eq', 'args': [after, before]}
         require(r.expr_type(relation, symbols, enforce_units=enforce_units) == ('bool', None),
                 'conservation type/unit mismatch')
-        return {'op': 'implies', 'args': [trigger, relation]}, \
+        return _scoped(pattern['trigger'], trigger, relation), \
             _and([trigger, _not(relation)])
     require(set(pattern) == {'kind', 'trigger', 'before_symbol', 'after_symbol'},
             'invalid preservation pattern')
@@ -654,7 +825,7 @@ def _pattern_expressions(pattern, symbols, enforce_units=True):
                                   {'var': pattern['before_symbol']}]}
     require(r.expr_type(equal, symbols, enforce_units=enforce_units) == ('bool', None),
             'state preservation type/unit mismatch')
-    return {'op': 'implies', 'args': [trigger, equal]}, _and([trigger, _not(equal)])
+    return _scoped(pattern['trigger'], trigger, equal), _and([trigger, _not(equal)])
 
 
 #: ``a op b`` is ``b MIRROR[op] a`` for the directional ops; folding direction
@@ -1063,26 +1234,7 @@ def symbol_table_review(plan):
     symbols = plan.get('symbols')
     symbols = symbols if isinstance(symbols, dict) else {}
     names = set(symbols)
-    referenced = set()
-
-    def add(name):
-        if isinstance(name, str) and name in names:
-            referenced.add(name)
-
-    for term in list(plan.get('precondition_terms') or []) + \
-            list(plan.get('impact_context_terms') or []):
-        if isinstance(term, dict):
-            _referenced_plan_symbols(term.get('predicate'), add)
-    outcome = plan.get('impact_outcome')
-    if isinstance(outcome, dict):
-        _referenced_plan_symbols(outcome.get('predicate'), add)
-    _referenced_plan_symbols(plan.get('pattern'), add)
-    for item in plan.get('derived_definitions') or []:
-        # A definition target is produced, not referenced: it counts only
-        # when a predicate or another definition uses it.  The expression's
-        # base symbols are genuine references.
-        if isinstance(item, dict):
-            _referenced_plan_symbols(item.get('expression'), add)
+    referenced = _plan_referenced_symbols(plan)
 
     def source_ids(name):
         meta = symbols[name]
@@ -1113,6 +1265,18 @@ def symbol_table_review(plan):
                 'referenced': {first: first in referenced,
                                second: second in referenced},
             })
+    contract = observability_contract(plan)
+    if contract['contract_present']:
+        for name in sorted(referenced & set(symbols)):
+            row = contract['symbols'].get(name) or {}
+            if row.get('missing'):
+                flagged.append({
+                    'symbol': name,
+                    'flag': 'missing_observability',
+                    'missing': list(row['missing']),
+                    'binding_risk': row.get('binding_risk'),
+                    'source_ids': source_ids(name),
+                })
     return {
         'schema_version': 'symbol-table-review/1',
         'advisory_only': True,
@@ -1308,7 +1472,7 @@ def _contains_expression(expression, predicate):
 
 
 def _vacuous_safety_shapes(claim):
-    """Return human-readable reasons for the two gate-defeating shapes.
+    """Return human-readable reasons for gate-defeating safety shapes.
 
     These are deterministic syntactic signatures of the observed 30-report
     failures: an I whose consequent is a tautology (``A => x == x`` or
@@ -1317,6 +1481,80 @@ def _vacuous_safety_shapes(claim):
     still mark such formulas consistent, so the gate must name them before the
     expensive local repair loop runs.
     """
+    return [item['detail'] for item in _claim_weak_invariant_diagnostics(claim)
+            if item['severity'] == 'blocking']
+
+
+def _same_argument_true_shape(expression):
+    """Return a reason when an expression is true for every value of its args."""
+    if not isinstance(expression, dict):
+        return None
+    op = expression.get('op')
+    args = expression.get('args')
+    if op in ('eq', 'le', 'ge') and isinstance(args, list) and len(args) == 2 \
+            and args[0] == args[1]:
+        return 'safety contains a tautological self-comparison'
+    if op == 'or' and isinstance(args, list) and len(args) == 2:
+        left, right = args
+        if (isinstance(right, dict) and right.get('op') == 'not' and
+                isinstance(right.get('args'), list) and len(right['args']) == 1 and
+                right['args'][0] == left):
+            return 'safety contains a tautological excluded-middle disjunction'
+        if (isinstance(left, dict) and left.get('op') == 'not' and
+                isinstance(left.get('args'), list) and len(left['args']) == 1 and
+                left['args'][0] == right):
+            return 'safety contains a tautological excluded-middle disjunction'
+    return None
+
+
+def _checkpoint_info(claim):
+    """Return ``(i_checkpoints, effect_checkpoints)`` for advisory diagnostics."""
+    symbols = claim.get('symbols') or {}
+    properties = claim.get('properties') or {}
+    pre = (properties.get('preconditions') or {}).get('expression')
+    safety = (properties.get('safety') or {}).get('expression')
+    effects = (properties.get('effects') or {}).get('expression')
+
+    def checkpoints(expression, exclude=None):
+        names = _expression_variables(expression)
+        if exclude is not None:
+            names -= _expression_variables(exclude)
+        return {str((symbols.get(name) or {}).get('checkpoint') or '').strip()
+                for name in names
+                if isinstance(symbols.get(name), dict)} - {''}
+
+    return checkpoints(safety, exclude=pre), checkpoints(effects)
+
+
+def _claim_advisory_diagnostics(claim):
+    """Advisory alignment warnings; these never block a candidate by themselves."""
+    reasons = []
+    i_checkpoints, effect_checkpoints = _checkpoint_info(claim)
+    if len(i_checkpoints) == 1 and len(effect_checkpoints) >= 2:
+        reasons.append({
+            'code': 'I_CHECKPOINT_COLLAPSED',
+            'severity': 'advisory',
+            'detail': ('safety observes every I symbol at one checkpoint while '
+                       'effects compare distinct before/after checkpoints; '
+                       'verify I is not a single-snapshot proxy for a '
+                       'cross-checkpoint harm'),
+        })
+    symbols = claim.get('symbols') or {}
+    for name in sorted(_expression_variables(
+            (claim.get('properties', {}).get('safety') or {}).get('expression'))):
+        checkpoint = str((symbols.get(name) or {}).get('checkpoint') or '').lower()
+        if 'before' in checkpoint and 'after' in checkpoint:
+            reasons.append({
+                'code': 'I_CHECKPOINT_REUSED',
+                'severity': 'advisory',
+                'detail': ('safety symbol ' + name + ' names both before and '
+                           'after in one checkpoint; use distinct snapshots'),
+            })
+    return reasons
+
+
+def _claim_weak_invariant_diagnostics(claim):
+    """Return structured ``{code, severity, detail}`` weak-invariant findings."""
     reasons = []
     safety = claim.get('properties', {}).get('safety', {}).get('expression')
     effects = claim.get('properties', {}).get('effects', {}).get('expression')
@@ -1325,24 +1563,56 @@ def _vacuous_safety_shapes(claim):
         if isinstance(args, list) and len(args) == 2:
             antecedent, consequent = args
             if consequent == antecedent:
-                reasons.append('safety is a tautological self-implication')
+                reasons.append({
+                    'code': 'I_SELF_IMPLICATION',
+                    'severity': 'blocking',
+                    'detail': 'safety is a tautological self-implication'})
             elif _is_same_symbol_equality(consequent):
-                reasons.append(
-                    'safety consequent is a tautological self-equality')
+                reasons.append({
+                    'code': 'I_TAUTOLOGY',
+                    'severity': 'blocking',
+                    'detail': 'safety consequent is a tautological self-equality'})
             elif (isinstance(consequent, dict) and
                     consequent.get('op') == 'const' and
                     consequent.get('const') is True):
-                reasons.append('safety consequent is the constant true')
+                reasons.append({
+                    'code': 'I_TAUTOLOGY',
+                    'severity': 'blocking',
+                    'detail': 'safety consequent is the constant true'})
     if _is_same_symbol_equality(safety):
-        reasons.append('safety is a tautological self-equality')
+        reasons.append({
+            'code': 'I_TAUTOLOGY',
+            'severity': 'blocking',
+            'detail': 'safety is a tautological self-equality'})
+    trivial = _same_argument_true_shape(safety)
+    if trivial:
+        reasons.append({'code': 'I_TRIVIAL_BOUND',
+                        'severity': 'blocking', 'detail': trivial})
+    if (isinstance(safety, dict) and isinstance(effects, dict)
+            and _numeric_relation_ops(effects)
+            and not (_expression_variables(safety) & _numeric_symbols(claim))):
+        reasons.append({
+            'code': 'I_LAYER_MISMATCH',
+            'severity': 'blocking',
+            'detail': ('safety is qualitative-only while effects assert a '
+                       'numeric harm; restate I over the numeric relation')})
+    if isinstance(safety, dict) and isinstance(effects, dict) and safety == effects:
+        reasons.append({
+            'code': 'I_COPIED_FROM_V',
+            'severity': 'blocking',
+            'detail': ('safety and effects are the same expression; V must be '
+                       'defined independently of I')})
     if isinstance(effects, dict):
         contradictory_not = (lambda node: (
             isinstance(node, dict) and node.get('op') == 'not' and
             isinstance(node.get('args'), list) and len(node['args']) == 1 and
             _is_same_symbol_equality(node['args'][0])))
         if _contains_expression(effects, contradictory_not):
-            reasons.append(
-                'effects contains an unsatisfiable negation of a self-equality')
+            reasons.append({
+                'code': 'EFFECT_CONTRADICTION',
+                'severity': 'blocking',
+                'detail': ('effects contains an unsatisfiable negation of a '
+                           'self-equality')})
         def contradictory_pair(node):
             if not isinstance(node, dict) or node.get('op') != 'and':
                 return False
@@ -1358,8 +1628,151 @@ def _vacuous_safety_shapes(claim):
                     positives.append(child)
             return any(neg == pos for neg in negations for pos in positives)
         if _contains_expression(effects, contradictory_pair):
-            reasons.append('effects contains a term and its own negation')
+            reasons.append({
+                'code': 'EFFECT_CONTRADICTION',
+                'severity': 'blocking',
+                'detail': 'effects contains a term and its own negation'})
+    reasons.extend(_claim_advisory_diagnostics(claim))
     return reasons
+
+
+WEAK_INVARIANT_BUCKETS = {
+    'I_HOLDS_ON_EXPLOIT_PATH': 'weak_invariant',
+    'I_IMPLIED_BY_P': 'weak_invariant',
+    'I_NOT_FALSIFIED_BY_V': 'weak_invariant',
+    'I_INCONSISTENT_WITH_P': 'relation_infeasible',
+    'V_INCONSISTENT_WITH_P': 'relation_infeasible',
+    'I_CHECKPOINT_COLLAPSED': 'semantic_alignment',
+    'I_CHECKPOINT_REUSED': 'semantic_alignment',
+    'I_LAYER_MISMATCH': 'numeric_alignment',
+    'I_TRIVIAL_BOUND': 'generator_defect',
+    'I_SELF_IMPLICATION': 'generator_defect',
+    'I_TAUTOLOGY': 'generator_defect',
+    'I_COPIED_FROM_V': 'generator_defect',
+    'I_OUTCOME_GUARDED': 'generator_defect',
+    'I_AUTHORIZATION_SELF_IMPLICATION': 'generator_defect',
+    'I_OUTCOME_NEGATES_CONDITION': 'generator_defect',
+    'EFFECT_CONTRADICTION': 'generator_defect',
+    'DIRECT_GATE_MISSING': 'generator_defect',
+}
+
+
+def weak_invariant_bucket(code):
+    """Route one structured diagnostic to its recovery bucket."""
+    return WEAK_INVARIANT_BUCKETS.get(code, 'unknown')
+
+
+def _p_implies_i(claim):
+    """True only when P is satisfiable and entails I (P AND NOT I UNSAT)."""
+    _, conditions = relation_setup(claim)
+    if 'P_and_not_I' not in conditions or 'P_and_I' not in conditions:
+        return False
+    solver = z3.Solver()
+    solver.set(timeout=5000)
+    solver.add(*conditions['P_and_I'])
+    if str(solver.check()) != 'sat':
+        return False
+    solver = z3.Solver()
+    solver.set(timeout=5000)
+    solver.add(*conditions['P_and_not_I'])
+    return str(solver.check()) == 'unsat'
+
+
+_DIRECT_CELL_DIAGNOSTICS = {
+    'P_and_I': ('I_INCONSISTENT_WITH_P', 'sat',
+                'P and I are not jointly satisfiable'),
+    'P_and_V': ('V_INCONSISTENT_WITH_P', 'sat',
+                'P and V are not jointly satisfiable'),
+    'P_and_V_and_not_I': ('I_NOT_FALSIFIED_BY_V', 'sat',
+                          'P, V and NOT I are not jointly satisfiable'),
+    'P_and_V_and_I': ('I_HOLDS_ON_EXPLOIT_PATH', 'unsat',
+                      'P, V and I are jointly satisfiable; I holds on the exploit path'),
+}
+
+
+def weak_invariant_diagnostics(plan=None, formal=None, claim_id='core_claim',
+                               include_advisory=True):
+    """Return structured weak-invariant diagnostics for a plan and/or formal claim.
+
+    ``reject_vacuous_safety`` uses only ``severity == 'blocking'`` findings; the
+    advisory alignment codes are surfaced for triage without rejecting a plan
+    that is otherwise mathematically feasible.
+    """
+    reasons = []
+    if isinstance(plan, dict):
+        pattern = plan.get('pattern')
+        if isinstance(pattern, dict):
+            def bound_symbols(predicate):
+                try:
+                    return _predicate_binding_symbols(predicate)
+                except ValueError:
+                    return set()
+            outcome_symbols = bound_symbols(plan.get('impact_outcome') or {})
+            condition = pattern.get('condition')
+            if (isinstance(condition, dict) and outcome_symbols and
+                    outcome_symbols & bound_symbols(condition)):
+                reasons.append({
+                    'code': 'I_OUTCOME_GUARDED',
+                    'severity': 'blocking',
+                    'detail': ('safety condition is guarded by the reported '
+                               'impact outcome')})
+            if pattern.get('kind') == 'authorization_guard':
+                effect_symbols = bound_symbols(pattern.get('effect') or {})
+                authorization_symbols = bound_symbols(
+                    pattern.get('authorization') or {})
+                if effect_symbols == authorization_symbols:
+                    reasons.append({
+                        'code': 'I_AUTHORIZATION_SELF_IMPLICATION',
+                        'severity': 'blocking',
+                        'detail': ('authorization guard is a tautological '
+                                   'self-implication')})
+        negated_symbol = _negated_condition_outcome_symbol(plan)
+        if negated_symbol:
+            reasons.append({
+                'code': 'I_OUTCOME_NEGATES_CONDITION',
+                'severity': 'blocking',
+                'detail': ('impact outcome negates the pattern condition '
+                           'symbol: ' + negated_symbol)})
+    if formal is not None:
+        claim = next((item for item in formal.get('claims', [])
+                      if item.get('id') == claim_id), None)
+        if claim is not None:
+            merged_claim = dict(claim)
+            if 'symbols' not in merged_claim and isinstance(formal.get('symbols'), dict):
+                merged_claim['symbols'] = formal['symbols']
+            reasons.extend(_claim_weak_invariant_diagnostics(merged_claim))
+            if _p_implies_i(merged_claim):
+                reasons.append({
+                    'code': 'I_IMPLIED_BY_P',
+                    'severity': 'blocking',
+                    'detail': ('P entails I, so I adds no independent safety '
+                               'content beyond the preconditions')})
+            diagnostics = direct_relation_diagnostics(merged_claim)
+            if not diagnostics['feasible']:
+                for name, info in diagnostics['cells'].items():
+                    code, _expected, detail = _DIRECT_CELL_DIAGNOSTICS[name]
+                    if info['ok']:
+                        continue
+                    if info['status'] == 'missing':
+                        code, detail = ('DIRECT_GATE_MISSING',
+                                        'required P/I/V gate cell is missing')
+                    reasons.append({
+                        'code': code,
+                        'severity': 'blocking',
+                        'detail': (detail + ': ' + name + '=' + info['status'] +
+                                   ' (expected ' + info['expected'] + ')'),
+                    })
+    if not include_advisory:
+        reasons = [item for item in reasons if item['severity'] == 'blocking']
+    # Preserve first occurrence order while dropping exact duplicates.
+    unique = []
+    seen = set()
+    for item in reasons:
+        key = (item['code'], item['detail'], item['severity'])
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique
 
 
 def reject_vacuous_safety(plan, formal=None, claim_id='core_claim'):
@@ -1374,47 +1787,9 @@ def reject_vacuous_safety(plan, formal=None, claim_id='core_claim'):
     and authorization bind the same symbol (``x implies x``).  A downstream
     semantic check catches any other indirect-consequence plan.
     """
-    reasons = []
-    pattern = plan.get('pattern') if isinstance(plan, dict) else None
-    if isinstance(pattern, dict):
-        def bound_symbols(predicate):
-            try:
-                return _predicate_binding_symbols(predicate)
-            except ValueError:
-                return set()
-        outcome_symbols = bound_symbols(plan.get('impact_outcome') or {})
-        condition = pattern.get('condition')
-        if isinstance(condition, dict) and outcome_symbols:
-            if outcome_symbols & bound_symbols(condition):
-                reasons.append('safety condition is guarded by the reported impact outcome')
-        if pattern.get('kind') == 'authorization_guard':
-            effect_symbols = bound_symbols(pattern.get('effect') or {})
-            authorization_symbols = bound_symbols(
-                pattern.get('authorization') or {})
-            if effect_symbols == authorization_symbols:
-                reasons.append('authorization guard is a tautological self-implication')
-    negated_symbol = _negated_condition_outcome_symbol(plan)
-    if negated_symbol:
-        reasons.append(
-            'impact outcome negates the pattern condition symbol: ' + negated_symbol)
-    if formal is not None:
-        claim = next((item for item in formal.get('claims', [])
-                      if item.get('id') == claim_id), None)
-        if claim is not None:
-            merged_claim = dict(claim)
-            if 'symbols' not in merged_claim and isinstance(formal.get('symbols'), dict):
-                merged_claim['symbols'] = formal['symbols']
-            reasons.extend(_vacuous_safety_shapes(merged_claim))
-            diagnostics = direct_relation_diagnostics(merged_claim)
-            if not diagnostics['feasible']:
-                detail = '; '.join(
-                    f"{name}={info['status']} (expected {info['expected']})"
-                    for name, info in diagnostics['cells'].items()
-                    if not info['ok'])
-                reasons.append(
-                    'compiled P/I/V gate does not admit a direct violation witness: '
-                    + detail)
-    return reasons
+    return [item['code'] + ': ' + item['detail']
+            for item in weak_invariant_diagnostics(
+                plan, formal, claim_id=claim_id, include_advisory=False)]
 
 
 def synthesize_id_formalization(plan, elements, claim_id='core_claim',
@@ -1502,8 +1877,10 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
 
     symbols, output_symbols = {}, {}
     for name, item in plan['symbols'].items():
-        require(identifier(name) and isinstance(item, dict) and set(item) == {
-            'sort', 'unit', 'meaning', 'checkpoint', 'entity_ids', 'source_ids'},
+        require(identifier(name) and isinstance(item, dict) and
+                PLAN_SYMBOL_REQUIRED_FIELDS <= set(item) and
+                set(item) <= (PLAN_SYMBOL_REQUIRED_FIELDS |
+                              PLAN_SYMBOL_OPTIONAL_FIELDS),
             'invalid plan symbol')
         require(item['sort'] in ('int', 'bool', 'address'), 'invalid plan symbol sort')
         if item['sort'] == 'int':
@@ -1530,6 +1907,24 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
                 all(x in statements for x in item['source_ids']), 'invalid plan symbol sources')
         evidence_ids = _evidence(item['source_ids'], statements)
         require(bool(evidence_ids), 'plan symbol lacks evidence')
+        if 'observable_kind' in item:
+            require(item['observable_kind'] in OBSERVABLE_KINDS,
+                    'invalid plan symbol observable_kind')
+        if 'scope' in item:
+            require(item['scope'] in SYMBOL_SCOPES,
+                    'invalid plan symbol scope')
+        if 'binding_risk' in item:
+            require(item['binding_risk'] in BINDING_RISKS,
+                    'invalid plan symbol binding_risk')
+        for key in ('receiver', 'contract_type'):
+            if key in item:
+                require(item[key] is None or
+                        (isinstance(item[key], str) and item[key].strip()),
+                        'invalid plan symbol ' + key)
+        if item.get('scope') == 'cross_contract':
+            require(isinstance(item.get('receiver'), str) and
+                    item['receiver'].strip(),
+                    'cross-contract plan symbol lacks receiver')
         symbols[name] = {'sort': item['sort'], 'unit': item['unit'],
                          'meaning': item['meaning'], 'checkpoint': item['checkpoint']}
         output_symbols[name] = {**symbols[name], 'evidence_ids': evidence_ids,
@@ -1602,11 +1997,21 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
     p_expression = (_and(p_expressions) if p_expressions else
                     {'const': True} if version in (
                         'report-formal-plan/7', LIVE_EXPANDED_PLAN_VERSION) else None)
+    trigger_predicates = _relocated_trigger_predicates(plan, plan['symbols'])
+    trigger_symbols = {p['symbol'] for p in trigger_predicates}
+    if trigger_predicates:
+        trigger_expressions = [_predicate(p, symbols, enforce_units=True)
+                               for p in trigger_predicates]
+        if p_expression is None:
+            p_expression = _and(trigger_expressions)
+        else:
+            p_expression = _and([p_expression] + trigger_expressions)
     # Validate the selected template's exact fields before alignment walks
     # into symbols such as observed_symbol/earlier_symbol. Malformed model
     # plans must produce a retryable ValueError, never an unhandled KeyError.
     safety, pattern_effects = _pattern_expressions(
-        plan['pattern'], symbols, enforce_units=True)
+        plan['pattern'], symbols, enforce_units=True,
+        trigger_symbols=trigger_symbols)
     effects = pattern_effects
     # live-16 defers this semantic source-alignment judgment until after P/I/V
     # generation. Frozen schemas keep their original validation behavior.
@@ -1707,7 +2112,16 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
             r.expr_type(effects, symbols, enforce_units=True) == ('bool', None),
             'synthesized property is not Boolean')
 
-    p_sources = plan['precondition_ids']
+    p_sources = list(plan['precondition_ids'])
+    if trigger_predicates:
+        # A scenario trigger moved into P is grounded by the intent/impact
+        # statement that declared its symbol, not by an explicit report
+        # precondition.  Carry those sources into P so the synthesized
+        # precondition is never rejected as 'formal property missing source'.
+        trigger_sources = _unique(
+            source for predicate in trigger_predicates
+            for source in plan['symbols'][predicate['symbol']].get('source_ids', []))
+        p_sources = list(dict.fromkeys([*p_sources, *trigger_sources]))
     i_sources = [plan['intent_id']]
     v_sources = plan['impact_ids']
     p_text = '; '.join(statements[x]['text'] for x in p_sources)

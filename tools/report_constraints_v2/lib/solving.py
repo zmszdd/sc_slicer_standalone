@@ -195,6 +195,8 @@ def from_bundle(bundle, unresolved_review=None, query_results=None):
         if queries.get('P_and_V') in ('unsat', 'unknown'):
             infeasible_claims.append(claim['id'])
     blockers = continuation_blockers(bundle, unresolved_review, query_results)
+    if not bundle.get('claims'):
+        blockers.append('stage2 produced no formalized claims')
     # A route is an action decision, so it must agree with the continuation
     # gate.  Previously a bundle with a missing P or V could be labelled
     # ``candidate`` while ``stage2_can_continue`` was false.

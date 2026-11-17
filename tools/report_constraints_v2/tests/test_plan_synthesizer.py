@@ -10,7 +10,8 @@ from unittest.mock import patch
 from lib.ingest import build_catalog, hydrate_elements, hydrate_formalization
 from lib.plan_synthesizer import (_pattern_expressions, structured_unresolved_review,
                               synthesize_id_formalization,
-                              impact_qualifier_types)
+                              impact_qualifier_types, observability_contract,
+                              symbol_table_review)
 from lib import report_only as report_math
 from lib import semantic_core
 from cli import semantic_pipeline as pipeline
@@ -55,6 +56,49 @@ def plan():
 
 
 class PlanSynthesisTests(unittest.TestCase):
+    def test_observability_fields_are_accepted_but_kept_out_of_formal_symbols(self):
+        elements, _ = id_inputs()
+        from tests.test_prompt_v317 import expanded_plan
+        candidate = expanded_plan()
+        candidate['symbols']['paid_fee'].update({
+            'observable_kind': 'getter', 'scope': 'business',
+            'receiver': None, 'contract_type': None, 'binding_risk': 'low'})
+        formal = synthesize_id_formalization(candidate, elements)
+        self.assertNotIn('observable_kind', formal['symbols']['paid_fee'])
+        contract = observability_contract(candidate)
+        self.assertTrue(contract['contract_present'])
+        self.assertEqual(contract['symbols']['paid_fee']['observable_kind'],
+                         'getter')
+        self.assertNotIn('paid_fee', contract['high_risk'])
+
+    def test_old_plan_has_no_observability_contract(self):
+        from tests.test_prompt_v317 import expanded_plan
+        contract = observability_contract(expanded_plan())
+        self.assertFalse(contract['contract_present'])
+        self.assertIsNone(contract['symbols']['paid_fee']['binding_risk'])
+
+    def test_cross_contract_symbol_requires_receiver(self):
+        elements, _ = id_inputs()
+        from tests.test_prompt_v317 import expanded_plan
+        candidate = expanded_plan()
+        candidate['symbols']['paid_fee'].update({
+            'observable_kind': 'getter', 'scope': 'cross_contract'})
+        with self.assertRaisesRegex(ValueError,
+                                    'cross-contract plan symbol lacks receiver'):
+            synthesize_id_formalization(candidate, elements)
+
+    def test_missing_observability_is_flagged_and_high_risk(self):
+        from tests.test_prompt_v317 import expanded_plan
+        candidate = expanded_plan()
+        candidate['symbols']['fee_revert'].update({
+            'observable_kind': 'getter', 'scope': 'business'})
+        contract = observability_contract(candidate)
+        self.assertIn('paid_fee', contract['high_risk'])
+        review = symbol_table_review(candidate)
+        flags = {row['flag'] for row in review['flagged']
+                 if row['symbol'] == 'paid_fee'}
+        self.assertIn('missing_observability', flags)
+
     def test_live8_compiles_report_impact_as_independent_v(self):
         elements, _ = id_inputs()
         from tests.test_prompt_v317 import expanded_plan
@@ -123,6 +167,65 @@ class PlanSynthesisTests(unittest.TestCase):
         relation = result['claims'][0]['semantic_relationship']['queries']
         self.assertEqual(relation['P_and_V_and_I'], 'unsat')
         self.assertEqual(relation['P_and_V_and_not_I'], 'sat')
+
+    def test_trigger_condition_relocates_to_precondition(self):
+        elements, _ = id_inputs()
+        candidate = plan()
+        candidate['symbols']['swap_triggered'] = {
+            'sort': 'bool', 'unit': None,
+            'meaning': 'swap finalization is triggered',
+            'checkpoint': 'swap_finalization',
+            'entity_ids': ['caller'],
+            'source_ids': ['intent_accept_buffer'],
+        }
+        candidate['pattern'] = {
+            'kind': 'required_effect',
+            'condition': {'kind': 'truth', 'symbol': 'swap_triggered', 'value': True},
+            'effect': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+        }
+        formal = synthesize_id_formalization(candidate, elements)
+        claim = formal['claims'][0]
+        self.assertEqual(claim['properties']['safety']['expression'],
+                         {'var': 'fee_revert'})
+        self.assertIn('swap_triggered',
+                      json.dumps(claim['properties']['preconditions']['expression']))
+        self.assertEqual(claim['properties']['effects']['expression']['op'], 'and')
+
+    def test_trigger_relocated_without_precondition_carries_source(self):
+        elements, _ = id_inputs()
+        from tests.test_prompt_v317 import expanded_plan
+        candidate = expanded_plan()
+        candidate['schema_version'] = 'report-formal-plan/8'
+        candidate['precondition_ids'] = []
+        candidate['precondition_terms'] = []
+        candidate['impact_context_terms'] = []
+        candidate['derived_definitions'] = []
+        candidate['impact_outcome'] = {
+            'source_id': 'impact_revert',
+            'predicate': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+        }
+        candidate['symbols']['swap_triggered'] = {
+            'sort': 'bool', 'unit': None,
+            'meaning': 'swap finalization is triggered',
+            'checkpoint': 'swap_finalization',
+            'entity_ids': ['caller'],
+            'source_ids': ['intent_accept_buffer'],
+        }
+        candidate['pattern'] = {
+            'kind': 'required_effect',
+            'condition': {'kind': 'truth', 'symbol': 'swap_triggered', 'value': True},
+            'effect': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+        }
+        formal = synthesize_id_formalization(candidate, elements)
+        p_prop = formal['claims'][0]['properties']['preconditions']
+        self.assertEqual(p_prop['source_ids'], ['intent_accept_buffer'])
+        self.assertEqual(p_prop['expression'],
+                         {'op': 'and', 'args': [
+                             {'const': True}, {'var': 'swap_triggered'}]})
+        catalog = build_catalog(TEXT)
+        hydrated = hydrate_formalization(formal, catalog, TEXT)
+        semantic_core.validate_formalization(
+            hydrated, hydrate_elements(elements, catalog, TEXT), TEXT)
 
     def test_no_explicit_p_is_compiled_as_unconditional_true(self):
         elements_raw, _ = id_inputs()

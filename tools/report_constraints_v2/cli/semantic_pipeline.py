@@ -42,8 +42,10 @@ from lib.plan_synthesizer import (check_distinct_p_predicates, classified_relati
                               relax_unsupported_relation, placeholder_predicate_review,
                               realign_expanded_relation_class,
                               reject_vacuous_safety, report_impact_expression,
+                              observability_contract,
                               requirement_source_review, structured_unresolved_review,
                               symbol_table_review, synthesize_id_formalization,
+                              weak_invariant_bucket, weak_invariant_diagnostics,
                               validate_faithfulness_verdict)
 from lib.solving import solve_queries
 from lib.multi_impact import (claim_id_for_impact,
@@ -517,6 +519,15 @@ def piv_failure_bucket(message):
     value = str(message).lower()
     if 'negates the pattern condition symbol' in value:
         return 'generator_defect'
+    if any(code in value for code in (
+            'i_holds_on_exploit_path', 'i_implied_by_p',
+            'i_not_falsified_by_v', 'i_trivial_bound',
+            'i_copied_from_v', 'i_layer_mismatch',
+            'i_checkpoint_collapsed', 'i_checkpoint_reused')):
+        # These are generator/layer defects, not report-material gaps: the
+        # report supplied a claim, but the generated I was not independently
+        # falsifiable. Keep them in the denominator so the defect stays visible.
+        return 'generator_defect'
     if ('direct p/i/v relationship is absent or infeasible' in value
             or 'p_and_i=unsat' in value
             or 'p_and_v=unsat' in value
@@ -731,6 +742,36 @@ def _piv_relationship_hint(message):
 def _direct_witness_hint(message):
     lowered = message.lower()
     vacuity_guidance = ''
+    if 'i_holds_on_exploit_path' in lowered or 'i_implied_by_p' in lowered:
+        vacuity_guidance += (
+            '\nWEAK-I GUIDANCE: I is true whenever P and V hold, so it cannot be '
+            'falsified on the exploit path. Do not restate P or reuse V. Give I '
+            'its own report-grounded requirement over the same observables V '
+            'uses, with distinct before/after checkpoints when the harm is a '
+            'state change. If no such requirement is stated, leave the impact '
+            'pending instead of inventing a weaker invariant.')
+    if 'i_trivial_bound' in lowered or 'i_self_implication' in lowered or \
+            'i_tautology' in lowered:
+        vacuity_guidance += (
+            '\nTRIVIAL-I GUIDANCE: Remove self-comparisons, excluded-middle '
+            'tautologies, and constant-true consequents. I must constrain the '
+            'report-stated observable, not a logical identity.')
+    if 'i_copied_from_v' in lowered:
+        vacuity_guidance += (
+            '\nCOPIED-V GUIDANCE: V is the observed violation and must be '
+            'defined independently of I. Restate I as the desired relation and '
+            'keep V as the report-stated harmful outcome that denies it.')
+    if 'i_not_falsified_by_v' in lowered or 'v_inconsistent_with_p' in lowered:
+        vacuity_guidance += (
+            '\nFALSIFICATION GUIDANCE: The generated V does not provide a '
+            'witness that falsifies I under P. Repair V to the report-stated '
+            'observable outcome, or narrow I to the relation that outcome '
+            'directly denies; do not add bridges or weaken P.')
+    if 'i_checkpoint_collapsed' in lowered or 'i_checkpoint_reused' in lowered:
+        vacuity_guidance += (
+            '\nCHECKPOINT GUIDANCE: Declare separate before/after symbols for a '
+            'cross-checkpoint harm. One single-snapshot symbol cannot witness a '
+            'before/after relation.')
     if 'safety consequent is a tautological self-equality' in lowered or \
             'safety is a tautological self-implication' in lowered:
         vacuity_guidance = (
@@ -739,6 +780,16 @@ def _direct_witness_hint(message):
             'repeats the consequent. If the selected intent has no condition, '
             'write I as the required state/operation directly (for example '
             'feeWallet != zero_address), not as A => (x == x).')
+    if 'safety is qualitative-only' in lowered:
+        vacuity_guidance += (
+            '\nNUMERIC-I GUIDANCE: The harm V asserts is a numeric relation '
+            '(before/after quantity, bound, or ratio), but I only names Boolean '
+            'occurrences, so I cannot be the direct negation of V. Restate I over '
+            'the same numeric observables V uses: declare before/after int '
+            'symbols with distinct checkpoints, keep their exact units, and write '
+            'I as the report-stated invariant on those numbers (for example '
+            'withdrawable_after >= withdrawable_before), not as a Boolean fee or '
+            'holder condition. Do not turn a numeric harm into a bool proxy.')
     if 'p_and_v=' in lowered and 'unsat' in lowered:
         vacuity_guidance += (
             '\nP_AND_V_GUIDANCE: P∧V is UNSAT, so V itself contradicts P. '
@@ -1490,20 +1541,54 @@ def request_impact_inventory(payload, prompt, model, output, retries,
                              on_attempt=None):
     """Extract impact facts from a catalog already restricted to Impact text."""
     def accept(raw, call_dir, record):
-        return validate_impact_inventory(raw, allowed_ids, evidence_catalog)
+        try:
+            return validate_impact_inventory(raw, allowed_ids, evidence_catalog)
+        except ValueError as exc:
+            from lib.impact_inventory import repair_verbatim_texts
+            repaired = repair_verbatim_texts(raw, evidence_catalog)
+            if repaired is not None:
+                record['repaired'] = 'verbatim_text'
+                return validate_impact_inventory(repaired, allowed_ids,
+                                                 evidence_catalog)
+            raise
 
+    feedback = lambda exc: ('\nRETRY FEEDBACK: Return the exact Impact inventory schema. '
+                            'Impact IDs must be lowercase snake_case and start with a '
+                            'letter (for example "pool_loses_funds", never a leading '
+                            'digit). Use only the supplied Impact fragment IDs; do not infer or '
+                            'include evidence from other report sections. Copy each text '
+                            'as an exact continuous excerpt; do not paraphrase, summarize, '
+                            'or join separated wording. Only whitespace and Markdown '
+                            'presentation may differ. Previous validation error: '
+                            + str(exc) + '\n')
     accepted, _ = _bounded_model_call(
         payload, prompt, model, output, retries, 'impact-inventory',
         'impact-inventory-attempts.json', accept,
-        lambda _exc: ('\nRETRY FEEDBACK: Return the exact Impact inventory schema. '
-                      'Impact IDs must be lowercase snake_case and start with a '
-                      'letter (for example "pool_loses_funds", never a leading '
-                      'digit). Use only the supplied Impact fragment IDs; do not infer or '
-                      'include evidence from other report sections. Copy each text '
-                      'as an exact continuous excerpt; do not paraphrase, summarize, '
-                      'or join separated wording. Only whitespace and Markdown '
-                      'presentation may differ.\n'),
+        feedback,
         'accepted_for_validation', extract_fn=extract_fn, on_attempt=on_attempt)
+    if allowed_ids and not accepted.get('impacts'):
+        # Retry whenever the marked Impact area produced no impact, even if the
+        # model listed ambiguities.  A common failure mode is "states an
+        # invariant violation but not a distinct harmful outcome": the harm is
+        # present but was pushed into ``ambiguities``, which still gates the
+        # case as ``needs_review`` with zero impacts.
+        retry_prompt = prompt + (
+            '\nRETRY FEEDBACK: The supplied Impact fragments state at least one '
+            'harmful outcome explicitly. Do not return an empty impacts array '
+            'when a harm is stated in the marked Impact area; even if you '
+            'previously moved it to ambiguities, copy its exact wording into '
+            'impacts with the corresponding evidence ID. Leave impacts empty '
+            'only when no harmful outcome is actually stated.\n')
+        try:
+            accepted, _ = _bounded_model_call(
+                payload, retry_prompt, model, output, 0,
+                'impact-inventory-empty-retry',
+                'impact-inventory-empty-retry-attempts.json', accept,
+                feedback, 'accepted_for_validation', extract_fn=extract_fn,
+                on_attempt=on_attempt)
+        except (json.JSONDecodeError, subprocess.TimeoutExpired,
+                TransientModelError, ValueError, KeyError, TypeError):
+            pass
     return accepted
 
 
@@ -3115,6 +3200,25 @@ def main():
         declarations = []
         queries = {}
         query_status = {}
+        plan_by_claim = {}
+        for record in plan_records or []:
+            claim_id = record.get('claim_id')
+            relative = record.get('formal_plan_path')
+            if not claim_id or not relative:
+                continue
+            try:
+                plan_by_claim[claim_id] = json.loads(
+                    (args.output / relative).read_text())
+            except (OSError, ValueError):
+                continue
+        observability_artifact = {
+            'schema_version': 'observability-contract/1',
+            'claims': {claim_id: observability_contract(plan)
+                       for claim_id, plan in plan_by_claim.items()},
+        }
+        write_json(args.output / 'observability-contract.json',
+                   observability_artifact)
+        weak_triage = {}
         for claim in bundle['claims']:
             filename = claim['id'] + '.smt2'
             (args.output / filename).write_text(claim.pop('smt'))
@@ -3131,11 +3235,29 @@ def main():
             query_status[claim['id']] = {
                 name: result['status']
                 for name, result in queries[claim['id']].items()}
+            claim_plan = plan_by_claim.get(claim['id'])
+            weak_diagnostics = weak_invariant_diagnostics(
+                claim_plan, formal, claim_id=claim['id'])
+            falsifier = queries[claim['id']].get('P_and_V_and_not_I') or {}
+            i_falsifier_hint = {
+                'query': 'P_and_V_and_not_I',
+                'status': falsifier.get('status', 'missing'),
+                'witness': falsifier.get('witness'),
+            }
+            weak_triage[claim['id']] = {
+                'diagnostics': weak_diagnostics,
+                'buckets': sorted({
+                    weak_invariant_bucket(item['code'])
+                    for item in weak_diagnostics}),
+                'i_falsifier_hint': i_falsifier_hint,
+            }
             for name, result in queries[claim['id']].items():
                 query_file = query_dir / (name + '.smt2')
                 query_file.write_text(result.pop('smt'))
                 result['path'] = str(query_file.relative_to(args.output))
                 result['sha256'] = r.sha(query_file.read_bytes())
+            observability = (observability_contract(claim_plan)['symbols']
+                             if claim_plan else None)
             declarations.append({'claim_id': claim['id'], 'predicates_path': filename,
                                  'predicates_sha256': r.sha((args.output / filename).read_bytes()),
                                  'formalization_status': claim['formalization_status'],
@@ -3143,7 +3265,14 @@ def main():
                                  'report_queries': ['P AND V', 'P AND V AND NOT I', 'P AND V AND I'],
                                  'code_queries_after_binding': ['P AND T', 'P AND T AND NOT I',
                                                                'P AND T AND V', 'P AND T AND NOT V'],
-                                 'binding_contract': binding_contract(formal, original)})
+                                 'weak_invariant_diagnostics': weak_diagnostics,
+                                 'i_falsifier_hint': i_falsifier_hint,
+                                 'binding_contract': binding_contract(
+                                     formal, original, observability=observability)})
+        write_json(args.output / 'weak-invariant-triage.json', {
+            'schema_version': 'weak-invariant-triage/1',
+            'claims': weak_triage,
+        })
         triage = triage_bundle(bundle, unresolved_review, query_status)
         assessment = stage2_assessment(
             readiness=readiness, bundle=bundle,

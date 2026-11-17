@@ -73,11 +73,49 @@ def validate_impact_inventory(candidate, allowed_ids, evidence_catalog=None):
                 fragments[item] for item in ids if item in fragments))
             quote = _normalized_source_text(row['text'])
             if not quote or quote not in cited_text:
+                snippet = cited_text[:180] if cited_text else ''
                 raise ValueError(
-                    'Impact inventory text must quote its cited Impact evidence verbatim')
+                    f"Impact inventory item '{row['id']}' text must quote "
+                    'its cited Impact evidence verbatim; copy an exact '
+                    f'continuous excerpt, e.g. {snippet!r}')
     if not allowed and rows:
         raise ValueError('Impact inventory requires an explicitly marked Impact area')
     return copy.deepcopy(candidate)
+
+
+def repair_verbatim_texts(candidate, evidence_catalog=None):
+    """Deterministically replace paraphrased impact text with verbatim excerpts.
+
+    The v2 verbatim gate requires each impact's ``text`` to be an exact excerpt
+    of its cited Impact fragments.  When a model paraphrases, the safest fix is
+    not to keep retrying but to substitute the cited fragments' own wording, so
+    the impact stays grounded and the gate passes deterministically.
+    """
+    if not isinstance(candidate, dict) or candidate.get('schema_version') != SCHEMA_VERSION:
+        return None
+    if not isinstance(evidence_catalog, dict):
+        return None
+    fragments = {row['id']: row['text']
+                 for row in evidence_catalog.get('fragments', [])
+                 if isinstance(row, dict)}
+    if not fragments:
+        return None
+    value = copy.deepcopy(candidate)
+    changed = False
+    for row in value.get('impacts', []):
+        if not isinstance(row, dict):
+            return None
+        ids = row.get('evidence_ids') or []
+        if not ids or not all(isinstance(item, str) for item in ids):
+            continue
+        excerpt = _normalized_source_text(' '.join(
+            fragments.get(item, '') for item in ids))
+        if not excerpt:
+            continue
+        if _normalized_source_text(row.get('text') or '') != excerpt:
+            row['text'] = excerpt
+            changed = True
+    return value if changed else None
 
 
 def merge_impact_inventory(elements, inventory):

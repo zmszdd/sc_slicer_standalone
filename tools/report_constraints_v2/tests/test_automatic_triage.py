@@ -119,6 +119,10 @@ class FormalRetryTests(unittest.TestCase):
             ValueError('core relation observables lack intent/impact grounding')))
         self.assertIn('x==x', formal_retry_hint(
             ValueError('trivial self-comparison predicate')))
+        self.assertIn('NUMERIC-I GUIDANCE', formal_retry_hint(ValueError(
+            'direct P/I/V relationship is absent or infeasible: '
+            'safety is qualitative-only while effects assert a numeric harm; '
+            'restate I over the numeric relation')))
         secret = 'USER_REPORT_SECRET'
         self.assertNotIn(secret, formal_retry_hint(ValueError(secret)))
 
@@ -154,10 +158,14 @@ class TriageTests(unittest.TestCase):
         review['report_warnings'] = ['ambiguous scope']
         self.assertEqual(from_bundle(review)['route'], 'review')
         # ...while the same acceptance with an incomplete core abstains.
-        self.assertEqual(from_bundle({'report_warnings': ['ambiguous scope'],
-                                      'claims': [],
-                                      'core_formalization_status': 'partial',
-                                      'acceptance_status': 'needs_review'})['route'], 'abstain')
+        empty = from_bundle({'report_warnings': ['ambiguous scope'],
+                             'claims': [],
+                             'core_formalization_status': 'partial',
+                             'acceptance_status': 'needs_review'})
+        self.assertEqual(empty['route'], 'abstain')
+        self.assertFalse(empty['stage2_can_continue'])
+        self.assertTrue(any('no formalized claims' in reason
+                            for reason in empty['continuation_blockers']))
         self.assertEqual(from_failure({'error_type': 'TimeoutExpired',
                                        'error': 'model timeout'})['route'], 'pipeline_failure')
 

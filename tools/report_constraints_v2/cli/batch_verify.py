@@ -110,7 +110,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--allow-report-upload', action='store_true')
     parser.add_argument('--provider', choices=('opencode', 'deepseek'), default='opencode')
-    parser.add_argument('--model', default='opencode-go/deepseek-v4-flash')
+    parser.add_argument('--model', default='opencode-go/deepseek-v4.1-flash')
     parser.add_argument('--concurrency', type=int, choices=(1, 2), default=2)
     parser.add_argument('--readiness-retries', type=int, choices=(0, 1), default=1)
     parser.add_argument('--element-retries', type=int, choices=(0, 1), default=1)

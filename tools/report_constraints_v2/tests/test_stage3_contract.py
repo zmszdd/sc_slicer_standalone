@@ -507,6 +507,21 @@ class BindingContractTests(unittest.TestCase):
         self.assertEqual(by_name['unused_witness']['appears_in'], [])
         self.assertEqual(by_name['unused_witness']['binding_kind'], 'not_required')
 
+    def test_observability_metadata_is_copied_when_supplied(self):
+        formal = self.formalization()
+        contract = binding_contract(
+            formal, formal['claims'][0],
+            observability={'paid_fee': {
+                'observable_kind': 'getter', 'scope': 'business',
+                'receiver': None, 'contract_type': None,
+                'binding_risk': 'low', 'missing': []}})
+        row = next(row for row in contract['symbols']
+                   if row['symbol'] == 'paid_fee')
+        self.assertEqual(row['observable_kind'], 'getter')
+        self.assertEqual(row['scope'], 'business')
+        self.assertEqual(row['binding_risk'], 'low')
+        self.assertNotIn('observability_missing', row)
+
 
 class IngestFeedbackTests(unittest.TestCase):
     def setUp(self):

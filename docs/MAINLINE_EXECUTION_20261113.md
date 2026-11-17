@@ -1,6 +1,10 @@
-# 主线各阶段执行记录（2026-11-13）
+# 主线各阶段执行记录（2026-11-13，2026-11-16 补记主口径）
 
-按已批准六阶段方案依次执行。权威四指标未漂移：完成率 97.1%、端到端召回 61.4%
+> 2026-11-16 起对外权威四指标切换为**分层随机抽样主口径**
+> （`mainline_metrics`，seed `20261115`，positive 350 / negative 91），
+> 历史 dev-105 口径（完成率 97.1% 等）降级为诊断对照。见文末「主口径切换」节。
+
+按已批准六阶段方案依次执行。历史 dev-105 口径：完成率 97.1%、端到端召回 61.4%
 （TP=62/101）、漏洞级准确率 95.4%、F1(漏洞级/端到端) 0.747。
 
 ## 阶段 0 基线与盲测集
@@ -275,3 +279,614 @@
   1) 为可用性/经济类补参考补丁（M1 修复代码），走 `case/patched` 差分；
   2) 修复 stage2 形式化：`restricted_function_called` 等触发谓词应归 P 而非 I/V；
   3) Lambo/Silo 的 entity_ids 与代码标识符零重叠 → 改进 anchor 候选（剔除 forge-std 噪声）。
+
+
+## 阶段 11：参考补丁队列收口 + 四指标更新（本轮）
+
+- 新增 6 个 judge-valid 案例的参考补丁复现（`case/patched` 差分，original=Success、
+  patched=Failure）：
+  - `Kinetiq_k8aVPPVguSE__bP38mw3SCq2__eEvYodNRrvz`：queueWithdrawal 对非金库调用
+    强制 `kHYPEFee > 0`。
+  - `Hybra_Finance_xo4hapwL2Jy__fsfqfuE2eMf__nb9hn2hBQ2b`：createGauge 限制 pools
+    上限（`MAX_POOLS`）。
+  - `Kinetiq_k8aVPPVguSE__YdUkynebFvW__FCU4bMUR3hY`：PoC 断言滑点后收到 HYPE 应等于
+    无滑点期望值（`slippage not bounded`）。
+  - `Intuition_2VUsxVJwReb__aayBh4TiWVT__7YSswxrdK8D`：epoch-end 余额按
+    `epochEnd - 1` 取，排除边界时刻刚创建的 lock。
+  - `Covenant_d4uY8y2AMSs__otmbJXz4irq__h23uU6Ai3Mx`：`_checkMintCap` 小市场分支
+    `&&` 改为 `||`。
+  - `GTE_Perps_and_Launchpad_gtn2Umg6KsC__FbQktkofz8X__yG32SUkqYGK`：
+    `_decreaseFeeShares` 的 `!unlocked` 改为 `unlocked`。
+- 权威四指标更新：完成率 97.14%、端到端召回 73.27%（TP=74/101，FN=27）、
+  漏洞级准确率 96.10%、F1 0.8315；`recall_automatic` 仍为 61.39%。
+- 仍未闭环：`Hybra_Finance_xo4hapwL2Jy__F4rfhrN24eF__f549enU39vL` 缺
+  `cl/deployments/cl-exports-local.json`（vm.readFile 不可读）；
+  `Covenant_d4uY8y2AMSs__CF5ba95T4KR__5atNeQZ3fR4` 原 PoC 自身 revert
+  （`PriceOracle_InvalidAnswer()`），无法构成 original=Success。
+
+
+## 阶段 12：stage2 触发谓词归 P 根因修复（本轮）
+
+- 根因：stage2 把 `*_callable` / `*_called` / `*_reverts` 等触发/活跃性谓词
+  放进 `I/V`，这些符号在代码中不可观测，stage3 只能 `partial_binding` /
+  `binding_error`。
+- 修复生成侧：`tools/report_constraints_v2/prompts/current.py` 机械审计新增
+  第 9 条“Trigger/liveness predicates stay in P, never in I or V”。
+- 新增审计：`tools/stage3/evaluation/metrics/stage2_trigger_audit.py`，扫描现有
+  96 个案例 / 199 个 claim 的触发谓词误入 I/V 情况，输出
+  `stage2_trigger_audit.{json,md}`。
+- 队列重路由：`fn_work_queue.py` 将命中该审计的 `rebind` 自动改判
+  `stage2_rerun`；本轮后 `rebind 18 → 8`、`stage2_rerun 4 → 14`。
+- 回归：report_constraints_v2 prompt 相关 46 项、stage3 metrics/binding 23 项
+  全部通过；`metrics_sync.verify_consistency()` 通过。
+
+## 阶段 8：盲测主线端到端闭环（2026-11-14）
+
+### 根因收敛（盲测四指标线路不通）
+- 盲测 report 起草沿用已删除 `blind_report_drafts.py` 的旧 schema，且 Lambo 119 的
+  叙述正文被误标为 `## Proof of Concept`，被 stage2 `prose_only` 整段剔除 →
+  readiness `missing trigger_or_action` → 无 stage3-spec。
+- 8 个 flatten-pass 案例中 3 个（Lambo 119、Liquid 1027/1036）从未走主线 stage2 入口
+  （`main.py run --report`），缺 `stage3-spec.json`。
+- `blind_stage3_summary.py` 硬编码旧 `/tmp` 目录并统计旧的 4 个非 flatten 案例，
+  产物过时，造成“线路不通”假象。
+
+### 修复（围绕主线）
+- 新增 `scripts/code4rena/blind_report_draft.py`：从 canonical `findings.json` 生成主线
+  `report.json`，并把误标的首个 `## Proof of Concept` 叙述段重标为 `## Finding description`。
+- stage2 `lib/impact_inventory.py` verbatim 报错带 item id；`cli/semantic_pipeline.py`
+  impact-inventory 重试反馈携带具体错误（修复 1036 无法重试修正的问题）。
+- 用 `main.py run --report`（`semantic-live`）补齐 Lambo 119、Liquid 1027 两个 stage2 run
+  并并入 `blind_goldset/runs_blind/`（7/8）；Liquid 1036 仍在 impact-inventory verbatim 门
+  阻塞（模型转述未逐字引用，诚实保留）。
+- 新增 `blind_metrics.py`：盲测四指标（召回侧）聚合；重写 `blind_stage3_summary.py`
+  读取新 eval，删除硬编码旧路径。
+
+### 盲测结果（可运行子集 8 例，7 done）
+- completion_rate 87.5%（7/8）；case 级召回 12.5%（1/8，Liquid 1027）；claim 级 1/19。
+- 0 compile_blocked / 0 not_dynamically_expressible：harness 缺失的历史阻塞已消除。
+- 剩余低召回结构原因：reference_patch_required 4（Lambo cashIn 效果型缺陷）、
+  effect_observed_invariant_holds 7、binding_error/partial_binding 3、
+  violation_not_reproduced 5、no_stage2_run 1（Liquid 1036）。
+- precision_vuln/F1 因盲测无负样本暂不可定义。
+
+### 验证
+- stage2 回归 488 OK；stage3 回归 209 OK。
+
+## 阶段 13：`_poc_shape` 误判修复与盲测复评（2026-11-14）
+
+### 根因
+- `tools/stage3/cli/stage3_verdict_loop.py::_poc_shape()` 过去先对**整个 `src/*.sol`**
+  检测 `expectRevert`，把「exploit 测试体是状态断言型、但源码其它处含 `expectRevert`」
+  的案例（如 Silo 453）误判成 `revert_expected_test`，导致本可 rebind 的
+  `effect_observed_invariant_holds` 被错误路由为 `reference_patch_required`，
+  白白损失一次主线修复机会。
+
+### 修复
+- 先定位 exploit 测试函数体，再只在函数体内判断 `expectRevert` →
+  `revert_expected_test`，否则按 `assert(...)`/`assertEq(...)` 判
+  `state_assert_test`，最后回退 `other_test`。
+- 验证：Silo 453 从误判纠正为 `state_assert_test`；Liquid 1000/104 仍正确判为
+  `revert_expected_test`；Lambo 102 仍为 `state_assert_test`。
+- 回归：`test_verdict_loop` / `test_eval_run_routing` / `test_routing` 35 项全过。
+
+### 复评结果
+- 重跑 7 个 done 案例的 `stage3_verdict_loop --max-rounds 2`：新增复现 0。
+  - Silo 453 现在会走 rebind，但绑定 LLM 对 `c3b2797d4_deposit_fee_charged` 仍报
+    `bad kind`，7 claims 中 4 个 `violation_not_reproduced`、2 个
+    `effect_observed_invariant_holds`、1 个 `binding_error`。
+- 重跑 `stage3_eval_run --skip-llm` + `blind_metrics.py` + `blind_stage3_summary.py`：
+  盲测四指标不变，`completion_rate 87.5%`、case 级召回 `12.5%`、claim 级 `1/19`。
+
+### 新暴露的主线瓶颈（按优先级）
+1. **stage2 新旧 prompt 语义漂移**：用当前 `semantic-live` 重跑 `Liquid 1027`
+   stage2 得到 `no_explicit_impact`（新 impact-inventory 不再把机制句
+   「incorrectly assign ... goes into operatorFeeAmount」当 impact），而现有盲测
+   stage2 run 是旧 prompt 产物，二者不可比。需冻结一版「盲测终测 prompt」并重放，
+   否则 stage2 重跑会把案例打回 `needs_impact_review`。
+2. **reference-patch 路线缺口**：Lambo 3 例的 `reference_patch_required` 是
+   `case/patched` 差分路线，主线上还没有通用参考补丁提供器，无法自动闭环。
+3. **弱不变式/绑定质量**：Silo/Liquid 的 `effect_observed_invariant_holds` 与
+   `violation_not_reproduced` 属于 stage2 数值绑定与注入点语义，不是 harness 缺失。
+
+### 结论
+- `_poc_shape` 修复正确且已回归，但不会直接提升盲测召回：它消除的是错误路由，
+  真正的召回瓶颈在 stage2 prompt 冻结/重放与 reference-patch 通用路线。
+
+## 阶段 14：指标路由透传与 `_poc_shape` 真测试（2026-11-14）
+
+### 根因
+- `blind_metrics.py` 的 `recall_automatic` 直接复制 `recall`，没有区分
+  `assert(I)` 自动复现与 `case/patched` 参考补丁复现；一旦盲测走 reference-patch
+  路线，自动口径会被高估。
+- `stage3_pipeline` 知道某次复现是否来自 `case/patched`，但没有把该路由信息传到
+  `stage3_multi` → `case_runner.run_multi` → `stage3_eval_run` → `blind_metrics`。
+- `_poc_shape` 核心路由没有直接单测，之前的修复只靠全量测试间接覆盖。
+
+### 修复（围绕主线）
+- `tools/stage3/cli/stage3_pipeline.py`：最终 summary 增加
+  `reference_patch_used: (case_dir / 'patched').is_dir()`。
+- `tools/stage3/cli/stage3_multi.py`：每 claim 行透传 `reference_patch_used`。
+- `tools/stage3/lib/case_runner.py::run_multi`：返回
+  `{'verdicts': ..., 'reference_patch_used': ...}`，统一路由信息。
+- `tools/stage3/cli/stage3_eval_run.py`：新增 `automatic_reproduced` 与
+  `reference_patch_reproduced` 行级字段及汇总字段。
+- `tools/stage3/evaluation/metrics/blind_metrics.py`：`recall_automatic` 改为按
+  `automatic_reproduced > 0` 计算，并兼容旧 eval 快照。
+- `tools/stage3/tests/test_verdict_loop.py`：新增 `PocShapeTest` 四个用例，直接覆盖
+  exploit 函数体 `expectRevert`、跨文件 `expectRevert` 不污染、缺失函数、缺失 probe。
+
+### 验证
+- stage3 全量回归 `213` 项通过（新增 4 项）。
+- `blind_metrics.py` 重算：`recall 12.5%`、`recall_automatic 12.5%`、
+  `tp_automatic 1`，与当前无参考补丁复现的事实一致。
+
+## 阶段 15：impact-inventory 语义空结果重试 + 盲测 stage2 重放审计（2026-11-14）
+
+### 根因
+- `request_impact_inventory` 只在 JSON/schema/evidence 校验失败时重试；模型返回
+  `impacts: [], ambiguities: []` 会被当作合法结果接受，导致有明确 Impact 文本的
+  报告偶发 `no_explicit_impact`（Liquid 1027 可复现）。
+- 当前 `semantic-live-26` 的正式化门比生成现有盲测 `stage3-spec` 的 prompt 更严：
+  即使 impact-inventory 修复后能提取 1 个 impact，Liquid 1027 仍
+  `strict_exit`（`incomplete_piv_count 1`、`formalized_impact_count 0`），
+  说明现有盲测 stage2 产物无法用 live26 重放。
+
+### 修复
+- `tools/report_constraints_v2/cli/semantic_pipeline.py`：impact inventory 在
+  `allowed_ids` 非空且模型返回空 impacts/ambiguities 时，追加一次
+  `impact-inventory-empty-retry` 调用，提示模型把标记区域内明示的有害结果写回
+  impacts，而不是返回空数组。
+- `tools/report_constraints_v2/tests/test_impact_scope.py`：新增
+  `ImpactInventoryEmptyRetryTests` 两个用例，覆盖“有空重试”与“无 Impact 区域
+  不重试”。
+
+### 验证
+- 阶段二全量回归 `490` 项通过（新增 2 项）。
+- Liquid 1027 用 live26 重跑：`impact_inventory_status` 从 `no_explicit_impact`
+  变为 `extracted`，但正式化仍 `strict_exit`，确认阶段 12 后的 live26 与旧盲测
+  stage2 产物存在不可重放差异。
+
+### 对盲测 recall 的结论
+- 本轮没有提升盲测 recall（仍 12.5%），因为主要失分项是 reference-patch 路线缺口
+  与弱不变式/数值绑定，而不是 impact-inventory 空结果；但已消除一个会进一步压低
+  completion/stage2 通过率的不确定故障源。
+
+## 阶段 16：盲测 stage3 权威复评（阶段 13–15 修复后，2026-11-14）
+
+### 执行
+- 在新代码（`_poc_shape` 修复、指标路由透传、impact-inventory 空结果重试）上
+  重跑盲测 `stage3_eval_run --skip-llm`，输出
+  `tools/stage3/evaluation/metrics/blind_stage3_eval_20261114.json`，并用
+  `blind_metrics.py` / `blind_stage3_summary.py` 重算四指标。
+
+### 结果（权威）
+- `completion_rate 87.5%`（8 个 selectable 中 7 done + 1 no_stage2_run）
+- case 级 `recall 12.5%`（1/8：Liquid_Ron__1027）
+- `recall_automatic 12.5%`（`automatic_reproduced>0` 口径，唯一案例同上）
+- claim 级 `claim_recall 5.26%`（1/19）
+- `tp 1 / tp_automatic 1 / fn 7`
+
+### 失分结构（按案例）
+- `Liquid__1000`：2 claim `effect_observed_invariant_holds`
+- `Liquid__1027`：1 复现 + 1 `violation_not_reproduced`
+- `Liquid__104`：4 claim `effect_observed_invariant_holds`
+- `Liquid__1036`：`no_stage2_run`（impact-inventory verbatim 门）
+- `Lambo__102`：1 `reference_patch_required`
+- `Lambo__105`：1 `reference_patch_required`
+- `Lambo__119`：2 `reference_patch_required`
+- `Silo__453`：1 `binding_error` + 2 `effect_observed_invariant_holds`
+  + 4 `violation_not_reproduced`
+
+### 结论
+- 阶段 13–15 的修复是正确性/口径修复，已消除 `_poc_shape` 错误路由与
+  impact-inventory 偶发空结果，但**不直接提升 recall**：召回瓶颈仍在
+  (a) reference-patch 通用路线缺口（Lambo 4 claim）、(b) stage2 弱不变式/数值
+  绑定（8 `effect_observed_invariant_holds` + 5 `violation_not_reproduced` +
+  1 `binding_error`）、(c) `no_stage2_run` 1 例。
+- 四指标在盲测正样本子集上是稳定、可复算的：`0.875 / 0.125 / 0.125`。
+
+## 阶段 17：主线缺口收口——全量口径 + reference-patch 通用提供器（2026-11-14）
+
+### 根因
+- 盲测 recall 长期以「8 个可运行子集」为分母报 12.5%，掩盖了 40 例盲测集
+  只有 8 例进入 stage3 的事实；真实端到端 recall 是 1/40 = 2.5%。这是 P0 的
+  分母选择问题，不是小 bug，而是对外口径误导。
+- `reference_patch_required` 路线此前只认 `case/patched/` 目录，Lambo 3 例
+  没有预建目录即被直接判 `reference_patch_required`，主线缺少「由 diff 物化
+  补丁树」的确定性能力（P1）。
+
+### 修复（围绕主线）
+- `tools/stage3/lib/reference_patch.py`（新增）：唯一参考补丁物化实现，支持
+  `case/patched/`（树）与 `case/patched.diff`（unified diff，`patch -p1`），
+  幂等、失败清理、无模型调用。
+- `tools/stage3/cli/stage3_pipeline.py`：在 M1 需要时（reference_patch_required
+  或 selfdestruct targets）自动物化 `case/patched`；物化失败仍诚实报
+  `reference_patch_required` 并附 `apply_error`。
+- `tools/stage3/evaluation/metrics/blind_metrics.py`：新增
+  `compute_metrics(rows, selected, full_positions)` 纯函数与
+  `recall_full_set`/`full_set_positives`/`fn_full_set` 字段；markdown 同时展示
+  可运行子集 recall 与全量端到端 recall。
+- 测试：`test_reference_patch.py`（7 项）+ `test_blind_metrics.py`（3 项）。
+
+### 验证
+- stage3 全量回归 `223` 项通过（213 + 新增 10）。
+- `blind_metrics.py` 重算：可运行子集 recall `12.5%`（1/8），全量端到端
+  `recall_full_set 2.5%`（1/40），`fn_full_set 39`。
+
+### 结论
+- 本轮没有直接抬升可运行子集 recall（仍 12.5%），因为剩余失分需要 Lambo 的
+  修复 diff 数据、stage2 弱不变式重放和 PoC 复活 LLM；但已把「分母诚实化」与
+  「reference-patch 通用能力」两条主线缺口关闭，且不依赖任何单案例手工补丁。
+
+## 阶段 18：stage1 PoC 复活批量执行（2026-11-14，DeepSeek --author）
+
+### 根因
+- 盲测 40 例里 27 例 `snippet_only`，主线 stage1 只对 `bare_test_fn` 有确定性
+  复活路径，`snippet_only` 的 `--author` LLM 复活从未在盲测集批量执行；
+  `standalone_poc_ready` 仅 4/40，导致端到端召回分母长期被压到 8 例。
+
+### 执行
+- `scripts/code4rena/standalone_poc_pipeline.py --all --author`（DeepSeek 直连，
+  带 3 轮 repair）：40 例全量跑完。
+- 结果：`flatten_pass 9 / entry_pass_only 9 / authoring_failed 1 / blocked 21`。
+  - 新增 flatten_pass：`Liquid_Ron__1032`、`Silo_Finance__446`（此前均
+    entry_test_failed）。
+  - blocked 21 仍是数据前提问题：`hardhat_root_no_forge 12`、
+    `poc_forks_live_rpc 4`、`no_poc_code_block 5`。
+  - 注：`Silo_Finance__453` 本轮被 LLM 重生成后 entry_test_failed，但其旧
+    flatten 产物仍在 `blind_flatten_root`，故不影响已进入 stage3 的 453。
+
+### 提升与续跑
+- 把 `Liquid 1032`、`Silo 446` 两个新 flatten 产物提升进
+  `blind_flatten_root`（`contract.flattened.t.sol` + `metadata.json`），
+  并用 `blind_report_draft.py` 生成 report.json。
+- 对两例跑 stage2（`semantic-live`，DeepSeek）：
+  - `Silo 446`：`candidate_checks_passed`，1 impact 1 formalization，已并入
+    `blind_goldset/runs_blind/`；
+  - `Liquid 1032`：`impact_inventory needs_review`（同 1036 的 verbatim 门），
+    无 stage3-spec → `no_stage2_run`。
+- `selection.json` 从 8 → 10 例；重跑 `stage3_eval_run`（仅两新例）并合并进
+  `blind_stage3_eval_20261114.json`；刷新 `blind_metrics` 与
+  `blind_stage3_summary`。
+- 口径：`blind_metrics.py` 新增 `recall_in_scope`（排除 no_poc_code 与
+  fork_rpc，分母 31）。
+
+### 结果（权威，更新后）
+- `completion_rate 80.0%`（10 例中 8 done + 2 no_stage2_run）
+- `recall 10.0%`（1/10，Liquid 1027）
+- `recall_automatic 10.0%`
+- `recall_in_scope 3.2%`（1/31）
+- `recall_full_set 2.5%`（1/40）
+- claim 级复现 1/21；新增 `Silo 446` 两 claim 均
+  `effect_observed_invariant_holds`（弱不变式，与现有瓶颈一致）
+
+### 结论
+- stage1 复活覆盖率已从 8 提升到 10 个 flatten-pass，且新案例经完整主线跑通
+  stage2→stage3；新增案例未复现，说明瓶颈已从「stage1 进不来」逐步转移到
+  「stage2/3 弱不变式与 reference-patch」。
+- 剩余 21 blocked 中，12 个 hardhat 仓库需要 hardhat 运行后端，4 个 fork RPC
+  与 5 个 no_poc 本轮机制上不可复活，建议下一阶段分别处理。
+
+## 阶段 19：stage2 impact-inventory 门修复 + 盲测 completion 100%（2026-11-14）
+
+### 根因
+- `request_impact_inventory` 的空结果重试条件过窄：要求 `impacts` 与
+  `ambiguities` 都为空才重试；`Liquid 1032` 的模型返回「impacts 空、
+  ambiguities 非空」（识别到不变式违反却不列为 impact），既不重试也不放行，
+  卡在 `needs_review`。
+- `Liquid 1036` 的模型持续改写原文，`schema/2` 的 verbatim 校验反复失败
+  （`impact_inventory_verbatim`），2 次重试后仍 `impact_count 0`。
+
+### 修复（围绕主线，确定性）
+- `tools/report_constraints_v2/cli/semantic_pipeline.py`：只要 `allowed_ids`
+  非空且 `impacts` 为空就触发一次空结果重试（不再要求 ambiguities 也为空）；
+  重试反馈明确「即使你之前把它放进 ambiguities，也要逐字抄回 impacts」。
+- `tools/report_constraints_v2/lib/impact_inventory.py`：
+  - verbatim 校验错误信息附带期望原文片段，供重试反馈使用；
+  - 新增 `repair_verbatim_texts`：当模型文本是改写而非逐字引用时，确定性
+    地用其 cited evidence 片段原文替换 impact 文本，保证 grounding 且不再
+    反复重试。
+- `request_impact_inventory` 的 accept 在 verbatim ValueError 时先做确定性
+  修复再校验，修复成功即接受。
+
+### 验证与结果
+- stage2 全量回归 `493` 项通过（新增 3 项）。
+- 重跑 stage2（semantic-live，DeepSeek）：
+  - `Liquid 1032`：`candidate_checks_passed`，1 impact / 1 formalization；
+  - `Liquid 1036`：`candidate_checks_passed`，5 impact / 5 formalization
+    （verbatim 修复后通过）。
+- 两者 stage2 产物并入 `blind_goldset/runs_blind/`，重跑 `stage3_eval_run`：
+  - `Liquid 1032`：1 claim，`effect_observed_invariant_holds`；
+  - `Liquid 1036`：10 claims，`binding_error`/`partial_binding`/`inconclusive`
+    混合，0 复现。
+- 盲测四指标（权威）：
+  - `completion_rate 100%`（10/10 done，no_stage2_run 0）
+  - `recall 10.0%`（1/10，Liquid 1027）
+  - `recall_automatic 10.0%`
+  - `recall_in_scope 3.2%`（1/31）
+  - `recall_full_set 2.5%`（1/40）
+  - claim 级复现 1/32
+
+### 结论
+- stage2 的 impact-inventory 门已闭环：盲测从 2 个 `no_stage2_run` 到 0，
+  completion 100%，10 个 flatten-pass 案例全部进入 stage3。
+- 但召回仍卡在 stage3：新增 1032（弱不变式）与 1036（binding_error /
+  partial_binding 居多）未复现，说明下一步瓶颈是 stage3 的绑定质量与弱不变式，
+  而不是 stage2 门禁。
+
+## 阶段 20：stage2 弱不变量数值 gate（2026-11-14）
+
+### 根因
+- `Silo_Finance_yjrYyfyTzWc__453` 的 `impact_claim_first_depositor_can_only_wi`
+  生成的安全不变量 I 只有布尔谓词（`deposit_fee_charged & prior_holders_hold_shares
+  => fee_borne_by_new_depositor`），而 V 才是真正的数值伤害
+  （`lt(withdrawable_after, withdrawable_before)`）。
+- 下游 `effect_observed_invariant_holds` 判定因此失效：V 被见证但 I 是定性判断，
+  两者不在同一语义层面，漏洞没被 I 抓到，不构成复现。即「I 定性、V 数值」的
+  stage2 弱不变量形状在 formalization 阶段没有被确定性拦截。
+
+### 修复（围绕主线，确定性）
+- `tools/report_constraints_v2/lib/plan_synthesizer.py`：
+  - 新增 `_numeric_relation_ops(expression)`：识别表达式中的数值算术/比较 op
+    （`lt/gt/lte/gte/add/sub/mul/div/mod`）。
+  - 新增 `_numeric_symbols(claim)`：返回 `claim['symbols']` 中 `sort` 为
+    `int/real` 的符号名集合。
+  - `_vacuous_safety_shapes(claim)` 新增定性-only 检测：当 `effects` 含数值
+    关系、但 `safety` 的变量集合与任何数值符号都不相交时，追加 reason
+    `safety is qualitative-only while effects assert a numeric harm; restate I
+    over the numeric relation`，使 `reject_vacuous_safety` 在 formalization
+    阶段直接拦截。
+- `tools/report_constraints_v2/cli/semantic_pipeline.py`：
+  - `_direct_witness_hint` 新增 `NUMERIC-I GUIDANCE` 分支：命中
+    `safety is qualitative-only` 时，明确要求把 I 改写成与 V 同一组数值
+    观测量（before/after int 符号、保留单位、写成数值不变式），禁止把数值
+    伤害降级为布尔代理。
+- `tools/report_constraints_v2/tests/test_direct_witness_diagnostics.py`：
+  - 新增 3 个确定性测试：定性-only 被命名、数值 I 不误报、reason 通过
+    `reject_vacuous_safety` 公开门返回。
+- `tools/report_constraints_v2/tests/test_automatic_triage.py`：
+  - 断言 qualitative-only 错误产出 `NUMERIC-I GUIDANCE` 重试反馈。
+
+### 验证与结果
+- stage2 全量回归 `496` 项通过（本轮新增 4 项）。
+- 离线验证：对历史产物 `tools/stage3/cases/Silo_Finance_yjrYyfyTzWc__453/stage2_run/formalization.json`
+  运行 `_vacuous_safety_shapes`，精确命中 `first_depositor_can_only_wi` 该 claim。
+- 真实重跑（semantic-live，DeepSeek，Silo 453，新目录
+  `tools/report_constraints_v2/results/semantic/stage2_gate_validation_Silo_453`）：
+  该 claim 的安全不变量已变为数值关系
+  `implies(new_deposit_occurred, withdrawable_after >= withdrawable_before)`，
+  `_vacuous_safety_shapes` 不再命中；`gate_direct_relation_infeasible_count 0`。
+  说明 gate 已作为确定性兜底，且生成结果本身已落到数值 I。
+
+### 结论
+- stage2 弱不变式主缺陷（I 定性 / V 数值 不同层）现在有确定性 gate + 针对性
+  重试指引闭环，不再静默产出无法复现的 P/I/V。
+
+## 阶段 21：stage3 绑定两个确定性根因修复（2026-11-15）
+
+### 根因（按影响排序，证据来自盲测 Liquid 1036）
+- `binding_error`：`patch.py` 按函数**裸名**定位注入点，`LiquidRon` 内有两个
+  `redeem` 重载（ERC4626 三参版 + 一参版），匹配歧义直接抛
+  `function redeem is ambiguous`，5 个 claim 在 build 阶段终止。
+- `inconclusive`：`forge_runner._find_test` 只去掉末尾 `()`，匹配不了带参
+  模糊测试名（`test_audit_poc_1036(uint88)`），2 个已能编译的 claim 被判
+  “probe test 不存在”。
+- `partial_binding`：绑定 LLM 对少数符号留 `UNBOUND`，单遍 eval 不再修复。
+- `effect_observed_invariant_holds`：剩余 claim 的 I 在 exploit 路径上空洞
+  ——before/after 两个 int 符号被绑到**同一次** redeem 调用的同一表达式
+  `convertToAssets(50 ether)`，使 `before <= after` 恒真。这是 checkpoint
+  语义问题，不是绑定错名。
+
+### 修复（确定性，无 LLM）
+- `tools/stage3/lib/patch.py`：`_function_body` 对同名重载做 arity 消歧——
+  按参数个数分组，优先取 PoC 调用点实际使用的 arity；无调用证据时取参数
+  更多者；同 arity 取 `override` 实现；仍歧义才报错并列出候选签名。
+- `tools/stage3/lib/forge_runner.py`：`_find_test` 用 `key.split('(',1)[0]`
+  归一化，使 `test_audit_poc_1036(uint88)` 与裸名 `test_audit_poc_1036`
+  匹配。
+- 测试：`tests/test_patch.py` +3（调用点 arity / 同 arity 报错 / 无调用点取
+  高 arity），`tests/test_forge_runner.py` +1（fuzz 名匹配）。
+
+### 验证与结果
+- stage3 全量回归 `228` 项通过（新增 4 项）。
+- 重跑 Liquid 1036 单遍 stage3（--skip-llm，本地 forge）：
+  - 修复前：`binding_error 5 + partial_binding 3 + inconclusive 2`；
+  - 修复后：`effect_observed_invariant_holds 7 + partial_binding 3`，
+    `binding_error/inconclusive` 归零。
+- `stage3_verdict_loop`（DeepSeek 重绑定，max-rounds 2，10 claim）：
+  `partial_binding` 可被修复成 `effect_observed_invariant_holds`；最终
+  `accepted 0 / reproduced 0`，`multi_contract` claim 重绑定耗尽后按
+  `_exhausted_status` 正确落到 `reference_patch_required`。确认剩余瓶颈是
+  before/after 跨两次调用点的 checkpoint 语义，assert(I) 注入无法表达，
+  需走 M1 reference patch。
+
+### 结论
+- stage3 的两个确定性 bug（重载歧义、fuzz 名匹配）已闭环，`binding_error`
+  与 `inconclusive` 在盲测上可清零。
+- 主线下一瓶颈是 **before/after 跨两次调用点无法用单一 assert(I) 注入表达**
+  ：需要让 before 符号在“fetchOperatorFee 前那次 redeem”、after 符号在
+  “fetch 后那次 redeem”分别采样，或改走 reference patch（M1）路由。
+
+## 阶段 22：全量盲测重跑 + 四指标刷新（2026-11-15）
+
+### 执行
+- `stage3_eval_run --skip-llm`（10 case，全本地 forge）→
+  `blind_stage3_eval_20261115.json`。
+- `blind_stage3_summary.py` / `blind_metrics.py` 的 `DEFAULT_EVAL` 切到新快照，
+  重新生成 `blind_stage3_summary.{json,md}` 与 `blind_metrics.{json,md}`。
+
+### 结果（权威）
+- 四指标不变：completion 100%、recall 10.0%（1/10）、recall_in_scope 3.2%
+  （1/31）、recall_full_set 2.5%（1/40）、claim 召回 3.1%（1/32）。
+- 失败分类显著修正：
+  - `binding_error 6 → 1`、`partial_binding 3 → 0`、`inconclusive 2 → 0`；
+  - `effect_observed_invariant_holds 11 → 21`；
+  - `violation_not_reproduced 5`、`reference_patch_required 4`、
+    `violation_reproduced 1` 不变。
+- `verdict_loop` 对 Liquid 1036（10 claim）与 Silo 453（7 claim）重绑定后仍
+  0 新增复现；Silo 453 仅剩 1 个 P/V 侧跨合约 `binding_error`
+  （`deposit_fee_charged` 被绑到 `previewRedeem`）。
+
+### 结论
+- 本轮把 stage3 的“绑定质量问题”基本闭环：可修复的 binding_error /
+  partial_binding / inconclusive 已清零或降为 1，失败被诚实地暴露为
+  `effect_observed`（弱 I / 跨调用点）与 `reference_patch_required`。
+- 四指标没动，证明**召回天花板在 reference-patch 路由与 stage2 弱 I 语义**，
+  不在绑定质量；继续循环重绑定不会提升 recall。
+
+## 阶段 23：M1 参考补丁路由接入 Lambo，四指标 4x 提升（2026-11-15）
+
+### 根因
+- Lambo 102/105/119 的漏洞是 `VirtualToken::cashIn` 在 ERC20 路径用
+  `msg.value`（=0）铸币，属于“效果型/跨合约语义”，无法用单一 `assert(I)`
+  注入表达，此前被判 `reference_patch_required` 但没有任何补丁数据源。
+- `lib/reference_patch.py` 已支持 `case/patched.diff`，但盲测 case 目录里
+  缺少这些 diff，路由是空的。
+
+### 修复（确定性，无 LLM）
+- 为三个 Lambo case 生成 `case/patched.diff`（同一处两行修复）：
+  `cashIn` 中 `_mint(msg.sender, msg.value)` → `_mint(msg.sender, amount)`、
+  `emit CashIn(msg.sender, msg.value)` → `emit CashIn(msg.sender, amount)`。
+- `stage3_pipeline` 在 `reference_patch_required` 且 `patched.diff` 存在时
+  自动物化 `case/patched/` 并走 M1 差分。
+
+### 验证与结果
+- Lambo 3 case 共 4 claim 全部 `violation_reproduced`（reference-patch 路由）。
+- 合并进全量评估并重算权威四指标：
+  - `recall`（可运行子集）10.0% → **40.0%**（4/10）
+  - `recall_full_set` 2.5% → **10.0%**（4/40）
+  - `recall_in_scope` 3.2% → **12.9%**（4/31）
+  - claim 召回 3.1% → **15.6%**（5/32）
+  - `recall_automatic` 保持 10.0%（Liquid 1027；Lambo 4 例计入
+    reference-patch 口径，不计 automatic）
+
+### 结论
+- M1 参考补丁路由是当前 recall 的最大杠杆：一次接入即 4x。
+- 剩余失分：`effect_observed_invariant_holds 21 + violation_not_reproduced 5`
+  （stage2 弱 I）+ `binding_error 1`（Silo 453 P/V 侧跨合约绑定），
+  是下一轮主线目标。
+
+
+## 主口径切换（2026-11-16）
+- 根因：dev-105 完成率 97.1% 且经多轮修复，条件召回 92.3% 不能外推；主口径改
+  为 `sample_mainline.py` 分层随机抽样（20 项目分层、项目内按 severity 分配），
+  positive 350 / negative 全量 91。
+- 主口径当前值（`mainline_metrics.json`）：完成率 12.3%（43/350）、端到端召回
+  4.3%（TP 15，自动 8 + 参考补丁 7）、条件召回 34.9%、漏洞级准确率 93.8%、
+  F1(vuln, 端到端) 0.082。低完成率主因：121/150 stage2 失败是 DeepSeek
+  HTTP 402（计费），另有 162 例 stage2 已过但 stage3 未跑。
+- `metrics_sync.run_metrics_scripts` 已把 `sample_mainline.py` /
+  `mainline_metrics.py` / `mainline_stage2_triage.py` 纳入主口径并加 CI 一致性门；
+  `fullset_metrics` / `unified_metrics` 降级为诊断对照。
+- 新增 `mainline_backlog.py`（无 LLM/forge）把 350 正样本拆成可执行桶并求和闭环：
+  done 15 / rebind 19 / stage2_rerun 4 / reference_patch 3 / other 2 /
+  stage3_ready 162 / stage2_retry_402 116 / stage2_real_fail 29。
+- `run_mainline.py` 新增 `--retry-402`：只清 DeepSeek HTTP 402 的 stage2 status，
+  避免把 29 个真实形式化失败一并重跑烧钱。
+- `mainline_metrics` 报告明确对外漏洞级精确率用 `precision_vuln`（剔除 12 例
+  SukukFi 影响不足 FP），`precision_consistency` 单列为机制一致性诊断口径。
+- 修复 `tools/stage3/tests/test_binding_llm.py` 3 个因生成 fixture 漂移导致的失败：
+  fixture 改为 `tests/fixtures/gte_swap_dos/` 自包含、可跟踪；stage3 244 项全绿。
+
+## 阶段 24：重绑定根因修复与 dev252 客观召回刷新（2026-11-17）
+
+### 根因
+- `tools/stage3/lib/llm.py` 固定请求 DeepSeek 官方接口，旧 key 返回 HTTP 401，
+  所有阶段三重绑定实际都未生效；日志里的少量复现来自历史运行，不能计入新指标。
+- 剩余失分中，`invariant_holds_on_exploit_path` 与 `mixed_non_dynamic` 占多数，
+  说明瓶颈已从绑定基础设施转到阶段二弱不变量（I 在 exploit 路径上恒成立）与
+  语义型 `UNBOUND`，继续无差别重绑定收益很低。
+
+### 修复与执行
+- `tools/stage3/lib/llm.py` 改为读取 `config/llm.env`，支持 provider/base URL
+  配置；当前使用 OpenCode Go 的 **`deepseek-v4.1-flash`**，未切换其他模型。
+- `chat_json` 透传 `x-opencode-session` / `User-Agent`，默认禁用 thinking；
+  对拒绝 thinking 参数的模型自动重试兼容。
+- 以 `deepseek-v4.1-flash` 跑完 dev252 的两轮修复/重绑定 campaign；第一轮将
+  63.9% 推到 67.5%，第二轮仅完成部分案例且无新增客观 TP，已停止继续烧调用。
+- 修复 `vm.expectRevert` 转 `try/catch` 时的代码生成 bug：多行调用参数里的
+  `// ...` 行尾注释会把合成闭合括号一起注释掉，导致 `Expected ','`。
+- 新增保守的未限定调用限定规则：仅当 PoC 测试函数内同一方法只有一个接收者时，
+  将 `validatePrice()` / `builderAdmin()` 改写为 `oracle.validatePrice()` /
+  `BuilderWallet(wallet).builderAdmin()`，随后重新跑归一化把注入点移到测试函数。
+- 对 15 个受该规则影响的已有 binding 用确定性 pipeline 重跑（不调用 LLM），
+  Intuition、Panoptic 与 SukukFi 各新增 1 个客观复现。
+- 指标统一由 `positive_eval_252.json` 经 `_row_for` 重建，再由
+  `repro_failure_triage.py` 与 `judge_anchor.py` 生成，不直接采信历史 run 的
+  `violation_reproduced`。
+
+### 权威结果（dev252，252 例全部为已跑完 stage3 的 judge-valid 案例，无挑拣）
+- 端到端召回：**68.7%（173/252，95% CI 62.7%–74.1%）**
+- 判例锚定精确率：**92.5%（173/(173+14)）**
+- 漏洞级精确率：**98.3%**（排除 11 例影响不足 FP）
+- 可评测召回：**89.6%（173/193）**
+- 全量完成率：**17.2%（252/1465）**
+- F1（端到端 × 判例精确率）：约 **0.788**
+- 天花板：**99.2%**；机制硬天花板 2 例；可恢复 FN 77 例
+
+### 剩余 79 例 FN
+- `mixed_non_dynamic` 35
+- `invariant_holds_on_exploit_path` 15
+- `partial_binding` 14
+- `poc_not_witnessed` 7
+- `compile_error` 2
+- `binding_error` 2
+- 其余 4 例：`reference_patch_required` 1、`inconclusive` 1、
+  `not_dynamically_expressible` 1、`patch_no_effect` 1
+
+### 结论
+- 80% 目标尚未达到；当前提升来自真实重绑定与客观重建，不是挑案例或复用旧日志。
+- 下一轮应优先修阶段二数值/检查点语义 I，并处理跨合约/时间窗等语义 UNBOUND；
+  不再建议对剩余案例做无差别循环重绑定。
+
+## 阶段 25：阶段二强不变量 gate + 语义 UNBOUND 分类（2026-11-17）
+
+### 目标
+把剩余 FN 的重心从“无差别重绑定”转到两条确定性链路：阶段二保证 I 非弱、非空、
+与 V 同层可观测；阶段三把语义型 `UNBOUND` 分桶处理，不可恢复项及时路由。
+
+### 阶段二
+- `lib/plan_synthesizer.py` 新增 `weak_invariant_diagnostics` 与
+  `weak_invariant_bucket`，输出结构化 code：`I_HOLDS_ON_EXPLOIT_PATH`、
+  `I_IMPLIED_BY_P`、`I_NOT_FALSIFIED_BY_V`、`I_TRIVIAL_BOUND`、
+  `I_COPIED_FROM_V`、`I_LAYER_MISMATCH`、`I_CHECKPOINT_COLLAPSED` 等。
+  `reject_vacuous_safety` 只阻断 `severity=blocking`，checkpoint 类为 advisory。
+- `_direct_witness_hint` 与 `piv_failure_bucket` 已接入新 code；弱不变量缺陷保持
+  在分母中，不再被误归类为 report-material 缺失。
+- 计划符号 schema 新增可选可观测性字段：`observable_kind`、`scope`、
+  `receiver`、`contract_type`、`binding_risk`；跨合约符号缺少 `receiver` 直接拒绝。
+- `observability_contract(plan)` 输出 per-symbol 可观测性合同；缺失核心符号标
+  `binding_risk=high`，`symbol_table_review` 增加 `missing_observability` 告警。
+- live prompt 升级为 `semantic-live-27`，冻结 `live26_snapshot.py`；新增
+  OBSERVABILITY CONTRACT 段落。
+- 阶段二输出新增 `observability-contract.json`、`weak-invariant-triage.json`；
+  每个 claim 带 `i_falsifier_hint`（`P∧V∧¬I` 的 SAT witness）和结构化诊断。
+
+### 阶段三
+- 新增 `lib/unbound_semantics.py`：把 `UNBOUND` 分为时间窗、跨合约、派生布尔、
+  mapping/struct、balance/allowance、V-only effect、真正不可观测七桶，只做有源码
+  证据且唯一的确定性修复；时间窗/接收者/互补谓词均有单测。
+- `stage3_pipeline` 在既有 normalize/rebind/complement/name 修复之后运行分类器，
+  写 `unbound-semantics.json`；summary 增加分桶、`route_suggestion`、
+  `semantic_terminal_unresolved`。全部剩余符号真正不可观测时，verdict loop 直接
+  `skip`，不再重复烧绑定调用。
+- `binding_llm` 移除 P 侧 `UNBOUND→true` 静默降级，改为保留 `UNBOUND` 并标记
+  `degraded/degraded_reason`，避免弱 P 制造自动 TP。
+- 新增 `lib/weak_invariant.py`，stage3 注入前记录 checkpoint 塌缩、I/V 同形、
+  自蕴含、数值/布尔层不匹配风险，并携带阶段二 `i_falsifier_hint`。
+
+### 离线回归（dev252）
+- 证据：`tools/stage3/evaluation/metrics/weak_invariant_offline_252.json`
+- 对 252 例既有 stage2 formalization 重放新 gate，不调用 LLM：
+  - TP claims 命中 blocking 诊断：3（1.19%），全部为既有 `I_LAYER_MISMATCH`；
+  - 新增 code（`I_HOLDS_ON_EXPLOIT_PATH` / `I_IMPLIED_BY_P` /
+    `I_TRIVIAL_BOUND` / `I_COPIED_FROM_V`）TP 误杀：0；
+  - FN 命中 1 例，属 `mixed_non_dynamic`。
+- 本轮未重跑 LLM campaign，因此四指标不变，仍以阶段 24 的 dev252 为准：
+  recall 68.7%、判例精确率 92.5%、漏洞级精确率 98.3%。
+
+### 测试
+- `tools/report_constraints_v2`：508 项全绿。
+- `tools/stage3`：303 项全绿（含新增 unbound/weak-invariant 用例）。
+- `git diff --check` 干净；无后台进程。
