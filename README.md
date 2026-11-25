@@ -19,6 +19,23 @@ GitHub 仓库包含源码、测试、文档、协议基线、冻结样本、正�
 [docs/PORTABILITY_20261123.md](docs/PORTABILITY_20261123.md) 配置数据根和 provider。
 历史实验脚本里写死的 `/root/...` 路径不属于主入口依赖。
 
+数据来源与第三方材料见 [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)。
+
+## 当前指标口径
+
+论文主表采用 consistency 主线的保守四指标，详细 CI 与口径见
+`tools/stage3/evaluation/metrics/mainline_metrics.md`：
+
+| 指标 | 当前值 | 95% CI |
+| --- | ---: | --- |
+| Accuracy（consistency，保守） | 20.0% | 11.2%–33.0% |
+| Recall（consistency，保守） | 25.0% | 14.2%–40.2% |
+| Precision（consistency，已评测） | 50.0% | 29.9%–70.1% |
+| F1（consistency，保守） | 0.3333 | 6.7%–50.0% |
+
+当前发布状态是 `coverage-limited`，`publishable=false`：负例覆盖不足、一致性 FPR
+上界超过发布上限。不要用 dev252、dev24、A+/hardened smoke 或旧协议结果替换主表。
+
 ## 统一入口
 
 仓库根目录的 `main.py` 是**阶段二 / 阶段三 / 三阶段 pipeline** 的统一命令行入口；

@@ -16,6 +16,7 @@
 | 口径对齐表 | `tools/stage3/evaluation/metrics/metric_alignment_report.json` / `.md` |
 | 发布门禁 | `tools/stage3/evaluation/metrics/locked_eval_contract.json` / `.md` |
 | 协议基线 | `tools/stage3/mainline-protocol.json` |
+| 数据来源与第三方材料 | `docs/DATA_SOURCES.md` |
 
 当前权威状态为 `ready=true`、`publishable=false`、`coverage-limited`。不要使用 dev252、A+/hardened smoke 或旧协议结果替换主表。
 
