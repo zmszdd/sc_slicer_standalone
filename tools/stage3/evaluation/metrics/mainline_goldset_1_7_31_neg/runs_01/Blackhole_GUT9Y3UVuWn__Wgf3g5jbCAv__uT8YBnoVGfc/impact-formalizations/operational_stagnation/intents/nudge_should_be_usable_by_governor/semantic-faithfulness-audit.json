@@ -1,0 +1,97 @@
+{
+  "schema_version": "semantic-faithfulness-audit/4",
+  "status": "completed",
+  "verdict_consistent": true,
+  "fidelity_status": "passed",
+  "checks": [
+    {
+      "source_id": "weekly_initialized_above_tail_start",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate checks weekly_initialized_value > tail_start_constant, matching the statement's claim."
+    },
+    {
+      "source_id": "initializer_set_to_admin",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate checks initializer_after_init != zero_address, matching the never-set-to-zero claim."
+    },
+    {
+      "source_id": "nudge_should_be_usable_by_governor",
+      "role": "I",
+      "verdict": "consistent",
+      "reason": "Predicate negates nudge_unexecutable_stagnation, encoding that nudge should be usable rather than perpetually unusable."
+    },
+    {
+      "source_id": "operational_stagnation",
+      "role": "V",
+      "verdict": "consistent",
+      "reason": "Predicate asserts nudge unexecutable and not callable by governor, matching the stagnation claim."
+    }
+  ],
+  "piv_relation": {
+    "verdict": "consistent",
+    "reason": "relation_context statement nudge_requires_weekly_below_tail_start (e_ee682632ea62_0009) explicitly bridges weekly above TAIL_START and initializer never zero to nudge() always reverting, supporting V from I under P."
+  },
+  "relation_context": [
+    {
+      "statement_id": "governor_invokes_nudge",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_ee682632ea62_0003",
+          "text": "The `MinterUpgradeable` contract includes a `nudge()` function, designed to enable the `BlackGovernor` to modify the `tailEmissionRate` based on governance decisions. However, this function is perpetually unusable under the contract's current design due to a conflicting state variable initialization and an unreachable update mechanism."
+        },
+        {
+          "evidence_id": "e_ee682632ea62_0010",
+          "text": "This bug prevents the `BlackGovernor` from ever successfully invoking `nudge()`, effectively deactivating a core governance mechanism for adjusting emission rates from the moment of contract deployment."
+        }
+      ]
+    },
+    {
+      "statement_id": "update_period_gated_by_initializer_zero",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_ee682632ea62_0007",
+          "text": "3.  **`update_period()` Function's Inoperability:** The `update_period()` function contains the logic responsible for gradually decreasing the `weekly` emission amount over time. However, this critical logic is gated by the condition `if (block.timestamp >= _period + WEEK && _initializer == address(0))`. In the current contract's `initialize()` function, `_initializer` is set to `msg.sender` (the `admin` in deployment) and is never subsequently set to `address(0)` in the `_initialize` function (which requires `_initializer == msg.sender`). As a result, the `_initializer == address(0)` part of the condition within `update_period()` will always evaluate to `false`, preventing the `weekly` valu"
+        },
+        {
+          "evidence_id": "e_ee682632ea62_0008",
+          "text": "e from ever decreasing naturally through the intended emission decay mechanism."
+        }
+      ]
+    },
+    {
+      "statement_id": "nudge_requires_weekly_below_tail_start",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_ee682632ea62_0009",
+          "text": "4.  **`nudge()` Function Rendered Unusable:** The `nudge()` function itself includes the [`require (weekly < TAIL_START);`](https://github.com/code-423n4/2025-05-blackhole/blob/92fff849d3b266e609e6d63478c4164d9f608e91/contracts/MinterUpgradeable.sol#L142) statement. Since `weekly` is initialized to a value greater than `TAIL_START` and can never decrease below it due to the inoperable `update_period()` logic, this `require` statement will always revert. Consequently, the `nudge()` function cannot be successfully called under any normal operational circumstances, rendering it completely unusable."
+        }
+      ]
+    }
+  ],
+  "relationship_trace": {
+    "status": "explicit",
+    "links": [
+      {
+        "from_source_ids": [
+          "weekly_initialized_above_tail_start",
+          "initializer_set_to_admin",
+          "nudge_should_be_usable_by_governor",
+          "operational_stagnation"
+        ],
+        "context_statement_id": "nudge_requires_weekly_below_tail_start",
+        "evidence_ids": [
+          "e_ee682632ea62_0009"
+        ],
+        "reported_relation": "nudge() requires weekly < TAIL_START, but weekly is initialized above TAIL_START and cannot decrease, so nudge() always reverts and cannot be invoked by BlackGovernor, leaving tailEmissionRate unadjustable and causing operational stagnation."
+      }
+    ],
+    "gap": ""
+  },
+  "mismatch_count": 0,
+  "repair_finding_count": 0
+}

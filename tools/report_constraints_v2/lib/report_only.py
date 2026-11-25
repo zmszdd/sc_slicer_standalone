@@ -8,6 +8,9 @@ import re
 import subprocess
 import tempfile
 import time
+import uuid
+import urllib.error
+import urllib.request
 from contextvars import ContextVar
 
 import z3
@@ -133,6 +136,41 @@ def prose_only(body, resume_sections=True, plain_section_exclusion=False,
     return '\n'.join(kept).strip()
 
 
+def poc_prose_only(body):
+    """Extract PoC prose from report.json while dropping fenced code.
+
+    This is still report-only evidence: no source code, no pairing metadata and
+    no tools are read.  Fenced blocks are removed because they are code, not the
+    natural-language execution narrative A+ consumes.
+    """
+    kept, fenced, active_level = [], None, None
+    heading_re = re.compile(r'^\s*(#{1,6})\s+(.+?)\s*$')
+    section_re = re.compile(r'^(?:proof of concept|poc)\b', re.I)
+    for line in body.splitlines():
+        marker = re.match(r'^\s*(`{3,}|~{3,})([^`~]*)$', line)
+        if fenced:
+            if marker and marker[1][0] == fenced[0] and len(marker[1]) >= fenced[1] and not marker[2].strip():
+                fenced = None
+            continue
+        if marker:
+            fenced = (marker[1][0], len(marker[1]))
+            continue
+        heading = heading_re.match(line)
+        if heading:
+            level, title = len(heading[1]), heading[2]
+            if active_level is not None:
+                if level <= active_level:
+                    active_level = None
+                continue
+            if section_re.match(title):
+                active_level = level
+                kept.append(line)
+            continue
+        if active_level is not None:
+            kept.append(line)
+    return '\n'.join(kept).strip()
+
+
 def _normalized_report_title(value):
     value = re.sub(r'^\s*#{1,6}\s*', '', value)
     value = re.sub(r'^\s*\[[^\]]+\]\s*', '', value)
@@ -145,6 +183,8 @@ def report_json_input(report, deduplicate_title=True, input_policy_version=5):
 
     Policy 5 includes prose mitigation/recommendation sections as potential I
     evidence while continuing to remove fenced code and PoC sections.
+    Policy 6 additionally includes the natural-language PoC narrative while
+    continuing to remove fenced code.
     Policies 2-4 remain byte-replayable for historical runs.
     """
     if not isinstance(report, dict):
@@ -155,12 +195,14 @@ def report_json_input(report, deduplicate_title=True, input_policy_version=5):
     title = report.get('title')
     if title is not None and (not isinstance(title, str) or not title.strip()):
         raise ValueError('report JSON title must be a nonempty string when present')
-    if input_policy_version not in (2, 3, 4, 5):
+    if input_policy_version not in (2, 3, 4, 5, 6):
         raise ValueError('unknown report input policy version')
-    selected_prose = prose_only(
+    prose = prose_only(
         body, resume_sections=input_policy_version >= 3,
         plain_section_exclusion=input_policy_version >= 4,
         include_recommendations=input_policy_version >= 5)
+    poc_prose = poc_prose_only(body) if input_policy_version >= 6 else ''
+    selected_prose = '\n\n'.join(part for part in (prose, poc_prose) if part)
     if not selected_prose:
         raise ValueError('empty report prose after filtering')
     first_nonempty = next((line for line in selected_prose.splitlines() if line.strip()), '')
@@ -170,16 +212,21 @@ def report_json_input(report, deduplicate_title=True, input_policy_version=5):
                            _normalized_report_title(first_heading.group(1)))
     parts = [title.strip()] if title and not (deduplicate_title and duplicate_title) else []
     parts.append(selected_prose)
-    body_field = ('body.description_impact_and_recommendations'
+    body_field = ('body.description_impact_recommendations_and_poc_prose'
+                  if input_policy_version >= 6 else
+                  'body.description_impact_and_recommendations'
                   if input_policy_version >= 5 else
                   'body.description_and_impact')
+    excluded = (['source_record', 'pairing', 'contract_code', 'fenced_code_poc']
+                if input_policy_version >= 6 else
+                ['proof_of_concept', 'source_record', 'pairing', 'contract_code']
+                if input_policy_version >= 5 else
+                ['proof_of_concept', 'recommended_mitigation',
+                 'source_record', 'pairing', 'contract_code'])
     policy = {
         'source_format': 'report.json',
         'selected_fields': ['title', body_field] if len(parts) == 2 else [body_field],
-        'excluded_fields': (['proof_of_concept', 'source_record', 'pairing', 'contract_code']
-                            if input_policy_version >= 5 else
-                            ['proof_of_concept', 'recommended_mitigation',
-                             'source_record', 'pairing', 'contract_code']),
+        'excluded_fields': excluded,
     }
     if deduplicate_title:
         policy.update({'policy_version': f'report-json-input/{input_policy_version}',
@@ -384,6 +431,122 @@ def model_failure_category(stdout, stderr):
         if any(marker in message for marker in markers):
             return category
     return 'unknown_runtime_error'
+
+
+def _opencode_api_config():
+    config = {}
+    env_file = ROOT / 'config' / 'llm.env'
+    if env_file.is_file():
+        for line in env_file.read_text(encoding='utf-8').splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#') or '=' not in stripped:
+                continue
+            key, value = stripped.split('=', 1)
+            config[key.strip()] = value.strip().strip('"')
+    key = os.environ.get('OPENCODE_API_KEY') or config.get('OPENCODE_API_KEY')
+    base = config.get('API_BASE_URL') or 'https://opencode.ai/inference/go/openai/v1'
+    if not key:
+        raise RuntimeError('OpenCode API key missing in config/llm.env')
+    return key, base.rstrip('/') + '/chat/completions'
+
+
+def _opencode_backoff_seconds(exc: urllib.error.HTTPError, attempt: int) -> float:
+    headers = getattr(exc, 'headers', None)
+    retry_after = headers.get('Retry-After') if headers else None
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 0.0), 60.0)
+        except (TypeError, ValueError):
+            pass
+    return min(5.0 * (2 ** attempt), 60.0)
+
+
+def extract_opencode_api(text, output, model, prompt=PROMPT):
+    key, url = _opencode_api_config()
+    if model.startswith('opencode-go/'):
+        model = model.split('/', 1)[1]
+    payload = {
+        'model': model,
+        'messages': [{'role': 'system', 'content': prompt},
+                     {'role': 'user', 'content': text}],
+        'response_format': {'type': 'json_object'},
+        'thinking': {'type': 'disabled'},
+        'temperature': 0,
+        'max_tokens': 8192,
+        'stream': False,
+    }
+    request = urllib.request.Request(
+        url, data=json.dumps(payload, ensure_ascii=False).encode(),
+        method='POST',
+        headers={'Content-Type': 'application/json',
+                 'Authorization': 'Bearer ' + key,
+                 'User-Agent': 'codex-stage2/1.0',
+                 'x-opencode-session': 'stage2-' + uuid.uuid4().hex})
+    started = time.monotonic()
+    attempts = 0
+    retry_wait_seconds = []
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=240) as response:
+                body = response.read(4_000_001)
+            break
+        except urllib.error.HTTPError as exc:
+            category = ('rate_or_quota' if exc.code == 429 else
+                        'authentication' if exc.code in (401, 403) else
+                        'model_unavailable' if exc.code == 404 else
+                        'unknown_runtime_error')
+            if exc.code == 429 and attempts < 2:
+                attempts += 1
+                delay = _opencode_backoff_seconds(exc, attempts - 1)
+                retry_wait_seconds.append(round(delay, 3))
+                time.sleep(delay)
+                continue
+            diagnostic = {
+                'schema_version': 'model-runtime-diagnostic/1',
+                'provider': 'opencode_api', 'category': category,
+                'http_status': exc.code, 'attempts': attempts + 1,
+                'retry_wait_seconds': retry_wait_seconds,
+                'elapsed_seconds': round(time.monotonic() - started, 3),
+                'raw_provider_output_saved': False,
+            }
+            (output / 'model-runtime-diagnostic.json').write_text(
+                json.dumps(diagnostic, indent=2) + '\n')
+            raise RuntimeError(
+                f'OpenCode API HTTP {exc.code}; category={category}') from None
+        except (urllib.error.URLError, OSError) as exc:
+            (output / 'model-runtime-diagnostic.json').write_text(json.dumps({
+                'schema_version': 'model-runtime-diagnostic/1',
+                'provider': 'opencode_api', 'category': 'network',
+                'elapsed_seconds': round(time.monotonic() - started, 3),
+                'raw_provider_output_saved': False,
+            }, indent=2) + '\n')
+            raise RuntimeError(f'OpenCode API network failure: {exc}') from None
+    if attempts:
+        diagnostic = {
+            'schema_version': 'model-runtime-diagnostic/1',
+            'provider': 'opencode_api', 'category': 'rate_or_quota_recovered',
+            'http_status': 429, 'attempts': attempts + 1,
+            'retry_wait_seconds': retry_wait_seconds,
+            'elapsed_seconds': round(time.monotonic() - started, 3),
+            'raw_provider_output_saved': False,
+        }
+        (output / 'model-runtime-diagnostic.json').write_text(
+            json.dumps(diagnostic, indent=2) + '\n')
+    try:
+        envelope = json.loads(body)
+        raw = envelope['choices'][0]['message']['content'].strip()
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise RuntimeError('OpenCode API response envelope invalid') from None
+    (output / 'model-response.txt').write_text(raw)
+    (output / 'model-usage.json').write_text(json.dumps({
+        'model': model, 'provider': 'opencode_api',
+        'elapsed_seconds': round(time.monotonic() - started, 3),
+        'usage': envelope.get('usage'),
+    }, indent=2) + '\n')
+    claim = json.loads(re.sub(r'^```(?:json)?\s*|\s*```$', '', raw))
+    (output / 'model-claim.json').write_text(json.dumps(
+        claim, ensure_ascii=False, indent=2))
+    return claim
 
 
 def extract(text, output, model, prompt=PROMPT):

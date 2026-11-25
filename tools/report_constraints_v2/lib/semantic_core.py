@@ -462,6 +462,7 @@ BOUNDARY = (
     ('P predicate symbol not grounded by selected preconditions', REJECT),
     ('P term source not selected', REJECT),
     ('P terms must cover selected preconditions exactly once', REJECT),
+    ('qualitative shadow replacement is not a Boolean relation', REJECT),
     ('attack step must reference action', REJECT),
     ('bounded relation type/unit mismatch', REJECT),
     ('catalog does not match this report', REJECT),
@@ -507,6 +508,7 @@ BOUNDARY = (
     ('invalid authorization guard pattern', REJECT),
     ('invalid authorization pattern', REJECT),
     ('invalid bounded relation pattern', REJECT),
+    ('invalid bounded relation operator', REJECT),
     ('invalid caveat list', REJECT),
     ('invalid claim impacts', REJECT),
     ('invalid claim modality', REJECT),
@@ -691,6 +693,10 @@ BOUNDARY = (
     ('DeepSeek response did not finish normally', REJECT),
     ('DeepSeek response envelope invalid; raw body not saved', REJECT),
     ('DeepSeek response exceeds local size limit', REJECT),
+    ('OpenCode API HTTP ; category=', REJECT),
+    ('OpenCode API key missing in config/llm.env', REJECT),
+    ('OpenCode API network failure: ', REJECT),
+    ('OpenCode API response envelope invalid', REJECT),
     ('model runtime exit ; category=; no fallback', REJECT),
 )
 

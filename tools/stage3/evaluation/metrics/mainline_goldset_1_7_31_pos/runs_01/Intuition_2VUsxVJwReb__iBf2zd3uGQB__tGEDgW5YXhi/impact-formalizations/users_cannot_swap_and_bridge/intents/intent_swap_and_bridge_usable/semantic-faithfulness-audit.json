@@ -1,0 +1,141 @@
+{
+  "schema_version": "semantic-faithfulness-audit/4",
+  "status": "completed",
+  "verdict_consistent": true,
+  "fidelity_status": "passed",
+  "checks": [
+    {
+      "source_id": "victim_broadcasts_swap_and_bridge",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Truth predicate victim_tx_broadcast matches the statement that the victim prepares and broadcasts the swapAndBridge transaction."
+    },
+    {
+      "source_id": "attacker_frontruns",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Truth predicate attacker_frontran matches the statement that the attacker frontruns the victim's transaction."
+    },
+    {
+      "source_id": "attacker_contract_holds_one_wei",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Equality to 1 wei matches the statement that the attacker sends 1 wei to the selfdestruct contract."
+    },
+    {
+      "source_id": "assumption_selfdestruct_forces_eth",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Truth predicate selfdestruct_forces_eth matches the EIP-6780 selfdestruct forwarding and reusability claim."
+    },
+    {
+      "source_id": "intent_swap_and_bridge_usable",
+      "role": "I",
+      "verdict": "consistent",
+      "reason": "Implication from victim_tx_broadcast to swap_and_bridge_completes encodes that the entry points must remain usable and not revert."
+    },
+    {
+      "source_id": "users_cannot_swap_and_bridge",
+      "role": "V",
+      "verdict": "consistent",
+      "reason": "Conjunction of swap_and_bridge_reverts with itself encodes that users cannot swap and bridge because the calls revert."
+    }
+  ],
+  "piv_relation": {
+    "verdict": "consistent",
+    "reason": "relation_context e_7bf3b40c6a3a_0006, e_0010, e_0011, e_0005 and e_0012 explicitly bridge forcing 1 wei via selfdestruct to the refund revert that makes swapAndBridge unusable, contradicting I."
+  },
+  "relation_context": [
+    {
+      "statement_id": "force_eth_to_slipstream_router",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_7bf3b40c6a3a_0006",
+          "text": "An attacker can force ETH onto the Slipstream SwapRouter using a contract that calls `selfdestruct(router)`. `selfdestruct()` after EIP-6780 (Cancun) only forwards ETH to the beneficiary without destroying the contract bytecode and does not allow the target to reject ETH; the Slipstream router cannot refuse this. With as little as 1 wei on the Slipstream router, every subsequent `swapAndBridgeWithETH` and `swapAndBridgeWithERC20` call fails. The same selfdestruct contract can be reused (bytecode is no longer removed), so the attack is cheap and repeatable."
+        },
+        {
+          "evidence_id": "e_7bf3b40c6a3a_0009",
+          "text": "2. Attacker sees the transaction and frontruns it. Attacker deploys a small contract that accepts ETH and has a function that calls `selfdestruct(slipstreamSwapRouter)`."
+        },
+        {
+          "evidence_id": "e_7bf3b40c6a3a_0010",
+          "text": "3. Attacker sends 1 wei to this contract and calls the function. The contract selfdestructs and forces 1 wei to the Slipstream SwapRouter. The router cannot reject this transfer."
+        }
+      ]
+    },
+    {
+      "statement_id": "victim_tx_calls_exact_input",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_7bf3b40c6a3a_0004",
+          "text": "After the swap, the Slipstream router calls `refundETH()` (from PeripheryPayments) to return any leftover ETH to the caller:"
+        },
+        {
+          "evidence_id": "e_7bf3b40c6a3a_0011",
+          "text": "4. Victim's transaction is included. It calls `exactInput()` on the Slipstream router. The swap executes, then the Slipstream router calls `refundETH()` and attempts to send its balance (at least 1 wei) to `TrustSwapAndBridgeRouter`."
+        }
+      ]
+    },
+    {
+      "statement_id": "trust_router_lacks_receive",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_7bf3b40c6a3a_0005",
+          "text": "So the Slipstream router sends its full ETH balance to `msg.sender`, which is `TrustSwapAndBridgeRouter`. `TrustSwapAndBridgeRouter` has no `receive()` or `fallback()` and does not handle incoming ETH. A plain ETH transfer to it reverts. Therefore, if the Slipstream SwapRouter has any ETH balance at the time of the call, the entire `swapAndBridgeWithETH` or `swapAndBridgeWithERC20` transaction reverts."
+        },
+        {
+          "evidence_id": "e_7bf3b40c6a3a_0012",
+          "text": "5. The transfer to `TrustSwapAndBridgeRouter` reverts because the contract has no `receive()` or `fallback()`. The whole transaction reverts and the victim's swap and bridge do not execute."
+        }
+      ]
+    }
+  ],
+  "relationship_trace": {
+    "status": "explicit",
+    "links": [
+      {
+        "from_source_ids": [
+          "attacker_contract_holds_one_wei",
+          "assumption_selfdestruct_forces_eth",
+          "users_cannot_swap_and_bridge"
+        ],
+        "context_statement_id": "force_eth_to_slipstream_router",
+        "evidence_ids": [
+          "e_7bf3b40c6a3a_0006",
+          "e_7bf3b40c6a3a_0009",
+          "e_7bf3b40c6a3a_0010"
+        ],
+        "reported_relation": "Forcing as little as 1 wei of ETH onto the Slipstream SwapRouter via selfdestruct makes every subsequent swapAndBridgeWithETH/swapAndBridgeWithERC20 call fail."
+      },
+      {
+        "from_source_ids": [
+          "victim_broadcasts_swap_and_bridge",
+          "users_cannot_swap_and_bridge"
+        ],
+        "context_statement_id": "victim_tx_calls_exact_input",
+        "evidence_ids": [
+          "e_7bf3b40c6a3a_0011"
+        ],
+        "reported_relation": "The victim's swapAndBridge transaction calls exactInput on the Slipstream router, which then attempts to refund its ETH balance to TrustSwapAndBridgeRouter."
+      },
+      {
+        "from_source_ids": [
+          "intent_swap_and_bridge_usable",
+          "users_cannot_swap_and_bridge"
+        ],
+        "context_statement_id": "trust_router_lacks_receive",
+        "evidence_ids": [
+          "e_7bf3b40c6a3a_0005",
+          "e_7bf3b40c6a3a_0012"
+        ],
+        "reported_relation": "Because TrustSwapAndBridgeRouter has no receive/fallback, the ETH refund reverts and the whole swap-and-bridge transaction reverts, making the entry points unusable."
+      }
+    ],
+    "gap": ""
+  },
+  "mismatch_count": 0,
+  "repair_finding_count": 0
+}

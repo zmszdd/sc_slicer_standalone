@@ -2,6 +2,8 @@
 
 SC_Slicer 是一个面向 Solidity 合约的目标导向代码切片工具。当前推荐使用 `run.sh` 入口运行，它会按指定的输入文件、目标合约、目标测试函数和目标变量生成切片合约，并可自动用 Foundry 复跑目标测试。
 
+仓库导航、权威指标位置与可清理产物见 [docs/REPOSITORY_GUIDE.md](docs/REPOSITORY_GUIDE.md)。
+
 ## 统一入口
 
 仓库根目录的 `main.py` 是**阶段二 / 阶段三 / 三阶段 pipeline** 的统一命令行入口；
@@ -24,6 +26,10 @@ PYTHON=/path/to/python ./scripts/doctor.sh
 FORGE=/path/to/forge make test-stage3
 ```
 
+主线外部数据目录通过环境变量或 `config/paths.local.env` 配置，详见
+[docs/PORTABILITY_20261123.md](docs/PORTABILITY_20261123.md)。`make doctor`
+会同时检查这些路径。
+
 阶段二入口（需要已安装 `z3-solver`）：
 
 ```bash
@@ -45,7 +51,21 @@ python main.py pipeline ...    # 三阶段串联：组装 + 运行
 make doctor        # 只读自检
 make test          # cargo test + 阶段二/三/pipeline 回归
 make e2e           # 阶段一切片 + forge test 端到端闭环
+make protocol-check # 校验主线协议代码哈希基线
+make lint          # cargo clippy 严格模式
+make locked-eval-check # 检查 locked eval 是否具备刷新四指标的条件
+make dev-current-mini # 当前协议下重跑 80 正 + 40 负开发集并生成四指标
+make verify        # 自检 + 协议 + lint + 全量测试 + 指标检查 + e2e
 ```
+
+`make locked-eval-check` 会生成
+`tools/stage3/evaluation/metrics/locked_eval_contract.{json,md}`，记录当前协议、
+正负样本规模、项目覆盖、provenance 与 eligible_current。历史结果或负样本不足时
+该命令返回非零，但不会伪造四指标。
+
+`make dev-current-mini` 会生成 `dev_current_mini_20261120.json` 并重跑
+80 正 + 40 负开发集；结果写入 `dev_current_metrics.{json,md}`，标签固定为
+`dev-current/1`，只反映当前协议在开发集上的表现，不替代 mainline 对外指标。
 
 CI（`.github/workflows/ci.yml`）包含 `stage1-rust`、`stage1-e2e`、`stage2-offline`、
 `stage3-unit` 和 `pipeline-e2e` 五个 job。
@@ -145,11 +165,13 @@ config/llm.env.example
 
 ```bash
 LLM_PROVIDER=opencode
-MODEL_NAME=opencode-go/deepseek-v4-flash
+MODEL_NAME=opencode-go/deepseek-v4.1-flash
 
-# 仅在 LLM_PROVIDER=openai 时需要：
-# OPENAI_API_KEY=...
-# API_BASE_URL=https://api.openai.com/v1
+# 仅在 LLM_PROVIDER=opencode 且 key 不在环境变量时填写：
+# OPENCODE_API_KEY=...
+# API_BASE_URL=https://opencode.ai/inference/go/openai/v1
+
+注意：包含 key 的配置文件权限必须是 `600`，`python main.py doctor` 会检查。
 ```
 
 运行 smoke test：

@@ -1,0 +1,27 @@
+Missing Delegatecall-Only Guard on injectSweepAndCall Allows Direct Use of Router Balance and Unintended Asset Custody
+
+## Finding description and impact
+
+The injectSweepAndCall function in TrailsRouter is designed to “sweep” a caller’s full balance in a given token (or ETH), inject that amount into a call’s calldata, and execute the call against a target contract. It is clearly written under the assumption that the router’s code runs in the context of a user wallet via delegatecall, where address(this) refers to the wallet, not the router itself.
+However, the function is declared as a normal external function without any onlyDelegatecall or equivalent restriction. When called directly on the router contract, it transfers tokens from msg.sender into address(this) (the router), and subsequent internal logic uses the router’s own balance via _getSelfBalance / address(this).
+This mismatch between intended execution context (delegatecall into a wallet/shim) and actual allowed execution context (direct external call on the router) causes the router to accumulate and control user funds. The core faulty assumption is that “this function will only ever execute in a context where address(this) is a wallet (or shim) owned by the user”; in reality, it is fully callable on the router implementation itself, turning a stateless routing component into a stateful asset custodian and significantly increasing blast radius for any other bug.
+
+Intended context:
+The router is meant to be used via delegatecall from a smart wallet or a shim contract.
+In that model:
+address(this) inside the router code resolves to the wallet/shim address, not the router contract.
+Token and ETH balances tracked by _getSelfBalance(token) are the wallet’s balances.
+The router is effectively “pure logic” with no long-term funds; all balances belong to the calling wallet.
+Actual context allowed by the code:
+
+impact:
+Asset Custody & Fund Loss:
+Users may unknowingly send funds to ROUTER expecting a stateless routing behavior.
+If TARGET is misconfigured, malicious, or fails:
+Funds remain in ROUTER without a clear path to recovery.
+Also the previous bug(injectAndCall Lets Anyone Spend Router-Held Funds due to missing  Delegatecall Guard) reported gets strong anyone can  withdraw tokens from ROUTER, the attacker can drain these accumulated balances.
+
+## Recommended mitigation steps
+
+restrict injectSweepAndCall to delegatecall-only
+Use the existing onlyDelegatecall modifier from DelegatecallGuard on injectSweepAndCall, and add a short doc comment making the assumption explicit.

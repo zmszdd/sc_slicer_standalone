@@ -1,0 +1,110 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "ScVqnBqSyyG",
+    "requested_finding_uid": "6N4VUdiTEaa",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "ScVqnBqSyyG",
+    "source_finding_uid": "6N4VUdiTEaa",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\low_valid_ScVqnBqSyyG.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "ScVqnBqSyyG",
+  "finding_uid": "6N4VUdiTEaa",
+  "finding_number": "6",
+  "title": "Missing whenNotPaused Modifier in Batch Transfer Functions Bypasses Emergency Stop",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "0xdice91",
+  "body": "## Finding description and impact\n\nThe `batchTransfers()` and `rBatchTransfers()` functions (lines 708, 1129) are missing the `whenNotPaused` modifier. While all other transfer functions (`transfer()`, `transferFrom()`, `mint()`, `burn()`) properly enforce pause checks, batch transfers can execute during emergency pauses. This completely defeats the purpose of the emergency stop mechanism, as batch settlements typically represent the largest value operations in the system. The functions' documentation states \"Contract must not be paused\" but this requirement is not enforced.\n\n**Impact:** During security incidents, regulatory freezes, or disputed settlements, admin cannot halt batch operations. Validator can continue processing settlements even when contract is paused, allowing vulnerable logic to execute, compliance violations to occur, and irreversible settlements during investigations.\n\n## Recommended mitigation steps\n\nAdd `whenNotPaused` modifier to both functions:\n\n```solidity\nfunction batchTransfers(...) external onlyValidator whenNotPaused returns (bool)\nfunction rBatchTransfers(...) external onlyValidator whenNotPaused returns (bool)\n```",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport \"../src/WERC7575ShareToken.sol\";\nimport \"../src/WERC7575Vault.sol\";\nimport \"./MockAsset.sol\";\nimport \"forge-std/Test.sol\";\nimport \"forge-std/console2.sol\";\n\ncontract POC_MissingPauseModifier is Test {\n    WERC7575ShareToken public shareToken;\n    WERC7575Vault public vault;\n    MockAsset public asset;\n\n    address public owner;\n    address public validator;\n    address public alice;\n    address public bob;\n\n    function setUp() public {\n        owner = address(this);\n        validator = makeAddr(\"validator\");\n        alice = makeAddr(\"alice\");\n        bob = makeAddr(\"bob\");\n\n        asset = new MockAsset();\n        shareToken = new WERC7575ShareToken(\"Share Token\", \"SHARE\");\n        vault = new WERC7575Vault(address(asset), shareToken);\n\n        shareToken.setValidator(validator);\n        shareToken.setKycAdmin(validator);\n        shareToken.registerVault(address(asset), address(vault));\n\n        // Setup KYC and balances\n        vm.startPrank(validator);\n        shareToken.setKycVerified(alice, true);\n        shareToken.setKycVerified(bob, true);\n        vm.stopPrank();\n\n        // Give Alice tokens via vault deposit\n        asset.mint(alice, 1000e18);\n        vm.startPrank(alice);\n        asset.approve(address(vault), 1000e18);\n        vault.deposit(1000e18, alice);\n        vm.stopPrank();\n    }\n\n    function test_BatchTransferBypassesPause() public {\n        console2.log(\"\\n=== POC: Batch Transfer Bypasses Pause ===\\n\");\n\n        uint256 aliceBalanceBefore = shareToken.balanceOf(alice);\n\n        // Admin pauses the contract\n        shareToken.pause();\n        assertTrue(shareToken.paused(), \"Contract should be paused\");\n\n        // Regular transfer should FAIL\n        vm.prank(alice);\n        vm.expectRevert();\n        shareToken.transfer(bob, 100e18);\n        console2.log(\"Regular transfer: BLOCKED (pause working)\");\n\n        // Batch transfer should SUCCEED (this is the bug!)\n        address[] memory debtors = new address[](1);\n        address[] memory creditors = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n\n        debtors[0] = alice;\n        creditors[0] = bob;\n        amounts[0] = 100e18;\n\n        vm.prank(validator);\n        bool success = shareToken.batchTransfers(debtors, creditors, amounts);\n\n        console2.log(\"Batch transfer: SUCCESS (bypasses pause!)\");\n        console2.log(\"\\n[!] Emergency stop mechanism bypassed\\n\");\n\n        // Verify the transfer actually happened\n        assertTrue(success, \"Batch transfer should succeed\");\n        assertEq(shareToken.balanceOf(alice), aliceBalanceBefore - 100e18);\n        assertEq(shareToken.balanceOf(bob), 100e18);\n    }\n}\n\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L1115-L1119",
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L700"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "948",
+    "api_submission_id": "",
+    "uid": "ScVqnBqSyyG",
+    "number": "948",
+    "title": "Missing whenNotPaused Modifier in Batch Transfer Functions Bypasses Emergency Stop",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "",
+    "handle": "0xdice91",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L1115-L1119",
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L700"
+    ],
+    "body": "## Finding description and impact\n\nThe `batchTransfers()` and `rBatchTransfers()` functions (lines 708, 1129) are missing the `whenNotPaused` modifier. While all other transfer functions (`transfer()`, `transferFrom()`, `mint()`, `burn()`) properly enforce pause checks, batch transfers can execute during emergency pauses. This completely defeats the purpose of the emergency stop mechanism, as batch settlements typically represent the largest value operations in the system. The functions' documentation states \"Contract must not be paused\" but this requirement is not enforced.\n\n**Impact:** During security incidents, regulatory freezes, or disputed settlements, admin cannot halt batch operations. Validator can continue processing settlements even when contract is paused, allowing vulnerable logic to execute, compliance violations to occur, and irreversible settlements during investigations.\n\n## Recommended mitigation steps\n\nAdd `whenNotPaused` modifier to both functions:\n\n```solidity\nfunction batchTransfers(...) external onlyValidator whenNotPaused returns (bool)\nfunction rBatchTransfers(...) external onlyValidator whenNotPaused returns (bool)\n```",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport \"../src/WERC7575ShareToken.sol\";\nimport \"../src/WERC7575Vault.sol\";\nimport \"./MockAsset.sol\";\nimport \"forge-std/Test.sol\";\nimport \"forge-std/console2.sol\";\n\ncontract POC_MissingPauseModifier is Test {\n    WERC7575ShareToken public shareToken;\n    WERC7575Vault public vault;\n    MockAsset public asset;\n\n    address public owner;\n    address public validator;\n    address public alice;\n    address public bob;\n\n    function setUp() public {\n        owner = address(this);\n        validator = makeAddr(\"validator\");\n        alice = makeAddr(\"alice\");\n        bob = makeAddr(\"bob\");\n\n        asset = new MockAsset();\n        shareToken = new WERC7575ShareToken(\"Share Token\", \"SHARE\");\n        vault = new WERC7575Vault(address(asset), shareToken);\n\n        shareToken.setValidator(validator);\n        shareToken.setKycAdmin(validator);\n        shareToken.registerVault(address(asset), address(vault));\n\n        // Setup KYC and balances\n        vm.startPrank(validator);\n        shareToken.setKycVerified(alice, true);\n        shareToken.setKycVerified(bob, true);\n        vm.stopPrank();\n\n        // Give Alice tokens via vault deposit\n        asset.mint(alice, 1000e18);\n        vm.startPrank(alice);\n        asset.approve(address(vault), 1000e18);\n        vault.deposit(1000e18, alice);\n        vm.stopPrank();\n    }\n\n    function test_BatchTransferBypassesPause() public {\n        console2.log(\"\\n=== POC: Batch Transfer Bypasses Pause ===\\n\");\n\n        uint256 aliceBalanceBefore = shareToken.balanceOf(alice);\n\n        // Admin pauses the contract\n        shareToken.pause();\n        assertTrue(shareToken.paused(), \"Contract should be paused\");\n\n        // Regular transfer should FAIL\n        vm.prank(alice);\n        vm.expectRevert();\n        shareToken.transfer(bob, 100e18);\n        console2.log(\"Regular transfer: BLOCKED (pause working)\");\n\n        // Batch transfer should SUCCEED (this is the bug!)\n        address[] memory debtors = new address[](1);\n        address[] memory creditors = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n\n        debtors[0] = alice;\n        creditors[0] = bob;\n        amounts[0] = 100e18;\n\n        vm.prank(validator);\n        bool success = shareToken.batchTransfers(debtors, creditors, amounts);\n\n        console2.log(\"Batch transfer: SUCCESS (bypasses pause!)\");\n        console2.log(\"\\n[!] Emergency stop mechanism bypassed\\n\");\n\n        // Verify the transfer actually happened\n        assertTrue(success, \"Batch transfer should succeed\");\n        assertEq(shareToken.balanceOf(alice), aliceBalanceBefore - 100e18);\n        assertEq(shareToken.balanceOf(bob), 100e18);\n    }\n}\n\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/948",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-12-05T15:23:15.124Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "2x3BJN92E9q",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T07:24:37.595Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "6N4VUdiTEaa"
+        },
+        {
+          "uid": "369ZnZY5p7a",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T07:24:40.392Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "6N4VUdiTEaa"
+        }
+      ],
+      "finding": {
+        "uid": "6N4VUdiTEaa",
+        "number": 6,
+        "duplicates": 57
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-12-18T04:58:24.004Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Missing whenNotPaused Modifier in Batch Transfer Functions Bypasses Emergency Stop",
+      "uid": "ScVqnBqSyyG",
+      "updatedAt": "2025-12-05T15:23:15.124Z",
+      "user": {
+        "uid": "TBmyrfM65ZD",
+        "handle": "0xdice91"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe `batchTransfers()` and `rBatchTransfers()` functions (lines 708, 1129) are missing the `whenNotPaused` modifier. While all other transfer functions (`transfer()`, `transferFrom()`, `mint()`, `burn()`) properly enforce pause checks, batch transfers can execute during emergency pauses. This completely defeats the purpose of the emergency stop mechanism, as batch settlements typically represent the largest value operations in the system. The functions' documentation states \"Contract must not be paused\" but this requirement is not enforced.\n\n**Impact:** During security incidents, regulatory freezes, or disputed settlements, admin cannot halt batch operations. Validator can continue processing settlements even when contract is paused, allowing vulnerable logic to execute, compliance violations to occur, and irreversible settlements during investigations.\n\n## Recommended mitigation steps\n\nAdd `whenNotPaused` modifier to both functions:\n\n```solidity\nfunction batchTransfers(...) external onlyValidator whenNotPaused returns (bool)\nfunction rBatchTransfers(...) external onlyValidator whenNotPaused returns (bool)\n```",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport \"../src/WERC7575ShareToken.sol\";\nimport \"../src/WERC7575Vault.sol\";\nimport \"./MockAsset.sol\";\nimport \"forge-std/Test.sol\";\nimport \"forge-std/console2.sol\";\n\ncontract POC_MissingPauseModifier is Test {\n    WERC7575ShareToken public shareToken;\n    WERC7575Vault public vault;\n    MockAsset public asset;\n\n    address public owner;\n    address public validator;\n    address public alice;\n    address public bob;\n\n    function setUp() public {\n        owner = address(this);\n        validator = makeAddr(\"validator\");\n        alice = makeAddr(\"alice\");\n        bob = makeAddr(\"bob\");\n\n        asset = new MockAsset();\n        shareToken = new WERC7575ShareToken(\"Share Token\", \"SHARE\");\n        vault = new WERC7575Vault(address(asset), shareToken);\n\n        shareToken.setValidator(validator);\n        shareToken.setKycAdmin(validator);\n        shareToken.registerVault(address(asset), address(vault));\n\n        // Setup KYC and balances\n        vm.startPrank(validator);\n        shareToken.setKycVerified(alice, true);\n        shareToken.setKycVerified(bob, true);\n        vm.stopPrank();\n\n        // Give Alice tokens via vault deposit\n        asset.mint(alice, 1000e18);\n        vm.startPrank(alice);\n        asset.approve(address(vault), 1000e18);\n        vault.deposit(1000e18, alice);\n        vm.stopPrank();\n    }\n\n    function test_BatchTransferBypassesPause() public {\n        console2.log(\"\\n=== POC: Batch Transfer Bypasses Pause ===\\n\");\n\n        uint256 aliceBalanceBefore = shareToken.balanceOf(alice);\n\n        // Admin pauses the contract\n        shareToken.pause();\n        assertTrue(shareToken.paused(), \"Contract should be paused\");\n\n        // Regular transfer should FAIL\n        vm.prank(alice);\n        vm.expectRevert();\n        shareToken.transfer(bob, 100e18);\n        console2.log(\"Regular transfer: BLOCKED (pause working)\");\n\n        // Batch transfer should SUCCEED (this is the bug!)\n        address[] memory debtors = new address[](1);\n        address[] memory creditors = new address[](1);\n        uint256[] memory amounts = new uint256[](1);\n\n        debtors[0] = alice;\n        creditors[0] = bob;\n        amounts[0] = 100e18;\n\n        vm.prank(validator);\n        bool success = shareToken.batchTransfers(debtors, creditors, amounts);\n\n        console2.log(\"Batch transfer: SUCCESS (bypasses pause!)\");\n        console2.log(\"\\n[!] Emergency stop mechanism bypassed\\n\");\n\n        // Verify the transfer actually happened\n        assertTrue(success, \"Batch transfer should succeed\");\n        assertEq(shareToken.balanceOf(alice), aliceBalanceBefore - 100e18);\n        assertEq(shareToken.balanceOf(bob), 100e18);\n    }\n}\n\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L1115-L1119,https://github.com/code-423n4/2025-11-sukukfi/blob/18fe2578cf1c6203dac7ff21513533010f3dda3e/src/WERC7575ShareToken.sol#L700",
+      "number": 948,
+      "aiExplanation": null,
+      "_index": 948
+    }
+  }
+}

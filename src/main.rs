@@ -1,7 +1,7 @@
 //!
 //! SC Slicer - Solidity 代码切片工具（唯一 CLI 入口）
 //!
-//! 当前唯一切片引擎为 `sol_resurrect_v2`：以 solar 解析器的 AST Span 为提取边界，
+//! 当前唯一切片引擎为 `sol_resurrect_v2`：以源码 span 文本索引为提取边界，
 //! 从目标测试函数与关注符号出发做 source-backed 切片，并用 forge 编译保证单调回退。
 //!
 //! 旧的 analyzer/semantic_slicer/noise_reduction/source_normalizer 双实现已删除，
@@ -35,7 +35,7 @@ fn build_cli() -> Command {
     Command::new("SC_Slicer")
         .version("0.2.0")
         .author("SC_Slicer Team")
-        .about("Solidity code slicing analysis tool based on Program Dependency Graph (PDG)")
+        .about("Source-backed Solidity code slice resurrection tool")
         .arg(
             Arg::new("input")
                 .help("Path to the Solidity contract file or directory containing .sol files")
@@ -454,13 +454,12 @@ fn collect_sol_files_recursive(dir: &Path, files: &mut Vec<String>) -> Result<()
             if path.extension().and_then(|s: &OsStr| s.to_str()) == Some("sol") {
                 files.push(path.to_string_lossy().to_string());
             }
-        } else if path.is_dir() {
-            if !path.ends_with("node_modules")
-                && !path.ends_with(".git")
-                && !path.ends_with("target")
-            {
-                collect_sol_files_recursive(&path, files)?;
-            }
+        } else if path.is_dir()
+            && !path.ends_with("node_modules")
+            && !path.ends_with(".git")
+            && !path.ends_with("target")
+        {
+            collect_sol_files_recursive(&path, files)?;
         }
     }
 

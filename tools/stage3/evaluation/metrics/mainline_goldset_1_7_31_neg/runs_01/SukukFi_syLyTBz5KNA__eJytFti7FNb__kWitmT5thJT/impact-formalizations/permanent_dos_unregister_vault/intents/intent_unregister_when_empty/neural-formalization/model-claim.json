@@ -1,0 +1,241 @@
+{
+  "formal_plan": {
+    "schema_version": "report-formal-plan/8",
+    "relation_class": "progress_or_liveness",
+    "precondition_ids": [
+      "vault_empty_and_deactivated",
+      "vault_asset_balance_zero_before"
+    ],
+    "intent_id": "intent_unregister_when_empty",
+    "impact_ids": [
+      "permanent_dos_unregister_vault"
+    ],
+    "symbols": {
+      "total_assets_before_unregister": {
+        "sort": "int",
+        "unit": "token_amount",
+        "meaning": "IERC7575Vault(vaultAddress).totalAssets() value at the checkpoint before unregisterVault is attempted",
+        "checkpoint": "before unregisterVault attempt",
+        "entity_ids": [
+          "vault"
+        ],
+        "source_ids": [
+          "vault_empty_and_deactivated",
+          "intent_unregister_when_empty"
+        ],
+        "observable_kind": "call",
+        "scope": "cross_contract",
+        "receiver": "vault",
+        "contract_type": "IERC7575Vault",
+        "binding_risk": "low"
+      },
+      "vault_asset_balance_before_donation": {
+        "sort": "int",
+        "unit": "token_amount",
+        "meaning": "ERC20(asset).balanceOf(vaultAddress) value before the attacker donation",
+        "checkpoint": "before donation",
+        "entity_ids": [
+          "vault",
+          "asset_token"
+        ],
+        "source_ids": [
+          "vault_asset_balance_zero_before"
+        ],
+        "observable_kind": "call",
+        "scope": "cross_contract",
+        "receiver": "asset_token",
+        "contract_type": "ERC20",
+        "binding_risk": "low"
+      },
+      "vault_deactivated": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the vault is deactivated",
+        "checkpoint": "before unregisterVault attempt",
+        "entity_ids": [
+          "vault"
+        ],
+        "source_ids": [
+          "vault_empty_and_deactivated"
+        ],
+        "observable_kind": "state",
+        "scope": "cross_contract",
+        "receiver": "vault",
+        "contract_type": "IERC7575Vault",
+        "binding_risk": "medium"
+      },
+      "unregister_succeeds": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "unregisterVault removes the vault from the registry successfully",
+        "checkpoint": "after unregisterVault call",
+        "entity_ids": [
+          "share_token",
+          "vault"
+        ],
+        "source_ids": [
+          "intent_unregister_when_empty",
+          "permanent_dos_unregister_vault"
+        ],
+        "observable_kind": "call",
+        "scope": "cross_contract",
+        "receiver": "share_token",
+        "contract_type": "ShareTokenUpgradeable",
+        "binding_risk": "medium"
+      },
+      "unregister_dos_permanent": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "unregistration of the vault is permanently blocked (DoS) after a direct non-zero token transfer to the vault",
+        "checkpoint": "after attacker dust donation",
+        "entity_ids": [
+          "vault",
+          "share_token"
+        ],
+        "source_ids": [
+          "permanent_dos_unregister_vault"
+        ],
+        "observable_kind": "derived",
+        "scope": "cross_contract",
+        "receiver": "share_token",
+        "contract_type": "ShareTokenUpgradeable",
+        "binding_risk": "high"
+      }
+    },
+    "precondition_terms": [
+      {
+        "source_id": "vault_empty_and_deactivated",
+        "predicate": {
+          "kind": "all_of",
+          "terms": [
+            {
+              "kind": "comparison",
+              "left": "total_assets_before_unregister",
+              "operator": "eq",
+              "right": {
+                "const": 0
+              }
+            },
+            {
+              "kind": "truth",
+              "symbol": "vault_deactivated",
+              "value": true
+            }
+          ]
+        }
+      },
+      {
+        "source_id": "vault_asset_balance_zero_before",
+        "predicate": {
+          "kind": "comparison",
+          "left": "vault_asset_balance_before_donation",
+          "operator": "eq",
+          "right": {
+            "const": 0
+          }
+        }
+      }
+    ],
+    "impact_outcome": {
+      "source_id": "permanent_dos_unregister_vault",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "unregister_dos_permanent",
+        "value": true
+      }
+    },
+    "impact_context_terms": [
+      {
+        "source_id": "permanent_dos_unregister_vault",
+        "qualifier_types": [
+          "duration_or_repetition",
+          "rate_or_cost",
+          "scope"
+        ],
+        "predicate": {
+          "kind": "truth",
+          "symbol": "unregister_dos_permanent",
+          "value": true
+        }
+      }
+    ],
+    "derived_definitions": [],
+    "pattern": {
+      "kind": "required_effect",
+      "condition": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "comparison",
+            "left": "total_assets_before_unregister",
+            "operator": "eq",
+            "right": {
+              "const": 0
+            }
+          },
+          {
+            "kind": "truth",
+            "symbol": "vault_deactivated",
+            "value": true
+          }
+        ]
+      },
+      "effect": {
+        "kind": "truth",
+        "symbol": "unregister_succeeds",
+        "value": true
+      }
+    },
+    "assumptions": [
+      "unregisterVault is the registry operation that removes the vault from ShareTokenUpgradeable",
+      "totalAssets() returning 0 and deactivation are the report's stated emptiness conditions"
+    ],
+    "unresolved": [
+      {
+        "category": "unsupported_relation",
+        "description": "The report does not state a direct observable that unregisterVault reverts or fails; the impact is phrased as a permanent DoS, so the V witness is a derived DoS boolean rather than a concrete revert/failure observable.",
+        "source_ids": [
+          "permanent_dos_unregister_vault"
+        ],
+        "blocks_formalization": false
+      }
+    ],
+    "limitations": [
+      "V is encoded as a derived DoS boolean because the report does not name a concrete revert or failure return for unregisterVault.",
+      "The dust amount (1 wei or any non-zero amount) is not modeled as a numeric symbol; the impact is captured as the permanent DoS outcome."
+    ]
+  },
+  "relationship_trace": {
+    "status": "explicit",
+    "links": [
+      {
+        "from_source_ids": [
+          "vault_empty_and_deactivated",
+          "vault_asset_balance_zero_before",
+          "intent_unregister_when_empty",
+          "permanent_dos_unregister_vault"
+        ],
+        "context_statement_id": "attacker_sends_dust",
+        "evidence_ids": [
+          "e_d807595ae87e_0007",
+          "e_d807595ae87e_0008"
+        ],
+        "reported_relation": "An attacker sends a non-zero token amount directly to the vault, which the report states permanently DoSes unregistration."
+      },
+      {
+        "from_source_ids": [
+          "vault_asset_balance_zero_before",
+          "intent_unregister_when_empty",
+          "permanent_dos_unregister_vault"
+        ],
+        "context_statement_id": "raw_balance_check",
+        "evidence_ids": [
+          "e_d807595ae87e_0005",
+          "e_d807595ae87e_0006"
+        ],
+        "reported_relation": "The unregisterVault check uses the raw ERC-20 balance, so a direct donation makes the balance non-zero and blocks unregistration even though totalAssets() is 0."
+      }
+    ],
+    "gap": ""
+  }
+}

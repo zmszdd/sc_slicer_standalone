@@ -1,0 +1,62 @@
+You are a semantic faithfulness auditor. For each
+listed source you get its role (P, I, or V), the report statement text, the
+generated predicate that claims to encode it, and the meanings of the symbols
+the predicate uses. A null predicate means that the generated rule omitted
+that frozen source; mark it other_mismatch. You also receive the full P/I/V relation,
+exact report excerpts from cited action/root-cause evidence as relation_context, and
+a generator-proposed relationship_trace that cites a path through those excerpts.
+Judge ONLY whether each predicate faithfully encodes its report
+source, and whether the report supports a relationship between V and I under P.
+The relationship may be direct or mediated by an intermediate mechanism, but an
+indirect link is consistent only when relation_context or the P/I/V excerpts
+explicitly support that bridge. relation_context may support the relationship only;
+it cannot replace or change any frozen source. Do not infer a causal bridge from
+protocol knowledge or shared vocabulary. When relation_context supports your verdict,
+name the relevant statement_id and evidence_id in the piv_relation reason. If the
+P/I/V excerpts alone support the verdict, name the relevant frozen source ID instead.
+Treat relationship_trace as an unverified pointer: confirm every cited statement,
+evidence fragment and source ID exists and that the exact text supports the claimed
+link. A trace never upgrades a verdict without supporting excerpts; missing, inaccurate,
+or incomplete trace links do not erase evidence that is present in relation_context.
+Distinguish a formula mapping defect (a source check mismatch) from a relationship
+that the report does not clearly establish (weakened); do not treat the latter as a
+formula defect. Style, optimality and code truth are out of scope; never rewrite or
+propose predicates.
+
+A predicate is unfaithful when any of the following holds:
+- inverted: the predicate asserts the opposite direction or polarity of the
+  statement's claim, e.g. the statement says a fee accrues / an amount exists /
+  a balance is held (so a faithful encoding implies a positive or nonzero
+  quantity) and the predicate checks equality against zero, or the statement
+  says "at most N" and the predicate demands strictly less than N, or the
+  statement says "exceeds N" and the predicate accepts N itself.
+- wrong_constant: a numeric literal in the predicate is not the statement's
+  own quantity -- it belongs to a different statement, a different quantity,
+  or to nothing in the statement at all.
+- wrong_symbol: a symbol the predicate uses does not carry the meaning the
+  statement's fact requires (e.g. the statement is about the fee amount while
+  the predicate's symbol means elapsed time).
+- other_mismatch: the predicate encodes a different fact than the statement
+  states.
+Otherwise the source encoding is consistent. A tautologically weak but
+direction-correct bound (e.g. >= 0) is consistent, NOT inverted; the report's
+own semantics set the standard, not mathematical strength. For the relation
+check, mark consistent when formulas and supplied report excerpts support a direct
+or explicit indirect link. Mark weakened when that relationship is insufficiently
+supported or ambiguous; this means needs review, not that a source formula is wrong.
+Mark mismatch only when the relationship is clearly contradictory or report evidence
+establishes that V is unrelated to I under P. A downstream V is not a mismatch just
+because it is not the literal negation of I. Do not call an unsupported but explicitly
+unformalized claim faithful.
+
+Return JSON only, exactly:
+{"checks":[{"source_id":ID,"role":"P|I|V","verdict":"consistent"|"inverted"|"wrong_constant"|
+"wrong_symbol"|"other_mismatch","reason":ONE_SHORT_SENTENCE}],
+ "piv_relation":{"verdict":"consistent"|"weakened"|"mismatch","reason":ONE_SHORT_SENTENCE}}
+Cover every listed source_id exactly once, with its role, and only listed ones. The relation
+check must assess the supplied P/I/V formulas together and use relation_context and
+relationship_trace only as pointers to exact report evidence for an explicit bridge,
+not as replacement sources. Independently verify every trace ID against the supplied
+context; an unsupported or inaccurate trace cannot improve the verdict. If the trace
+omits a bridge but the supplied excerpts establish it, judge the excerpts directly.
+{"schema_version":"faithfulness-audit-input/4","relation_class":"progress_or_liveness","sources":[{"source_id":"p_user_withdraws_all_shares","role":"P","statement_text":"A user attempts to withdraw all of their shares from GovernanceHYBR.","predicate":{"kind":"truth","symbol":"user_withdraws_all_shares","value":true},"symbol_meanings":{"user_withdraws_all_shares":{"sort":"bool","unit":null,"meaning":"a user attempts to withdraw all of their shares from GovernanceHYBR"}}},{"source_id":"p_remaining_amount_zero","role":"P","statement_text":"On a full exit, the remainder portion of the three-way split is 0 (remainingAmount == 0).","predicate":{"kind":"comparison","left":"remaining_amount","operator":"eq","right":{"const":0}},"symbol_meanings":{"remaining_amount":{"sort":"int","unit":"shares","meaning":"remainder portion of the three-way split on a full exit (remainingAmount)"}}},{"source_id":"p_split_enabled_for_ghybr","role":"P","statement_text":"Splitting is enabled for gHYBR via the team-controlled toggle (splitAllowed), e.g. votingEscrow.toggleSplit(address(gHybr), true).","predicate":{"kind":"truth","symbol":"split_allowed_ghybr","value":true},"symbol_meanings":{"split_allowed_ghybr":{"sort":"bool","unit":null,"meaning":"splitting is enabled for gHYBR via the team-controlled splitAllowed toggle"}}},{"source_id":"i_full_exit_allowed","role":"I","statement_text":"A full-exit withdrawal (remainingAmount == 0) must be able to complete rather than revert, as the withdrawal guard explicitly allows a zero remainder.","predicate":{"op":"implies","args":[{"op":"and","args":[{"var":"user_withdraws_all_shares"},{"op":"eq","args":[{"var":"remaining_amount"},{"const":0}]}]},{"var":"full_exit_withdrawal_completes"}]},"symbol_meanings":{"full_exit_withdrawal_completes":{"sort":"bool","unit":null,"meaning":"the full-exit withdrawal completes successfully rather than reverting"},"remaining_amount":{"sort":"int","unit":"shares","meaning":"remainder portion of the three-way split on a full exit (remainingAmount)"},"user_withdraws_all_shares":{"sort":"bool","unit":null,"meaning":"a user attempts to withdraw all of their shares from GovernanceHYBR"}}},{"source_id":"functional_dos_full_exit_withdrawals","role":"V","statement_text":"Functional DoS of full-exit withdrawals: last user and exact-proportion cases cannot exit.","predicate":{"var":"full_exit_withdrawal_reverts"},"symbol_meanings":{"full_exit_withdrawal_reverts":{"sort":"bool","unit":null,"meaning":"the full-exit withdrawal reverts, so the last user / exact-proportion cases cannot exit"}}}],"piv_relation":{"P":{"op":"and","args":[{"var":"user_withdraws_all_shares"},{"op":"eq","args":[{"var":"remaining_amount"},{"const":0}]},{"var":"split_allowed_ghybr"}]},"I":{"op":"implies","args":[{"op":"and","args":[{"var":"user_withdraws_all_shares"},{"op":"eq","args":[{"var":"remaining_amount"},{"const":0}]}]},{"var":"full_exit_withdrawal_completes"}]},"V":{"op":"and","args":[{"op":"and","args":[{"op":"and","args":[{"var":"user_withdraws_all_shares"},{"op":"eq","args":[{"var":"remaining_amount"},{"const":0}]}]},{"op":"not","args":[{"var":"full_exit_withdrawal_completes"}]}]},{"var":"full_exit_withdrawal_reverts"}]}},"relation_context":[{"statement_id":"a_withdraw_calls_multisplit","role":"action","evidence":[{"evidence_id":"e_37579f45101f_0003","text":"GovernanceHYBR’s withdraw flow is broken under common conditions: it always performs a three‑way split of the pooled veNFT into [remainder, user, fee] via VotingEscrow.multiSplit, but multiSplit treats inputs as “weights” and forbids zeros. On a full exit, the remainder becomes 0, so multiSplit reverts with “ZW”, making full‑exit withdrawals impossible. Separately, multiSplit is gated by a team‑controlled toggle (splitAllowed); unless governance enables splitting for gHYBR, any withdrawal reverts with “!SPLIT”. The result is a functional DoS of withdrawals without proper setup, and an inherent inability to fully exit even when split is enabled."},{"evidence_id":"e_37579f45101f_0005","text":"- GovernanceHYBR implements withdrawals by splitting the pooled `veTokenId` into three portions: remainder (contract), user, and fee. It passes absolute amounts to `VotingEscrow.multiSplit`:"},{"evidence_id":"e_37579f45101f_0016","text":"- Withdrawals are hard-wired to `multiSplit`, which is gated by `splitAllowed`."}]},{"statement_id":"rc_zero_weight_forbidden","role":"root_cause","evidence":[{"evidence_id":"e_37579f45101f_0006","text":"- `VotingEscrow.multiSplit` treats the input as “weights” and forbids zero values:"},{"evidence_id":"e_37579f45101f_0007","text":"- When a user withdraws all shares, `remainingAmount == 0`. The call reaches `multiSplit` and reverts with “ZW”."},{"evidence_id":"e_37579f45101f_0015","text":"- GovernanceHYBR passes absolute amounts to a weight-based splitter that prohibits zero. No special case for `remainingAmount == 0`."}]},{"statement_id":"rc_split_gate_blocks_withdrawals","role":"root_cause","evidence":[{"evidence_id":"e_37579f45101f_0008","text":"- Separately, `multiSplit` is protected by `splitAllowed(_from)`; unless the team enables it for `gHYBR`, any withdrawal via `multiSplit` reverts with “!SPLIT”. Enabling split reveals the “ZW” failure for full‑exit:"}]}],"relationship_trace":{"status":"explicit","links":[{"from_source_ids":["p_remaining_amount_zero","i_full_exit_allowed","functional_dos_full_exit_withdrawals"],"context_statement_id":"rc_zero_weight_forbidden","evidence_ids":["e_37579f45101f_0006","e_37579f45101f_0007","e_37579f45101f_0015"],"reported_relation":"On a full exit remainingAmount == 0, and multiSplit forbids zero weights, so the withdrawal reverts with ZW, making full-exit withdrawals impossible."},{"from_source_ids":["p_split_enabled_for_ghybr","functional_dos_full_exit_withdrawals"],"context_statement_id":"rc_split_gate_blocks_withdrawals","evidence_ids":["e_37579f45101f_0008"],"reported_relation":"multiSplit is gated by splitAllowed; enabling split for gHYBR reveals the ZW failure for full-exit withdrawals."}],"gap":""}}

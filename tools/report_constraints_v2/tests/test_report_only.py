@@ -1,11 +1,49 @@
 """Synthetic compiler controls; NOT evaluation of model extraction accuracy."""
+import json
+import tempfile
 import unittest
+import urllib.error
+from pathlib import Path
+from unittest import mock
 
 import z3
 
 from lib import report_only as r
 
 TEXT = 'The operation should not fail solely because the supplied fee exceeds the quote.'
+
+
+class OpenCodeApiTransportTest(unittest.TestCase):
+    def test_429_is_retried_with_bounded_backoff(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, _limit):
+                payload = {'choices': [{'message': {'content': '{"declared":true}'}}]}
+                return json.dumps(payload).encode()
+
+        rate_limit = urllib.error.HTTPError(
+            'https://opencode.ai/inference', 429, 'rate limit',
+            {'Retry-After': '0'}, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            with mock.patch.object(r.urllib.request, 'urlopen',
+                                   side_effect=[rate_limit, FakeResponse()]) as urlopen, \
+                    mock.patch.object(r.time, 'sleep') as sleep:
+                claim = r.extract_opencode_api(TEXT, output,
+                                               'opencode-go/deepseek-v4.1-flash',
+                                               prompt='synthetic')
+            diagnostic = json.loads(
+                (output / 'model-runtime-diagnostic.json').read_text())
+        self.assertEqual(claim, {'declared': True})
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(0.0)
+        self.assertEqual(diagnostic['category'], 'rate_or_quota_recovered')
+        self.assertEqual(diagnostic['attempts'], 2)
 
 
 def fixture():
@@ -154,6 +192,26 @@ class ReportOnlyTests(unittest.TestCase):
         self.assertNotIn('After.', old_text)
         self.assertIn('After.', new_text)
         self.assertNotIn('POC\n', new_text)
+
+    def test_v6_adds_poc_prose_but_not_fenced_code(self):
+        report = {
+            'title': 'Reward loss',
+            'body': ('## Finding description and impact\nRewards are lost.\n'
+                     '## Proof of Concept\nCall withdraw twice.\n'
+                     '```solidity\nSECRET_CODE\n```\n'
+                     'Then observe the balance.\n## Impact\nUsers lose rewards.'),
+        }
+        prior, prior_policy = r.report_json_input(report, input_policy_version=5)
+        current, policy = r.report_json_input(report, input_policy_version=6)
+        self.assertNotIn('Call withdraw twice.', prior)
+        self.assertIn('Call withdraw twice.', current)
+        self.assertIn('Then observe the balance.', current)
+        self.assertNotIn('SECRET_CODE', current)
+        self.assertEqual(prior_policy['policy_version'], 'report-json-input/5')
+        self.assertEqual(policy['policy_version'], 'report-json-input/6')
+        self.assertEqual(policy['selected_fields'],
+                         ['title',
+                          'body.description_impact_recommendations_and_poc_prose'])
 
     def test_v4_excludes_unheaded_mitigation_and_preserves_v3_replay(self):
         report = {'title': 'Balance decrease',

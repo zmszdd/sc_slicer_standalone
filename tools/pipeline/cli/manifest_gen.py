@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[3]  # repo root
 sys.path.insert(0, str(ROOT / 'tools' / 'pipeline'))
 
 from lib.manifest import build_manifest_from_case  # noqa: E402
+from lib.harness_qualification import qualify  # noqa: E402
 
 
 def _report_draft(finding: dict) -> dict:
@@ -135,7 +136,15 @@ def _manifest_from_index_row(row: dict, flatten_root: Path, out: Path,
         binding_rounds=binding_rounds,
         case_dir=out / 'cases' / case_key,
     )
-    manifest['kind'] = 'runnable'
+    qualification = qualify(flatten, test_name=test_name)
+    manifest['harness_qualification'] = qualification
+    if qualification['status'] == 'runnable':
+        manifest['kind'] = 'runnable'
+    else:
+        manifest['kind'] = 'needs_input'
+        manifest['blockers'] = list(manifest.get('blockers') or [])
+        manifest['blockers'].extend(qualification['blockers'])
+        manifest['reason'] = 'harness qualification failed'
     return manifest
 
 

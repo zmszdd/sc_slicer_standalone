@@ -1,0 +1,132 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "26b090e0727327d228d816ee054034c32051634d4706af2f2c441635feb932a7",
+  "fragments": [
+    {
+      "id": "e_26b090e07273_0001",
+      "text": "# RiskEngine: _computeDelayedSwap uses inverted logic (max vs sub), penalizing hedged positions",
+      "start": 0,
+      "end": 95,
+      "line": 1
+    },
+    {
+      "id": "e_26b090e07273_0002",
+      "text": "## Description",
+      "start": 97,
+      "end": 111,
+      "line": 3
+    },
+    {
+      "id": "e_26b090e07273_0003",
+      "text": "The `_computeDelayedSwap` function in `RiskEngine.sol` is intended to calculate the collateral requirement for a \"Delayed Swap\" position (Loan + Credit). Logically, holding a credit (lending money) should reduce the collateral requirement of a loan (borrowing money).",
+      "start": 112,
+      "end": 379,
+      "line": 4
+    },
+    {
+      "id": "e_26b090e07273_0004",
+      "text": "However, the implementation compares the `required` collateral against the `convertedCredit` using an `if/else` block that equates to `Math.max()`:",
+      "start": 380,
+      "end": 527,
+      "line": 5
+    },
+    {
+      "id": "e_26b090e07273_0005",
+      "text": "This logic is flawed. It returns the *maximum* of the debt or the credit.",
+      "start": 530,
+      "end": 603,
+      "line": 8
+    },
+    {
+      "id": "e_26b090e07273_0006",
+      "text": "If a user lends MORE money (`convertedCredit` > `required`), the system requires MORE collateral (`convertedCredit`), instead of 0.",
+      "start": 604,
+      "end": 735,
+      "line": 9
+    },
+    {
+      "id": "e_26b090e07273_0007",
+      "text": "## Impact",
+      "start": 737,
+      "end": 746,
+      "line": 11
+    },
+    {
+      "id": "e_26b090e07273_0008",
+      "text": "**Critical Severity**.",
+      "start": 747,
+      "end": 769,
+      "line": 12
+    },
+    {
+      "id": "e_26b090e07273_0009",
+      "text": "Users who employ \"Delayed Swap\" or similar hedged strategies are severely penalized. Instead of receiving capital efficiency (netting), they are subject to a collateral requirement that increases with their credit position. This completely breaks the risk model for these strategies, potentially leading to unfair liquidations or making the strategy economically unviable (DoS of functionality).",
+      "start": 770,
+      "end": 1165,
+      "line": 13
+    },
+    {
+      "id": "e_26b090e07273_0010",
+      "text": "## Real Life Scenario",
+      "start": 1167,
+      "end": 1188,
+      "line": 15
+    },
+    {
+      "id": "e_26b090e07273_0011",
+      "text": "1. **Strategy:** A Market Maker (Bob) wants to execute a \"Delayed Swap\" strategy. He borrows 100 ETH (Short Position) and simultaneously lends 105 ETH worth of tokens in a credit position (Long Position) to hedge his risk.",
+      "start": 1189,
+      "end": 1411,
+      "line": 16
+    },
+    {
+      "id": "e_26b090e07273_0012",
+      "text": "2. **Expectation:** Since his Credit ($105) covers his Debt ($100), Bob expects the protocol to require near-zero collateral (or a small safe margin).",
+      "start": 1412,
+      "end": 1562,
+      "line": 17
+    },
+    {
+      "id": "e_26b090e07273_0013",
+      "text": "3. **Execution:** The `RiskEngine` calculates his collateral requirement using `_computeDelayedSwap`.",
+      "start": 1563,
+      "end": 1664,
+      "line": 18
+    },
+    {
+      "id": "e_26b090e07273_0014",
+      "text": "4. **The Glitch:** The logic `if (required > convertedCredit) return required; else return convertedCredit;` triggers. Since Credit (105) > Debt (100), it returns **105**.",
+      "start": 1665,
+      "end": 1836,
+      "line": 19
+    },
+    {
+      "id": "e_26b090e07273_0015",
+      "text": "5. **Consequence:** Instead of seeing a solvent, hedged account, the protocol incorrectly demands 105 ETH of *additional* collateral from Bob.",
+      "start": 1837,
+      "end": 1979,
+      "line": 20
+    },
+    {
+      "id": "e_26b090e07273_0016",
+      "text": "6. **Liquidation:** If Bob doesn't have this extra capital (which he shouldn't need, as he is fully hedged), the protocol marks him as insolvent and liquidates his position immediately, causing massive unfair losses.",
+      "start": 1980,
+      "end": 2196,
+      "line": 21
+    },
+    {
+      "id": "e_26b090e07273_0017",
+      "text": "## Recommended Mitigation",
+      "start": 2198,
+      "end": 2223,
+      "line": 23
+    },
+    {
+      "id": "e_26b090e07273_0018",
+      "text": "Change the logic to subtract the credit from the requirement, flooring at a minimum safety value (e.g., 1 or `required`).",
+      "start": 2224,
+      "end": 2345,
+      "line": 24
+    }
+  ]
+}

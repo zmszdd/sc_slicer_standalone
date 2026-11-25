@@ -1,0 +1,28 @@
+Public execute and pullAmountAndExecute allow draining router-held residual funds via delegated Multicall3.
+
+## Lines of code affected
+
+## Finding description 
+
+Root cause: `TrailsRouter` is publicly callable and `delegatecall`s Multicall3 aggregate3Value, permitting arbitrary targets and ETH values drawn from `address(this)`. The router can accumulate value via:
+- `receive()` accepting ETH.
+- ERC20 pulled in `injectSweepAndCall`.
+- Overpaid ETH not refunded in `pullAmountAndExecute`.
+- Targets returning ETH/tokens to the router. Thus, any nonzero router-held funds can be exfiltrated by a third party via `execute`.
+
+## Impact explanation
+
+- Direct theft of residual ETH and/or ERC20 stuck/dusted in router, independent of user mistakes.
+- Likely in real-world routes that partially spend, refund, or rebate.
+
+
+## Recommended mitigation steps
+
+Make router stateless:
+- Enforce no net ETH retained post-execution; refund any positive delta to `msg.sender`.
+- Accept explicit token list and sweep any positive delta back to `msg.sender`.
+
+- Enforce that value forwarded equals msg.value (no access to existing router balance).
+- For ERC20, ensure only transfers sourced from msg.sender path are allowed; disallow direct calls that move router’s own token balance.
+- Consider a balance snapshot invariant: after execute, router’s native/token balances must not decrease except along explicitly allowed sweep/refund paths.
+- Add allowlist/role checks or a guard that forbids arbitrary targets via Multicall3 from public entrypoints.

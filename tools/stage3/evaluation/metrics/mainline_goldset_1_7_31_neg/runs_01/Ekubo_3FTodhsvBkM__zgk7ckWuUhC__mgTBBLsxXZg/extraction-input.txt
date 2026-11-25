@@ -1,0 +1,96 @@
+Oracle lacks L2 sequencer uptime validation enabling price manipulation during downtime
+
+## Finding description and impact
+
+
+The Oracle extension records price snapshots through hooks that fire on every swap and position update in the Ekubo protocol. These snapshots form the foundation for all time-weighted average price calculations consumed by external protocols. However, the snapshot insertion logic completely ignores Layer 2 sequencer status, which creates a critical vulnerability if Ekubo deploys on any L2 chain.
+
+The README explicitly states Ekubo is a "multi-chain ownerless and permissionless contract" designed for the EVM. There's a reasonable expectation this code will run on chains with centralized sequencers. Yet the oracle has zero awareness of sequencer uptime.
+
+Here's the core snapshot insertion function that gets called on every swap and position update:
+
+
+The function calculates `timePassed` using `block.timestamp`, creates cumulative values based on that time delta, and stores the snapshot. On L2s with centralized sequencers, this logic breaks down catastrophically during sequencer downtime.
+
+Attack scenario in detail:
+
+**Phase 1: Sequencer Goes Down**
+
+When an L2 sequencer stops producing blocks, `block.timestamp` freezes. No new transactions are processed, but the real-world clock keeps ticking. This can happen due to:
+- Infrastructure failures
+- Maintenance windows  
+- Malicious attacks on sequencer infrastructure
+- Network partitions
+
+During this period, which can last minutes to hours, market prices continue to move on centralized
+
+**Phase 2: Sequencer Restart**
+
+When the sequencer comes back online, it starts processing the backlog of pending transactions. All these transactions execute with the same stale `block.timestamp` from when the sequencer went down. 
+
+But, the oracle sees this as normal activity. The first swap that executes calls `maybeInsertSnapshot()`, which calculates:
+
+
+If the sequencer was down for an hour but `block.timestamp` only advanced by seconds (because it was frozen), `timePassed` is artificially small. The snapshot gets written with cumulative values that don't reflect the real time gap.
+
+Worse, trades execute at prices that may have been manipulated during the accumulation phase while the sequencer was down. These corrupted prices get locked into the oracle's TWAP history.
+
+**Phase 3: Grace Period Exploitation**
+
+Even after the sequencer is back up and `block.timestamp` starts advancing normally, there's a window where the oracle data is still contaminated. Attackers can:
+
+1. Execute trades during the first few blocks after restart at manipulated prices
+2. Have those trades recorded in oracle snapshots 
+3. Wait for the TWAP window to incorporate those snapshots
+4. Exploit protocols that depend on the now-corrupted TWAP
+
+
+**Why This Matters More Than View Function Issues**
+
+Tthis vulnerability strikes at the core of how the oracle collects data. The `maybeInsertSnapshot()` function isn't a helper for integrators - it's called directly by the protocol's `beforeSwap` and `beforeUpdatePosition` hooks:
+
+
+Every swap that occurs writes a snapshot. If those snapshots are corrupted during sequencer downtime, the corruption is permanent and affects all downstream TWAP consumers forever (or until enough new snapshots cycle through the circular buffer).
+
+**Impact Assessment**
+
+The impact depends on deployment context:
+- **On Ethereum mainnet**: No impact (no sequencer)
+- **On any L2**: Critical vulnerability enabling:
+  - Price manipulation through sequencer downtime windows
+  - Permanent corruption of oracle data
+  - Exploitation of all protocols depending on the oracle
+  - Loss of funds from liquidations/trades based on corrupted prices
+
+Given the protocol is explicitly designed as "multi-chain" and most new deployments target L2s, this is a material risk worth addressing.
+
+## Recommended mitigation steps
+
+
+Implement sequencer uptime validation:
+
+**1. Add sequencer uptime feed integration:**
+
+
+**2. Validate sequencer status before recording snapshots:**
+
+
+**3. Add error definitions:**
+
+
+**4. Deployment configuration:**
+
+For mainnet deployments, pass `address(0)` as the sequencer feed to skip checks. For L2 deployments, use the appropriate Chainlink sequencer uptime feed:
+
+- Optimism: 0x371EAD81c9102C9BF4874A9075FFFf170F2Ee389
+- Arbitrum: 0xFdB631F5EE196F0ed6FAa767959853A9F217697D  
+- Base: 0xBCF85224fc0756B9Fa45aA7892530B47e10b6433
+
+**Alternative approach if Chainlink feeds unavailable:**
+
+If deploying to a chain without Chainlink sequencer feeds, implement a simple heartbeat mechanism:
+
+
+This requires an off-chain keeper to call `updateHeartbeat()` regularly, but provides basic protection against stale timestamps.
+
+The critical point is that any L2 deployment needs some mechanism to detect and handle sequencer downtime. The oracle cannot blindly trust `block.timestamp` on chains with centralized sequencers.

@@ -93,6 +93,7 @@ class CaseRunOfflineEndToEndTest(unittest.TestCase):
             '--out-dir', str(self.out),
             '--binding', str(binding_path),
             '--stage2-run-dir', str(stage2_run),
+            '--allow-unverified-stage2',
         ])
         self.assertEqual(rc, 0)
         summary_path = self.out / 'run' / 'pipeline-summary.json'

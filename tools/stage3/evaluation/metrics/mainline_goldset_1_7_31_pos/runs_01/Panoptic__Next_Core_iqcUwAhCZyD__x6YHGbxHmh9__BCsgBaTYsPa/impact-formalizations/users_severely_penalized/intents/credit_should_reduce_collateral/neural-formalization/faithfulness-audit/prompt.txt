@@ -1,0 +1,62 @@
+You are a semantic faithfulness auditor. For each
+listed source you get its role (P, I, or V), the report statement text, the
+generated predicate that claims to encode it, and the meanings of the symbols
+the predicate uses. A null predicate means that the generated rule omitted
+that frozen source; mark it other_mismatch. You also receive the full P/I/V relation,
+exact report excerpts from cited action/root-cause evidence as relation_context, and
+a generator-proposed relationship_trace that cites a path through those excerpts.
+Judge ONLY whether each predicate faithfully encodes its report
+source, and whether the report supports a relationship between V and I under P.
+The relationship may be direct or mediated by an intermediate mechanism, but an
+indirect link is consistent only when relation_context or the P/I/V excerpts
+explicitly support that bridge. relation_context may support the relationship only;
+it cannot replace or change any frozen source. Do not infer a causal bridge from
+protocol knowledge or shared vocabulary. When relation_context supports your verdict,
+name the relevant statement_id and evidence_id in the piv_relation reason. If the
+P/I/V excerpts alone support the verdict, name the relevant frozen source ID instead.
+Treat relationship_trace as an unverified pointer: confirm every cited statement,
+evidence fragment and source ID exists and that the exact text supports the claimed
+link. A trace never upgrades a verdict without supporting excerpts; missing, inaccurate,
+or incomplete trace links do not erase evidence that is present in relation_context.
+Distinguish a formula mapping defect (a source check mismatch) from a relationship
+that the report does not clearly establish (weakened); do not treat the latter as a
+formula defect. Style, optimality and code truth are out of scope; never rewrite or
+propose predicates.
+
+A predicate is unfaithful when any of the following holds:
+- inverted: the predicate asserts the opposite direction or polarity of the
+  statement's claim, e.g. the statement says a fee accrues / an amount exists /
+  a balance is held (so a faithful encoding implies a positive or nonzero
+  quantity) and the predicate checks equality against zero, or the statement
+  says "at most N" and the predicate demands strictly less than N, or the
+  statement says "exceeds N" and the predicate accepts N itself.
+- wrong_constant: a numeric literal in the predicate is not the statement's
+  own quantity -- it belongs to a different statement, a different quantity,
+  or to nothing in the statement at all.
+- wrong_symbol: a symbol the predicate uses does not carry the meaning the
+  statement's fact requires (e.g. the statement is about the fee amount while
+  the predicate's symbol means elapsed time).
+- other_mismatch: the predicate encodes a different fact than the statement
+  states.
+Otherwise the source encoding is consistent. A tautologically weak but
+direction-correct bound (e.g. >= 0) is consistent, NOT inverted; the report's
+own semantics set the standard, not mathematical strength. For the relation
+check, mark consistent when formulas and supplied report excerpts support a direct
+or explicit indirect link. Mark weakened when that relationship is insufficiently
+supported or ambiguous; this means needs review, not that a source formula is wrong.
+Mark mismatch only when the relationship is clearly contradictory or report evidence
+establishes that V is unrelated to I under P. A downstream V is not a mismatch just
+because it is not the literal negation of I. Do not call an unsupported but explicitly
+unformalized claim faithful.
+
+Return JSON only, exactly:
+{"checks":[{"source_id":ID,"role":"P|I|V","verdict":"consistent"|"inverted"|"wrong_constant"|
+"wrong_symbol"|"other_mismatch","reason":ONE_SHORT_SENTENCE}],
+ "piv_relation":{"verdict":"consistent"|"weakened"|"mismatch","reason":ONE_SHORT_SENTENCE}}
+Cover every listed source_id exactly once, with its role, and only listed ones. The relation
+check must assess the supplied P/I/V formulas together and use relation_context and
+relationship_trace only as pointers to exact report evidence for an explicit bridge,
+not as replacement sources. Independently verify every trace ID against the supplied
+context; an unsupported or inaccurate trace cannot improve the verdict. If the trace
+omits a bridge but the supplied excerpts establish it, judge the excerpts directly.
+{"schema_version":"faithfulness-audit-input/4","relation_class":"value_relation","sources":[{"source_id":"bob_opens_hedged_delayed_swap","role":"P","statement_text":"Bob executes a Delayed Swap strategy by borrowing 100 ETH (short position) and simultaneously lending 105 ETH worth of tokens in a credit position (long position).","predicate":{"kind":"all_of","terms":[{"kind":"comparison","left":"borrowed_eth","operator":"eq","right":{"const":100}},{"kind":"comparison","left":"lent_eth","operator":"eq","right":{"const":105}}]},"symbol_meanings":{"borrowed_eth":{"sort":"int","unit":"ETH","meaning":"amount Bob borrows in the short loan position of the Delayed Swap"},"lent_eth":{"sort":"int","unit":"ETH","meaning":"amount Bob lends in the credit (long) position of the Delayed Swap"}}},{"source_id":"credit_should_reduce_collateral","role":"I","statement_text":"Holding a credit (lending money) should reduce the collateral requirement of a loan (borrowing money) rather than increase it.","predicate":{"var":"credit_reduces_collateral"},"symbol_meanings":{"credit_reduces_collateral":{"sort":"bool","unit":null,"meaning":"holding a credit position reduces (rather than increases) the collateral requirement of the loan"}}},{"source_id":"users_severely_penalized","role":"V","statement_text":"Users who employ \"Delayed Swap\" or similar hedged strategies are severely penalized.","predicate":{"var":"hedged_strategy_penalized"},"symbol_meanings":{"hedged_strategy_penalized":{"sort":"bool","unit":null,"meaning":"users employing Delayed Swap or similar hedged strategies are severely penalized"}}}],"piv_relation":{"P":{"op":"and","args":[{"op":"and","args":[{"op":"eq","args":[{"var":"borrowed_eth"},{"const":100}]},{"op":"eq","args":[{"var":"lent_eth"},{"const":105}]}]},{"var":"credit_reduces_collateral"}]},"I":{"var":"credit_reduces_collateral"},"V":{"op":"and","args":[{"op":"and","args":[{"var":"credit_reduces_collateral"},{"op":"not","args":[{"var":"credit_reduces_collateral"}]}]},{"var":"hedged_strategy_penalized"}]}},"relation_context":[{"statement_id":"risk_engine_computes_delayed_swap","role":"action","evidence":[{"evidence_id":"e_26b090e07273_0013","text":"3. **Execution:** The `RiskEngine` calculates his collateral requirement using `_computeDelayedSwap`."}]},{"statement_id":"max_logic_returns_credit","role":"root_cause","evidence":[{"evidence_id":"e_26b090e07273_0004","text":"However, the implementation compares the `required` collateral against the `convertedCredit` using an `if/else` block that equates to `Math.max()`:"},{"evidence_id":"e_26b090e07273_0005","text":"This logic is flawed. It returns the *maximum* of the debt or the credit."},{"evidence_id":"e_26b090e07273_0006","text":"If a user lends MORE money (`convertedCredit` > `required`), the system requires MORE collateral (`convertedCredit`), instead of 0."},{"evidence_id":"e_26b090e07273_0014","text":"4. **The Glitch:** The logic `if (required > convertedCredit) return required; else return convertedCredit;` triggers. Since Credit (105) > Debt (100), it returns **105**."}]}],"relationship_trace":{"status":"explicit","links":[{"from_source_ids":["bob_opens_hedged_delayed_swap","credit_should_reduce_collateral","users_severely_penalized"],"context_statement_id":"max_logic_returns_credit","evidence_ids":["e_26b090e07273_0004","e_26b090e07273_0005","e_26b090e07273_0006","e_26b090e07273_0014"],"reported_relation":"The implementation returns the maximum of required collateral and converted credit, so a larger credit increases rather than reduces the collateral requirement, penalizing hedged Delayed Swap users."}],"gap":""}}

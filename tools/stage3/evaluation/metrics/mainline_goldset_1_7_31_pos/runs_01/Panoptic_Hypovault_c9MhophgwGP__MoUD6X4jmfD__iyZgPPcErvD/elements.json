@@ -1,0 +1,313 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "HypoVault share transfers and performance-fee calculation via userBasis",
+    "environment": "HypoVault ERC-20 vault with transfer/transferFrom and performance fee on positive PNL",
+    "evidence": [
+      "Performance fee can be bypassed via manipulated `userBasis`",
+      "Performance fee is charged for the user with a positive PNL in the vault. PNL is calculated by withdrawal amount redeemed by share balance minus principal represented by `userBasis`.",
+      "However, `userBasis` can be changed after user deposits through transfers. `transfer()` and `transferFrom()` allow users to transfer `balance` and `userBasis` proportionally at the same time.",
+      "Between different users, multiple transfers can make `balance` unchanged (representing the same withdrawable amount despite fees) while changing `userBasis` (representing the principal which should have been constant). Then the winning user can fabricate a non-positive PNL to bypass the performance fee.",
+      "HypoVault shares are ERC-20 tokens, which implement transfer functions. In `HypoVault::transfer()`:",
+      "We can see `userBasis` is transferred with user balance. The two variables `userBasis[user]` and `balanceOf[user]` are designed to follow such an invariant:",
+      "However, the following scenario shows how the constant `k` ratio can be broken:",
+      "4. Alice: (10s, 12p). Bob: (20s, 18p).",
+      "5. Bob has made a profit, so he wants to exit now. But if he exits immediately, he must pay performance fee with a positive `PNL = 20 - 18 = 2`. So he decides to make a trade with Alice, who loses money at the moment and does not want to exit.",
+      "6. Bob persuades Alice to transfer `10s` to him first.",
+      "7. Alice: (0s, 0p). Bob: (30s, 30p).",
+      "8. Bob transfers back `10s` to Alice.",
+      "9. Alice: (10s, 10p). Bob: (20s, 20p).",
+      "10. Alice and Bob have no loss in shares after the transfers. Alice loses money but has a 0 PNL. Bob wins money but also has a 0 PNL.",
+      "11. If Bob exits now, he will not have to pay a performance fee. If Alice exits now, she also will not pay a performance fee, and neither would she have before. So Alice never suffers a loss regarding fees, and the trade with Bob does no harm. If Alice decides to stay in the vault, when she makes a profit, she can also do the same trade with others.",
+      "The performance fee follows a non-positive-then-zero mechanism, which means the vault operates as a non-zero-sum game. If more users with negative PNL are willing to exit, and more users with positive PNL make trades with them (winners bypass fees and losers get compensated somehow), then it will cause more harm to the protocol's interests. After all, it is unfair to allow any bypass of fees.",
+      "Consider enforcing full transfer or redesigning the balance-basis relationship and performance fee calculation."
+    ]
+  },
+  "entities": [
+    {
+      "id": "hypovault",
+      "name": "HypoVault",
+      "role": "contract",
+      "evidence": [
+        "Performance fee is charged for the user with a positive PNL in the vault. PNL is calculated by withdrawal amount redeemed by share balance minus principal represented by `userBasis`.",
+        "HypoVault shares are ERC-20 tokens, which implement transfer functions. In `HypoVault::transfer()`:",
+        "We can see `userBasis` is transferred with user balance. The two variables `userBasis[user]` and `balanceOf[user]` are designed to follow such an invariant:"
+      ]
+    },
+    {
+      "id": "alice",
+      "name": "Alice (loser user)",
+      "role": "victim",
+      "evidence": [
+        "4. Alice: (10s, 12p). Bob: (20s, 18p).",
+        "5. Bob has made a profit, so he wants to exit now. But if he exits immediately, he must pay performance fee with a positive `PNL = 20 - 18 = 2`. So he decides to make a trade with Alice, who loses money at the moment and does not want to exit.",
+        "6. Bob persuades Alice to transfer `10s` to him first.",
+        "9. Alice: (10s, 10p). Bob: (20s, 20p)."
+      ]
+    },
+    {
+      "id": "bob",
+      "name": "Bob (winner user)",
+      "role": "attacker",
+      "evidence": [
+        "4. Alice: (10s, 12p). Bob: (20s, 18p).",
+        "5. Bob has made a profit, so he wants to exit now. But if he exits immediately, he must pay performance fee with a positive `PNL = 20 - 18 = 2`. So he decides to make a trade with Alice, who loses money at the moment and does not want to exit.",
+        "6. Bob persuades Alice to transfer `10s` to him first.",
+        "9. Alice: (10s, 10p). Bob: (20s, 20p)."
+      ]
+    },
+    {
+      "id": "user_basis",
+      "name": "userBasis (principal)",
+      "role": "asset",
+      "evidence": [
+        "Performance fee is charged for the user with a positive PNL in the vault. PNL is calculated by withdrawal amount redeemed by share balance minus principal represented by `userBasis`.",
+        "However, `userBasis` can be changed after user deposits through transfers. `transfer()` and `transferFrom()` allow users to transfer `balance` and `userBasis` proportionally at the same time.",
+        "We can see `userBasis` is transferred with user balance. The two variables `userBasis[user]` and `balanceOf[user]` are designed to follow such an invariant:",
+        "\\text{balanceOf}[\\text{user}] > 0 \\implies \\frac{\\text{balanceOf}[\\text{user}]}{\\text{userBasis}[\\text{user}]} = k \\text{ (constant)}"
+      ]
+    },
+    {
+      "id": "balance",
+      "name": "balanceOf (shares)",
+      "role": "asset",
+      "evidence": [
+        "However, `userBasis` can be changed after user deposits through transfers. `transfer()` and `transferFrom()` allow users to transfer `balance` and `userBasis` proportionally at the same time.",
+        "We can see `userBasis` is transferred with user balance. The two variables `userBasis[user]` and `balanceOf[user]` are designed to follow such an invariant:",
+        "\\text{balanceOf}[\\text{user}] > 0 \\implies \\frac{\\text{balanceOf}[\\text{user}]}{\\text{userBasis}[\\text{user}]} = k \\text{ (constant)}"
+      ]
+    },
+    {
+      "id": "performance_fee",
+      "name": "Performance fee",
+      "role": "other",
+      "evidence": [
+        "Performance fee can be bypassed via manipulated `userBasis`",
+        "Performance fee is charged for the user with a positive PNL in the vault. PNL is calculated by withdrawal amount redeemed by share balance minus principal represented by `userBasis`.",
+        "The performance fee follows a non-positive-then-zero mechanism, which means the vault operates as a non-zero-sum game. If more users with negative PNL are willing to exit, and more users with positive PNL make trades with them (winners bypass fees and losers get compensated somehow), then it will cause more harm to the protocol's interests. After all, it is unfair to allow any bypass of fees."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_initial_balances",
+      "kind": "precondition",
+      "text": "Before any transfers, Alice holds (10 shares, 12 principal) and Bob holds (20 shares, 18 principal), with share and funds at 1:1.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "bob",
+        "balance",
+        "user_basis"
+      ],
+      "evidence": [
+        "1. `s` represents shares (balanceOf[user]). We suppose share and funds is 1:1.",
+        "4. Alice: (10s, 12p). Bob: (20s, 18p)."
+      ]
+    },
+    {
+      "id": "p_bob_positive_pnl",
+      "kind": "precondition",
+      "text": "Bob has a positive PNL of 20 - 18 = 2 and would owe a performance fee if he exits immediately.",
+      "modality": "asserted",
+      "entity_ids": [
+        "bob",
+        "performance_fee",
+        "user_basis"
+      ],
+      "evidence": [
+        "5. Bob has made a profit, so he wants to exit now. But if he exits immediately, he must pay performance fee with a positive `PNL = 20 - 18 = 2`. So he decides to make a trade with Alice, who loses money at the moment and does not want to exit."
+      ]
+    },
+    {
+      "id": "p_alice_negative_pnl",
+      "kind": "precondition",
+      "text": "Alice loses money at the moment and does not want to exit.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice"
+      ],
+      "evidence": [
+        "5. Bob has made a profit, so he wants to exit now. But if he exits immediately, he must pay performance fee with a positive `PNL = 20 - 18 = 2`. So he decides to make a trade with Alice, who loses money at the moment and does not want to exit."
+      ]
+    },
+    {
+      "id": "a_alice_transfer_to_bob",
+      "kind": "action",
+      "text": "Bob persuades Alice to transfer 10 shares to him first, moving Alice to (0 shares, 0 principal) and Bob to (30 shares, 30 principal).",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "bob",
+        "balance",
+        "user_basis"
+      ],
+      "evidence": [
+        "6. Bob persuades Alice to transfer `10s` to him first.",
+        "7. Alice: (0s, 0p). Bob: (30s, 30p)."
+      ]
+    },
+    {
+      "id": "a_bob_transfer_back",
+      "kind": "action",
+      "text": "Bob transfers back 10 shares to Alice, leaving Alice at (10 shares, 10 principal) and Bob at (20 shares, 20 principal).",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "bob",
+        "balance",
+        "user_basis"
+      ],
+      "evidence": [
+        "8. Bob transfers back `10s` to Alice.",
+        "9. Alice: (10s, 10p). Bob: (20s, 20p)."
+      ]
+    },
+    {
+      "id": "rc_proportional_basis_transfer",
+      "kind": "root_cause",
+      "text": "transfer() and transferFrom() transfer balance and userBasis proportionally, so multiple transfers between users can leave balance unchanged while changing userBasis, breaking the constant balance/userBasis ratio k.",
+      "modality": "asserted",
+      "entity_ids": [
+        "hypovault",
+        "balance",
+        "user_basis"
+      ],
+      "evidence": [
+        "However, `userBasis` can be changed after user deposits through transfers. `transfer()` and `transferFrom()` allow users to transfer `balance` and `userBasis` proportionally at the same time.",
+        "Between different users, multiple transfers can make `balance` unchanged (representing the same withdrawable amount despite fees) while changing `userBasis` (representing the principal which should have been constant). Then the winning user can fabricate a non-positive PNL to bypass the performance fee.",
+        "We can see `userBasis` is transferred with user balance. The two variables `userBasis[user]` and `balanceOf[user]` are designed to follow such an invariant:",
+        "\\text{balanceOf}[\\text{user}] > 0 \\implies \\frac{\\text{balanceOf}[\\text{user}]}{\\text{userBasis}[\\text{user}]} = k \\text{ (constant)}",
+        "However, the following scenario shows how the constant `k` ratio can be broken:"
+      ]
+    },
+    {
+      "id": "rc_fabricated_nonpositive_pnl",
+      "kind": "root_cause",
+      "text": "After the transfers Alice and Bob have no loss in shares but both have 0 PNL, so the winning user can fabricate a non-positive PNL to bypass the performance fee.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "bob",
+        "performance_fee",
+        "user_basis"
+      ],
+      "evidence": [
+        "Between different users, multiple transfers can make `balance` unchanged (representing the same withdrawable amount despite fees) while changing `userBasis` (representing the principal which should have been constant). Then the winning user can fabricate a non-positive PNL to bypass the performance fee.",
+        "10. Alice and Bob have no loss in shares after the transfers. Alice loses money but has a 0 PNL. Bob wins money but also has a 0 PNL.",
+        "11. If Bob exits now, he will not have to pay a performance fee. If Alice exits now, she also will not pay a performance fee, and neither would she have before. So Alice never suffers a loss regarding fees, and the trade with Bob does no harm. If Alice decides to stay in the vault, when she makes a profit, she can also do the same trade with others."
+      ]
+    },
+    {
+      "id": "i_basis_balance_invariant",
+      "kind": "security_intent",
+      "text": "For every user, balanceOf[user] = 0 iff userBasis[user] = 0, and if balanceOf[user] > 0 then balanceOf[user]/userBasis[user] equals a constant k.",
+      "modality": "asserted",
+      "entity_ids": [
+        "hypovault",
+        "balance",
+        "user_basis"
+      ],
+      "evidence": [
+        "We can see `userBasis` is transferred with user balance. The two variables `userBasis[user]` and `balanceOf[user]` are designed to follow such an invariant:",
+        "\\forall \\text{user} \\in \\text{Users}: \\begin{cases}",
+        "\\text{balanceOf}[\\text{user}] = 0 \\iff \\text{userBasis}[\\text{user}] = 0 \\\\",
+        "\\text{balanceOf}[\\text{user}] > 0 \\implies \\frac{\\text{balanceOf}[\\text{user}]}{\\text{userBasis}[\\text{user}]} = k \\text{ (constant)}",
+        "\\end{cases}"
+      ]
+    },
+    {
+      "id": "i_principal_constant",
+      "kind": "security_intent",
+      "text": "A user's userBasis, representing principal, should remain constant across transfers rather than being changed by transfers between users.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user_basis",
+        "balance"
+      ],
+      "evidence": [
+        "Between different users, multiple transfers can make `balance` unchanged (representing the same withdrawable amount despite fees) while changing `userBasis` (representing the principal which should have been constant). Then the winning user can fabricate a non-positive PNL to bypass the performance fee.",
+        "Consider enforcing full transfer or redesigning the balance-basis relationship and performance fee calculation."
+      ]
+    },
+    {
+      "id": "i_fee_on_positive_pnl",
+      "kind": "security_intent",
+      "text": "A user with a positive PNL must pay the performance fee on exit; any bypass of fees is not permitted.",
+      "modality": "asserted",
+      "entity_ids": [
+        "performance_fee",
+        "user_basis"
+      ],
+      "evidence": [
+        "Performance fee is charged for the user with a positive PNL in the vault. PNL is calculated by withdrawal amount redeemed by share balance minus principal represented by `userBasis`.",
+        "The performance fee follows a non-positive-then-zero mechanism, which means the vault operates as a non-zero-sum game. If more users with negative PNL are willing to exit, and more users with positive PNL make trades with them (winners bypass fees and losers get compensated somehow), then it will cause more harm to the protocol's interests. After all, it is unfair to allow any bypass of fees."
+      ]
+    },
+    {
+      "id": "assump_transfer_allowed",
+      "kind": "assumption",
+      "text": "Users are able to call transfer()/transferFrom() to move shares and proportional userBasis between accounts.",
+      "modality": "asserted",
+      "entity_ids": [
+        "hypovault",
+        "balance",
+        "user_basis"
+      ],
+      "evidence": [
+        "However, `userBasis` can be changed after user deposits through transfers. `transfer()` and `transferFrom()` allow users to transfer `balance` and `userBasis` proportionally at the same time.",
+        "HypoVault shares are ERC-20 tokens, which implement transfer functions. In `HypoVault::transfer()`:"
+      ]
+    },
+    {
+      "id": "bypass_performance_fee",
+      "kind": "impact",
+      "text": "the winning user can fabricate a non-positive PNL to bypass the performance fee",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "Between different users, multiple transfers can make `balance` unchanged (representing the same withdrawable amount despite fees) while changing `userBasis` (representing the principal which should have been constant). Then the winning user can fabricate a non-positive PNL to bypass the performance fee."
+      ]
+    },
+    {
+      "id": "bob_no_performance_fee",
+      "kind": "impact",
+      "text": "If Bob exits now, he will not have to pay a performance fee.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "11. If Bob exits now, he will not have to pay a performance fee. If Alice exits now, she also will not pay a performance fee, and neither would she have before. So Alice never suffers a loss regarding fees, and the trade with Bob does no harm. If Alice decides to stay in the vault, when she makes a profit, she can also do the same trade with others."
+      ]
+    },
+    {
+      "id": "harm_to_protocol_interests",
+      "kind": "impact",
+      "text": "then it will cause more harm to the protocol's interests",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "The performance fee follows a non-positive-then-zero mechanism, which means the vault operates as a non-zero-sum game. If more users with negative PNL are willing to exit, and more users with positive PNL make trades with them (winners bypass fees and losers get compensated somehow), then it will cause more harm to the protocol's interests. After all, it is unfair to allow any bypass of fees."
+      ]
+    },
+    {
+      "id": "unfair_fee_bypass",
+      "kind": "impact",
+      "text": "it is unfair to allow any bypass of fees",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "The performance fee follows a non-positive-then-zero mechanism, which means the vault operates as a non-zero-sum game. If more users with negative PNL are willing to exit, and more users with positive PNL make trades with them (winners bypass fees and losers get compensated somehow), then it will cause more harm to the protocol's interests. After all, it is unfair to allow any bypass of fees."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_alice_transfer_to_bob",
+    "a_bob_transfer_back"
+  ],
+  "ambiguities": [
+    "Report does not state whether transfers are permissionless or restricted; no unauthorized-caller condition asserted.",
+    "The 0-PNL post-transfer state is an outcome of the transfers, not a precondition.",
+    "Report does not give a numeric fee amount or explicit expected-vs-actual fee values.",
+    "Whether the invariant k is enforced by code or only described as a design intent is not fully specified."
+  ]
+}

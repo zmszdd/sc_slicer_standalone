@@ -1,0 +1,227 @@
+{
+  "schema_version": "report-elements/2",
+  "scope": {
+    "flow": "BasePositions.deposit computes liquidity L from current pool price bounded by maxAmount0/maxAmount1, then calls CORE.updatePosition(...,L); the beforeUpdatePosition extension hook moves sqrtRatio/tick, Core recomputes debt at the new price, and BasePositions transfers the new debt from the user without re-checking the maxAmount limits.",
+    "environment": "BasePositions.sol deposit settlement interacting with Core.sol updatePosition and beforeUpdatePosition extension hooks (TWAMM and other extension-enabled pools).",
+    "evidence_ids": [
+      "e_84bad1f6b37d_0001",
+      "e_84bad1f6b37d_0004",
+      "e_84bad1f6b37d_0005",
+      "e_84bad1f6b37d_0006",
+      "e_84bad1f6b37d_0007",
+      "e_84bad1f6b37d_0008",
+      "e_84bad1f6b37d_0009",
+      "e_84bad1f6b37d_0010",
+      "e_84bad1f6b37d_0017"
+    ]
+  },
+  "entities": [
+    {
+      "id": "user",
+      "name": "depositor",
+      "role": "victim",
+      "evidence_ids": [
+        "e_84bad1f6b37d_0004",
+        "e_84bad1f6b37d_0010",
+        "e_84bad1f6b37d_0013"
+      ]
+    },
+    {
+      "id": "base_positions",
+      "name": "BasePositions contract",
+      "role": "contract",
+      "evidence_ids": [
+        "e_84bad1f6b37d_0004",
+        "e_84bad1f6b37d_0006",
+        "e_84bad1f6b37d_0010"
+      ]
+    },
+    {
+      "id": "core",
+      "name": "Core contract",
+      "role": "contract",
+      "evidence_ids": [
+        "e_84bad1f6b37d_0007",
+        "e_84bad1f6b37d_0008",
+        "e_84bad1f6b37d_0009",
+        "e_84bad1f6b37d_0010"
+      ]
+    },
+    {
+      "id": "extension_hook",
+      "name": "beforeUpdatePosition extension hook",
+      "role": "contract",
+      "evidence_ids": [
+        "e_84bad1f6b37d_0008"
+      ]
+    },
+    {
+      "id": "accountant",
+      "name": "Accountant",
+      "role": "contract",
+      "evidence_ids": [
+        "e_84bad1f6b37d_0010"
+      ]
+    },
+    {
+      "id": "max_amount_params",
+      "name": "maxAmount0/maxAmount1 slippage limits",
+      "role": "other",
+      "evidence_ids": [
+        "e_84bad1f6b37d_0004",
+        "e_84bad1f6b37d_0006",
+        "e_84bad1f6b37d_0015"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "user_supplies_max_amounts",
+      "kind": "precondition",
+      "text": "The user calls deposit specifying maxAmount0 and maxAmount1 to limit the tokens they are willing to spend.",
+      "modality": "asserted",
+      "entity_ids": [
+        "user",
+        "base_positions",
+        "max_amount_params"
+      ],
+      "evidence_ids": [
+        "e_84bad1f6b37d_0004"
+      ]
+    },
+    {
+      "id": "liquidity_computed_at_current_price",
+      "kind": "precondition",
+      "text": "Before the lock, the function reads the current pool state (sqrtRatio) and calculates liquidity L that can be minted without exceeding maxAmount0 or maxAmount1 at that specific price.",
+      "modality": "asserted",
+      "entity_ids": [
+        "base_positions",
+        "max_amount_params"
+      ],
+      "evidence_ids": [
+        "e_84bad1f6b37d_0006"
+      ]
+    },
+    {
+      "id": "deposit_calls_update_position",
+      "kind": "action",
+      "text": "BasePositions calls CORE.updatePosition(..., L) with the calculated liquidity L.",
+      "modality": "asserted",
+      "entity_ids": [
+        "base_positions",
+        "core"
+      ],
+      "evidence_ids": [
+        "e_84bad1f6b37d_0007"
+      ]
+    },
+    {
+      "id": "hook_moves_price",
+      "kind": "action",
+      "text": "Inside Core, the beforeUpdatePosition extension hook is triggered; for TWAMM pools this executes pending virtual orders, moving the pool price (sqrtRatio) and tick.",
+      "modality": "asserted",
+      "entity_ids": [
+        "core",
+        "extension_hook"
+      ],
+      "evidence_ids": [
+        "e_84bad1f6b37d_0008"
+      ]
+    },
+    {
+      "id": "debt_recomputed_at_new_price",
+      "kind": "root_cause",
+      "text": "After the hook returns, Core calculates the token debt required to mint the fixed liquidity L at the new, modified price, and BasePositions transfers these amounts from the user via the Accountant without verifying whether the final debt exceeds the original maxAmount parameters.",
+      "modality": "asserted",
+      "entity_ids": [
+        "core",
+        "base_positions",
+        "accountant",
+        "max_amount_params"
+      ],
+      "evidence_ids": [
+        "e_84bad1f6b37d_0009",
+        "e_84bad1f6b37d_0010"
+      ]
+    },
+    {
+      "id": "enforce_max_amount_after_lock",
+      "kind": "security_intent",
+      "text": "After the lock callback returns, the actual amount charged to the user must not exceed the user's maxAmount0/maxAmount1 limits; if the actual amount charged exceeds the user's limit, the transaction must revert.",
+      "modality": "asserted",
+      "entity_ids": [
+        "base_positions",
+        "max_amount_params",
+        "user"
+      ],
+      "evidence_ids": [
+        "e_84bad1f6b37d_0004",
+        "e_84bad1f6b37d_0015",
+        "e_84bad1f6b37d_0017"
+      ]
+    },
+    {
+      "id": "max_amount_is_contractual_limit",
+      "kind": "security_intent",
+      "text": "The maxAmount parameters act as a contractual limit that the protocol must not violate, preserving the intended slippage protection.",
+      "modality": "asserted",
+      "entity_ids": [
+        "max_amount_params",
+        "base_positions"
+      ],
+      "evidence_ids": [
+        "e_84bad1f6b37d_0015"
+      ]
+    },
+    {
+      "id": "unlimited_slippage_on_deposit_inputs",
+      "kind": "impact",
+      "text": "Users are exposed to unlimited slippage on their deposit inputs.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence_ids": [
+        "e_84bad1f6b37d_0012"
+      ]
+    },
+    {
+      "id": "direct_financial_loss",
+      "kind": "impact",
+      "text": "Direct Financial Loss: If the price moves unfavorably during the extension hook (e.g., a large TWAMM sell order executes), the user is forced to supply tokens at a highly disadvantageous exchange rate, often exceeding their authorized `maxAmount`.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence_ids": [
+        "e_84bad1f6b37d_0013"
+      ]
+    },
+    {
+      "id": "mev_exposure",
+      "kind": "impact",
+      "text": "MEV Exposure: Attackers can front-run deposits into TWAMM pools or other extension-enabled pools by ensuring a price-moving state change happens immediately before the user's deposit settles, effectively sandwiching the liquidity addition without the user's consent.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence_ids": [
+        "e_84bad1f6b37d_0014"
+      ]
+    },
+    {
+      "id": "invariant_violation",
+      "kind": "impact",
+      "text": "Invariant Violation: The `maxAmount` parameters act as a contractual limit which the protocol violates, breaking the intended slippage protection mechanisms.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence_ids": [
+        "e_84bad1f6b37d_0015"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "deposit_calls_update_position",
+    "hook_moves_price"
+  ],
+  "ambiguities": [
+    "Report does not state who triggers the price-moving state change (attacker front-run is described as possible, not as an established precondition).",
+    "No explicit numeric bound or concrete price-move magnitude is given for the unfavorable price change.",
+    "Whether the user's maxAmount limits are nonzero or otherwise constrained is not stated.",
+    "The report does not establish a specific prior transaction/state before the deposit beyond the current pool state read."
+  ]
+}

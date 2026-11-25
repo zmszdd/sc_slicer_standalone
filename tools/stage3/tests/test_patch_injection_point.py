@@ -39,7 +39,7 @@ class InjectionPointTest(unittest.TestCase):
         out = _inject_into_source(src, self._spec(), self._formal(), 'core',
                                   self._entries(), [('f', None)])
         self.assertLess(out.find('stage3_p'), out.find('state.change()'))
-        self.assertIn('assert(!(stage3_p) || (flag));', out)
+        self.assertIn('require(!(stage3_p) || (flag), "stage3:I");', out)
 
     def test_snapshot_before_parameterless_exploit(self):
         src = (
@@ -80,7 +80,7 @@ class InjectionPointTest(unittest.TestCase):
         self.assertLess(head_decl, anchor)
         self.assertGreater(assign, anchor)
         self.assertLess(assign, attacker)
-        self.assertIn('assert(!(stage3_p) || (flag));', out)
+        self.assertIn('require(!(stage3_p) || (flag), "stage3:I");', out)
 
     def test_tuple_destructure_prelude(self):
         # A tuple-returning getter must be destructured into local names before
@@ -129,7 +129,7 @@ class InjectionPointTest(unittest.TestCase):
         self.assertIn('bool stage3_p;', out)
         self.assertIn('stage3_p = firstProblem != 0;', out)
         # tail assertion still references the function-scoped snapshot
-        self.assertIn('assert(!(stage3_p) || (flag));', out)
+        self.assertIn('require(!(stage3_p) || (flag), "stage3:I");', out)
 
     def test_snapshot_after_missing_anchor_raises(self):
         entries = {

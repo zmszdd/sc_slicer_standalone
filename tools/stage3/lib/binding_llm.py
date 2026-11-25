@@ -16,14 +16,19 @@ import json
 import re
 from pathlib import Path
 
-from lib import llm
+from lib import binding_scope, llm
+from lib.observable_ir import (audit_binding as audit_observable_binding,
+                               audit_recipes as audit_observable_recipes,
+                               build_contract as build_observable_ir,
+                               candidate_identifiers)
+from lib.recipe_compiler import compile_binding as compile_ready_recipes
 from lib.spec_loader import (SpecError, claim_binding_contract, load_stage2_run,
                              precondition_symbols_for_claim,
                              safety_symbols_for_claim)
 from lib.binding import CHECKPOINTS, KINDS, BINDING_SCHEMA
 from lib.solidity_scan import (base_identifiers, contract_has_function,
                                contract_instances, function_owner,
-                               poc_test_function)
+                               poc_test_function_for_case)
 
 PROPOSAL_SCHEMA = 'stage3-binding-proposal/1'
 MAX_SOURCE_CHARS = 160000
@@ -82,7 +87,9 @@ def slice_flatten(source: str) -> str:
 
 
 def _symbols_payload(contract: dict, candidates: dict[str, list[str]] | None = None,
-                     observability: dict[str, str] | None = None) -> list[dict]:
+                     observability: dict[str, str] | None = None,
+                     observables: dict[str, list[dict]] | None = None,
+                     recipes: dict[str, list[dict]] | None = None) -> list[dict]:
     rows = [r for r in contract.get('symbols', []) if r.get('appears_in')]
     payload = []
     for r in rows:
@@ -100,6 +107,18 @@ def _symbols_payload(contract: dict, candidates: dict[str, list[str]] | None = N
             row['candidate_identifiers'] = candidates[r['symbol']]
         if observability and observability.get(r['symbol']):
             row['observability'] = observability[r['symbol']]
+        if observables and observables.get(r['symbol']):
+            row['observable_candidates'] = observables[r['symbol']][:8]
+        if recipes and recipes.get(r['symbol']):
+            ready = [item for item in recipes[r['symbol']]
+                     if item.get('executable') and
+                     item.get('confidence') == 'high']
+            planned = [item for item in recipes[r['symbol']]
+                       if item not in ready]
+            if ready:
+                row['ready_observable_recipes'] = ready[:6]
+            if planned:
+                row['planned_observable_recipes'] = planned[:4]
         payload.append(row)
     return payload
 
@@ -113,6 +132,18 @@ _SYSTEM = (
     'expression; if a symbol truly cannot be observed in the source, set its '
     'solidity_expr to the literal "UNBOUND" (keep the symbol entry, keep its '
     'kind/checkpoint/source).\n\n'
+    'OBSERVABLE IR RULE\n'
+    '- When a symbol carries "observable_candidates", prefer an expression '
+    'whose identifiers come from those candidates. Do not invent a new field '
+    'or function name just because a natural-language phrase sounds plausible.\n'
+    '- When a symbol carries "ready_observable_recipes", select one of those '
+    'recipe expressions (or a strictly simpler equivalent using its roots). '
+    'A "planned_observable_recipes" row is not executable yet: leave the '
+    'symbol UNBOUND unless the source proves every required argument.\n'
+    '- A candidate with checkpoint=before/after/input is a fact at that '
+    'checkpoint, not a claim that the fact changes. If the symbol requires a '
+    'transition (changed/unchanged/succeeds/fails), combine two distinct '
+    'observables or leave it UNBOUND for stage-2 restatement.\n\n'
     'NUMERIC/LITERAL RULES\n'
     '- Numeric constants must be complete Solidity literals: write "1e18", '
     'not "e18"; write "100", not "hundred". Never emit a bare exponent or a '
@@ -173,6 +204,20 @@ _SYSTEM = (
     '- Boolean preconditions that hold on the exploit path may be bound to the '
     'literal "true". An effect that is the negation of the safety property may '
     'use "!".\n'
+    'BEFORE SNAPSHOT TYPE RULE\n'
+    '- For checkpoint "before" numeric/address snapshots, add '
+    '"solidity_type" with the exact scalar type of the expression '
+    '(uint8..uint256, int8..int256, address, bool, bytes1..bytes32). '
+    'Read the state variable or function-return declaration in the '
+    'source; when the type is not visible to you, omit the field and '
+    'the pipeline will infer it deterministically.\n\n'
+    'REVERT PREDICATE RULE\n'
+    '- For a boolean symbol meaning "X reverts" / "X completes without '
+    'reverting" / "X executes successfully", express it as an observable '
+    'condition on X\'s inputs/outputs (for example "balanceBefore < '
+    'balanceAfter" or "!someFlag") instead of UNBOUND. When no post-state '
+    'observable captures the outcome, bind to the best state delta around '
+    'the call; never bind a SAFETY (I-side) symbol to a bare "true"/"false".\n'
     '- NEVER bind a SAFETY (I-side) symbol to a bare "true"/"false" literal: a '
     'constant invariant is vacuous and the binding will be REJECTED. For an '
     'unobservable I-side symbol, emit "UNBOUND". A bare "true" is allowed ONLY '
@@ -233,6 +278,7 @@ def _user_prompt(claim_id: str, symbols: list[dict], source: str,
                 '<symbol>': {
                     'kind': 'boolean_predicate|address_value|numeric_value',
                     'solidity_expr': '<solidity expression or the literal "UNBOUND">',
+                    'solidity_type': '<optional exact Solidity scalar type for a before snapshot, e.g. uint128/int256/address/bytes32>',
                     'checkpoint': 'before|after|input',
                     'source': 'File.sol:functionName',
                 },
@@ -428,9 +474,31 @@ def propose_binding(stage2_dir: Path, claim_id: str, src_dir: Path,
     if src_files:
         try:
             raw_source = '\n'.join(sol.read_text() for sol in src_files)
-            injection = poc_test_function(raw_source)
+            injection = poc_test_function_for_case(src_dir.parent, raw_source)
         except (OSError, FileNotFoundError):
             injection = None
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    anchor = None
+    try:
+        from lib.anchor_resolver import resolve_anchors
+        anchor = resolve_anchors(stage2_dir, claim_id, src_dir)
+    except Exception:
+        anchor = None
+    scope = binding_scope.merge(
+        binding_scope.from_binding(src_dir.parent, existing, src_dir=src_dir),
+        binding_scope.from_anchor(anchor))
+    observable_ir = {}
+    try:
+        observable_ir = build_observable_ir(stage2_dir, claim_id, src_dir,
+                                            **scope)
+        (out_dir / 'observable-ir.json').write_text(
+            json.dumps(observable_ir, ensure_ascii=False, indent=2) + '\n')
+        (out_dir / 'binding-scope.json').write_text(
+            json.dumps(scope, ensure_ascii=False, indent=2) + '\n')
+    except Exception:
+        observable_ir = {}
 
     try:
         from lib.binding_skeleton import build_skeleton
@@ -446,22 +514,33 @@ def propose_binding(stage2_dir: Path, claim_id: str, src_dir: Path,
     except Exception:
         candidates = {}
         observability = {}
+    if observable_ir:
+        for symbol in required:
+            ir_candidates = candidate_identifiers(observable_ir, symbol)
+            if ir_candidates:
+                candidates[symbol] = ir_candidates
+            row = (observable_ir.get('symbols') or {}).get(symbol) or {}
+            if row.get('observability'):
+                observability[symbol] = row['observability']
+        observables = {
+            symbol: (row.get('candidates') or [])
+            for symbol, row in (observable_ir.get('symbols') or {}).items()
+        }
+        recipes = {
+            symbol: (row.get('recipes') or [])
+            for symbol, row in (observable_ir.get('symbols') or {}).items()
+        }
+    else:
+        observables = {}
+        recipes = {}
 
-    anchor = None
-    try:
-        from lib.anchor_resolver import resolve_anchors
-        anchor = resolve_anchors(stage2_dir, claim_id, src_dir)
-    except Exception:
-        anchor = None
-
-    symbols = _symbols_payload(contract, candidates, observability)
+    symbols = _symbols_payload(contract, candidates, observability,
+                               observables, recipes)
     analyze_required = required
     if focus is not None:
         analyze_required = set(focus)
         symbols = [row for row in symbols if row['symbol'] in analyze_required]
 
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     user = _user_prompt(claim_id, symbols, source, hint=hint, focus=focus)
     if anchor and anchor.get('suggested_patch_contract'):
         user += ('\n\nSUGGESTED_PATCH_CONTRACT: '
@@ -501,6 +580,24 @@ def propose_binding(stage2_dir: Path, claim_id: str, src_dir: Path,
     raw = llm.chat_json(_SYSTEM, user, model=model)
     (out_dir / 'model-claim.json').write_text(
         json.dumps(raw, ensure_ascii=False, indent=2) + '\n')
+    raw, recipe_changes = compile_ready_recipes(raw, observable_ir)
+    if recipe_changes:
+        (out_dir / 'recipe-compile.json').write_text(
+            json.dumps({'schema_version': 'stage3-recipe-compile-report/1',
+                        'changes': recipe_changes},
+                       ensure_ascii=False, indent=2) + '\n')
+    ir_audit = (audit_observable_binding(raw, observable_ir)
+                if observable_ir else None)
+    if ir_audit is not None:
+        (out_dir / 'observable-binding-audit.json').write_text(
+            json.dumps(ir_audit, ensure_ascii=False, indent=2) + '\n')
+        raw['observable_ir_audit'] = ir_audit
+    recipe_audit = (audit_observable_recipes(raw, observable_ir)
+                    if observable_ir else None)
+    if recipe_audit is not None:
+        (out_dir / 'observable-recipe-audit.json').write_text(
+            json.dumps(recipe_audit, ensure_ascii=False, indent=2) + '\n')
+        raw['observable_recipe_audit'] = recipe_audit
     hard, unbound = _analyze(raw, claim_id, analyze_required)
     if not hard and unbound:
         safety_symbols = safety_symbols_for_claim(stage2['formal'], claim_id)
@@ -515,9 +612,15 @@ def propose_binding(stage2_dir: Path, claim_id: str, src_dir: Path,
                     and entry.get('checkpoint') == 'before'
                     and sym not in safety_symbols
                     and sym in precondition_symbols):
-                entry['solidity_expr'] = 'true'
-            else:
-                remaining.append(sym)
+                # A before-state boolean P symbol that the model could not
+                # observe is not evidence for `true`. Keep it UNBOUND and mark
+                # the degradation explicitly; the semantic UNBOUND classifier
+                # or stage-2 restatement route decides what happens next.
+                entry['degraded'] = True
+                entry['degraded_reason'] = (
+                    'P-side UNBOUND is not auto-bound to true; a degraded '
+                    'precondition cannot support an automatic TP')
+            remaining.append(sym)
         unbound = remaining
     if hard:
         return {
@@ -568,7 +671,13 @@ def propose_binding(stage2_dir: Path, claim_id: str, src_dir: Path,
         json.dumps(raw, ensure_ascii=False, indent=2) + '\n')
     unbound_detail = {
         sym: {'observability': observability.get(sym, 'low'),
-              'candidates': candidates.get(sym, [])}
+              'candidates': candidates.get(sym, []),
+              **({'degraded': True,
+                  'degraded_reason': (raw.get('bindings', {}).get(sym) or {}).get(
+                      'degraded_reason')}
+                 if isinstance(raw.get('bindings', {}).get(sym), dict) and
+                 (raw.get('bindings', {}).get(sym) or {}).get('degraded')
+                 else {})}
         for sym in unbound
     }
     return {

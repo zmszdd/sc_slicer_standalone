@@ -1,0 +1,232 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "ERC-4337 UserOp signature validation in AtomWallet: _extractValidUntilAndValidAfterFromSignature parses validUntil/validAfter from a 77-byte signature plus trailing calldata",
+    "environment": "AtomWallet.sol (ERC-4337 alignment, PR #135)",
+    "evidence": [
+      "Assembly overread in signature suffix extraction allows arbitrary timestamp poisoning via trailing calldata",
+      "`AtomWallet.sol` (specifically `_extractValidUntilAndValidAfterFromSignature`)",
+      "**Relevant Lines / PR:** Lines ~337–361 (extraction logic), introduced/fixed in PR #135 (ERC-4337 alignment)",
+      "**High** — Requires only a malicious bundler/relayer to append 20+ poison bytes after the 77-byte signature in calldata. No special privileges, no signature forgery needed."
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "malicious bundler/relayer",
+      "role": "attacker",
+      "evidence": [
+        "**High** — Attacker can fully control the `validAfter` and `validUntil` timestamps returned in `validationData` without invalidating the ECDSA signature. This enables:",
+        "**High** — Requires only a malicious bundler/relayer to append 20+ poison bytes after the 77-byte signature in calldata. No special privileges, no signature forgery needed."
+      ]
+    },
+    {
+      "id": "atom_wallet",
+      "name": "AtomWallet.sol",
+      "role": "contract",
+      "evidence": [
+        "`AtomWallet.sol` (specifically `_extractValidUntilAndValidAfterFromSignature`)",
+        "**Relevant Lines / PR:** Lines ~337–361 (extraction logic), introduced/fixed in PR #135 (ERC-4337 alignment)"
+      ]
+    },
+    {
+      "id": "extraction_fn",
+      "name": "_extractValidUntilAndValidAfterFromSignature",
+      "role": "contract",
+      "evidence": [
+        "`AtomWallet.sol` (specifically `_extractValidUntilAndValidAfterFromSignature`)",
+        "In `_extractValidUntilAndValidAfterFromSignature`:"
+      ]
+    },
+    {
+      "id": "userop",
+      "name": "UserOp",
+      "role": "other",
+      "evidence": [
+        "- Replay attacks or time-window bypass on any UserOp"
+      ]
+    },
+    {
+      "id": "signature",
+      "name": "77-byte signature with trailing calldata",
+      "role": "asset",
+      "evidence": [
+        "**High** — Requires only a malicious bundler/relayer to append 20+ poison bytes after the 77-byte signature in calldata. No special privileges, no signature forgery needed.",
+        "- Trailing calldata bytes (after the 77-byte sig) are loaded into `word` → after `>> 160`, they directly poison the 96-bit `packed` value → attacker controls `validUntil`/`validAfter`.",
+        "Break the invariant:- Strict 77-byte sig + suffix parsing only"
+      ]
+    },
+    {
+      "id": "timestamps",
+      "name": "validUntil / validAfter timestamps",
+      "role": "asset",
+      "evidence": [
+        "**High** — Attacker can fully control the `validAfter` and `validUntil` timestamps returned in `validationData` without invalidating the ECDSA signature. This enables:",
+        "- Trailing calldata bytes (after the 77-byte sig) are loaded into `word` → after `>> 160`, they directly poison the 96-bit `packed` value → attacker controls `validUntil`/`validAfter`."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "p_sig_77_bytes",
+      "kind": "precondition",
+      "text": "The signature in calldata is 77 bytes.",
+      "modality": "asserted",
+      "entity_ids": [
+        "signature"
+      ],
+      "evidence": [
+        "**High** — Requires only a malicious bundler/relayer to append 20+ poison bytes after the 77-byte signature in calldata. No special privileges, no signature forgery needed.",
+        "- Trailing calldata bytes (after the 77-byte sig) are loaded into `word` → after `>> 160`, they directly poison the 96-bit `packed` value → attacker controls `validUntil`/`validAfter`.",
+        "Break the invariant:- Strict 77-byte sig + suffix parsing only"
+      ]
+    },
+    {
+      "id": "p_trailing_poison_bytes",
+      "kind": "precondition",
+      "text": "20+ poison bytes are appended after the 77-byte signature in calldata.",
+      "modality": "potential",
+      "entity_ids": [
+        "signature",
+        "attacker"
+      ],
+      "evidence": [
+        "**High** — Requires only a malicious bundler/relayer to append 20+ poison bytes after the 77-byte signature in calldata. No special privileges, no signature forgery needed."
+      ]
+    },
+    {
+      "id": "p_malicious_bundler",
+      "kind": "precondition",
+      "text": "The caller is a malicious bundler/relayer; no special privileges or signature forgery are required.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker"
+      ],
+      "evidence": [
+        "**High** — Requires only a malicious bundler/relayer to append 20+ poison bytes after the 77-byte signature in calldata. No special privileges, no signature forgery needed."
+      ]
+    },
+    {
+      "id": "a_append_poison",
+      "kind": "action",
+      "text": "The malicious bundler/relayer appends 20+ poison bytes after the 77-byte signature in calldata.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "signature"
+      ],
+      "evidence": [
+        "**High** — Requires only a malicious bundler/relayer to append 20+ poison bytes after the 77-byte signature in calldata. No special privileges, no signature forgery needed."
+      ]
+    },
+    {
+      "id": "a_extract_timestamps",
+      "kind": "action",
+      "text": "_extractValidUntilAndValidAfterFromSignature extracts validUntil/validAfter from the signature suffix.",
+      "modality": "asserted",
+      "entity_ids": [
+        "extraction_fn",
+        "timestamps"
+      ],
+      "evidence": [
+        "`AtomWallet.sol` (specifically `_extractValidUntilAndValidAfterFromSignature`)",
+        "In `_extractValidUntilAndValidAfterFromSignature`:"
+      ]
+    },
+    {
+      "id": "rc_assembly_overread",
+      "kind": "root_cause",
+      "text": "meta is a 12-byte slice; add(meta, 32) points 32 bytes after meta start, so mload loads 32 bytes starting 20 bytes past the end of the signature calldata, and trailing calldata bytes are loaded into word, which after >> 160 directly poison the 96-bit packed value, letting the attacker control validUntil/validAfter.",
+      "modality": "asserted",
+      "entity_ids": [
+        "extraction_fn",
+        "signature",
+        "timestamps"
+      ],
+      "evidence": [
+        "- `meta` is a 12-byte slice (`validUntil + validAfter`).",
+        "- `add(meta, 32)` points 32 bytes after meta start → `mload` loads 32 bytes starting 20 bytes past the end of the signature calldata.",
+        "- Trailing calldata bytes (after the 77-byte sig) are loaded into `word` → after `>> 160`, they directly poison the 96-bit `packed` value → attacker controls `validUntil`/`validAfter`."
+      ]
+    },
+    {
+      "id": "i_strict_suffix_parsing",
+      "kind": "security_intent",
+      "text": "Signature suffix parsing must use a strict 77-byte signature and parse only the suffix, so trailing calldata bytes cannot influence the extracted validUntil/validAfter.",
+      "modality": "asserted",
+      "entity_ids": [
+        "extraction_fn",
+        "signature",
+        "timestamps"
+      ],
+      "evidence": [
+        "Break the invariant:- Strict 77-byte sig + suffix parsing only",
+        "Replace the unsafe assembly load with a safe extraction:",
+        "Or use `calldataload` with bounds check + mask."
+      ]
+    },
+    {
+      "id": "i_timestamps_bound_to_signature",
+      "kind": "security_intent",
+      "text": "The validAfter and validUntil timestamps returned in validationData must be bound to the ECDSA signature and not controllable without invalidating it.",
+      "modality": "asserted",
+      "entity_ids": [
+        "timestamps",
+        "signature",
+        "atom_wallet"
+      ],
+      "evidence": [
+        "**High** — Attacker can fully control the `validAfter` and `validUntil` timestamps returned in `validationData` without invalidating the ECDSA signature. This enables:"
+      ]
+    },
+    {
+      "id": "perpetual_validity",
+      "kind": "impact",
+      "text": "Perpetual validity (`validUntil = type(uint48).max`)",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- Perpetual validity (`validUntil = type(uint48).max`)"
+      ]
+    },
+    {
+      "id": "forced_execution_windows",
+      "kind": "impact",
+      "text": "Forced execution in future/past windows",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- Forced execution in future/past windows"
+      ]
+    },
+    {
+      "id": "replay_attacks_or_time_window_bypass",
+      "kind": "impact",
+      "text": "Replay attacks or time-window bypass on any UserOp",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- Replay attacks or time-window bypass on any UserOp"
+      ]
+    },
+    {
+      "id": "session_key_abuse_delayed_execution_griefing_unauthorized_ops",
+      "kind": "impact",
+      "text": "Potential session key abuse, delayed execution griefing, or unauthorized ops if time bounds are used for rate limiting or revocation",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "- Potential session key abuse, delayed execution griefing, or unauthorized ops if time bounds are used for rate limiting or revocation"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "a_append_poison",
+    "a_extract_timestamps"
+  ],
+  "ambiguities": [
+    "Report does not state whether the 77-byte signature is a fixed protocol requirement or an observed input; treated as the stated signature length.",
+    "No explicit statement that the attacker controls the UserOp submission beyond being a malicious bundler/relayer.",
+    "The exact numeric poison-byte count beyond '20+' is not specified."
+  ]
+}

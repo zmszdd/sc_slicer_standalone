@@ -1,0 +1,13 @@
+Post-deposit accounting in GrowthHYBR mints fewer shares than expected (worst case: 0 shares)
+
+## Finding description and impact
+
+In ve33/contracts/GovernanceHYBR.sol, `deposit()` locks the incoming HYBR into the veNFT first and then calculates gHYBR shares. `calculateShares` reads `totalAssets` after it already includes the new deposit. The effective formula becomes `shares = amount * totalSupply / (assets_before + amount)`. This inflates the denominator with the depositor’s own funds and causes minting less shares than expected.
+
+In the extreme case, a first 1 wei seed creates totalSupply = 1 and totalAssets = 1. For any later deposit of amount > 0, the minted shares are `floor(amount * 1 / (1 + amount)) = 0`, since the denominator strictly exceeds the numerator. More generally, depositors mint fewer shares than the correct pre-deposit pro-rata amount, causing a short-mint and value transfer to existing holders. Worst case, deposits mint 0 shares.
+
+The PoC `test_gHybr_DepositPostAssetAccounting_DonatesFunds` demonstrates the extreme case and shows that three subsequent deposits each mint zero shares; the PoC has no output and succeeds when it passes all assertions. To run it: `forge test --match-test DepositPostAssetAccounting_DonatesFunds -vvv`
+
+## Recommended mitigation steps
+
+Compute shares from a pre-deposit snapshot of totalSupply and totalAssets, before moving or locking the new amount. Then lock the funds and mint the precomputed shares.

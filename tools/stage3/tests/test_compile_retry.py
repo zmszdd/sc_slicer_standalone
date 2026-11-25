@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from lib.compile_retry import error_identifiers
+from lib.compile_retry import error_identifiers, failure_classes
 
 PIPELINE = Path(__file__).resolve().parents[1] / 'cli' / 'stage3_pipeline.py'
 
@@ -27,6 +27,13 @@ class CompileRetryTest(unittest.TestCase):
         import lib.compile_retry as module
         self.assertFalse(hasattr(module, 'neutralize_binding'))
         self.assertFalse(hasattr(module, 'blacklist_symbols'))
+
+    def test_failure_classes(self):
+        self.assertIn('stack_too_deep', failure_classes(
+            'CompilerError: Stack too deep when compiling inline assembly'))
+        self.assertIn('undeclared_identifier', failure_classes(
+            'Error (7576): Undeclared identifier. "minter" is not visible.'))
+        self.assertEqual(failure_classes(''), [])
 
 
 class PipelineNeutralizationRegressionTest(unittest.TestCase):

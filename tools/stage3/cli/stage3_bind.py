@@ -56,7 +56,7 @@ def main(argv=None):
 
     result = bind_claims(
         case_dir=case_dir, stage2_dir=stage2_dir, src_dir=src_dir,
-        claims=claims, formal=stage2['formal'],
+        claims=claims, formal=stage2['formal'], spec=stage2['spec'],
         max_rounds=args.max_rounds, reuse=args.reuse,
         strict=True, apply_ceiling=False, run_fn=subprocess.run)
 

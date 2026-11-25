@@ -84,6 +84,18 @@ impl Default for EffectiveSliceBudget {
     }
 }
 
+struct MetadataInput<'a> {
+    source_db: &'a SourceDatabase,
+    graph: &'a SliceGraph,
+    fallback: &'a FallbackController,
+    budget: &'a EffectiveSliceBudget,
+    iterations: usize,
+    code: &'a str,
+    last_command: Option<String>,
+    last_error_kind: Option<String>,
+    original_project_uncompilable: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct ResurrectionV2Result {
     pub code: String,
@@ -167,17 +179,17 @@ impl<'a> ResurrectionRunner<'a> {
     }
 
     async fn handle_success(&mut self) -> Result<Option<ResurrectionV2Result>> {
-        let metadata = metadata_for(
-            self.source_db,
-            &self.graph,
-            &self.fallback,
-            &self.budget,
-            self.iterations,
-            &self.final_code,
-            self.last_command.clone(),
-            None,
-            false,
-        );
+        let metadata = metadata_for(MetadataInput {
+            source_db: self.source_db,
+            graph: &self.graph,
+            fallback: &self.fallback,
+            budget: &self.budget,
+            iterations: self.iterations,
+            code: &self.final_code,
+            last_command: self.last_command.clone(),
+            last_error_kind: None,
+            original_project_uncompilable: false,
+        });
         if !metadata.slice_effective {
             crate::execution_log::detail(
                 "resurrection_v2_effective_gate",
@@ -239,17 +251,17 @@ impl<'a> ResurrectionRunner<'a> {
                     .clone()
                     .unwrap_or_else(|| "renderer_or_toolchain_mismatch".to_string())
             };
-            let metadata = metadata_for(
-                self.source_db,
-                &self.graph,
-                &self.fallback,
-                &self.budget,
-                self.iterations,
-                &self.final_code,
-                original_status.command.or(self.last_command.clone()),
-                Some(failure_kind),
+            let metadata = metadata_for(MetadataInput {
+                source_db: self.source_db,
+                graph: &self.graph,
+                fallback: &self.fallback,
+                budget: &self.budget,
+                iterations: self.iterations,
+                code: &self.final_code,
+                last_command: original_status.command.or(self.last_command.clone()),
+                last_error_kind: Some(failure_kind),
                 original_project_uncompilable,
-            );
+            });
             let summary = format!(
                 "compile_success=false original_project_uncompilable={}",
                 original_project_uncompilable
@@ -278,17 +290,17 @@ impl<'a> ResurrectionRunner<'a> {
     }
 
     fn iteration_limit_result(&mut self) -> Result<ResurrectionV2Result> {
-        let metadata = metadata_for(
-            self.source_db,
-            &self.graph,
-            &self.fallback,
-            &self.budget,
-            self.iterations,
-            &self.final_code,
-            self.last_command.clone(),
-            Some("fallback_iteration_limit".to_string()),
-            false,
-        );
+        let metadata = metadata_for(MetadataInput {
+            source_db: self.source_db,
+            graph: &self.graph,
+            fallback: &self.fallback,
+            budget: &self.budget,
+            iterations: self.iterations,
+            code: &self.final_code,
+            last_command: self.last_command.clone(),
+            last_error_kind: Some("fallback_iteration_limit".to_string()),
+            original_project_uncompilable: false,
+        });
         self.finish(metadata, "iteration_limit".to_string())
     }
 
@@ -307,17 +319,17 @@ impl<'a> ResurrectionRunner<'a> {
                     }
                 }
                 CompileStatus::ForgeUnavailable => {
-                    let metadata = metadata_for(
-                        self.source_db,
-                        &self.graph,
-                        &self.fallback,
-                        &self.budget,
-                        self.iterations,
-                        &self.final_code,
-                        self.last_command.clone(),
-                        Some("forge_unavailable".to_string()),
-                        false,
-                    );
+                    let metadata = metadata_for(MetadataInput {
+                        source_db: self.source_db,
+                        graph: &self.graph,
+                        fallback: &self.fallback,
+                        budget: &self.budget,
+                        iterations: self.iterations,
+                        code: &self.final_code,
+                        last_command: self.last_command.clone(),
+                        last_error_kind: Some("forge_unavailable".to_string()),
+                        original_project_uncompilable: false,
+                    });
                     return self.finish(metadata, "forge_unavailable".to_string());
                 }
                 CompileStatus::Failed => {
@@ -357,17 +369,18 @@ pub async fn run_resurrection_v2(request: ResurrectionV2Request) -> Result<Resur
     runner.run().await
 }
 
-fn metadata_for(
-    source_db: &SourceDatabase,
-    graph: &SliceGraph,
-    fallback: &FallbackController,
-    budget: &EffectiveSliceBudget,
-    iterations: usize,
-    code: &str,
-    last_command: Option<String>,
-    last_error_kind: Option<String>,
-    original_project_uncompilable: bool,
-) -> ResurrectionV2Metadata {
+fn metadata_for(input: MetadataInput<'_>) -> ResurrectionV2Metadata {
+    let MetadataInput {
+        source_db,
+        graph,
+        fallback,
+        budget,
+        iterations,
+        code,
+        last_command,
+        last_error_kind,
+        original_project_uncompilable,
+    } = input;
     let level = fallback.level();
     let input_lines = source_db.total_nonblank_lines().max(1);
     let output_lines = code.lines().filter(|line| !line.trim().is_empty()).count();

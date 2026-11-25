@@ -147,7 +147,7 @@ def main() -> dict:
     gt = json.loads((HERE / 'judge_ground_truth.json').read_text())
     judge = {r['case']: r for r in gt.get('cases', [])}
     ja = json.loads((HERE / 'judge_anchored_metrics.json').read_text())
-    pe = json.loads((HERE / 'positive_eval_105.json').read_text())
+    pe = json.loads((HERE / 'positive_eval_161.json').read_text())
     p2 = json.loads((HERE / 'p2_auto_reproductions_20261110.json').read_text())
 
     valid_pool = [r['case'] for r in pe.get('cases', [])

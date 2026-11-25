@@ -81,9 +81,9 @@ contract Other {
         two = (out / 'TwoContracts.sol').read_text()
         other = (out / 'Other.sol').read_text()
         self.assertEqual(two.count('bool stage3_guard_ok = true;'), 2)
-        self.assertEqual(two.count('assert('), 2)
+        self.assertEqual(two.count('require('), 2)
         self.assertEqual(other.count('bool stage3_guard_ok = true;'), 1)
-        self.assertEqual(other.count('assert('), 1)
+        self.assertEqual(other.count('require('), 1)
         # both Alpha and Beta got patched, not just the first match
         self.assertIn('contract Alpha', two)
         self.assertIn('contract Beta', two)

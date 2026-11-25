@@ -1,11 +1,16 @@
 import unittest
+import json
+import tempfile
 from pathlib import Path
 
 from lib.solidity_scan import (base_identifiers, expr_identifiers,
+                               _strip_comments_and_strings,
                                is_snapshot_identifier, scan_src,
                                contract_state_vars,
                                contract_visible_state_vars,
+                               contract_instances,
                                poc_test_contract, poc_test_function,
+                               poc_test_function_for_case,
                                contract_has_function)
 
 E2E_SRC = Path(__file__).resolve().parents[1] / 'cases' / 'panoptic_builder_init_e2e' / 'src'
@@ -13,6 +18,8 @@ E2E_SRC = Path(__file__).resolve().parents[1] / 'cases' / 'panoptic_builder_init
 
 class SolidityScanTest(unittest.TestCase):
     def test_scan_e2e_contracts_and_functions(self):
+        if not E2E_SRC.is_dir():
+            self.skipTest('optional e2e fixture is not present')
         index = scan_src(E2E_SRC)
         declared = index.all_declared()
         for name in ('BuilderWallet', 'BuilderFactory', 'Create2Lib', 'IERC20',
@@ -45,6 +52,15 @@ class SolidityScanTest(unittest.TestCase):
         self.assertIn('gHybr', contract_visible_state_vars(src, 'C4PoC'))
         self.assertIn('local', contract_visible_state_vars(src, 'C4PoC'))
 
+    def test_contract_instances_include_inherited_harness_state(self):
+        src = (
+            'contract Vault { uint256 public total; }\n'
+            'contract Base { Vault public vault; }\n'
+            'contract C4PoC is Base { function test_x() external {} }\n'
+        )
+        self.assertEqual(contract_instances(src, 'C4PoC'),
+                         {'vault': 'Vault'})
+
     def test_poc_test_contract_detection(self):
         src = (
             'contract A { function test_a() external {} }\n'
@@ -63,10 +79,36 @@ class SolidityScanTest(unittest.TestCase):
         )
         self.assertEqual(poc_test_function(src), ('C4PoC', 'test_inflationAttack'))
 
+    def test_local_manifest_prefers_report_poc_over_neutral_entrypoint(self):
+        src = (
+            'contract C4PoC { function test_realBug() external { x(); } }\n'
+            'contract Neutral_x is C4PoC { function test_entrypoint() public '
+            '{ require(true, "neutral stage1 entrypoint"); } }'
+        )
+        self.assertEqual(poc_test_function(src), ('Neutral_x', 'test_entrypoint'))
+        self.assertEqual(poc_test_function(src, ignore_neutral=True),
+                         ('C4PoC', 'test_realBug'))
+        with tempfile.TemporaryDirectory() as tmp:
+            case_dir = Path(tmp)
+            (case_dir / 'harness-manifest.json').write_text(json.dumps({
+                'local_runnable': True}))
+            self.assertEqual(poc_test_function_for_case(case_dir, src),
+                             ('C4PoC', 'test_realBug'))
+
     def test_contract_has_function(self):
         src = 'contract A { function test_x() external {} }\ncontract B {}'
         self.assertTrue(contract_has_function(src, 'A', 'test_x'))
         self.assertFalse(contract_has_function(src, 'B', 'test_x'))
+
+    def test_comment_stripping_preserves_source_offsets(self):
+        src = ('// header\n'
+               'contract A { string s = "x"; /* note */\n'
+               '  function f() external { uint256 n = 1; }\n'
+               '}\n')
+        clean = _strip_comments_and_strings(src)
+        self.assertEqual(len(clean), len(src))
+        self.assertEqual(clean.count('\n'), src.count('\n'))
+        self.assertTrue(contract_has_function(src, 'A', 'f'))
 
 
 if __name__ == '__main__':

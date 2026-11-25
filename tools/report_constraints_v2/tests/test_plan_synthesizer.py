@@ -117,6 +117,58 @@ class PlanSynthesisTests(unittest.TestCase):
         self.assertNotEqual(claim['properties']['effects']['expression'],
                             claim['properties']['safety']['expression'])
 
+    def test_live8_replaces_qualitative_shadow_with_bounded_violation(self):
+        elements, _ = id_inputs()
+        from tests.test_prompt_v317 import expanded_plan
+        candidate = expanded_plan()
+        candidate['schema_version'] = 'report-formal-plan/8'
+        candidate['relation_class'] = 'bounded_value'
+        candidate['pattern'] = {
+            'kind': 'bounded_relation',
+            'condition': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+            'value': {'symbol': 'paid_fee'},
+            'operator': 'le',
+            'bound': {'symbol': 'required_fee'},
+        }
+        candidate['impact_context_terms'] = []
+        candidate['impact_outcome'] = {
+            'source_id': 'impact_revert',
+            'predicate': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+        }
+        formal = synthesize_id_formalization(
+            candidate, elements, direct_witness_effects=True)
+        properties = formal['claims'][0]['properties']
+        expressions = [properties[name]['expression']
+                       for name in ('preconditions', 'safety', 'effects')]
+        violation = {'op': 'gt', 'args': [
+            {'var': 'paid_fee'}, {'var': 'required_fee'}]}
+        self.assertTrue(any(json.dumps(violation) in json.dumps(item)
+                            for item in expressions))
+        self.assertNotIn('fee_revert', json.dumps(expressions))
+
+    def test_live8_separates_correspondence_checkpoints(self):
+        elements, _ = id_inputs()
+        from tests.test_prompt_v317 import expanded_plan
+        candidate = expanded_plan()
+        candidate['schema_version'] = 'report-formal-plan/8'
+        candidate['relation_class'] = 'state_correspondence'
+        candidate['pattern'] = {
+            'kind': 'correspondence',
+            'condition': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+            'observed_symbol': 'paid_fee',
+            'expected_symbol': 'required_fee',
+        }
+        candidate['impact_context_terms'] = []
+        candidate['impact_outcome'] = {
+            'source_id': 'impact_revert',
+            'predicate': {'kind': 'truth', 'symbol': 'fee_revert', 'value': True},
+        }
+        formal = synthesize_id_formalization(candidate, elements)
+        observed = formal['symbols']['paid_fee']['checkpoint']
+        expected = formal['symbols']['required_fee']['checkpoint']
+        self.assertTrue(observed.startswith('after observed '))
+        self.assertTrue(expected.startswith('before expected '))
+
     def test_impact_qualifier_detector_covers_scope_direction_and_duration(self):
         text = ('Every newly created vault is permanently griefed if the attacker '
                 're-deposits before expiry; users lose more than 50% each day, '

@@ -1,0 +1,62 @@
+You are a semantic faithfulness auditor. For each
+listed source you get its role (P, I, or V), the report statement text, the
+generated predicate that claims to encode it, and the meanings of the symbols
+the predicate uses. A null predicate means that the generated rule omitted
+that frozen source; mark it other_mismatch. You also receive the full P/I/V relation,
+exact report excerpts from cited action/root-cause evidence as relation_context, and
+a generator-proposed relationship_trace that cites a path through those excerpts.
+Judge ONLY whether each predicate faithfully encodes its report
+source, and whether the report supports a relationship between V and I under P.
+The relationship may be direct or mediated by an intermediate mechanism, but an
+indirect link is consistent only when relation_context or the P/I/V excerpts
+explicitly support that bridge. relation_context may support the relationship only;
+it cannot replace or change any frozen source. Do not infer a causal bridge from
+protocol knowledge or shared vocabulary. When relation_context supports your verdict,
+name the relevant statement_id and evidence_id in the piv_relation reason. If the
+P/I/V excerpts alone support the verdict, name the relevant frozen source ID instead.
+Treat relationship_trace as an unverified pointer: confirm every cited statement,
+evidence fragment and source ID exists and that the exact text supports the claimed
+link. A trace never upgrades a verdict without supporting excerpts; missing, inaccurate,
+or incomplete trace links do not erase evidence that is present in relation_context.
+Distinguish a formula mapping defect (a source check mismatch) from a relationship
+that the report does not clearly establish (weakened); do not treat the latter as a
+formula defect. Style, optimality and code truth are out of scope; never rewrite or
+propose predicates.
+
+A predicate is unfaithful when any of the following holds:
+- inverted: the predicate asserts the opposite direction or polarity of the
+  statement's claim, e.g. the statement says a fee accrues / an amount exists /
+  a balance is held (so a faithful encoding implies a positive or nonzero
+  quantity) and the predicate checks equality against zero, or the statement
+  says "at most N" and the predicate demands strictly less than N, or the
+  statement says "exceeds N" and the predicate accepts N itself.
+- wrong_constant: a numeric literal in the predicate is not the statement's
+  own quantity -- it belongs to a different statement, a different quantity,
+  or to nothing in the statement at all.
+- wrong_symbol: a symbol the predicate uses does not carry the meaning the
+  statement's fact requires (e.g. the statement is about the fee amount while
+  the predicate's symbol means elapsed time).
+- other_mismatch: the predicate encodes a different fact than the statement
+  states.
+Otherwise the source encoding is consistent. A tautologically weak but
+direction-correct bound (e.g. >= 0) is consistent, NOT inverted; the report's
+own semantics set the standard, not mathematical strength. For the relation
+check, mark consistent when formulas and supplied report excerpts support a direct
+or explicit indirect link. Mark weakened when that relationship is insufficiently
+supported or ambiguous; this means needs review, not that a source formula is wrong.
+Mark mismatch only when the relationship is clearly contradictory or report evidence
+establishes that V is unrelated to I under P. A downstream V is not a mismatch just
+because it is not the literal negation of I. Do not call an unsupported but explicitly
+unformalized claim faithful.
+
+Return JSON only, exactly:
+{"checks":[{"source_id":ID,"role":"P|I|V","verdict":"consistent"|"inverted"|"wrong_constant"|
+"wrong_symbol"|"other_mismatch","reason":ONE_SHORT_SENTENCE}],
+ "piv_relation":{"verdict":"consistent"|"weakened"|"mismatch","reason":ONE_SHORT_SENTENCE}}
+Cover every listed source_id exactly once, with its role, and only listed ones. The relation
+check must assess the supplied P/I/V formulas together and use relation_context and
+relationship_trace only as pointers to exact report evidence for an explicit bridge,
+not as replacement sources. Independently verify every trace ID against the supplied
+context; an unsupported or inaccurate trace cannot improve the verdict. If the trace
+omits a bridge but the supplied excerpts establish it, judge the excerpts directly.
+{"schema_version":"faithfulness-audit-input/4","relation_class":"progress_or_liveness","sources":[{"source_id":"protocol_deactivated","role":"P","statement_text":"Protocol administrators have called deactivateProtocol() to pause trading operations, so clearingHouse.active is false.","predicate":{"kind":"comparison","left":"clearing_house_active","operator":"eq","right":{"const":false}},"symbol_meanings":{"clearing_house_active":{"sort":"bool","unit":null,"meaning":"clearingHouse.active flag indicating whether the protocol is active (true) or paused (false)"}}},{"source_id":"trading_blocked","role":"P","statement_text":"Trading operations such as placeOrder and liquidate properly revert with ProtocolNotActive error while the protocol is paused.","predicate":{"kind":"truth","symbol":"trading_ops_revert_protocol_not_active","value":true},"symbol_meanings":{"trading_ops_revert_protocol_not_active":{"sort":"bool","unit":null,"meaning":"trading operations placeOrder/liquidate revert with ProtocolNotActive while paused"}}},{"source_id":"pause_effective","role":"I","statement_text":"The emergency pause mechanism must provide complete protection by preventing all critical fund-moving operations while the protocol is paused.","predicate":{"op":"implies","args":[{"op":"eq","args":[{"var":"clearing_house_active"},{"const":false}]},{"var":"fund_moving_ops_blocked_during_pause"}]},"symbol_meanings":{"clearing_house_active":{"sort":"bool","unit":null,"meaning":"clearingHouse.active flag indicating whether the protocol is active (true) or paused (false)"},"fund_moving_ops_blocked_during_pause":{"sort":"bool","unit":null,"meaning":"all critical fund-moving operations (deposit/withdraw/depositTo/withdrawToSpot/depositFromSpot) are prevented while the protocol is paused"}}},{"source_id":"ineffective_emergency_response","role":"V","statement_text":"The protocol's emergency pause mechanism fails to provide complete protection, undermining its primary safety purpose","predicate":{"var":"fund_movement_occurs_during_pause"},"symbol_meanings":{"fund_movement_occurs_during_pause":{"sort":"bool","unit":null,"meaning":"fund-moving operations (deposit/withdraw/spot transfers) still succeed while the protocol is paused"}}}],"piv_relation":{"P":{"op":"and","args":[{"op":"eq","args":[{"var":"clearing_house_active"},{"const":false}]},{"var":"trading_ops_revert_protocol_not_active"}]},"I":{"op":"implies","args":[{"op":"eq","args":[{"var":"clearing_house_active"},{"const":false}]},{"var":"fund_moving_ops_blocked_during_pause"}]},"V":{"op":"and","args":[{"op":"and","args":[{"op":"eq","args":[{"var":"clearing_house_active"},{"const":false}]},{"op":"not","args":[{"var":"fund_moving_ops_blocked_during_pause"}]}]},{"var":"fund_movement_occurs_during_pause"}]}},"relation_context":[{"statement_id":"deposit_withdraw_lack_check","role":"root_cause","evidence":[{"evidence_id":"e_eeafaff86cf1_0003","text":"The protocol implements an emergency pause mechanism through the `onlyActiveProtocol` modifier that checks `clearingHouse.active` status before allowing critical operations. However, this protection is inconsistently applied across the codebase. While trading functions like `placeOrder`, `liquidate`, and `backstopLiquidate` properly use the `onlyActiveProtocol` modifier, all deposit and withdrawal functions lack this essential safety check."},{"evidence_id":"e_eeafaff86cf1_0004","text":"The affected functions include:"},{"evidence_id":"e_eeafaff86cf1_0005","text":"- `deposit(address account, uint256 amount)` in PerpManager"},{"evidence_id":"e_eeafaff86cf1_0006","text":"- `withdraw(address account, uint256 amount)` in PerpManager"},{"evidence_id":"e_eeafaff86cf1_0007","text":"- `depositTo(address account, uint256 amount)` in PerpManager"},{"evidence_id":"e_eeafaff86cf1_0008","text":"- `depositFromSpot(address account, uint256 amount)` in PerpManager"},{"evidence_id":"e_eeafaff86cf1_0009","text":"- `withdrawToSpot(address account, uint256 amount)` in PerpManager"},{"evidence_id":"e_eeafaff86cf1_0010","text":"- `deposit(address account, address token, uint256 amount)` in AccountManager"},{"evidence_id":"e_eeafaff86cf1_0011","text":"- `withdraw(address account, address token, uint256 amount)` in AccountManager"}]},{"statement_id":"fund_movement_during_pause","role":"action","evidence":[{"evidence_id":"e_eeafaff86cf1_0017","text":"4. **Deposit/withdraw operations continue**: Malicious actors or uninformed users can still:"},{"evidence_id":"e_eeafaff86cf1_0018","text":"- Deposit funds into a compromised protocol via `deposit()` or `depositTo()`"},{"evidence_id":"e_eeafaff86cf1_0019","text":"- Withdraw funds during the pause via `withdraw()` or `withdrawToSpot()`"},{"evidence_id":"e_eeafaff86cf1_0020","text":"- Move funds between spot and perp accounts via `depositFromSpot()`"}]}],"relationship_trace":{"status":"explicit","links":[{"from_source_ids":["protocol_deactivated","pause_effective","ineffective_emergency_response"],"context_statement_id":"deposit_withdraw_lack_check","evidence_ids":["e_eeafaff86cf1_0003"],"reported_relation":"The pause modifier is applied to trading functions but deposit and withdrawal functions lack the check, so the pause does not block all fund-moving operations."},{"from_source_ids":["trading_blocked","ineffective_emergency_response"],"context_statement_id":"fund_movement_during_pause","evidence_ids":["e_eeafaff86cf1_0017","e_eeafaff86cf1_0018","e_eeafaff86cf1_0019","e_eeafaff86cf1_0020"],"reported_relation":"While trading is correctly blocked, deposit and withdraw operations continue during the pause, so the emergency pause fails to provide complete protection."}],"gap":""}}

@@ -1,0 +1,62 @@
+You are a semantic faithfulness auditor. For each
+listed source you get its role (P, I, or V), the report statement text, the
+generated predicate that claims to encode it, and the meanings of the symbols
+the predicate uses. A null predicate means that the generated rule omitted
+that frozen source; mark it other_mismatch. You also receive the full P/I/V relation,
+exact report excerpts from cited action/root-cause evidence as relation_context, and
+a generator-proposed relationship_trace that cites a path through those excerpts.
+Judge ONLY whether each predicate faithfully encodes its report
+source, and whether the report supports a relationship between V and I under P.
+The relationship may be direct or mediated by an intermediate mechanism, but an
+indirect link is consistent only when relation_context or the P/I/V excerpts
+explicitly support that bridge. relation_context may support the relationship only;
+it cannot replace or change any frozen source. Do not infer a causal bridge from
+protocol knowledge or shared vocabulary. When relation_context supports your verdict,
+name the relevant statement_id and evidence_id in the piv_relation reason. If the
+P/I/V excerpts alone support the verdict, name the relevant frozen source ID instead.
+Treat relationship_trace as an unverified pointer: confirm every cited statement,
+evidence fragment and source ID exists and that the exact text supports the claimed
+link. A trace never upgrades a verdict without supporting excerpts; missing, inaccurate,
+or incomplete trace links do not erase evidence that is present in relation_context.
+Distinguish a formula mapping defect (a source check mismatch) from a relationship
+that the report does not clearly establish (weakened); do not treat the latter as a
+formula defect. Style, optimality and code truth are out of scope; never rewrite or
+propose predicates.
+
+A predicate is unfaithful when any of the following holds:
+- inverted: the predicate asserts the opposite direction or polarity of the
+  statement's claim, e.g. the statement says a fee accrues / an amount exists /
+  a balance is held (so a faithful encoding implies a positive or nonzero
+  quantity) and the predicate checks equality against zero, or the statement
+  says "at most N" and the predicate demands strictly less than N, or the
+  statement says "exceeds N" and the predicate accepts N itself.
+- wrong_constant: a numeric literal in the predicate is not the statement's
+  own quantity -- it belongs to a different statement, a different quantity,
+  or to nothing in the statement at all.
+- wrong_symbol: a symbol the predicate uses does not carry the meaning the
+  statement's fact requires (e.g. the statement is about the fee amount while
+  the predicate's symbol means elapsed time).
+- other_mismatch: the predicate encodes a different fact than the statement
+  states.
+Otherwise the source encoding is consistent. A tautologically weak but
+direction-correct bound (e.g. >= 0) is consistent, NOT inverted; the report's
+own semantics set the standard, not mathematical strength. For the relation
+check, mark consistent when formulas and supplied report excerpts support a direct
+or explicit indirect link. Mark weakened when that relationship is insufficiently
+supported or ambiguous; this means needs review, not that a source formula is wrong.
+Mark mismatch only when the relationship is clearly contradictory or report evidence
+establishes that V is unrelated to I under P. A downstream V is not a mismatch just
+because it is not the literal negation of I. Do not call an unsupported but explicitly
+unformalized claim faithful.
+
+Return JSON only, exactly:
+{"checks":[{"source_id":ID,"role":"P|I|V","verdict":"consistent"|"inverted"|"wrong_constant"|
+"wrong_symbol"|"other_mismatch","reason":ONE_SHORT_SENTENCE}],
+ "piv_relation":{"verdict":"consistent"|"weakened"|"mismatch","reason":ONE_SHORT_SENTENCE}}
+Cover every listed source_id exactly once, with its role, and only listed ones. The relation
+check must assess the supplied P/I/V formulas together and use relation_context and
+relationship_trace only as pointers to exact report evidence for an explicit bridge,
+not as replacement sources. Independently verify every trace ID against the supplied
+context; an unsupported or inaccurate trace cannot improve the verdict. If the trace
+omits a bridge but the supplied excerpts establish it, judge the excerpts directly.
+{"schema_version":"faithfulness-audit-input/4","relation_class":"progress_or_liveness","sources":[{"source_id":"victim_broadcasts_swap_and_bridge","role":"P","statement_text":"A victim prepares a transaction calling swapAndBridgeWithETH() or swapAndBridgeWithERC20() and broadcasts it to the mempool.","predicate":{"kind":"truth","symbol":"victim_tx_broadcast","value":true},"symbol_meanings":{"victim_tx_broadcast":{"sort":"bool","unit":null,"meaning":"victim prepared and broadcast a swapAndBridgeWithETH/swapAndBridgeWithERC20 transaction to the mempool"}}},{"source_id":"attacker_frontruns","role":"P","statement_text":"The attacker sees the victim's transaction and frontruns it.","predicate":{"kind":"truth","symbol":"attacker_frontran","value":true},"symbol_meanings":{"attacker_frontran":{"sort":"bool","unit":null,"meaning":"attacker observed the victim transaction and frontran it"}}},{"source_id":"attacker_contract_holds_one_wei","role":"P","statement_text":"The attacker sends 1 wei to the selfdestruct contract before calling its selfdestruct function.","predicate":{"kind":"comparison","left":"attacker_contract_eth_wei","operator":"eq","right":{"const":1}},"symbol_meanings":{"attacker_contract_eth_wei":{"sort":"int","unit":"wei","meaning":"ETH amount the attacker sends to the selfdestruct contract before calling selfdestruct"}}},{"source_id":"assumption_selfdestruct_forces_eth","role":"P","statement_text":"After EIP-6780 (Cancun), selfdestruct() forwards ETH to the beneficiary without destroying bytecode and the target cannot reject the ETH, so the same selfdestruct contract can be reused.","predicate":{"kind":"truth","symbol":"selfdestruct_forces_eth","value":true},"symbol_meanings":{"selfdestruct_forces_eth":{"sort":"bool","unit":null,"meaning":"selfdestruct forwards ETH to the beneficiary without destroying bytecode and the target cannot reject it, so the contract is reusable"}}},{"source_id":"intent_swap_and_bridge_usable","role":"I","statement_text":"swapAndBridgeWithETH and swapAndBridgeWithERC20 must remain usable (not revert) regardless of whether the Slipstream SwapRouter holds any ETH.","predicate":{"op":"implies","args":[{"var":"victim_tx_broadcast"},{"var":"swap_and_bridge_completes"}]},"symbol_meanings":{"swap_and_bridge_completes":{"sort":"bool","unit":null,"meaning":"swapAndBridgeWithETH/swapAndBridgeWithERC20 completes without reverting"},"victim_tx_broadcast":{"sort":"bool","unit":null,"meaning":"victim prepared and broadcast a swapAndBridgeWithETH/swapAndBridgeWithERC20 transaction to the mempool"}}},{"source_id":"users_cannot_swap_and_bridge","role":"V","statement_text":"Users cannot swap and bridge from Base to the destination chain via the protocol.","predicate":{"op":"and","args":[{"var":"swap_and_bridge_reverts"},{"var":"swap_and_bridge_reverts"}]},"symbol_meanings":{"swap_and_bridge_reverts":{"sort":"bool","unit":null,"meaning":"swapAndBridgeWithETH/swapAndBridgeWithERC20 reverts so users cannot swap and bridge from Base to the destination chain"}}}],"piv_relation":{"P":{"op":"and","args":[{"var":"victim_tx_broadcast"},{"var":"attacker_frontran"},{"op":"eq","args":[{"var":"attacker_contract_eth_wei"},{"const":1}]},{"var":"selfdestruct_forces_eth"}]},"I":{"op":"implies","args":[{"var":"victim_tx_broadcast"},{"var":"swap_and_bridge_completes"}]},"V":{"op":"and","args":[{"op":"and","args":[{"var":"victim_tx_broadcast"},{"op":"not","args":[{"var":"swap_and_bridge_completes"}]}]},{"var":"swap_and_bridge_reverts"},{"var":"swap_and_bridge_reverts"}]}},"relation_context":[{"statement_id":"force_eth_to_slipstream_router","role":"action","evidence":[{"evidence_id":"e_7bf3b40c6a3a_0006","text":"An attacker can force ETH onto the Slipstream SwapRouter using a contract that calls `selfdestruct(router)`. `selfdestruct()` after EIP-6780 (Cancun) only forwards ETH to the beneficiary without destroying the contract bytecode and does not allow the target to reject ETH; the Slipstream router cannot refuse this. With as little as 1 wei on the Slipstream router, every subsequent `swapAndBridgeWithETH` and `swapAndBridgeWithERC20` call fails. The same selfdestruct contract can be reused (bytecode is no longer removed), so the attack is cheap and repeatable."},{"evidence_id":"e_7bf3b40c6a3a_0009","text":"2. Attacker sees the transaction and frontruns it. Attacker deploys a small contract that accepts ETH and has a function that calls `selfdestruct(slipstreamSwapRouter)`."},{"evidence_id":"e_7bf3b40c6a3a_0010","text":"3. Attacker sends 1 wei to this contract and calls the function. The contract selfdestructs and forces 1 wei to the Slipstream SwapRouter. The router cannot reject this transfer."}]},{"statement_id":"victim_tx_calls_exact_input","role":"action","evidence":[{"evidence_id":"e_7bf3b40c6a3a_0004","text":"After the swap, the Slipstream router calls `refundETH()` (from PeripheryPayments) to return any leftover ETH to the caller:"},{"evidence_id":"e_7bf3b40c6a3a_0011","text":"4. Victim's transaction is included. It calls `exactInput()` on the Slipstream router. The swap executes, then the Slipstream router calls `refundETH()` and attempts to send its balance (at least 1 wei) to `TrustSwapAndBridgeRouter`."}]},{"statement_id":"trust_router_lacks_receive","role":"root_cause","evidence":[{"evidence_id":"e_7bf3b40c6a3a_0005","text":"So the Slipstream router sends its full ETH balance to `msg.sender`, which is `TrustSwapAndBridgeRouter`. `TrustSwapAndBridgeRouter` has no `receive()` or `fallback()` and does not handle incoming ETH. A plain ETH transfer to it reverts. Therefore, if the Slipstream SwapRouter has any ETH balance at the time of the call, the entire `swapAndBridgeWithETH` or `swapAndBridgeWithERC20` transaction reverts."},{"evidence_id":"e_7bf3b40c6a3a_0012","text":"5. The transfer to `TrustSwapAndBridgeRouter` reverts because the contract has no `receive()` or `fallback()`. The whole transaction reverts and the victim's swap and bridge do not execute."}]}],"relationship_trace":{"status":"explicit","links":[{"from_source_ids":["attacker_contract_holds_one_wei","assumption_selfdestruct_forces_eth","users_cannot_swap_and_bridge"],"context_statement_id":"force_eth_to_slipstream_router","evidence_ids":["e_7bf3b40c6a3a_0006","e_7bf3b40c6a3a_0009","e_7bf3b40c6a3a_0010"],"reported_relation":"Forcing as little as 1 wei of ETH onto the Slipstream SwapRouter via selfdestruct makes every subsequent swapAndBridgeWithETH/swapAndBridgeWithERC20 call fail."},{"from_source_ids":["victim_broadcasts_swap_and_bridge","users_cannot_swap_and_bridge"],"context_statement_id":"victim_tx_calls_exact_input","evidence_ids":["e_7bf3b40c6a3a_0011"],"reported_relation":"The victim's swapAndBridge transaction calls exactInput on the Slipstream router, which then attempts to refund its ETH balance to TrustSwapAndBridgeRouter."},{"from_source_ids":["intent_swap_and_bridge_usable","users_cannot_swap_and_bridge"],"context_statement_id":"trust_router_lacks_receive","evidence_ids":["e_7bf3b40c6a3a_0005","e_7bf3b40c6a3a_0012"],"reported_relation":"Because TrustSwapAndBridgeRouter has no receive/fallback, the ETH refund reverts and the whole swap-and-bridge transaction reverts, making the entry points unusable."}],"gap":""}}

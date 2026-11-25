@@ -27,6 +27,11 @@ def impact_intent_key(impact_id, intent_id):
     return f'{impact_id}::{intent_id}'
 
 
+def claim_symbol_prefix(claim_id):
+    """Return the private symbol namespace used by one formal claim."""
+    return 'c' + hashlib.sha256(claim_id.encode()).hexdigest()[:8] + '_'
+
+
 def unformalized_claim(elements, impact_id, reason):
     """Preserve a failed impact as a reviewable claim disposition."""
     statements = {row['id']: row for row in elements['statements']}
@@ -89,7 +94,7 @@ def namespace_formalization(formal, claim_id):
     """Give each isolated P/I/V plan private symbols while preserving its AST."""
     formal = copy.deepcopy(formal)
     require(len(formal['claims']) == 1, 'per-impact plan must synthesize one claim')
-    prefix = 'c' + hashlib.sha256(claim_id.encode()).hexdigest()[:8] + '_'
+    prefix = claim_symbol_prefix(claim_id)
     mapping = {name: prefix + name[:64 - len(prefix)] for name in formal['symbols']}
     symbols = {mapping[name]: value for name, value in formal['symbols'].items()}
     claim = formal['claims'][0]
@@ -98,6 +103,19 @@ def namespace_formalization(formal, claim_id):
         prop['expression'] = _namespace_expression(prop['expression'], mapping)
     formal['symbols'] = symbols
     return formal
+
+
+def namespace_observability_contract(claim_id, contract):
+    """Align plan-level observability metadata with namespaced formal symbols."""
+    contract = copy.deepcopy(contract or {})
+    prefix = claim_symbol_prefix(claim_id)
+    symbols = contract.get('symbols') or {}
+    mapping = {name: prefix + name[:64 - len(prefix)] for name in symbols}
+    contract['symbols'] = {mapping[name]: item for name, item in symbols.items()}
+    if 'high_risk' in contract:
+        contract['high_risk'] = [mapping.get(name, name)
+                                 for name in contract['high_risk']]
+    return contract
 
 
 def merge_claim_formalizations(successful, elements, failures=(), *,

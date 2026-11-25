@@ -1,0 +1,289 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "OffsetProgressiveCurve initialization with offset18 = 0 and subsequent previewWithdraw query",
+    "environment": "Solidity UD60x18 fixed-point curve contract (non-upgradeable)",
+    "evidence": [
+      "`OffsetProgressiveCurve.initialize()` Accepts `offset18 = 0`, Inheriting `previewWithdraw` Underflow Revert from `ProgressiveCurve`",
+      "`OffsetProgressiveCurve.initialize()` validates `slope18` but performs no validation on `offset18`, silently accepting",
+      "mathematically identical to `ProgressiveCurve`. This means the contract inherits the `previewWithdraw` arithmetic",
+      "without redeployment and repointing every vault that references the broken curve address. EIP-4626 Section 4 explicitly",
+      "**Root cause — asymmetric parameter validation in `initialize()`:**",
+      "`slope18` is validated; `offset18` is not. Passing `offset18 = 0` stores `OFFSET = wrap(0)` and deploys successfully.",
+      "**Inherited underflow — concrete proof (slope = 2e18, HALF_SLOPE = 1e18, offset = 0):**",
+      "- `initialize(\"MyOffsetCurve\", 2e18, 0)` executes without error.",
+      "1. **EIP-4626 spec violation.** `previewWithdraw` MUST NOT revert for valid inputs (`assets ≤ maxWithdraw`). Any",
+      "**Option A — Reject `offset18 = 0` in `initialize()` (Recommended):** Mirror the existing `slope18` validation pattern"
+    ]
+  },
+  "entities": [
+    {
+      "id": "deployer",
+      "name": "deployer",
+      "role": "attacker",
+      "evidence": [
+        "rounding in the deposit path. The contract is non-upgradeable, so a deployer who passes `offset18 = 0` cannot recover",
+        "- `initialize(\"MyOffsetCurve\", 2e18, 0)` executes without error."
+      ]
+    },
+    {
+      "id": "offset_progressive_curve",
+      "name": "OffsetProgressiveCurve",
+      "role": "contract",
+      "evidence": [
+        "`OffsetProgressiveCurve.initialize()` Accepts `offset18 = 0`, Inheriting `previewWithdraw` Underflow Revert from `ProgressiveCurve`",
+        "`OffsetProgressiveCurve.initialize()` validates `slope18` but performs no validation on `offset18`, silently accepting",
+        "`slope18` is validated; `offset18` is not. Passing `offset18 = 0` stores `OFFSET = wrap(0)` and deploys successfully."
+      ]
+    },
+    {
+      "id": "progressive_curve",
+      "name": "ProgressiveCurve",
+      "role": "contract",
+      "evidence": [
+        "mathematically identical to `ProgressiveCurve`. This means the contract inherits the `previewWithdraw` arithmetic",
+        "`wrap(totalShares)` — the formula becomes identical to `ProgressiveCurve`. Specifically in `previewWithdraw`:"
+      ]
+    },
+    {
+      "id": "depositor",
+      "name": "depositor",
+      "role": "victim",
+      "evidence": [
+        "2. **Full-pool withdrawal query permanently broken.** A depositor cannot preview their own full exit amount from a"
+      ]
+    },
+    {
+      "id": "integrator",
+      "name": "integrator/aggregator",
+      "role": "other",
+      "evidence": [
+        "integrator, front-end, or aggregator calling `previewWithdraw(totalAssets, ...)` will receive a panic revert."
+      ]
+    },
+    {
+      "id": "offset_parameter",
+      "name": "offset18 / OFFSET",
+      "role": "other",
+      "evidence": [
+        "`OffsetProgressiveCurve.initialize()` validates `slope18` but performs no validation on `offset18`, silently accepting",
+        "`slope18` is validated; `offset18` is not. Passing `offset18 = 0` stores `OFFSET = wrap(0)` and deploys successfully.",
+        "calculations. With `OFFSET = wrap(0)`, every occurrence of `add(wrap(totalShares), OFFSET)` reduces to"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "deployer_calls_initialize_with_zero_offset",
+      "kind": "precondition",
+      "text": "The deployer calls initialize with offset18 = 0 (e.g. initialize(\"MyOffsetCurve\", 2e18, 0)).",
+      "modality": "asserted",
+      "entity_ids": [
+        "deployer",
+        "offset_progressive_curve",
+        "offset_parameter"
+      ],
+      "evidence": [
+        "`OffsetProgressiveCurve.initialize()` validates `slope18` but performs no validation on `offset18`, silently accepting",
+        "`slope18` is validated; `offset18` is not. Passing `offset18 = 0` stores `OFFSET = wrap(0)` and deploys successfully.",
+        "- `initialize(\"MyOffsetCurve\", 2e18, 0)` executes without error."
+      ]
+    },
+    {
+      "id": "slope18_passes_validation",
+      "kind": "precondition",
+      "text": "slope18 = 2e18 passes validation (non-zero, even).",
+      "modality": "asserted",
+      "entity_ids": [
+        "offset_progressive_curve"
+      ],
+      "evidence": [
+        "- `slope18 = 2e18` passes validation (non-zero, even). `offset18 = 0` is never checked."
+      ]
+    },
+    {
+      "id": "first_deposit_occurs",
+      "kind": "precondition",
+      "text": "A first deposit into the empty pool has occurred (deposit 2 wei, shares = 1414213562).",
+      "modality": "asserted",
+      "entity_ids": [
+        "offset_progressive_curve",
+        "depositor"
+      ],
+      "evidence": [
+        "underflow revert already confirmed in `ProgressiveCurve`: after the first deposit, `previewWithdraw` panics for any",
+        "| Deposit 2 wei (empty pool)   | `floor(sqrt(2 × 1e18))`                                      | `shares = 1414213562` |",
+        "- The first deposit succeeds. Only on the first full-withdrawal preview does the panic surface."
+      ]
+    },
+    {
+      "id": "initialize_accepts_zero_offset",
+      "kind": "action",
+      "text": "initialize() accepts offset18 = 0 and deploys successfully, storing OFFSET = wrap(0).",
+      "modality": "asserted",
+      "entity_ids": [
+        "deployer",
+        "offset_progressive_curve",
+        "offset_parameter"
+      ],
+      "evidence": [
+        "`OffsetProgressiveCurve.initialize()` validates `slope18` but performs no validation on `offset18`, silently accepting",
+        "`slope18` is validated; `offset18` is not. Passing `offset18 = 0` stores `OFFSET = wrap(0)` and deploys successfully.",
+        "- `initialize(\"MyOffsetCurve\", 2e18, 0)` executes without error."
+      ]
+    },
+    {
+      "id": "preview_withdraw_full_pool_query",
+      "kind": "action",
+      "text": "previewWithdraw is called for a full-pool withdrawal query (assets = totalAssets).",
+      "modality": "asserted",
+      "entity_ids": [
+        "integrator",
+        "depositor",
+        "offset_progressive_curve"
+      ],
+      "evidence": [
+        "underflow revert already confirmed in `ProgressiveCurve`: after the first deposit, `previewWithdraw` panics for any",
+        "integrator, front-end, or aggregator calling `previewWithdraw(totalAssets, ...)` will receive a panic revert.",
+        "2. **Full-pool withdrawal query permanently broken.** A depositor cannot preview their own full exit amount from a"
+      ]
+    },
+    {
+      "id": "asymmetric_validation_no_offset_check",
+      "kind": "root_cause",
+      "text": "initialize() validates slope18 but performs no validation on offset18, so offset18 = 0 is silently accepted and OFFSET = wrap(0) contributes nothing, making the formula identical to ProgressiveCurve.",
+      "modality": "asserted",
+      "entity_ids": [
+        "offset_progressive_curve",
+        "offset_parameter",
+        "progressive_curve"
+      ],
+      "evidence": [
+        "`OffsetProgressiveCurve.initialize()` validates `slope18` but performs no validation on `offset18`, silently accepting",
+        "zero. When `offset18 = 0`, the stored `OFFSET = wrap(0)` contributes nothing to any formula, making the contract",
+        "**Root cause — asymmetric parameter validation in `initialize()`:**",
+        "`slope18` is validated; `offset18` is not. Passing `offset18 = 0` stores `OFFSET = wrap(0)` and deploys successfully.",
+        "calculations. With `OFFSET = wrap(0)`, every occurrence of `add(wrap(totalShares), OFFSET)` reduces to",
+        "`wrap(totalShares)` — the formula becomes identical to `ProgressiveCurve`. Specifically in `previewWithdraw`:"
+      ]
+    },
+    {
+      "id": "underflow_from_floor_sqrt_gap",
+      "kind": "root_cause",
+      "text": "With OFFSET = 0, floor-sqrt rounding in _convertToShares creates a gap so that divUp(assets, HALF_SLOPE) exceeds square(totalShares), and sub(wrap(1), wrap(2)) underflows in previewWithdraw.",
+      "modality": "asserted",
+      "entity_ids": [
+        "offset_progressive_curve",
+        "progressive_curve"
+      ],
+      "evidence": [
+        "full-pool withdrawal query because `divUp(assets, HALF_SLOPE)` exceeds `square(totalShares)` due to the floor-sqrt",
+        "| `square(wrap(1414213562))`   | `floor(1414213562² / 1e18)` = `floor(1.9999… × 10¹⁸ / 10¹⁸)` | = **1** (raw UD60x18) |",
+        "| `divUp(wrap(2), HALF_SLOPE)` | `ceil(2 × 1e18 / 1e18)`                                      | = **2** (raw UD60x18) |",
+        "| `sub(wrap(1), wrap(2))`      | underflow                                                    | **REVERT**            |",
+        "The revert occurs because the floor-sqrt rounding in `_convertToShares` creates a permanent gap: `totalAssets` grows",
+        "faster than `HALF_SLOPE × totalShares²`. When `previewWithdraw` uses `divUp` (correct per spec) and then subtracts, the",
+        "operand order produces an underflow. With `OFFSET = 0`, no offset term closes this gap."
+      ]
+    },
+    {
+      "id": "preview_must_not_revert",
+      "kind": "security_intent",
+      "text": "previewWithdraw MUST NOT revert for valid inputs (assets ≤ maxWithdraw), per EIP-4626 Section 4.",
+      "modality": "asserted",
+      "entity_ids": [
+        "offset_progressive_curve"
+      ],
+      "evidence": [
+        "without redeployment and repointing every vault that references the broken curve address. EIP-4626 Section 4 explicitly",
+        "requires preview functions MUST NOT revert for valid inputs.",
+        "1. **EIP-4626 spec violation.** `previewWithdraw` MUST NOT revert for valid inputs (`assets ≤ maxWithdraw`). Any"
+      ]
+    },
+    {
+      "id": "offset_should_be_validated",
+      "kind": "security_intent",
+      "text": "initialize() should validate offset18 symmetrically with slope18, rejecting offset18 = 0.",
+      "modality": "inferred",
+      "entity_ids": [
+        "offset_progressive_curve",
+        "offset_parameter"
+      ],
+      "evidence": [
+        "**Option A — Reject `offset18 = 0` in `initialize()` (Recommended):** Mirror the existing `slope18` validation pattern",
+        "This is a one-line fix that closes the misconfiguration window entirely and makes the validation symmetric with"
+      ]
+    },
+    {
+      "id": "eip4626_previewwithdraw_revert",
+      "kind": "impact",
+      "text": "EIP-4626 spec violation. previewWithdraw MUST NOT revert for valid inputs (assets ≤ maxWithdraw). Any",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "1. **EIP-4626 spec violation.** `previewWithdraw` MUST NOT revert for valid inputs (`assets ≤ maxWithdraw`). Any"
+      ]
+    },
+    {
+      "id": "integrator_panic_revert",
+      "kind": "impact",
+      "text": "integrator, front-end, or aggregator calling previewWithdraw(totalAssets, ...) will receive a panic revert.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "integrator, front-end, or aggregator calling `previewWithdraw(totalAssets, ...)` will receive a panic revert."
+      ]
+    },
+    {
+      "id": "full_pool_withdrawal_query_broken",
+      "kind": "impact",
+      "text": "Full-pool withdrawal query permanently broken. A depositor cannot preview their own full exit amount from a zero-offset curve instance.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "2. **Full-pool withdrawal query permanently broken.** A depositor cannot preview their own full exit amount from a",
+        "zero-offset curve instance."
+      ]
+    },
+    {
+      "id": "non_upgradeable_redeployment",
+      "kind": "impact",
+      "text": "Non-upgradeable — redeployment required. The broken OFFSET is immutable after initialization. Any vaults that",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "3. **Non-upgradeable — redeployment required.** The broken `OFFSET` is immutable after initialization. Any vaults that"
+      ]
+    },
+    {
+      "id": "vaults_must_be_repointed",
+      "kind": "impact",
+      "text": "Non-upgradeable — redeployment required. The broken OFFSET is immutable after initialization. Any vaults that have registered this curve address must be repointed, which may not be possible depending on vault upgrade patterns.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "3. **Non-upgradeable — redeployment required.** The broken `OFFSET` is immutable after initialization. Any vaults that",
+        "have registered this curve address must be repointed, which may not be possible depending on vault upgrade patterns."
+      ]
+    },
+    {
+      "id": "silent_misconfiguration",
+      "kind": "impact",
+      "text": "Silent misconfiguration. The deployer receives no feedback that offset18 = 0 is semantically invalid. The",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "4. **Silent misconfiguration.** The deployer receives no feedback that `offset18 = 0` is semantically invalid. The"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "initialize_accepts_zero_offset",
+    "preview_withdraw_full_pool_query"
+  ],
+  "ambiguities": [
+    "The report does not state who calls previewWithdraw in the concrete proof; the integrator/depositor roles are illustrative.",
+    "The offset_should_be_validated intent is derived from the recommended mitigation (Option A) rather than an explicit stated requirement; its intended property is inferred.",
+    "The report does not establish an unauthorized-caller condition; the deployer is the configuring party, not an external attacker."
+  ]
+}

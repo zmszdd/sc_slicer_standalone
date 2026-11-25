@@ -20,12 +20,22 @@ def main(argv=None):
     parser.add_argument('--runs-dir', type=Path,
                         default=ROOT / 'runs')
     parser.add_argument('--check', action='store_true',
-                        help='regenerate then fail on cross-file inconsistency')
+                        help='read-only cross-file consistency check; never writes')
     args = parser.parse_args(argv)
+
+    if args.check:
+        check = verify_consistency()
+        print(json.dumps({'consistency': check}, ensure_ascii=False, indent=2))
+        return 0 if check['ok'] else 1
 
     result = sync(args.runs_dir)
     check = verify_consistency()
     result['consistency'] = check
+    if not result.get('generation_ok', False):
+        result['consistency']['problems'].extend(
+            'generation failed: ' + name
+            for name in result.get('generation_failures') or [])
+        result['consistency']['ok'] = False
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if check['ok'] else 1
 

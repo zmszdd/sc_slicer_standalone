@@ -16,12 +16,14 @@ from pathlib import Path
 
 from lib.solidity_scan import (IDENT, KEYWORDS, is_snapshot_identifier,
                                scan_src, base_identifiers,
+                               contract_decl_kind,
                                contract_visible_functions,
                                contract_visible_state_vars,
                                contract_has_function, file_level_functions,
                                file_level_state_vars)
+from lib.rebind import parse_source_signatures
 
-LINT_SCHEMA = 'stage3-binding-lint/1'
+LINT_SCHEMA = 'stage3-binding-lint/2'
 
 # Roots that may legally start a Solidity expression without a user declaration.
 ALLOWED_ROOTS = {
@@ -129,8 +131,95 @@ def _contract_scope(patch: dict | None, src: Path, index,
     except OSError:
         return None
 
+
+def _top_level_operator(expr: str) -> str | None:
+    depth = 0
+    for index, char in enumerate(expr):
+        if char in '([{':
+            depth += 1
+        elif char in ')]}':
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            for operator in ('==', '!=', '<=', '>=', '&&', '||'):
+                if expr.startswith(operator, index):
+                    return operator
+            if char in '<>':
+                return char
+    return None
+
+
+def _single_call_returns(expr: str, signatures: dict) -> list[str] | None:
+    text = expr.strip()
+    match = re.fullmatch(
+        r'[A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*'
+        r'\s*\(.*\)', text, re.S)
+    if not match:
+        return None
+    head = text.split('(', 1)[0]
+    name = head.split('.')[-1].strip()
+    overloads = (signatures.get('functions') or {}).get(name) or []
+    if not overloads:
+        return None
+    overload = max(overloads, key=lambda row: row.get('arity') or 0)
+    return list(overload.get('returns') or [])
+
+
+def _shape_problems(name: str, entry: dict, signatures: dict) -> list[dict]:
+    expr = str(entry.get('solidity_expr') or '').strip()
+    kind = entry.get('kind')
+    if not expr or expr == 'UNBOUND':
+        return []
+    where = f'bindings.{name}.solidity_expr'
+    problems: list[dict] = []
+    returns = _single_call_returns(expr, signatures)
+    if returns is not None and len(returns) > 1:
+        problems.append({
+            'where': where, 'severity': 'error',
+            'code': 'BINDING_SHAPE_TUPLE_AS_SCALAR',
+            'message': (f'call returns {len(returns)} values but the binding '
+                        'uses it as one scalar; destructure it in solidity_stmts'),
+        })
+        return problems
+    if returns and len(returns) == 1:
+        returned = str(returns[0]).lower()
+        expected_type = {
+            'boolean_predicate': 'bool',
+            'address_value': 'address',
+            'numeric_value': 'int',
+        }.get(kind)
+        mismatch = (
+            expected_type == 'bool' and returned != 'bool' or
+            expected_type == 'address' and returned != 'address' or
+            expected_type == 'int' and not (returned.startswith('uint') or
+                                             returned.startswith('int') or
+                                             returned.startswith('fixed') or
+                                             returned.startswith('ufixed')))
+        if mismatch:
+            problems.append({
+                'where': where, 'severity': 'error',
+                'code': 'BINDING_SHAPE_KIND_MISMATCH',
+                'message': (f'{kind} symbol is bound to a call returning '
+                            f'{returned!r}'),
+            })
+    if (kind in {'numeric_value', 'address_value'} and
+            expr.startswith('(') and expr.endswith(')') and
+            ',' in expr):
+        problems.append({
+            'where': where, 'severity': 'error',
+            'code': 'BINDING_SHAPE_TUPLE_AS_SCALAR',
+            'message': 'tuple literal cannot be bound to one scalar symbol',
+        })
+    if kind == 'boolean_predicate' and re.fullmatch(r'-?\d+(?:\.\d+)?', expr):
+        problems.append({
+            'where': where, 'severity': 'error',
+            'code': 'BINDING_SHAPE_NUMBER_AS_BOOL',
+            'message': 'numeric literal cannot be bound to a boolean symbol',
+        })
+    return problems
+
 def lint_binding(binding: dict, src: Path, *, test_dir: Path | None = None,
-                 strict: bool = False, safety_symbols: set[str] | None = None) -> dict:
+                 strict: bool = False, safety_symbols: set[str] | None = None,
+                 observable_ir: dict | None = None) -> dict:
     """Return a machine-readable lint record for one binding.json.
 
     ``src`` is the contracts directory, ``test_dir`` (optional) the Foundry test
@@ -138,8 +227,7 @@ def lint_binding(binding: dict, src: Path, *, test_dir: Path | None = None,
     """
     problems: list[dict] = []
     index = scan_src(src)
-    declared = index.all_declared()
-    src_files = {f.name for f in index.files}
+    all_files = dict(index.files)
     contracts = set().union(*(f.contracts for f in index.files.values()))
     all_functions = set().union(*(set(f.functions) for f in index.files.values()))
     if test_dir is not None:
@@ -148,9 +236,14 @@ def lint_binding(binding: dict, src: Path, *, test_dir: Path | None = None,
         except FileNotFoundError:
             test_index = None
         if test_index is not None:
+            all_files.update(test_index.files)
             contracts |= set().union(*(f.contracts for f in test_index.files.values()))
             all_functions |= set().union(*(set(f.functions)
                                            for f in test_index.files.values()))
+    declared = set().union(*(f.declared() for f in all_files.values()))
+    src_files = {path.name for path in all_files}
+    signatures = parse_source_signatures(
+        '\n'.join(path.read_text() for path in all_files))
 
     patch = binding.get('patch')
     probe_hint = binding.get('probe') or {}
@@ -170,8 +263,8 @@ def lint_binding(binding: dict, src: Path, *, test_dir: Path | None = None,
     file_level_fn_set: set[str] = set()
     if isinstance(patch, dict):
         patch_file = _find_patch_file(src, patch.get('file') or '', index)
-        if patch_file is not None and patch_file in index.files:
-            same_file_state_vars = set(index.files[patch_file].state_vars)
+        if patch_file is not None and patch_file in all_files:
+            same_file_state_vars = set(all_files[patch_file].state_vars)
             try:
                 raw = patch_file.read_text()
                 file_level_vars = file_level_state_vars(raw)
@@ -183,6 +276,7 @@ def lint_binding(binding: dict, src: Path, *, test_dir: Path | None = None,
                 file_level_vars = set()
 
     bindings = binding.get('bindings') or {}
+    all_entry_declared = set(declared)
     for name, entry in bindings.items():
         if not isinstance(entry, dict):
             problems.append({'where': f'bindings.{name}', 'severity': 'error',
@@ -199,6 +293,7 @@ def lint_binding(binding: dict, src: Path, *, test_dir: Path | None = None,
         for stmt in stmts:
             lhs = str(stmt).split('=', 1)[0]
             entry_declared |= {token for token in re.findall(IDENT, lhs)}
+        all_entry_declared |= entry_declared - declared
         if not expr.strip():
             problems.append({'where': f'bindings.{name}.solidity_expr',
                              'severity': 'error', 'message': 'empty solidity_expr'})
@@ -231,6 +326,8 @@ def lint_binding(binding: dict, src: Path, *, test_dir: Path | None = None,
             problems.append({'where': f'bindings.{name}.solidity_expr',
                              'severity': 'warning' if not strict else 'error',
                              'message': f'identifier {root!r} not declared in src'})
+        for problem in _shape_problems(name, entry, signatures):
+            problems.append(problem)
         if patch_scope is not None:
             for root in sorted(base_identifiers(expr)):
                 if is_snapshot_identifier(root):
@@ -241,7 +338,9 @@ def lint_binding(binding: dict, src: Path, *, test_dir: Path | None = None,
                     continue
                 if root in (entry_declared - declared):
                     continue
-                if root in same_file_state_vars and root not in patch_scope:
+                if (root in same_file_state_vars
+                        and root not in patch_scope
+                        and root not in (patch_function_scope or set())):
                     problems.append({
                         'where': f'bindings.{name}.solidity_expr',
                         'severity': 'warning' if not strict else 'error',
@@ -262,17 +361,51 @@ def lint_binding(binding: dict, src: Path, *, test_dir: Path | None = None,
                                     f'and is not visible from the injection point')
                     })
 
+    if safety_symbols:
+        checkpoints = {
+            str((bindings.get(name) or {}).get('checkpoint') or '')
+            for name in safety_symbols
+            if isinstance(bindings.get(name), dict)
+            and str((bindings.get(name) or {}).get('checkpoint') or '').strip()
+        }
+        if len(checkpoints) == 1:
+            problems.append({
+                'where': 'bindings.I.checkpoint',
+                'severity': 'notice',
+                'code': 'I_SINGLE_CHECKPOINT',
+                'message': (f'all invariant symbols use one checkpoint '
+                            f'({next(iter(checkpoints))}); verify this is a '
+                            'transition rather than a single snapshot'),
+            })
+
+    ir_audit = None
+    if observable_ir:
+        from lib.observable_ir import audit_binding
+        ir_audit = audit_binding(binding, observable_ir,
+                                 declared_roots=all_entry_declared)
+        for row in ir_audit.get('problems') or []:
+            problems.append({
+                'where': f"bindings.{row['symbol']}.solidity_expr",
+                'severity': row.get('severity', 'warning'),
+                'code': row.get('code'),
+                'message': row.get('message'),
+            })
     if isinstance(patch, dict):
         for label, file in (('patch.file', patch.get('file')),
                             ('patch.contract', patch.get('contract'))):
-            if file and label.endswith('.file') and file not in src_files:
+            file_ok = (file in src_files or
+                       (file and Path(file).name in src_files))
+            if file and label.endswith('.file') and not file_ok:
                 problems.append({'where': label, 'severity': 'error',
                                  'message': f'patch target not found in src: {file}'})
         for i, fn in enumerate(patch.get('functions') or []):
-            if isinstance(fn, dict) and fn.get('file') and fn['file'] not in src_files:
+            fn_file = fn.get('file') if isinstance(fn, dict) else None
+            fn_ok = (fn_file in src_files or
+                     (fn_file and Path(fn_file).name in src_files))
+            if isinstance(fn, dict) and fn_file and not fn_ok:
                 problems.append({'where': f'patch.functions[{i}].file',
                                  'severity': 'error',
-                                 'message': f'patch target not found in src: {fn["file"]}'})
+                                 'message': f'patch target not found in src: {fn_file}'})
             if isinstance(fn, dict) and fn.get('name'):
                 contract = fn.get('contract') or patch.get('contract')
                 file_name = fn.get('file') or patch.get('file')
@@ -291,6 +424,18 @@ def lint_binding(binding: dict, src: Path, *, test_dir: Path | None = None,
                         'message': (f'function {fn["name"]!r} not found in '
                                     f'contract {contract!r}; bind to the actual '
                                     f'PoC test function name')})
+                if contract and exists and path is not None:
+                    try:
+                        kind = contract_decl_kind(path.read_text(), contract)
+                    except OSError:
+                        kind = None
+                    if kind == 'library':
+                        problems.append({
+                            'where': f'patch.functions[{i}].contract',
+                            'severity': 'error',
+                            'message': (f'patch target {contract!r} is a library; '
+                                        'inject into the business contract or use '
+                                        'an explicit test-level monitor')})
     elif patch is not None:
         problems.append({'where': 'patch', 'severity': 'warning',
                          'message': 'patch must be an object'})
@@ -315,4 +460,5 @@ def lint_binding(binding: dict, src: Path, *, test_dir: Path | None = None,
         'ok': errors == 0 and (not strict or warnings == 0),
         'summary': {'errors': errors, 'warnings': warnings},
         'problems': problems,
+        'observable_ir_audit': ir_audit,
     }

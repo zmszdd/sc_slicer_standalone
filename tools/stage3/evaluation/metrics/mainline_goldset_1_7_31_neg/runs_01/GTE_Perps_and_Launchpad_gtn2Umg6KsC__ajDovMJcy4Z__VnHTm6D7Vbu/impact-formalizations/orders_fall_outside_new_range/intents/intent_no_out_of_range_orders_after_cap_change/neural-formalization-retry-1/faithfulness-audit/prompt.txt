@@ -1,0 +1,62 @@
+You are a semantic faithfulness auditor. For each
+listed source you get its role (P, I, or V), the report statement text, the
+generated predicate that claims to encode it, and the meanings of the symbols
+the predicate uses. A null predicate means that the generated rule omitted
+that frozen source; mark it other_mismatch. You also receive the full P/I/V relation,
+exact report excerpts from cited action/root-cause evidence as relation_context, and
+a generator-proposed relationship_trace that cites a path through those excerpts.
+Judge ONLY whether each predicate faithfully encodes its report
+source, and whether the report supports a relationship between V and I under P.
+The relationship may be direct or mediated by an intermediate mechanism, but an
+indirect link is consistent only when relation_context or the P/I/V excerpts
+explicitly support that bridge. relation_context may support the relationship only;
+it cannot replace or change any frozen source. Do not infer a causal bridge from
+protocol knowledge or shared vocabulary. When relation_context supports your verdict,
+name the relevant statement_id and evidence_id in the piv_relation reason. If the
+P/I/V excerpts alone support the verdict, name the relevant frozen source ID instead.
+Treat relationship_trace as an unverified pointer: confirm every cited statement,
+evidence fragment and source ID exists and that the exact text supports the claimed
+link. A trace never upgrades a verdict without supporting excerpts; missing, inaccurate,
+or incomplete trace links do not erase evidence that is present in relation_context.
+Distinguish a formula mapping defect (a source check mismatch) from a relationship
+that the report does not clearly establish (weakened); do not treat the latter as a
+formula defect. Style, optimality and code truth are out of scope; never rewrite or
+propose predicates.
+
+A predicate is unfaithful when any of the following holds:
+- inverted: the predicate asserts the opposite direction or polarity of the
+  statement's claim, e.g. the statement says a fee accrues / an amount exists /
+  a balance is held (so a faithful encoding implies a positive or nonzero
+  quantity) and the predicate checks equality against zero, or the statement
+  says "at most N" and the predicate demands strictly less than N, or the
+  statement says "exceeds N" and the predicate accepts N itself.
+- wrong_constant: a numeric literal in the predicate is not the statement's
+  own quantity -- it belongs to a different statement, a different quantity,
+  or to nothing in the statement at all.
+- wrong_symbol: a symbol the predicate uses does not carry the meaning the
+  statement's fact requires (e.g. the statement is about the fee amount while
+  the predicate's symbol means elapsed time).
+- other_mismatch: the predicate encodes a different fact than the statement
+  states.
+Otherwise the source encoding is consistent. A tautologically weak but
+direction-correct bound (e.g. >= 0) is consistent, NOT inverted; the report's
+own semantics set the standard, not mathematical strength. For the relation
+check, mark consistent when formulas and supplied report excerpts support a direct
+or explicit indirect link. Mark weakened when that relationship is insufficiently
+supported or ambiguous; this means needs review, not that a source formula is wrong.
+Mark mismatch only when the relationship is clearly contradictory or report evidence
+establishes that V is unrelated to I under P. A downstream V is not a mismatch just
+because it is not the literal negation of I. Do not call an unsupported but explicitly
+unformalized claim faithful.
+
+Return JSON only, exactly:
+{"checks":[{"source_id":ID,"role":"P|I|V","verdict":"consistent"|"inverted"|"wrong_constant"|
+"wrong_symbol"|"other_mismatch","reason":ONE_SHORT_SENTENCE}],
+ "piv_relation":{"verdict":"consistent"|"weakened"|"mismatch","reason":ONE_SHORT_SENTENCE}}
+Cover every listed source_id exactly once, with its role, and only listed ones. The relation
+check must assess the supplied P/I/V formulas together and use relation_context and
+relationship_trace only as pointers to exact report evidence for an explicit bridge,
+not as replacement sources. Independently verify every trace ID against the supplied
+context; an unsupported or inaccurate trace cannot improve the verdict. If the trace
+omits a bridge but the supplied excerpts establish it, judge the excerpts directly.
+{"schema_version":"faithfulness-audit-input/4","relation_class":"bounded_value","sources":[{"source_id":"cap_reduced_below_existing_orders","role":"P","statement_text":"The divergence cap is reduced via setDivergenceCap to a value lower than current orders' prices, so previously valid orders fall outside the new range.","predicate":{"kind":"comparison","left":"divergence_cap_after_reduction","operator":"lt","right":{"symbol":"existing_order_price"}},"symbol_meanings":{"divergence_cap_after_reduction":{"sort":"int","unit":"price","meaning":"divergence cap value after setDivergenceCap reduction"},"existing_order_price":{"sort":"int","unit":"price","meaning":"price of a previously valid existing order"}}},{"source_id":"intent_no_out_of_range_orders_after_cap_change","role":"I","statement_text":"Orders falling outside the price ranges on both standard and backstop orderbooks should be forcefully closed so they do not remain outside the divergence range.","predicate":{"op":"le","args":[{"var":"order_price_after_cap_change"},{"var":"divergence_cap_after_reduction"}]},"symbol_meanings":{"divergence_cap_after_reduction":{"sort":"int","unit":"price","meaning":"divergence cap value after setDivergenceCap reduction"},"order_price_after_cap_change":{"sort":"int","unit":"price","meaning":"price of a previously valid order observed after the divergence cap reduction"}}},{"source_id":"orders_fall_outside_new_range","role":"V","statement_text":"previously valid orders could suddenly fall outside the new range","predicate":{"op":"and","args":[{"op":"gt","args":[{"var":"order_price_after_cap_change"},{"var":"divergence_cap_after_reduction"}]},{"op":"lt","args":[{"var":"divergence_cap_after_reduction"},{"var":"existing_order_price"}]}]},"symbol_meanings":{"divergence_cap_after_reduction":{"sort":"int","unit":"price","meaning":"divergence cap value after setDivergenceCap reduction"},"existing_order_price":{"sort":"int","unit":"price","meaning":"price of a previously valid existing order"},"order_price_after_cap_change":{"sort":"int","unit":"price","meaning":"price of a previously valid order observed after the divergence cap reduction"}}}],"piv_relation":{"P":{"op":"and","args":[{"op":"lt","args":[{"var":"divergence_cap_after_reduction"},{"var":"existing_order_price"}]},{"var":"out_of_range_order_closed"}]},"I":{"op":"le","args":[{"var":"order_price_after_cap_change"},{"var":"divergence_cap_after_reduction"}]},"V":{"op":"and","args":[{"op":"and","args":[{"var":"out_of_range_order_closed"},{"op":"not","args":[{"op":"le","args":[{"var":"order_price_after_cap_change"},{"var":"divergence_cap_after_reduction"}]}]}]},{"op":"gt","args":[{"var":"order_price_after_cap_change"},{"var":"divergence_cap_after_reduction"}]},{"op":"lt","args":[{"var":"divergence_cap_after_reduction"},{"var":"existing_order_price"}]}]}},"relation_context":[{"statement_id":"no_posting_divergence_check","role":"root_cause","evidence":[{"evidence_id":"e_71dd422ec2ce_0005","text":"These functions ensure that orders cannot be *filled* beyond the divergence cap. However, the protocol lacks checks during order *posting*, allowing users to submit orders with prices far outside these bounds. Specifically:"},{"evidence_id":"e_71dd422ec2ce_0006","text":"- In `_matchIncomingBid`: The loop breaks if `bestAsk > maxAsk`."},{"evidence_id":"e_71dd422ec2ce_0007","text":"- In `_matchIncomingAsk`: The loop breaks if `bestBid < minBid`."}]},{"statement_id":"liquidator_calls_backstop","role":"action","evidence":[{"evidence_id":"e_71dd422ec2ce_0011","text":"3. Sdmin or backstop liquidator calls `backstopLiquidate`."}]},{"statement_id":"backstop_reverts_zeroorder","role":"root_cause","evidence":[{"evidence_id":"e_71dd422ec2ce_0012","text":"4. The function reverts with a `ZeroOrder()` due to the divergence check."}]}],"relationship_trace":{"status":"explicit","links":[{"from_source_ids":["cap_reduced_below_existing_orders","intent_no_out_of_range_orders_after_cap_change","orders_fall_outside_new_range"],"context_statement_id":"no_posting_divergence_check","evidence_ids":["e_71dd422ec2ce_0005","e_71dd422ec2ce_0006","e_71dd422ec2ce_0007"],"reported_relation":"Orders can be posted with prices outside the divergence bounds, so reducing the cap below existing order prices leaves those orders outside the new range."}],"gap":""}}

@@ -55,8 +55,6 @@ def _poc_shape(case_dir: Path) -> str:
     name = probe.get('exploit_test')
     if not name:
         return 'no_body'
-    if 'expectRevert' in text:
-        return 'revert_expected_test'
     match = re.search(rf'function\s+{re.escape(name)}\s*\([^)]*\)\s*[^{{]*\{{', text)
     if not match:
         return 'other_test'
@@ -71,6 +69,8 @@ def _poc_shape(case_dir: Path) -> str:
             if depth == 0:
                 body = body[:j + 1]
                 break
+    if 'expectRevert' in body:
+        return 'revert_expected_test'
     if re.search(r'assert(?:Eq|True|False|Le|Ge|Lt|Gt)?\s*\(', body):
         return 'state_assert_test'
     return 'other_test'
@@ -158,6 +158,9 @@ def _propose_once(case_dir: Path, stage2_dir: Path, claim_id: str,
     cmd = [sys.executable, '-m', 'cli.stage3_binding_llm',
            '--stage2-run', str(stage2_dir), '--claim-id', claim_id,
            '--src', str(case_dir / 'src'), '--out', str(out_dir)]
+    existing_path = case_dir / 'bindings' / f'{claim_id}.json'
+    if existing_path.is_file():
+        cmd += ['--existing', str(existing_path)]
     if hint:
         cmd += ['--hint', hint]
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
@@ -195,6 +198,8 @@ def _propose(case_dir: Path, stage2_dir: Path, claim_id: str,
         lint = _lint_proposal(binding, case_dir, stage2_dir, claim_id)
         if not lint['summary']['errors']:
             return binding, ''
+
+
         problems = [f"{p['where']}: {p['message']}"
                     for p in lint['problems']]
         hint = ('binding lint rejected the proposal; fix exactly these '
@@ -210,6 +215,8 @@ def main(argv=None):
                         help='defaults to <case-dir>/stage2_run')
     parser.add_argument('--max-rounds', type=int, default=2)
     parser.add_argument('--run-id-prefix', help='defaults to case directory name')
+    parser.add_argument('--claims', default=None,
+                        help='comma-separated claim ids to re-run; default: all')
     args = parser.parse_args(argv)
 
     case_dir = args.case_dir.resolve()
@@ -225,6 +232,9 @@ def main(argv=None):
 
     claims = [row['claim_id'] for row in stage2['spec'].get('claims', [])
               if isinstance(row, dict) and 'claim_id' in row]
+    if args.claims:
+        selected = {c.strip() for c in args.claims.split(',') if c.strip()}
+        claims = [c for c in claims if c in selected]
     if not claims:
         raise SystemExit('no claims in stage3-spec.json')
 

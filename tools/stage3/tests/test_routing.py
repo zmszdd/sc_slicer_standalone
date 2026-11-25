@@ -18,6 +18,8 @@ class RoutingRealCaseTest(unittest.TestCase):
 
     def test_intuition_cross_contract_routes_to_reference_patch(self):
         case = CASES / ('Intuition_2VUsxVJwReb__6YNDfbQYkTa__KcTHtNrsMFs')
+        if not case.is_dir():
+            self.skipTest('optional real-case fixture is not present')
         route = classify_route(
             case / 'stage2_run',
             'impact_claim_dos_via_expired_window_8ceee315_ddfa6e3d',
@@ -28,6 +30,8 @@ class RoutingRealCaseTest(unittest.TestCase):
 
     def test_refpatch_cross_contract_fixture_routes_to_reference_patch(self):
         case = CASES / 'refpatch_cross_contract'
+        if not case.is_dir():
+            self.skipTest('optional real-case fixture is not present')
         route = classify_route(case / 'stage2_run',
                                'claim_cross_contract_refpatch', case / 'src')
         self.assertEqual(route['route'], REFERENCE_PATCH_CROSS_CONTRACT)

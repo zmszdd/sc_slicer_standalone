@@ -26,6 +26,9 @@ RECOVERABLE_BUCKETS = {
     'poc_not_witnessed',
     'inconclusive',
     'partial_binding',
+    'compile_error',
+    'binding_error',
+    'binding_failed',
 }
 
 

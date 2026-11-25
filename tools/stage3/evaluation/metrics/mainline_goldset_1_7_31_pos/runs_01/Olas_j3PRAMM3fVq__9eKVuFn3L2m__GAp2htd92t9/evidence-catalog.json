@@ -1,0 +1,216 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "90b0a7ef3a74b9d6c88f035e07b2ede9783966e4628ea5ea2a8583d91bc4e802",
+  "fragments": [
+    {
+      "id": "e_90b0a7ef3a74_0001",
+      "text": "UniswapPriceOracle TWAP Validation Always Returns True Regardles Price Manipulation",
+      "start": 0,
+      "end": 83,
+      "line": 1
+    },
+    {
+      "id": "e_90b0a7ef3a74_0002",
+      "text": "## Description:",
+      "start": 85,
+      "end": 100,
+      "line": 3
+    },
+    {
+      "id": "e_90b0a7ef3a74_0003",
+      "text": "The _validatePrice()_ function in __UniswapPriceOracle__ is supposed to protect the protocol's buyback mechanism from price manipulation by comparing the current spot price against a time-weighted average price. Due to a mathematical error in how the TWAP is computed, the function always compares the spot price against itself, resulting in a derivation of zero every single time. The function therefore always returns true, no matter how severely the pool has been manipulated.",
+      "start": 102,
+      "end": 581,
+      "line": 5
+    },
+    {
+      "id": "e_90b0a7ef3a74_0004",
+      "text": "This completely removes the pre-swap price validation from the V2 buyback path in __BuyBackBurner__, exposing the protocol to sandwich attacks where an attacker can manipulate the Uniswap V2 pool, trigger _buyBack()_ (which is callable by anyone), and extract value up to maxSlippage% of the swap amount.",
+      "start": 583,
+      "end": 887,
+      "line": 7
+    },
+    {
+      "id": "e_90b0a7ef3a74_0005",
+      "text": "## Details:",
+      "start": 889,
+      "end": 900,
+      "line": 9
+    },
+    {
+      "id": "e_90b0a7ef3a74_0006",
+      "text": "The implementation on lines 79–82 of __UniswapPriceOracle.sol__ computes the \"TWAP\" like this:",
+      "start": 901,
+      "end": 995,
+      "line": 10
+    },
+    {
+      "id": "e_90b0a7ef3a74_0007",
+      "text": "timeWeightedAverage = (cumulativePriceLast + tradePrice × elapsedTime − cumulativePriceLast) / elapsedTime",
+      "start": 998,
+      "end": 1104,
+      "line": 13
+    },
+    {
+      "id": "e_90b0a7ef3a74_0008",
+      "text": "= (tradePrice × elapsedTime) / elapsedTime",
+      "start": 1125,
+      "end": 1167,
+      "line": 14
+    },
+    {
+      "id": "e_90b0a7ef3a74_0009",
+      "text": "= tradePrice",
+      "start": 1188,
+      "end": 1200,
+      "line": 15
+    },
+    {
+      "id": "e_90b0a7ef3a74_0010",
+      "text": "Because timeWeightedAverage == tradePrice is always true, the derivation calculation on lines 86–88 always produces zero:",
+      "start": 1202,
+      "end": 1323,
+      "line": 17
+    },
+    {
+      "id": "e_90b0a7ef3a74_0011",
+      "text": "And zero is always less than or equal to any slippage parameter, so line 90 always returns true:",
+      "start": 1326,
+      "end": 1422,
+      "line": 20
+    },
+    {
+      "id": "e_90b0a7ef3a74_0012",
+      "text": "The fundamental problem is that the function reads _cumulativePriceLast_ from the pool and then immediately uses it as both the starting point and the reference for subtraction in the same calculation. A correct TWAP implementation needs two snapshots taken at different points in time — you need to store a previous cumulative price reading and compare it against the current one.",
+      "start": 1425,
+      "end": 1806,
+      "line": 23
+    },
+    {
+      "id": "e_90b0a7ef3a74_0013",
+      "text": "## Impact",
+      "start": 1808,
+      "end": 1817,
+      "line": 25
+    },
+    {
+      "id": "e_90b0a7ef3a74_0014",
+      "text": "The validatePrice() function is called as the first line of defense in BuyBackBurner._buyOLAS() for V2 swaps:",
+      "start": 1818,
+      "end": 1927,
+      "line": 26
+    },
+    {
+      "id": "e_90b0a7ef3a74_0015",
+      "text": "Because this check always passes, the V2 buyback path has no effective pre-swap price validation. The remaining protections are:",
+      "start": 1928,
+      "end": 2056,
+      "line": 27
+    },
+    {
+      "id": "e_90b0a7ef3a74_0016",
+      "text": "1. _previousPrice_ --> Captured after _validatePrice_ passes, at the already-manipulated spot price.",
+      "start": 2058,
+      "end": 2158,
+      "line": 29
+    },
+    {
+      "id": "e_90b0a7ef3a74_0017",
+      "text": "2. _performSwap : Executes with _amountOutMin_ = 0 in __BuyBackBurnerUniswap.sol__, accepting any output.",
+      "start": 2159,
+      "end": 2264,
+      "line": 30
+    },
+    {
+      "id": "e_90b0a7ef3a74_0018",
+      "text": "3. Post-swap bounds check: Compares the post-swap price against bounds derived from _previousPrice_, which was itself captured at the manipulated state.",
+      "start": 2265,
+      "end": 2417,
+      "line": 31
+    },
+    {
+      "id": "e_90b0a7ef3a74_0019",
+      "text": "The post-swap check does provide some protection, but it's anchored to the wrong baseline. The attacker's profit is bounded by _maxSlippage%_ of the swap value rather than being fully prevented.",
+      "start": 2419,
+      "end": 2613,
+      "line": 33
+    },
+    {
+      "id": "e_90b0a7ef3a74_0020",
+      "text": "Critically, buyBack() has no access control — anyone can call it. This means an attacker can:",
+      "start": 2615,
+      "end": 2708,
+      "line": 35
+    },
+    {
+      "id": "e_90b0a7ef3a74_0021",
+      "text": "1. Flash-loan tokens to manipulate the V2 pool reserves",
+      "start": 2710,
+      "end": 2765,
+      "line": 37
+    },
+    {
+      "id": "e_90b0a7ef3a74_0022",
+      "text": "2. Call _buyBack()_ — _validatePrice()_ passes regardless",
+      "start": 2766,
+      "end": 2823,
+      "line": 38
+    },
+    {
+      "id": "e_90b0a7ef3a74_0023",
+      "text": "3. The swap executes at the manipulated price with zero minimum output",
+      "start": 2824,
+      "end": 2894,
+      "line": 39
+    },
+    {
+      "id": "e_90b0a7ef3a74_0024",
+      "text": "4. The post-swap check uses the manipulated price as its baseline",
+      "start": 2895,
+      "end": 2960,
+      "line": 40
+    },
+    {
+      "id": "e_90b0a7ef3a74_0025",
+      "text": "5. The attacker restores the pool and profits up to _maxSlippage%_ of the swap",
+      "start": 2961,
+      "end": 3039,
+      "line": 41
+    },
+    {
+      "id": "e_90b0a7ef3a74_0026",
+      "text": "__This is a critical/high impact issue!__",
+      "start": 3041,
+      "end": 3082,
+      "line": 43
+    },
+    {
+      "id": "e_90b0a7ef3a74_0027",
+      "text": "## Recommended mitigation steps",
+      "start": 3084,
+      "end": 3115,
+      "line": 45
+    },
+    {
+      "id": "e_90b0a7ef3a74_0028",
+      "text": "Store periodic snapshots:",
+      "start": 3117,
+      "end": 3142,
+      "line": 47
+    },
+    {
+      "id": "e_90b0a7ef3a74_0029",
+      "text": "Add state to the oracle to store the cumulative price at a previous point in time. On each call, compare the current cumulative price against the stored one to derive a real TWAP:",
+      "start": 3143,
+      "end": 3322,
+      "line": 48
+    },
+    {
+      "id": "e_90b0a7ef3a74_0030",
+      "text": "Describe the best method(s) to mitigate the finding.",
+      "start": 3326,
+      "end": 3378,
+      "line": 52
+    }
+  ]
+}

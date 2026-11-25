@@ -74,13 +74,49 @@ def _build_stage2_cmd(manifest: dict, base_dir: Path) -> list[str]:
     return cmd
 
 
-def _reuse_stage2(run_dir: Path, source_run: Path) -> int:
-    """Copy stage-2 artifacts and replay-verify them before the join."""
+def _resolve_stage3_config(manifest: dict, base_dir: Path) -> dict:
+    """Resolve every stage-3 field consumed by ``_run_stage3``.
+
+    Keeping this in one place prevents manifest fields from being silently
+    dropped while building the child-process configuration.
+    """
+    stage3 = manifest['stage3']
+    binding_path = resolve_path(base_dir, stage3.get('binding'))
+    test_path = resolve_path(base_dir, stage3.get('test'))
+    case_dir = resolve_path(base_dir, stage3['case_dir'])
+    if case_dir is None:
+        raise ManifestError('stage3.case_dir is required')
+    return {
+        'binding': str(binding_path) if binding_path is not None else None,
+        'binding_rounds': stage3.get('binding_rounds'),
+        'test': str(test_path) if test_path is not None else None,
+        'case_dir': str(case_dir),
+        'run_id': stage3.get('run_id'),
+    }
+
+
+def _reuse_stage2(run_dir: Path, source_run: Path,
+                  verify: bool = True) -> int:
+    """Copy stage-2 artifacts and replay-verify them before the join.
+
+    ``verify=False`` is an explicit legacy-fixture opt-out.  It is never the
+    default and is recorded in the reuse log so the run cannot be mistaken for
+    a current-protocol artifact.
+    """
     verify_log = run_dir / 'stage2-verify.log'
     with verify_log.open('w') as log:
-        rc = subprocess.call([sys.executable, str(ROOT / 'main.py'), 'verify',
-                              str(source_run)], cwd=str(ROOT),
-                             stdout=log, stderr=subprocess.STDOUT)
+        if not verify:
+            log.write('stage2 replay verification explicitly disabled by '
+                      'manifest; legacy fixture is not current-protocol '
+                      'evidence\n')
+            rc = 0
+        else:
+            rc = subprocess.call([sys.executable, str(ROOT / 'main.py'), 'verify',
+                                  str(source_run)], cwd=str(ROOT),
+                                 stdout=log, stderr=subprocess.STDOUT)
+    if rc != 0:
+        raise ManifestError(
+            f'stage2 reuse failed verification ({rc}): {source_run}')
     dest = run_dir / 'stage2'
     dest.mkdir(parents=True, exist_ok=True)
     for artifact in STAGE2_ARTIFACTS:
@@ -238,12 +274,13 @@ def run_pipeline(manifest_path: Path, run_dir: Path | None = None,
     if not skip_stage2:
         _record(timeline, 'stage2', start=_now())
         if manifest['stage2']['report'] is None:
-            verify_rc = _reuse_stage2(run_dir, stage2_run)
+            stage2 = manifest['stage2']
+            verify_rc = _reuse_stage2(
+                run_dir, stage2_run,
+                verify=bool(stage2.get('reuse_verify', True)))
             _record(timeline, 'stage2', end=_now(), mode='reuse', exit_code=0,
                     verify_exit_code=verify_rc,
-                    verify_warning=(None if verify_rc == 0
-                                    else 'stage2 verify replay failed; '
-                                         'structural load still passed'),
+                    verify_disabled=not bool(stage2.get('reuse_verify', True)),
                     run_dir=str(stage2_run))
         else:
             cmd = _build_stage2_cmd(manifest, base_dir)
@@ -288,14 +325,7 @@ def run_pipeline(manifest_path: Path, run_dir: Path | None = None,
         print(json.dumps(timeline, ensure_ascii=False, indent=2))
         return 1, run_dir
 
-    binding_path = resolve_path(base_dir, manifest['stage3']['binding'])
-    test_path = resolve_path(base_dir, manifest['stage3']['test'])
-    stage3_resolved = {
-        'binding': str(binding_path) if binding_path is not None else None,
-        'test': str(test_path) if test_path is not None else None,
-        'case_dir': str(resolve_path(base_dir, manifest['stage3']['case_dir'])),
-        'run_id': manifest['stage3'].get('run_id'),
-    }
+    stage3_resolved = _resolve_stage3_config(manifest, base_dir)
     _record(timeline, 'stage3', start=_now())
     stage3_run_id = run_id or manifest['stage3'].get('run_id') or \
         f'{case_id}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")}'

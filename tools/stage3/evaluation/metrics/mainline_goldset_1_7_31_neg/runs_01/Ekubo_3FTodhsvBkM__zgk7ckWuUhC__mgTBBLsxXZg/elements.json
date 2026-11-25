@@ -1,0 +1,302 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Ekubo Oracle snapshot insertion via maybeInsertSnapshot() called by beforeSwap and beforeUpdatePosition hooks on an L2 with a centralized sequencer",
+    "environment": "L2 deployment of Ekubo protocol with centralized sequencer; mainnet has no sequencer and no impact",
+    "evidence": [
+      "Oracle lacks L2 sequencer uptime validation enabling price manipulation during downtime",
+      "The Oracle extension records price snapshots through hooks that fire on every swap and position update in the Ekubo protocol. These snapshots form the foundation for all time-weighted average price calculations consumed by external protocols. However, the snapshot insertion logic completely ignores Layer 2 sequencer status, which creates a critical vulnerability if Ekubo deploys on any L2 chain.",
+      "The README explicitly states Ekubo is a \"multi-chain ownerless and permissionless contract\" designed for the EVM. There's a reasonable expectation this code will run on chains with centralized sequencers. Yet the oracle has zero awareness of sequencer uptime.",
+      "Tthis vulnerability strikes at the core of how the oracle collects data. The `maybeInsertSnapshot()` function isn't a helper for integrators - it's called directly by the protocol's `beforeSwap` and `beforeUpdatePosition` hooks:",
+      "- **On Ethereum mainnet**: No impact (no sequencer)",
+      "- **On any L2**: Critical vulnerability enabling:",
+      "Given the protocol is explicitly designed as \"multi-chain\" and most new deployments target L2s, this is a material risk worth addressing."
+    ]
+  },
+  "entities": [
+    {
+      "id": "ekubo_oracle",
+      "name": "Ekubo Oracle extension",
+      "role": "contract",
+      "evidence": [
+        "The Oracle extension records price snapshots through hooks that fire on every swap and position update in the Ekubo protocol. These snapshots form the foundation for all time-weighted average price calculations consumed by external protocols. However, the snapshot insertion logic completely ignores Layer 2 sequencer status, which creates a critical vulnerability if Ekubo deploys on any L2 chain.",
+        "Tthis vulnerability strikes at the core of how the oracle collects data. The `maybeInsertSnapshot()` function isn't a helper for integrators - it's called directly by the protocol's `beforeSwap` and `beforeUpdatePosition` hooks:"
+      ]
+    },
+    {
+      "id": "maybe_insert_snapshot",
+      "name": "maybeInsertSnapshot() snapshot insertion function",
+      "role": "contract",
+      "evidence": [
+        "Here's the core snapshot insertion function that gets called on every swap and position update:",
+        "The function calculates `timePassed` using `block.timestamp`, creates cumulative values based on that time delta, and stores the snapshot. On L2s with centralized sequencers, this logic breaks down catastrophically during sequencer downtime.",
+        "But, the oracle sees this as normal activity. The first swap that executes calls `maybeInsertSnapshot()`, which calculates:",
+        "Tthis vulnerability strikes at the core of how the oracle collects data. The `maybeInsertSnapshot()` function isn't a helper for integrators - it's called directly by the protocol's `beforeSwap` and `beforeUpdatePosition` hooks:"
+      ]
+    },
+    {
+      "id": "l2_sequencer",
+      "name": "L2 centralized sequencer",
+      "role": "other",
+      "evidence": [
+        "The README explicitly states Ekubo is a \"multi-chain ownerless and permissionless contract\" designed for the EVM. There's a reasonable expectation this code will run on chains with centralized sequencers. Yet the oracle has zero awareness of sequencer uptime.",
+        "When an L2 sequencer stops producing blocks, `block.timestamp` freezes. No new transactions are processed, but the real-world clock keeps ticking. This can happen due to:",
+        "When the sequencer comes back online, it starts processing the backlog of pending transactions. All these transactions execute with the same stale `block.timestamp` from when the sequencer went down."
+      ]
+    },
+    {
+      "id": "block_timestamp",
+      "name": "block.timestamp",
+      "role": "other",
+      "evidence": [
+        "The function calculates `timePassed` using `block.timestamp`, creates cumulative values based on that time delta, and stores the snapshot. On L2s with centralized sequencers, this logic breaks down catastrophically during sequencer downtime.",
+        "When an L2 sequencer stops producing blocks, `block.timestamp` freezes. No new transactions are processed, but the real-world clock keeps ticking. This can happen due to:",
+        "When the sequencer comes back online, it starts processing the backlog of pending transactions. All these transactions execute with the same stale `block.timestamp` from when the sequencer went down.",
+        "If the sequencer was down for an hour but `block.timestamp` only advanced by seconds (because it was frozen), `timePassed` is artificially small. The snapshot gets written with cumulative values that don't reflect the real time gap.",
+        "The critical point is that any L2 deployment needs some mechanism to detect and handle sequencer downtime. The oracle cannot blindly trust `block.timestamp` on chains with centralized sequencers."
+      ]
+    },
+    {
+      "id": "twap_consumers",
+      "name": "External protocols consuming TWAP",
+      "role": "victim",
+      "evidence": [
+        "The Oracle extension records price snapshots through hooks that fire on every swap and position update in the Ekubo protocol. These snapshots form the foundation for all time-weighted average price calculations consumed by external protocols. However, the snapshot insertion logic completely ignores Layer 2 sequencer status, which creates a critical vulnerability if Ekubo deploys on any L2 chain.",
+        "4. Exploit protocols that depend on the now-corrupted TWAP",
+        "- Exploitation of all protocols depending on the oracle"
+      ]
+    },
+    {
+      "id": "attacker",
+      "name": "Attacker exploiting grace period",
+      "role": "attacker",
+      "evidence": [
+        "Even after the sequencer is back up and `block.timestamp` starts advancing normally, there's a window where the oracle data is still contaminated. Attackers can:",
+        "1. Execute trades during the first few blocks after restart at manipulated prices"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "l2_deployment_with_centralized_sequencer",
+      "kind": "precondition",
+      "text": "Ekubo is deployed on an L2 chain with a centralized sequencer.",
+      "modality": "potential",
+      "entity_ids": [
+        "ekubo_oracle",
+        "l2_sequencer"
+      ],
+      "evidence": [
+        "The Oracle extension records price snapshots through hooks that fire on every swap and position update in the Ekubo protocol. These snapshots form the foundation for all time-weighted average price calculations consumed by external protocols. However, the snapshot insertion logic completely ignores Layer 2 sequencer status, which creates a critical vulnerability if Ekubo deploys on any L2 chain.",
+        "The README explicitly states Ekubo is a \"multi-chain ownerless and permissionless contract\" designed for the EVM. There's a reasonable expectation this code will run on chains with centralized sequencers. Yet the oracle has zero awareness of sequencer uptime.",
+        "- **On any L2**: Critical vulnerability enabling:",
+        "Given the protocol is explicitly designed as \"multi-chain\" and most new deployments target L2s, this is a material risk worth addressing."
+      ]
+    },
+    {
+      "id": "sequencer_downtime_occurs",
+      "kind": "precondition",
+      "text": "The L2 sequencer stops producing blocks for a period lasting minutes to hours.",
+      "modality": "potential",
+      "entity_ids": [
+        "l2_sequencer"
+      ],
+      "evidence": [
+        "When an L2 sequencer stops producing blocks, `block.timestamp` freezes. No new transactions are processed, but the real-world clock keeps ticking. This can happen due to:",
+        "During this period, which can last minutes to hours, market prices continue to move on centralized"
+      ]
+    },
+    {
+      "id": "timestamp_frozen_during_downtime",
+      "kind": "precondition",
+      "text": "While the sequencer is down, block.timestamp is frozen and does not advance with the real-world clock.",
+      "modality": "potential",
+      "entity_ids": [
+        "l2_sequencer",
+        "block_timestamp"
+      ],
+      "evidence": [
+        "When an L2 sequencer stops producing blocks, `block.timestamp` freezes. No new transactions are processed, but the real-world clock keeps ticking. This can happen due to:",
+        "When the sequencer comes back online, it starts processing the backlog of pending transactions. All these transactions execute with the same stale `block.timestamp` from when the sequencer went down."
+      ]
+    },
+    {
+      "id": "sequencer_restart_backlog",
+      "kind": "precondition",
+      "text": "When the sequencer restarts, it processes the backlog of pending transactions, all executing with the same stale block.timestamp from when the sequencer went down.",
+      "modality": "potential",
+      "entity_ids": [
+        "l2_sequencer",
+        "block_timestamp"
+      ],
+      "evidence": [
+        "When the sequencer comes back online, it starts processing the backlog of pending transactions. All these transactions execute with the same stale `block.timestamp` from when the sequencer went down."
+      ]
+    },
+    {
+      "id": "first_swap_calls_maybe_insert_snapshot",
+      "kind": "action",
+      "text": "The first swap after restart executes and calls maybeInsertSnapshot() via the beforeSwap hook.",
+      "modality": "potential",
+      "entity_ids": [
+        "maybe_insert_snapshot",
+        "ekubo_oracle"
+      ],
+      "evidence": [
+        "But, the oracle sees this as normal activity. The first swap that executes calls `maybeInsertSnapshot()`, which calculates:",
+        "Tthis vulnerability strikes at the core of how the oracle collects data. The `maybeInsertSnapshot()` function isn't a helper for integrators - it's called directly by the protocol's `beforeSwap` and `beforeUpdatePosition` hooks:"
+      ]
+    },
+    {
+      "id": "time_passed_computed_from_frozen_timestamp",
+      "kind": "root_cause",
+      "text": "maybeInsertSnapshot() calculates timePassed using block.timestamp, so when the sequencer was down for an hour but block.timestamp advanced only by seconds, timePassed is artificially small and the snapshot is written with cumulative values that do not reflect the real time gap.",
+      "modality": "asserted",
+      "entity_ids": [
+        "maybe_insert_snapshot",
+        "block_timestamp"
+      ],
+      "evidence": [
+        "The function calculates `timePassed` using `block.timestamp`, creates cumulative values based on that time delta, and stores the snapshot. On L2s with centralized sequencers, this logic breaks down catastrophically during sequencer downtime.",
+        "But, the oracle sees this as normal activity. The first swap that executes calls `maybeInsertSnapshot()`, which calculates:",
+        "If the sequencer was down for an hour but `block.timestamp` only advanced by seconds (because it was frozen), `timePassed` is artificially small. The snapshot gets written with cumulative values that don't reflect the real time gap."
+      ]
+    },
+    {
+      "id": "no_sequencer_uptime_check",
+      "kind": "root_cause",
+      "text": "The snapshot insertion logic completely ignores L2 sequencer status and has zero awareness of sequencer uptime.",
+      "modality": "asserted",
+      "entity_ids": [
+        "maybe_insert_snapshot",
+        "l2_sequencer"
+      ],
+      "evidence": [
+        "The Oracle extension records price snapshots through hooks that fire on every swap and position update in the Ekubo protocol. These snapshots form the foundation for all time-weighted average price calculations consumed by external protocols. However, the snapshot insertion logic completely ignores Layer 2 sequencer status, which creates a critical vulnerability if Ekubo deploys on any L2 chain.",
+        "The README explicitly states Ekubo is a \"multi-chain ownerless and permissionless contract\" designed for the EVM. There's a reasonable expectation this code will run on chains with centralized sequencers. Yet the oracle has zero awareness of sequencer uptime."
+      ]
+    },
+    {
+      "id": "trades_at_manipulated_prices_recorded",
+      "kind": "action",
+      "text": "Trades execute at prices that may have been manipulated during the accumulation phase while the sequencer was down, and those trades are recorded in oracle snapshots.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "maybe_insert_snapshot"
+      ],
+      "evidence": [
+        "Worse, trades execute at prices that may have been manipulated during the accumulation phase while the sequencer was down. These corrupted prices get locked into the oracle's TWAP history.",
+        "1. Execute trades during the first few blocks after restart at manipulated prices",
+        "2. Have those trades recorded in oracle snapshots"
+      ]
+    },
+    {
+      "id": "grace_period_trades_after_restart",
+      "kind": "action",
+      "text": "During the first few blocks after restart, attackers execute trades at manipulated prices before block.timestamp advances normally.",
+      "modality": "potential",
+      "entity_ids": [
+        "attacker",
+        "l2_sequencer"
+      ],
+      "evidence": [
+        "Even after the sequencer is back up and `block.timestamp` starts advancing normally, there's a window where the oracle data is still contaminated. Attackers can:",
+        "1. Execute trades during the first few blocks after restart at manipulated prices"
+      ]
+    },
+    {
+      "id": "intent_validate_sequencer_before_snapshot",
+      "kind": "security_intent",
+      "text": "On L2 deployments, the oracle must validate sequencer uptime status before recording snapshots, rather than blindly trusting block.timestamp.",
+      "modality": "asserted",
+      "entity_ids": [
+        "maybe_insert_snapshot",
+        "l2_sequencer",
+        "block_timestamp"
+      ],
+      "evidence": [
+        "Implement sequencer uptime validation:",
+        "**2. Validate sequencer status before recording snapshots:**",
+        "The critical point is that any L2 deployment needs some mechanism to detect and handle sequencer downtime. The oracle cannot blindly trust `block.timestamp` on chains with centralized sequencers."
+      ]
+    },
+    {
+      "id": "intent_detect_handle_downtime",
+      "kind": "security_intent",
+      "text": "Any L2 deployment needs a mechanism to detect and handle sequencer downtime so that snapshots are not recorded from stale timestamps.",
+      "modality": "asserted",
+      "entity_ids": [
+        "maybe_insert_snapshot",
+        "l2_sequencer"
+      ],
+      "evidence": [
+        "This requires an off-chain keeper to call `updateHeartbeat()` regularly, but provides basic protection against stale timestamps.",
+        "The critical point is that any L2 deployment needs some mechanism to detect and handle sequencer downtime. The oracle cannot blindly trust `block.timestamp` on chains with centralized sequencers."
+      ]
+    },
+    {
+      "id": "assumption_mainnet_no_sequencer",
+      "kind": "assumption",
+      "text": "On Ethereum mainnet there is no sequencer, so the reported vulnerability does not apply.",
+      "modality": "asserted",
+      "entity_ids": [
+        "l2_sequencer"
+      ],
+      "evidence": [
+        "- **On Ethereum mainnet**: No impact (no sequencer)"
+      ]
+    },
+    {
+      "id": "price_manipulation_sequencer_downtime",
+      "kind": "impact",
+      "text": "Price manipulation through sequencer downtime windows",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "- Price manipulation through sequencer downtime windows"
+      ]
+    },
+    {
+      "id": "permanent_corruption_oracle_data",
+      "kind": "impact",
+      "text": "Permanent corruption of oracle data",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "- Permanent corruption of oracle data"
+      ]
+    },
+    {
+      "id": "exploitation_protocols_depending_oracle",
+      "kind": "impact",
+      "text": "Exploitation of all protocols depending on the oracle",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "- Exploitation of all protocols depending on the oracle"
+      ]
+    },
+    {
+      "id": "loss_of_funds_liquidations_trades",
+      "kind": "impact",
+      "text": "Loss of funds from liquidations/trades based on corrupted prices",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "- Loss of funds from liquidations/trades based on corrupted prices"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "first_swap_calls_maybe_insert_snapshot",
+    "trades_at_manipulated_prices_recorded",
+    "grace_period_trades_after_restart"
+  ],
+  "ambiguities": [
+    "Report does not state who may call maybeInsertSnapshot() or whether the attacker is permissionless; only hook invocation is described.",
+    "The manipulated prices during downtime are described as 'may have been manipulated' without a concrete manipulation mechanism or actor authorization.",
+    "The exact TWAP window length and number of snapshots needed to cycle the circular buffer are not specified.",
+    "Whether the attacker is a distinct actor or any trader during the grace period is not established."
+  ]
+}

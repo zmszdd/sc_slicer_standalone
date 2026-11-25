@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / 'tools' / 'pipeline'))
 
 from lib.manifest import build_manifest_from_case  # noqa: E402
 from lib.runner import run_pipeline  # noqa: E402
+from lib.harness_qualification import qualify  # noqa: E402
 
 
 def _first_file(directory: Path, *names: str) -> Path | None:
@@ -88,6 +89,7 @@ def _build_manifest(args, case_dir: Path, out_dir: Path, *,
         function=args.function or _read_test_name(case_dir),
         binding=Path(args.binding).resolve() if args.binding else None,
         binding_rounds=args.binding_rounds,
+        stage2_reuse_verify=not args.allow_unverified_stage2,
     )
 
 
@@ -102,6 +104,8 @@ def main(argv=None):
     parser.add_argument('--binding-rounds', type=int, default=3)
     parser.add_argument('--stage2-run-dir', default=None,
                         help='reuse an existing stage-2 run instead of running report')
+    parser.add_argument('--allow-unverified-stage2', action='store_true',
+                        help='legacy fixture only: skip stage-2 replay verification')
     args = parser.parse_args(argv)
 
     case_dir = Path(args.case_dir).resolve()
@@ -121,6 +125,24 @@ def main(argv=None):
         raise SystemExit(
             f'{src} has no PoC test function (function test*/invariant*); '
             'the flatten must be self-contained')
+    qualification = qualify(
+        src, test_name=args.function or _read_test_name(case_dir))
+    (out_dir / 'harness-qualification.json').write_text(
+        json.dumps(qualification, ensure_ascii=False, indent=2) + '\n')
+    if qualification['status'] != 'runnable':
+        manifest = {
+            'schema_version': 'pipeline-manifest/1',
+            'kind': 'needs_input',
+            'case_id': case_dir.name,
+            'blockers': qualification['blockers'],
+            'reason': 'harness qualification failed',
+            'harness_qualification': qualification,
+        }
+        manifest_path = out_dir / 'manifest.pipeline.json'
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
+        print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        return 0
     manifest = _build_manifest(args, case_dir, out_dir, report=report, src=src)
     manifest_path = out_dir / 'manifest.pipeline.json'
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False,

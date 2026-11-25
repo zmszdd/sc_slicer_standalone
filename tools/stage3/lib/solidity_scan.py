@@ -8,8 +8,10 @@ lint/suggestion rather than authority.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 IDENT = r'[A-Za-z_$][A-Za-z0-9_$]*'
@@ -70,6 +72,13 @@ _LOCAL_DECL_RE = re.compile(
     rf'(?m)^[ \t]+(?:mapping\([^)]*\)|{IDENT}(?:\s*\[[^\]]*\])?)'
     rf'(?:\s+(?:storage|memory|calldata))?\s+({IDENT})\s*(?:=|;)')
 
+_CLEAN_RE = re.compile(
+    r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*[\s\S]*?\*/')
+
+
+def _blank_match(match: re.Match[str]) -> str:
+    return ''.join('\n' if char == '\n' else ' ' for char in match.group())
+
 
 @dataclass
 class SolFile:
@@ -125,6 +134,7 @@ class SolidityIndex:
         return out
 
 
+@lru_cache(maxsize=64)
 def _strip_comments_and_strings(source: str) -> str:
     """Blank out comments and string/nat-spec bodies to avoid false matches."""
     out = []
@@ -133,8 +143,9 @@ def _strip_comments_and_strings(source: str) -> str:
     while i < n:
         if source.startswith('//', i):
             j = source.find('\n', i)
-            out.append('\n' if j != -1 else '')
-            i = j if j != -1 else n
+            end = j if j != -1 else n
+            out.append(' ' * (end - i))
+            i = end
             continue
         if source.startswith('/*', i):
             j = source.find('*/', i + 2)
@@ -147,8 +158,9 @@ def _strip_comments_and_strings(source: str) -> str:
             j = i + 1
             while j < n and source[j] != q:
                 j += 1
-            out.append(' ' * (j - i + 1))
-            i = j + 1
+            end = j + 1 if j < n else n
+            out.append(' ' * (end - i))
+            i = end
             continue
         out.append(ch)
         i += 1
@@ -185,6 +197,67 @@ def _matching_brace(clean: str, open_idx: int) -> int:
     return n - 1
 
 
+@lru_cache(maxsize=32)
+def clean_source(source: str) -> str:
+    """Return comment/string-stripped source, cached by exact source text.
+
+    The regex fast path keeps offsets stable for span-based consumers while
+    avoiding a Python-level character loop over multi-megabyte flattened
+    Solidity files.
+    """
+    return _CLEAN_RE.sub(_blank_match, source)
+
+
+@lru_cache(maxsize=32)
+def _contract_spans(clean: str) -> dict[str, tuple[int, int]]:
+    """Map every declared contract/interface/library to its body span."""
+    spans: dict[str, tuple[int, int]] = {}
+    for match in _DECL_RE.finditer(clean):
+        open_idx = clean.find('{', match.end())
+        if open_idx < 0:
+            continue
+        spans[match.group(3)] = (open_idx, _matching_brace(clean, open_idx))
+    return spans
+
+
+def contract_span(clean: str, contract: str) -> tuple[int, int] | None:
+    """Return the cached ``(open_brace, close_brace)`` span for ``contract``."""
+    return _contract_spans(clean).get(contract)
+
+
+@lru_cache(maxsize=32)
+def _contract_names(clean: str) -> frozenset[str]:
+    return frozenset(match.group(3) for match in _DECL_RE.finditer(clean))
+
+
+@lru_cache(maxsize=32)
+def _inheritance_map(clean: str) -> dict[str, tuple[str, ...]]:
+    return {
+        match.group(1): tuple(_bases(match.group(2) or ''))
+        for match in _INHERIT_RE.finditer(clean)
+    }
+
+
+def inheritance_bases(clean: str, contract: str) -> tuple[str, ...]:
+    """Return cached base-contract names for ``contract``."""
+    return _inheritance_map(clean).get(contract, ())
+
+
+@lru_cache(maxsize=256)
+def _decl_kind_clean(clean: str, contract: str) -> str | None:
+    marker = re.search(
+        rf'\b(abstract\s+)?(contract|interface|library)\s+'
+        rf'{re.escape(contract)}\b', clean)
+    if not marker:
+        return None
+    kind = marker.group(2)
+    if kind == 'interface':
+        return 'interface'
+    if kind == 'library':
+        return 'library'
+    return 'abstract contract' if marker.group(1) else 'contract'
+
+
 def contract_state_vars(source: str, contract: str) -> set[str]:
     """Best-effort state-variable names declared directly inside ``contract``.
 
@@ -192,19 +265,15 @@ def contract_state_vars(source: str, contract: str) -> set[str]:
     only meaningful as an *over-approximation* of what ``contract`` can see.
     Returns an empty set when the contract is not found.
     """
-    clean = _strip_comments_and_strings(source)
+    clean = clean_source(source)
     return _contract_state_vars_clean(clean, contract)
 
 
 def file_level_functions(source: str) -> set[str]:
     """Function declarations outside any contract/interface/library body."""
-    clean = _strip_comments_and_strings(source)
+    clean = clean_source(source)
     masked = list(clean)
-    for m in _DECL_RE.finditer(clean):
-        open_idx = clean.find('{', m.end())
-        if open_idx < 0:
-            continue
-        close_idx = _matching_brace(clean, open_idx)
+    for open_idx, close_idx in _contract_spans(clean).values():
         for i in range(open_idx, close_idx + 1):
             masked[i] = ' '
     outside = ''.join(masked)
@@ -219,13 +288,9 @@ def file_level_state_vars(source: str) -> set[str]:
     are visible from every contract.  These must not be treated as
     cross-contract references by the stage-3 binding linter.
     """
-    clean = _strip_comments_and_strings(source)
+    clean = clean_source(source)
     masked = list(clean)
-    for m in _DECL_RE.finditer(clean):
-        open_idx = clean.find('{', m.end())
-        if open_idx < 0:
-            continue
-        close_idx = _matching_brace(clean, open_idx)
+    for open_idx, close_idx in _contract_spans(clean).values():
         for i in range(open_idx, close_idx + 1):
             masked[i] = ' '
     outside = ''.join(masked)
@@ -234,20 +299,31 @@ def file_level_state_vars(source: str) -> set[str]:
 
 def _contract_state_vars_clean(clean: str, contract: str) -> set[str]:
     """Direct state vars of ``contract`` in already comment-stripped text."""
-    marker = re.search(
-        rf'\b(?:abstract\s+)?(?:contract|interface|library)\s+'
-        rf'{re.escape(contract)}\b', clean)
-    if not marker:
+    span = contract_span(clean, contract)
+    if span is None:
         return set()
-    open_idx = clean.find('{', marker.end())
-    if open_idx < 0:
-        return set()
-    close_idx = _matching_brace(clean, open_idx)
+    open_idx, close_idx = span
     return {m.group(1) for m in _STATE_VAR_RE.finditer(clean[open_idx + 1:close_idx])}
 _INSTANCE_VAR_RE = re.compile(
     rf'(?m)^\s*({IDENT})'
     rf'(?:(?:\s+public|\s+private|\s+internal|\s+constant|\s+immutable|\s+override)+)*'
     rf'\s+({IDENT})\s*(?:=[^;]*)?;')
+
+
+def _contract_instances_clean(clean: str, contract: str) -> dict[str, str]:
+    span = contract_span(clean, contract)
+    if span is None:
+        return {}
+    open_idx, close_idx = span
+    body = clean[open_idx + 1:close_idx]
+    contract_names = _contract_names(clean)
+    out: dict[str, str] = {}
+    for m in _INSTANCE_VAR_RE.finditer(body):
+        type_name = m.group(1)
+        var_name = m.group(2)
+        if type_name in contract_names and var_name not in out:
+            out[var_name] = type_name
+    return out
 
 
 def contract_instances(source: str, contract: str) -> dict[str, str]:
@@ -260,24 +336,21 @@ def contract_instances(source: str, contract: str) -> dict[str, str]:
     PoC test harness (for example ``ServiceNft public snft;`` -> ``{"snft":
     "ServiceNft"}``).
     """
-    clean = _strip_comments_and_strings(source)
-    marker = re.search(
-        rf'\b(?:abstract\s+)?(?:contract|interface|library)\s+'
-        rf'{re.escape(contract)}\b', clean)
-    if not marker:
-        return {}
-    open_idx = clean.find('{', marker.end())
-    if open_idx < 0:
-        return {}
-    close_idx = _matching_brace(clean, open_idx)
-    body = clean[open_idx + 1:close_idx]
-    contract_names = {m.group(3) for m in _DECL_RE.finditer(clean)}
+    clean = clean_source(source)
+    decls = _inheritance_map(clean)
     out: dict[str, str] = {}
-    for m in _INSTANCE_VAR_RE.finditer(body):
-        type_name = m.group(1)
-        var_name = m.group(2)
-        if type_name in contract_names and var_name not in out:
-            out[var_name] = type_name
+    seen: set[str] = set()
+    queue = [contract]
+    while queue:
+        name = queue.pop(0)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        for var_name, type_name in _contract_instances_clean(
+                clean, name).items():
+            out.setdefault(var_name, type_name)
+        queue.extend(base for base in decls.get(name, [])
+                     if base not in seen)
     return out
 
 
@@ -290,31 +363,15 @@ def contract_decl_kind(source: str, contract: str) -> str | None:
     share the same anchor identifier (for example an interface and its
     implementation both declaring a function).
     """
-    clean = _strip_comments_and_strings(source)
-    marker = re.search(
-        rf'\b(abstract\s+)?(contract|interface|library)\s+'
-        rf'{re.escape(contract)}\b', clean)
-    if not marker:
-        return None
-    kind = marker.group(2)
-    if kind == 'interface':
-        return 'interface'
-    if kind == 'library':
-        return 'library'
-    return 'abstract contract' if marker.group(1) else 'contract'
+    return _decl_kind_clean(clean_source(source), contract)
 
 
 def _contract_functions_clean(clean: str, contract: str) -> set[str]:
     """Function names declared directly inside ``contract``."""
-    marker = re.search(
-        rf'\b(?:abstract\s+)?(?:contract|interface|library)\s+'
-        rf'{re.escape(contract)}\b', clean)
-    if not marker:
+    span = contract_span(clean, contract)
+    if span is None:
         return set()
-    open_idx = clean.find('{', marker.end())
-    if open_idx < 0:
-        return set()
-    close_idx = _matching_brace(clean, open_idx)
+    open_idx, close_idx = span
     body = clean[open_idx + 1:close_idx]
     return {m.group(1) for m in re.finditer(
         rf'\bfunction\s+({IDENT})\s*\(', body)}
@@ -345,9 +402,8 @@ def contract_visible_state_vars(source: str, contract: str) -> set[str]:
     direct state variables. Returns the direct vars only when inheritance
     cannot be resolved (for example when ``contract`` is not found).
     """
-    clean = _strip_comments_and_strings(source)
-    decls = {m.group(1): _bases(m.group(2) or '')
-             for m in _INHERIT_RE.finditer(clean)}
+    clean = clean_source(source)
+    decls = _inheritance_map(clean)
     seen: set[str] = set()
     out: set[str] = set()
     queue = [contract]
@@ -368,9 +424,8 @@ def contract_visible_functions(source: str, contract: str) -> set[str]:
 
     Same lexical best-effort walk as ``contract_visible_state_vars``.
     """
-    clean = _strip_comments_and_strings(source)
-    decls = {m.group(1): _bases(m.group(2) or '')
-             for m in _INHERIT_RE.finditer(clean)}
+    clean = clean_source(source)
+    decls = _inheritance_map(clean)
     seen: set[str] = set()
     out: set[str] = set()
     queue = [contract]
@@ -393,78 +448,133 @@ def poc_test_contract(source: str) -> str | None:
     such contract (the PoC harness is normally the final contract in a
     flattened file). Returns ``None`` when no PoC test function is found.
     """
-    clean = _strip_comments_and_strings(source)
+    clean = clean_source(source)
     result = None
-    for m in _DECL_RE.finditer(clean):
-        name = m.group(3)
-        open_idx = clean.find('{', m.end())
-        if open_idx < 0:
-            continue
-        close_idx = _matching_brace(clean, open_idx)
+    for name, (open_idx, close_idx) in _contract_spans(clean).items():
         body = clean[open_idx + 1:close_idx]
-        if re.search(r'\bfunction\s+test_[A-Za-z0-9_]+', body):
+        if re.search(r'\bfunction\s+test[A-Za-z0-9_]*\s*\(', body):
             result = name
     return result
 
 
-def poc_test_function(source: str) -> tuple[str, str] | None:
+def poc_test_function(source: str, *, ignore_neutral: bool = False) -> tuple[str, str] | None:
     """Return ``(contract, test_function_name)`` for the PoC harness.
 
-    Scans contract bodies for ``function test_<name>`` and returns the last
-    such (contract, function) pair. Returns ``None`` when no PoC test function
-    is found.
+    Scans contract bodies for ``function test<name>`` and returns the last
+    non-stub such (contract, function) pair. Returns ``None`` when no PoC
+    test function is found. An empty ``test_submissionValidity() external {}``
+    placeholder is ignored when a real PoC test exists in the same harness.
+    A stage-1 neutral entrypoint is a compile-only placeholder; when
+    ``ignore_neutral`` is set it is used only if no report PoC exists.
     """
-    clean = _strip_comments_and_strings(source)
+    clean = clean_source(source)
     result = None
-    for m in _DECL_RE.finditer(clean):
-        contract = m.group(3)
-        open_idx = clean.find('{', m.end())
-        if open_idx < 0:
-            continue
-        close_idx = _matching_brace(clean, open_idx)
+    fallback = None
+    for contract, (open_idx, close_idx) in _contract_spans(clean).items():
         body = clean[open_idx + 1:close_idx]
-        for fn in re.finditer(r'\bfunction\s+(test_[A-Za-z0-9_]+)\s*\(', body):
-            result = (contract, fn.group(1))
-    return result
+        for fn in re.finditer(r'\bfunction\s+(test[A-Za-z0-9_]*)\s*\([^)]*\)'
+                              r'[^{]*\{', body):
+            name = fn.group(1)
+            fn_open = fn.end() - 1
+            if fn_open >= len(body) or body[fn_open] != '{':
+                continue
+            fn_close = _matching_brace(body, fn_open)
+            fn_body = body[fn_open + 1:fn_close]
+            is_neutral = (
+                (contract.startswith('Neutral_') and name == 'test_entrypoint')
+                or 'neutral stage1 entrypoint' in fn_body)
+            if ignore_neutral and is_neutral:
+                fallback = (contract, name)
+                continue
+            if re.sub(r'\s+', '', fn_body):
+                result = (contract, name)
+            else:
+                fallback = (contract, name)
+    if result is not None:
+        return result
+    return fallback
+
+
+def poc_test_function_for_case(case_dir: Path, source: str) -> tuple[str, str] | None:
+    """Select the injection point recorded by a stage-1 harness manifest."""
+    manifest = Path(case_dir) / 'harness-manifest.json'
+    local_runnable = False
+    route = ''
+    if manifest.is_file():
+        try:
+            payload = json.loads(manifest.read_text(encoding='utf-8'))
+            local_runnable = bool(payload.get('local_runnable'))
+            route = str(payload.get('route') or '')
+        except (OSError, ValueError):
+            local_runnable = False
+            route = ''
+    if route == 'negative_witness':
+        clean = clean_source(source)
+        for contract, (open_idx, close_idx) in _contract_spans(clean).items():
+            if not contract.startswith('NegWitness_'):
+                continue
+            body = clean[open_idx + 1:close_idx]
+            match = re.search(
+                r'\bfunction\s+(test_negative_witness)\s*\([^)]*\)[^{]*\{',
+                body)
+            if match:
+                return contract, match.group(1)
+    return poc_test_function(source, ignore_neutral=local_runnable)
 
 
 def contract_has_function(source: str, contract: str, function: str) -> bool:
     """Return whether ``function`` is declared inside ``contract``."""
-    clean = _strip_comments_and_strings(source)
-    marker = re.search(
-        rf'\b(?:abstract\s+)?(?:contract|interface|library)\s+'
-        rf'{re.escape(contract)}\b', clean)
-    if not marker:
+    clean = clean_source(source)
+    span = contract_span(clean, contract)
+    if span is None:
         return False
-    open_idx = clean.find('{', marker.end())
-    if open_idx < 0:
-        return False
-    close_idx = _matching_brace(clean, open_idx)
+    open_idx, close_idx = span
     body = clean[open_idx + 1:close_idx]
     return bool(re.search(rf'\bfunction\s+{re.escape(function)}\s*\(', body))
+
+
+def function_callees(source: str, contract: str, function: str) -> set[str]:
+    """Return same-contract functions called directly by ``function``.
+
+    The scan is lexical and conservative: it only returns identifiers that are
+    also declared as functions in the same contract, which is enough to build
+    a minimal call slice without treating external receivers as local facts.
+    """
+    clean = clean_source(source)
+    span = contract_span(clean, contract)
+    if span is None:
+        return set()
+    open_idx, close_idx = span
+    body = clean[open_idx + 1:close_idx]
+    declared = _contract_functions_clean(clean, contract)
+    callees: set[str] = set()
+    for match in re.finditer(
+            rf'\bfunction\s+{re.escape(function)}\s*\([^)]*\)[^{{]*\{{', body):
+        fn_open = match.end() - 1
+        if fn_open >= len(body) or body[fn_open] != '{':
+            continue
+        fn_close = _matching_brace(body, fn_open)
+        fn_body = body[fn_open + 1:fn_close]
+        callees |= {
+            name for name in re.findall(
+                r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\(', fn_body)
+            if name in declared and name != function
+        }
+    return callees
 
 
 def function_owner(source: str, function: str) -> set[str]:
     """Return the set of contracts/interfaces/libraries that declare
     ``function`` directly, plus ``None`` when it is a file-level function."""
-    clean = _strip_comments_and_strings(source)
+    clean = clean_source(source)
     owners: set[str] = set()
-    for m in _DECL_RE.finditer(clean):
-        cname = m.group(3)
-        open_idx = clean.find('{', m.end())
-        if open_idx < 0:
-            continue
-        close_idx = _matching_brace(clean, open_idx)
+    for cname, (open_idx, close_idx) in _contract_spans(clean).items():
         body = clean[open_idx + 1:close_idx]
         if re.search(rf'\bfunction\s+{re.escape(function)}\s*\(', body):
             owners.add(cname)
     # file-level functions (outside every contract body)
     masked = list(clean)
-    for m in _DECL_RE.finditer(clean):
-        open_idx = clean.find('{', m.end())
-        if open_idx < 0:
-            continue
-        close_idx = _matching_brace(clean, open_idx)
+    for open_idx, close_idx in _contract_spans(clean).values():
         for i in range(open_idx, close_idx + 1):
             masked[i] = ' '
     outside = ''.join(masked)
@@ -476,14 +586,9 @@ def function_owner(source: str, function: str) -> set[str]:
 def state_var_owner(source: str, var: str) -> set[str]:
     """Return the set of contracts declaring ``var``, or ``None`` for a
     file-level constant/declaration."""
-    clean = _strip_comments_and_strings(source)
+    clean = clean_source(source)
     owners: set[str] = set()
-    for m in _DECL_RE.finditer(clean):
-        cname = m.group(3)
-        open_idx = clean.find('{', m.end())
-        if open_idx < 0:
-            continue
-        close_idx = _matching_brace(clean, open_idx)
+    for cname, (open_idx, close_idx) in _contract_spans(clean).items():
         body = clean[open_idx + 1:close_idx]
         if any(mm.group(1) == var for mm in _STATE_VAR_RE.finditer(body)):
             owners.add(cname)
@@ -494,7 +599,7 @@ def state_var_owner(source: str, var: str) -> set[str]:
 
 def scan_file(path: Path) -> SolFile:
     source = path.read_text()
-    clean = _strip_comments_and_strings(source)
+    clean = clean_source(source)
     f = SolFile(path=path)
     f.contracts = [m.group(3) for m in _DECL_RE.finditer(clean)]
     f.functions = {m.group(1): [] for m in _FUNC_RE.finditer(clean)}

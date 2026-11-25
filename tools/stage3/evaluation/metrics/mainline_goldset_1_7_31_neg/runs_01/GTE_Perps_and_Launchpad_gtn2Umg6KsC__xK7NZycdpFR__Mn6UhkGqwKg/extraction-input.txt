@@ -1,0 +1,20 @@
+GTELaunchpadV2Pair::swap() function charges less fees than it is supposed to
+
+## Finding description and impact
+The [GTELaunchpadV2Pair::swap()](https://github.com/code-423n4/2025-08-gte-perps/blob/main/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol#L232) function first ensures that a fee of **0.3%** is charged on the amountIn (the fee that should be distributed among the liquidity providers), and then calculates and distributes an additional fee towards the `Distributor.sol` contract. However that additional fee is not withheld from the user that made the swap. 
+
+As can be seen from the code snippet above we first check whether **XY >= K** is true, and then we calculate the additional fee that should be distributed to the `Distributor.sol` contract. There is no additional check to see if the **XY >= K** formula is satisfied. There is a separate vulnerability regarding the difference between the current contract balance of the contract and the saved reserve amounts, however if that issue is fixed the issue described in this reports still persists.
+
+ A malicious actor can directly interact with the deployed instance of the `GteLaunchpadV2Pair.sol` contract, and transfer the required tokens to perform a swap where he pays only **0.3%** on the amount in. The protocol team have disclosed in the public Q&A that they intend to use an unmodified instance of the [UniswapV2Router01.sol](https://github.com/Uniswap/v2-periphery/blob/master/contracts/UniswapV2Router01.sol) contract, just with the required changes for it to be compiled with a version of solidity greater than **0.8.0**. If the contract is not modified to account for the additional fee that should be charged (it will be hard to), normal users will also pay only a **0.3%** fee for swaps. This will result in the liquidity providers receiving less fees than they are supposed to.
+
+Additionally the spot price determined by **x = y/x**  will be affected if the additional fee is not charged from the user that performs the swap.  This will intern affect the next swaps and the ratio of tokens in and tokens out. Consider the following scenario:
+
+- The fee accrued to the `Disrtibutor.sol` contract is **0.05%** `reserve0` is **40e18** and `reserve1` is **200_000_000e18**.
+- Alice intends to swap **100_000_000e18** of `token1` into `token0`
+- If the contract correctly charges **0.35%** fee we get the following output amount for `token0`
+**40e18 - (8_000_000_000e18 / 299_650_000e18) = 40e18 - 26.6978e18 ~ 13.3022e18**. The calculated price of x(`token0`) is **299_950_000e18 / 26.6978e18 ~ 11_235_008e18**
+- If the contract only charges **0.3%** fee we get the following output amount of `token0` **40e18 - (8_000_000_000e18 / 299_700_000e18) = 40 - 26.6933e18 ~ 13.3067e18**. The calculated price of x(`token0`) is **299_950_000e18 / 26.6933e18 ~ 11_236_902e18**
+- As can be seen from the above equations if the protocol charges the correct fee the price of token x in terms of token y is less. This will affect subsequent swaps, and if the tokens are traded on another platform it will create a price discrepancy. 
+## Recommended mitigation steps
+Consider first calculating the fee that should be distributed to the `Distributo.sol` contract, subtract it from the adjusted balance 
+for the corresponding token, and then check whether this if statement passes:

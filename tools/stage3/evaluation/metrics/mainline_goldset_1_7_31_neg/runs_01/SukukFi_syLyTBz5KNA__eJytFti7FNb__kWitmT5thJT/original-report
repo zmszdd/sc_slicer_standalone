@@ -1,0 +1,11 @@
+{
+  "schema_version": "official-negative-report/1",
+  "case": "SukukFi_syLyTBz5KNA__eJytFti7FNb__kWitmT5thJT",
+  "project": "SukukFi_syLyTBz5KNA",
+  "submission_uid": "kWitmT5thJT",
+  "finding_uid": "eJytFti7FNb",
+  "title": "Dust Donation Permanently DoS unregisterVault via Raw balanceOf Check",
+  "body": "## Finding description and impact\n\nThe unregisterVault(address asset) function in ShareTokenUpgradeable.sol is intended to safely remove a vault from the registry once it is empty and deactivated. As a safety measure, it performs two checks:\n\nIERC7575Vault(vaultAddress).totalAssets() must return 0\nERC20(asset).balanceOf(vaultAddress) must return 0\n\nThe second check uses the raw ERC-20 balance, which includes any tokens sent directly to the vault contract (donations, dust, airdrops, etc.).\nAn attacker can permanently DoS the unregistration of any vault by sending 1 wei (or any non-zero amount) directly to the vault:\n``` token.transfer(address(vault), 1); ```\n\n\nAfter this transaction:\n\ntotalAssets() can still return 0 (vault is deactivated / uses internal accounting)\nbalanceOf(vault) is now > 0  unregisterVaultpermanently reverts with CannotUnregisterVaultAssetBalance\n\n## Impact\n\nPermanent denial-of-service on a core administrative function required for:\nMigrating to a new vault implementation\nDecommissioning a stablecoin/asset\nEmergency cleanup or protocol shutdown\n\nAffects every asset in the multi-vault system (USDC, HONEY, USDT0, etc.)\nAttack cost: < $0.001 on Berachain\nNo recovery mechanism exists (no sweep/dust removal function)\n## Recommended mitigation steps\nconsider adding dust tolerance to the raw balance check (quickest fix): \n\n```\nuint256 constant DUST_THRESHOLD = 1000; // or 1e6, adjustable\nif (vaultBalance > DUST_THRESHOLD) revert CannotUnregisterVaultAssetBalance();\n\n```\n\nconsider adding an owner-only dust sweep function (extra safety):\n```\nfunction sweepDust(address asset, address to, uint256 amount) external onlyOwner {\n    ERC20(asset).safeTransfer(to, amount);\n}\n```",
+  "validity": "invalid",
+  "source": "tools/stage3/evaluation/metrics/official_negative_submissions_20261121.json"
+}

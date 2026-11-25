@@ -1,0 +1,39 @@
+DoS of all swap-and-bridge flows because TrustSwapAndBridgeRouter cannot accept ETH from Slipstream's refundETH()
+
+## Description:
+
+`TrustSwapAndBridgeRouter` delegates swaps to the Slipstream (Aerodrome CL) SwapRouter via `exactInput()`. 
+
+After the swap, the Slipstream router calls `refundETH()` (from PeripheryPayments) to return any leftover ETH to the caller:
+
+
+So the Slipstream router sends its full ETH balance to `msg.sender`, which is `TrustSwapAndBridgeRouter`. `TrustSwapAndBridgeRouter` has no `receive()` or `fallback()` and does not handle incoming ETH. A plain ETH transfer to it reverts. Therefore, if the Slipstream SwapRouter has any ETH balance at the time of the call, the entire `swapAndBridgeWithETH` or `swapAndBridgeWithERC20` transaction reverts.
+
+An attacker can force ETH onto the Slipstream SwapRouter using a contract that calls `selfdestruct(router)`. `selfdestruct()` after EIP-6780 (Cancun) only forwards ETH to the beneficiary without destroying the contract bytecode and does not allow the target to reject ETH; the Slipstream router cannot refuse this. With as little as 1 wei on the Slipstream router, every subsequent `swapAndBridgeWithETH` and `swapAndBridgeWithERC20` call fails. The same selfdestruct contract can be reused (bytecode is no longer removed), so the attack is cheap and repeatable.
+
+## Scenario:
+
+1. Victim prepares a transaction calling `swapAndBridgeWithETH()` or `swapAndBridgeWithERC20()` and broadcasts it to the mempool.
+
+2. Attacker sees the transaction and frontruns it. Attacker deploys a small contract that accepts ETH and has a function that calls `selfdestruct(slipstreamSwapRouter)`.
+
+3. Attacker sends 1 wei to this contract and calls the function. The contract selfdestructs and forces 1 wei to the Slipstream SwapRouter. The router cannot reject this transfer.
+
+4. Victim's transaction is included. It calls `exactInput()` on the Slipstream router. The swap executes, then the Slipstream router calls `refundETH()` and attempts to send its balance (at least 1 wei) to `TrustSwapAndBridgeRouter`.
+
+5. The transfer to `TrustSwapAndBridgeRouter` reverts because the contract has no `receive()` or `fallback()`. The whole transaction reverts and the victim's swap and bridge do not execute.
+
+6. All users are affected: every `swapAndBridgeWithETH` and `swapAndBridgeWithERC20` call fails. The attacker can repeatedly send 1 wei to the Slipstream router using the same contract (EIP-6780 leaves bytecode in place).
+
+## Impact:
+
+Full DoS of swap-and-bridge. Both `swapAndBridgeWithETH` and `swapAndBridgeWithERC20` are unusable whenever the Slipstream SwapRouter holds any ETH. Users cannot swap and bridge from Base to the destination chain via the protocol.
+
+Low cost of attack. Can be repeated many times. One wei per attack (+gas); the selfdestruct contract can be reused. No need to hold or lock significant funds.
+
+## Recommended Mitigation:
+
+Add a `receive()` to `TrustSwapAndBridgeRouter` so it can accept ETH sent by the Slipstream router in `refundETH()`:
+
+
+Additionally add a function to pull any accidental or refunded ETH to a designated recipient

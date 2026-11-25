@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lib.spec_loader import SpecError, load_stage2_run
+from lib.invariant_ranking import rank_claims
 
 ROOT = Path(__file__).resolve().parents[1]  # tools/stage3
 
@@ -37,6 +38,10 @@ def main(argv=None):
     parser.add_argument('--run-id-prefix', help='defaults to the case directory name')
     parser.add_argument('--claims', default=None,
                         help='comma-separated claim ids to run; default: all in spec')
+    parser.add_argument('--stage2-gate-mode', choices=('legacy', 'strict', 'aplus'),
+                        default='aplus')
+    parser.add_argument('--claim-top-k', type=int, default=3,
+                        help='execute only the top-k ranked claims; 0 keeps all')
     args = parser.parse_args(argv)
 
     case_dir = Path(args.case_dir).resolve()
@@ -55,6 +60,12 @@ def main(argv=None):
     if args.claims:
         selected = {c.strip() for c in args.claims.split(',') if c.strip()}
         claims = [c for c in claims if c in selected]
+    claim_ranking = rank_claims(
+        stage2_dir, stage2['spec'], limit=args.claim_top_k)
+    if args.claim_top_k > 0:
+        available = set(claims)
+        claims = [claim_id for claim_id in claim_ranking['selected_claim_ids']
+                  if claim_id in available]
     if not claims:
         raise SystemExit('no claims in stage3-spec.json')
 
@@ -74,7 +85,8 @@ def main(argv=None):
         proc = subprocess.run(
             [sys.executable, '-m', 'cli.stage3_pipeline',
              '--case-dir', str(case_dir), '--stage2-run', str(stage2_dir),
-             '--binding', str(binding), '--run-id', run_id],
+             '--binding', str(binding), '--run-id', run_id,
+             '--stage2-gate-mode', args.stage2_gate_mode],
             capture_output=True, text=True, cwd=str(ROOT))
         if proc.returncode != 0:
             rows.append({'claim_id': claim_id, 'status': 'error', 'run_id': run_id,
@@ -86,6 +98,7 @@ def main(argv=None):
             'status': 'ok',
             'run_id': run_id,
             'consistency_verdict': _dig(summary, ['consistency_verdict']),
+            'reference_patch_used': bool(_dig(summary, ['reference_patch_used'])),
             'exploit_original': _dig(summary, ['forge', 'exploit', 'original', 'status']),
             'exploit_patched': _dig(summary, ['forge', 'exploit', 'patched', 'status']),
         })
@@ -97,6 +110,7 @@ def main(argv=None):
         'ok': sum(1 for row in rows if row['status'] == 'ok'),
         'failed': sum(1 for row in rows if row['status'] != 'ok'),
         'claims': rows,
+        'claim_ranking': claim_ranking,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if payload['failed'] == 0 else 1

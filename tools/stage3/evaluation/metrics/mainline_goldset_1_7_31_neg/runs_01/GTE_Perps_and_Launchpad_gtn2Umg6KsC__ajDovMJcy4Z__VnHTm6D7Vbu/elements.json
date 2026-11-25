@@ -1,0 +1,232 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "backstop liquidation matching against posted orders outside divergence caps",
+    "environment": "perpetual/orderbook protocol with divergence caps, backstop liquidation, and admin-set divergence cap",
+    "evidence": [
+      "Backstop orders posted beyond divergence limits enables denial of backstop liquidations",
+      "The protocol enforces price divergence caps to prevent order fills outside a safe range relative to the mark price. For ask orders, the maximum allowable fill price is calculated as follows:",
+      "These functions ensure that orders cannot be *filled* beyond the divergence cap. However, the protocol lacks checks during order *posting*, allowing users to submit orders with prices far outside these bounds. Specifically:",
+      "3. Sdmin or backstop liquidator calls `backstopLiquidate`.",
+      "4. The function reverts with a `ZeroOrder()` due to the divergence check.",
+      "A more straightforward and probable bug comes from admin actions. If the divergence cap is reduced via `setDivergenceCap` to a value lower than current orders' prices, previously valid orders could suddenly fall outside the new range. This instantly triggers blocking liquidations across both backstop and standard orderbooks without requiring active exploitation."
+    ]
+  },
+  "entities": [
+    {
+      "id": "alice",
+      "name": "Alice (order poster)",
+      "role": "attacker",
+      "evidence": [
+        "2. Alice submits a sell (ask) order at a price significantly above the max diverging ask price."
+      ]
+    },
+    {
+      "id": "bob",
+      "name": "Bob (undercollateralized short position holder)",
+      "role": "victim",
+      "evidence": [
+        "1. Bob opens a short position on ETH that becomes undercollateralized due to market movements, making it eligible for backstop liquidation."
+      ]
+    },
+    {
+      "id": "liquidator",
+      "name": "Admin or backstop liquidator",
+      "role": "authority",
+      "evidence": [
+        "3. Sdmin or backstop liquidator calls `backstopLiquidate`."
+      ]
+    },
+    {
+      "id": "orderbook",
+      "name": "Orderbook",
+      "role": "contract",
+      "evidence": [
+        "These functions ensure that orders cannot be *filled* beyond the divergence cap. However, the protocol lacks checks during order *posting*, allowing users to submit orders with prices far outside these bounds. Specifically:",
+        "- In `_matchIncomingBid`: The loop breaks if `bestAsk > maxAsk`.",
+        "- In `_matchIncomingAsk`: The loop breaks if `bestBid < minBid`."
+      ]
+    },
+    {
+      "id": "divergence_cap",
+      "name": "Divergence cap",
+      "role": "other",
+      "evidence": [
+        "The protocol enforces price divergence caps to prevent order fills outside a safe range relative to the mark price. For ask orders, the maximum allowable fill price is calculated as follows:",
+        "A more straightforward and probable bug comes from admin actions. If the divergence cap is reduced via `setDivergenceCap` to a value lower than current orders' prices, previously valid orders could suddenly fall outside the new range. This instantly triggers blocking liquidations across both backstop and standard orderbooks without requiring active exploitation."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "bob_undercollateralized_short",
+      "kind": "precondition",
+      "text": "Bob has an open short position on ETH that is undercollateralized and eligible for backstop liquidation.",
+      "modality": "asserted",
+      "entity_ids": [
+        "bob"
+      ],
+      "evidence": [
+        "1. Bob opens a short position on ETH that becomes undercollateralized due to market movements, making it eligible for backstop liquidation."
+      ]
+    },
+    {
+      "id": "alice_posts_ask_above_max",
+      "kind": "precondition",
+      "text": "Alice submits a sell (ask) order at a price significantly above the max diverging ask price.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "orderbook",
+        "divergence_cap"
+      ],
+      "evidence": [
+        "2. Alice submits a sell (ask) order at a price significantly above the max diverging ask price."
+      ]
+    },
+    {
+      "id": "no_opposing_long_orders",
+      "kind": "precondition",
+      "text": "No opposing long orders exist in the book, so Alice's post-only order does not fill and revert with PostOnlyOrderWouldBeFilled().",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "orderbook"
+      ],
+      "evidence": [
+        "Executing this requires careful timing: No opposing long orders can exist in the book, as Alice's post-only order would fill against them and revert with `PostOnlyOrderWouldBeFilled()`. This makes it mostly probable on freshly created assets, where orders are scarce."
+      ]
+    },
+    {
+      "id": "no_posting_divergence_check",
+      "kind": "root_cause",
+      "text": "The protocol lacks checks during order posting, allowing users to submit orders with prices far outside the divergence bounds; the matching loops break on bestAsk > maxAsk and bestBid < minBid, so the out-of-range order cannot be filled.",
+      "modality": "asserted",
+      "entity_ids": [
+        "orderbook",
+        "divergence_cap"
+      ],
+      "evidence": [
+        "These functions ensure that orders cannot be *filled* beyond the divergence cap. However, the protocol lacks checks during order *posting*, allowing users to submit orders with prices far outside these bounds. Specifically:",
+        "- In `_matchIncomingBid`: The loop breaks if `bestAsk > maxAsk`.",
+        "- In `_matchIncomingAsk`: The loop breaks if `bestBid < minBid`."
+      ]
+    },
+    {
+      "id": "liquidator_calls_backstop",
+      "kind": "action",
+      "text": "Admin or backstop liquidator calls backstopLiquidate.",
+      "modality": "asserted",
+      "entity_ids": [
+        "liquidator",
+        "bob"
+      ],
+      "evidence": [
+        "3. Sdmin or backstop liquidator calls `backstopLiquidate`."
+      ]
+    },
+    {
+      "id": "backstop_reverts_zeroorder",
+      "kind": "root_cause",
+      "text": "backstopLiquidate reverts with ZeroOrder() due to the divergence check when the only available ask is outside the divergence cap.",
+      "modality": "asserted",
+      "entity_ids": [
+        "liquidator",
+        "orderbook",
+        "divergence_cap"
+      ],
+      "evidence": [
+        "4. The function reverts with a `ZeroOrder()` due to the divergence check."
+      ]
+    },
+    {
+      "id": "cap_reduced_below_existing_orders",
+      "kind": "precondition",
+      "text": "The divergence cap is reduced via setDivergenceCap to a value lower than current orders' prices, so previously valid orders fall outside the new range.",
+      "modality": "asserted",
+      "entity_ids": [
+        "divergence_cap",
+        "orderbook"
+      ],
+      "evidence": [
+        "A more straightforward and probable bug comes from admin actions. If the divergence cap is reduced via `setDivergenceCap` to a value lower than current orders' prices, previously valid orders could suddenly fall outside the new range. This instantly triggers blocking liquidations across both backstop and standard orderbooks without requiring active exploitation."
+      ]
+    },
+    {
+      "id": "intent_posting_within_divergence",
+      "kind": "security_intent",
+      "text": "Orders should only be placed when the order price is not outside the divergence ranges.",
+      "modality": "asserted",
+      "entity_ids": [
+        "orderbook",
+        "divergence_cap"
+      ],
+      "evidence": [
+        "Consider, only placing orders when price of order isn't falling outside divergence ranges."
+      ]
+    },
+    {
+      "id": "intent_no_out_of_range_orders_after_cap_change",
+      "kind": "security_intent",
+      "text": "Orders falling outside the price ranges on both standard and backstop orderbooks should be forcefully closed so they do not remain outside the divergence range.",
+      "modality": "asserted",
+      "entity_ids": [
+        "orderbook",
+        "divergence_cap"
+      ],
+      "evidence": [
+        "For alternative impact, the most plausible remediation is to forcefully close orders - on both standard and backstop orderbook - falling outside price ranges."
+      ]
+    },
+    {
+      "id": "backstop_liquidation_reverts_zeroorder",
+      "kind": "impact",
+      "text": "The function reverts with a `ZeroOrder()` due to the divergence check.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "4. The function reverts with a `ZeroOrder()` due to the divergence check."
+      ]
+    },
+    {
+      "id": "malicious_order_sits_indefinitely",
+      "kind": "impact",
+      "text": "When malicious user post it, it sit indefinitely on orderbook, because no other user can fill it.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "When malicious user post it, it sit indefinitely on orderbook, because no other user can fill it. The only sensible way to clear it is `delistClose` which isn't a perfect just to clear one order."
+      ]
+    },
+    {
+      "id": "orders_fall_outside_new_range",
+      "kind": "impact",
+      "text": "previously valid orders could suddenly fall outside the new range",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "A more straightforward and probable bug comes from admin actions. If the divergence cap is reduced via `setDivergenceCap` to a value lower than current orders' prices, previously valid orders could suddenly fall outside the new range. This instantly triggers blocking liquidations across both backstop and standard orderbooks without requiring active exploitation."
+      ]
+    },
+    {
+      "id": "blocking_liquidations_both_orderbooks",
+      "kind": "impact",
+      "text": "This instantly triggers blocking liquidations across both backstop and standard orderbooks without requiring active exploitation.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "A more straightforward and probable bug comes from admin actions. If the divergence cap is reduced via `setDivergenceCap` to a value lower than current orders' prices, previously valid orders could suddenly fall outside the new range. This instantly triggers blocking liquidations across both backstop and standard orderbooks without requiring active exploitation."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "liquidator_calls_backstop"
+  ],
+  "ambiguities": [
+    "Report does not state whether Alice's posting is permissionless or requires authorization; no explicit anyone-can-call statement.",
+    "The ZeroOrder() revert is described as the outcome of backstopLiquidate; whether it is the direct violation witness or a downstream consequence is not fully separated in prose.",
+    "Timing/order relation between Alice's posting and the liquidator's call is described as requiring careful timing but no explicit ordering constraint beyond no opposing longs.",
+    "Alternative impact scenario (cap reduction) lacks an explicit actor/authorization and timing relative to existing orders beyond the setDivergenceCap call.",
+    "delistClose being the only sensible way to clear the order is framed as a workaround, not a distinct stated harm"
+  ]
+}

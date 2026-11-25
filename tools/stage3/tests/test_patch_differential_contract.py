@@ -5,7 +5,8 @@ Locks two facts that must not drift independently:
 1. ``lib/patch.py`` emits a single plain ``assert(!P || I)`` with no
    ``stage3:P`` marker.
 2. ``lib/differential.py`` maps an original-pass / patched-assertion-failure
-   pair to ``P_and_T=sat, P_and_T_and_not_I=sat, P_and_T_and_V=sat``.
+   pair to ``P_and_T=sat, P_and_T_and_not_I=sat``.  V stays ``unknown`` unless
+   the independent effect probe actually succeeds.
 
 No LLM or forge is involved; the test builds an in-memory case and asserts the
 emitted source string, then runs ``compute_queries`` on the corresponding
@@ -66,7 +67,7 @@ class PatchDifferentialContractTest(unittest.TestCase):
             inject_patched_sources(case, patched, binding, spec, formal)
             source = (patched / 'Counter.sol').read_text()
 
-        self.assertIn('assert(!(value > 0) || (value >= 1));', source)
+        self.assertIn('require(!(value > 0) || (value >= 1), "stage3:I");', source)
         self.assertNotIn('stage3:P', source)
 
         for reason in ('panic: assertion failed (0x01)', 'Panic(0x01)'):
@@ -78,7 +79,15 @@ class PatchDifferentialContractTest(unittest.TestCase):
                 )
                 self.assertEqual(queries['P_and_T'], 'sat')
                 self.assertEqual(queries['P_and_T_and_not_I'], 'sat')
-                self.assertEqual(queries['P_and_T_and_V'], 'sat')
+                self.assertEqual(queries['P_and_T_and_V'], 'unknown')
+
+                observed = compute_queries(
+                    {'exploit_test': 'test_exploit'},
+                    {'status': 'Success', 'reason': None},
+                    {'status': 'Failure', 'reason': reason},
+                    effect_result={'status': 'Success', 'reason': None},
+                )
+                self.assertEqual(observed['P_and_T_and_V'], 'sat')
 
 
 if __name__ == '__main__':

@@ -1,0 +1,108 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "Zrash2sFL9M",
+    "requested_finding_uid": "DkPdxd8nA3n",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "Zrash2sFL9M",
+    "source_finding_uid": "DkPdxd8nA3n",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\low_valid_Zrash2sFL9M.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "Zrash2sFL9M",
+  "finding_uid": "DkPdxd8nA3n",
+  "finding_number": "40",
+  "title": "Vault approval is not revoked in ShareTokenUpgradeable::unregisterVault() flow",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "",
+  "user_handle": "prk0",
+  "body": "## Description\n\n```solidity\nfunction registerVault(address asset, address vaultAddress) external onlyOwner {\n    // SNIP\n\n    // If investment ShareToken is already configured, set up investment for the new vault\n    // Only configure if the vault address is a deployed contract\n>   address investmentShareToken = $.investmentShareToken;\n>   if (investmentShareToken != address(0)) {\n>       _configureVaultInvestmentSettings(asset, vaultAddress, investmentShareToken);\n>   }\n\n    // If investment manager is already configured, set it for the new vault\n    // Only configure if the vault address is a deployed contract\n    address investmentManager = $.investmentManager;\n    if (investmentManager != address(0)) {\n        ERC7575VaultUpgradeable(vaultAddress).setInvestmentManager(investmentManager);\n    }\n\n    emit VaultUpdate(asset, vaultAddress);\n}\n\nfunction _configureVaultInvestmentSettings(address asset, address vaultAddress, address investmentShareToken) internal {\n    // Find the corresponding investment vault for this asset\n    address investmentVaultAddress = IERC7575ShareExtended(investmentShareToken).vault(asset);\n\n    // Configure investment vault if there's a matching one for this asset\n    if (investmentVaultAddress != address(0)) {\n        ERC7575VaultUpgradeable(vaultAddress).setInvestmentVault(IERC7575(investmentVaultAddress));\n\n        // Grant unlimited allowance to the vault on the investment ShareToken\n>       IERC20(investmentShareToken).approve(vaultAddress, type(uint256).max);\n    }\n}\n```\n\n `_configureVaultInvestmentSettings()` will be called in the `registerVault()` flow, if `investmentShareToken` has been configured.\n\nIn `_configureVaultInvestmentSettings()`, the `vaultAddress` is configured with max allowance for `investmentShareToken`.\n\nThe allowance is not reset in the `unregisterVault()` flow, which will leave a lingering max approval to the old vault.\n\n## Impact\n\nLingering `investmentShareToken` allowance on previous vault even after vault update\n\n## Recommendation\n\n```solidity\n// ShareTokenUpgradeable.sol\nfunction unregisterVault(address asset) external onlyOwner {\n    // SNIP\n\n    // Remove vault registration (automatically removes from enumerable collection)\n    $.assetToVault.remove(asset);\n    delete $.vaultToAsset[vaultAddress];\n    \n+   IERC20(investmentShareToken).approve(vaultAddress, 0);\n\n    emit VaultUpdate(asset, address(0));\n}\n```",
+  "proof_of_concept": "```solidity\n// CompleteFlowWalkthrough.t.sol\n// ❯ forge test --match-test test_VaultUpdate_LingeringApprovalPoC -vv\nfunction test_VaultUpdate_LingeringApprovalPoC() public {\n    // @audit unregisterVault()\n    // Deploy a real new vault for the same asset\n    ERC7575VaultUpgradeable vaultImpl = new ERC7575VaultUpgradeable();\n    bytes memory vaultInitData = abi.encodeWithSelector(ERC7575VaultUpgradeable.initialize.selector, asset, address(shareToken), owner);\n    ERC1967Proxy vaultProxy = new ERC1967Proxy(address(vaultImpl), vaultInitData);\n    address newVault = address(vaultProxy);\n\n    vm.startPrank(owner);\n    vault.setVaultActive(false);\n\n    shareToken.unregisterVault(address(asset));\n\n    shareToken.registerVault(address(asset), newVault);\n    assertEq(shareToken.vault(address(asset)), newVault);\n    vm.stopPrank();\n\n    uint256 oldVaultAllowance = investmentShareToken.allowance(address(shareToken), address(vault));\n    uint256 newVaultAllowance = investmentShareToken.allowance(address(shareToken), address(newVault));\n    assertTrue(oldVaultAllowance == type(uint256).max);\n    assertTrue(newVaultAllowance == type(uint256).max);\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/ShareTokenUpgradeable.sol#L282-L327"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "179",
+    "api_submission_id": "",
+    "uid": "Zrash2sFL9M",
+    "number": "179",
+    "title": "Vault approval is not revoked in ShareTokenUpgradeable::unregisterVault() flow",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "",
+    "handle": "prk0",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/ShareTokenUpgradeable.sol#L282-L327"
+    ],
+    "body": "## Description\n\n```solidity\nfunction registerVault(address asset, address vaultAddress) external onlyOwner {\n    // SNIP\n\n    // If investment ShareToken is already configured, set up investment for the new vault\n    // Only configure if the vault address is a deployed contract\n>   address investmentShareToken = $.investmentShareToken;\n>   if (investmentShareToken != address(0)) {\n>       _configureVaultInvestmentSettings(asset, vaultAddress, investmentShareToken);\n>   }\n\n    // If investment manager is already configured, set it for the new vault\n    // Only configure if the vault address is a deployed contract\n    address investmentManager = $.investmentManager;\n    if (investmentManager != address(0)) {\n        ERC7575VaultUpgradeable(vaultAddress).setInvestmentManager(investmentManager);\n    }\n\n    emit VaultUpdate(asset, vaultAddress);\n}\n\nfunction _configureVaultInvestmentSettings(address asset, address vaultAddress, address investmentShareToken) internal {\n    // Find the corresponding investment vault for this asset\n    address investmentVaultAddress = IERC7575ShareExtended(investmentShareToken).vault(asset);\n\n    // Configure investment vault if there's a matching one for this asset\n    if (investmentVaultAddress != address(0)) {\n        ERC7575VaultUpgradeable(vaultAddress).setInvestmentVault(IERC7575(investmentVaultAddress));\n\n        // Grant unlimited allowance to the vault on the investment ShareToken\n>       IERC20(investmentShareToken).approve(vaultAddress, type(uint256).max);\n    }\n}\n```\n\n `_configureVaultInvestmentSettings()` will be called in the `registerVault()` flow, if `investmentShareToken` has been configured.\n\nIn `_configureVaultInvestmentSettings()`, the `vaultAddress` is configured with max allowance for `investmentShareToken`.\n\nThe allowance is not reset in the `unregisterVault()` flow, which will leave a lingering max approval to the old vault.\n\n## Impact\n\nLingering `investmentShareToken` allowance on previous vault even after vault update\n\n## Recommendation\n\n```solidity\n// ShareTokenUpgradeable.sol\nfunction unregisterVault(address asset) external onlyOwner {\n    // SNIP\n\n    // Remove vault registration (automatically removes from enumerable collection)\n    $.assetToVault.remove(asset);\n    delete $.vaultToAsset[vaultAddress];\n    \n+   IERC20(investmentShareToken).approve(vaultAddress, 0);\n\n    emit VaultUpdate(asset, address(0));\n}\n```",
+    "proof_of_concept": "```solidity\n// CompleteFlowWalkthrough.t.sol\n// ❯ forge test --match-test test_VaultUpdate_LingeringApprovalPoC -vv\nfunction test_VaultUpdate_LingeringApprovalPoC() public {\n    // @audit unregisterVault()\n    // Deploy a real new vault for the same asset\n    ERC7575VaultUpgradeable vaultImpl = new ERC7575VaultUpgradeable();\n    bytes memory vaultInitData = abi.encodeWithSelector(ERC7575VaultUpgradeable.initialize.selector, asset, address(shareToken), owner);\n    ERC1967Proxy vaultProxy = new ERC1967Proxy(address(vaultImpl), vaultInitData);\n    address newVault = address(vaultProxy);\n\n    vm.startPrank(owner);\n    vault.setVaultActive(false);\n\n    shareToken.unregisterVault(address(asset));\n\n    shareToken.registerVault(address(asset), newVault);\n    assertEq(shareToken.vault(address(asset)), newVault);\n    vm.stopPrank();\n\n    uint256 oldVaultAllowance = investmentShareToken.allowance(address(shareToken), address(vault));\n    uint256 newVaultAllowance = investmentShareToken.allowance(address(shareToken), address(newVault));\n    assertTrue(oldVaultAllowance == type(uint256).max);\n    assertTrue(newVaultAllowance == type(uint256).max);\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/179",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-11-28T23:21:08.939Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "EPKJHv94L7E",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T11:31:47.842Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "DkPdxd8nA3n"
+        },
+        {
+          "uid": "GDuX9AodsRc",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T11:31:50.365Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "DkPdxd8nA3n"
+        }
+      ],
+      "finding": {
+        "uid": "DkPdxd8nA3n",
+        "number": 40,
+        "duplicates": 17
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": null,
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-12-22T03:28:25.113Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "Vault approval is not revoked in ShareTokenUpgradeable::unregisterVault() flow",
+      "uid": "Zrash2sFL9M",
+      "updatedAt": "2025-11-28T23:22:03.868Z",
+      "user": {
+        "uid": "7rR6FgJaSTS",
+        "handle": "prk0"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Description\n\n```solidity\nfunction registerVault(address asset, address vaultAddress) external onlyOwner {\n    // SNIP\n\n    // If investment ShareToken is already configured, set up investment for the new vault\n    // Only configure if the vault address is a deployed contract\n>   address investmentShareToken = $.investmentShareToken;\n>   if (investmentShareToken != address(0)) {\n>       _configureVaultInvestmentSettings(asset, vaultAddress, investmentShareToken);\n>   }\n\n    // If investment manager is already configured, set it for the new vault\n    // Only configure if the vault address is a deployed contract\n    address investmentManager = $.investmentManager;\n    if (investmentManager != address(0)) {\n        ERC7575VaultUpgradeable(vaultAddress).setInvestmentManager(investmentManager);\n    }\n\n    emit VaultUpdate(asset, vaultAddress);\n}\n\nfunction _configureVaultInvestmentSettings(address asset, address vaultAddress, address investmentShareToken) internal {\n    // Find the corresponding investment vault for this asset\n    address investmentVaultAddress = IERC7575ShareExtended(investmentShareToken).vault(asset);\n\n    // Configure investment vault if there's a matching one for this asset\n    if (investmentVaultAddress != address(0)) {\n        ERC7575VaultUpgradeable(vaultAddress).setInvestmentVault(IERC7575(investmentVaultAddress));\n\n        // Grant unlimited allowance to the vault on the investment ShareToken\n>       IERC20(investmentShareToken).approve(vaultAddress, type(uint256).max);\n    }\n}\n```\n\n `_configureVaultInvestmentSettings()` will be called in the `registerVault()` flow, if `investmentShareToken` has been configured.\n\nIn `_configureVaultInvestmentSettings()`, the `vaultAddress` is configured with max allowance for `investmentShareToken`.\n\nThe allowance is not reset in the `unregisterVault()` flow, which will leave a lingering max approval to the old vault.\n\n## Impact\n\nLingering `investmentShareToken` allowance on previous vault even after vault update\n\n## Recommendation\n\n```solidity\n// ShareTokenUpgradeable.sol\nfunction unregisterVault(address asset) external onlyOwner {\n    // SNIP\n\n    // Remove vault registration (automatically removes from enumerable collection)\n    $.assetToVault.remove(asset);\n    delete $.vaultToAsset[vaultAddress];\n    \n+   IERC20(investmentShareToken).approve(vaultAddress, 0);\n\n    emit VaultUpdate(asset, address(0));\n}\n```",
+      "proofOfConcept": "```solidity\n// CompleteFlowWalkthrough.t.sol\n// ❯ forge test --match-test test_VaultUpdate_LingeringApprovalPoC -vv\nfunction test_VaultUpdate_LingeringApprovalPoC() public {\n    // @audit unregisterVault()\n    // Deploy a real new vault for the same asset\n    ERC7575VaultUpgradeable vaultImpl = new ERC7575VaultUpgradeable();\n    bytes memory vaultInitData = abi.encodeWithSelector(ERC7575VaultUpgradeable.initialize.selector, asset, address(shareToken), owner);\n    ERC1967Proxy vaultProxy = new ERC1967Proxy(address(vaultImpl), vaultInitData);\n    address newVault = address(vaultProxy);\n\n    vm.startPrank(owner);\n    vault.setVaultActive(false);\n\n    shareToken.unregisterVault(address(asset));\n\n    shareToken.registerVault(address(asset), newVault);\n    assertEq(shareToken.vault(address(asset)), newVault);\n    vm.stopPrank();\n\n    uint256 oldVaultAllowance = investmentShareToken.allowance(address(shareToken), address(vault));\n    uint256 newVaultAllowance = investmentShareToken.allowance(address(shareToken), address(newVault));\n    assertTrue(oldVaultAllowance == type(uint256).max);\n    assertTrue(newVaultAllowance == type(uint256).max);\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/ShareTokenUpgradeable.sol#L282-L327",
+      "number": 179,
+      "aiExplanation": null,
+      "_index": 179
+    }
+  }
+}

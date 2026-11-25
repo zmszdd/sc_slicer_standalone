@@ -14,6 +14,7 @@ import copy
 import functools
 import json
 import re
+import shutil
 from lib.salvage import check_numeric_plan, check_address_plan
 from pathlib import Path
 import subprocess
@@ -35,6 +36,7 @@ from prompts.current import (FAITHFULNESS_AUDIT_PROMPT,
 from lib.ingest import build_catalog, hydrate_elements, hydrate_formalization
 from lib.impact_inventory import (MAX_IMPACTS, merge_impact_inventory,
                                   validate_impact_inventory)
+from lib.formalization_audit import build_contract as build_formalization_contract
 from lib.plan_synthesizer import (check_distinct_p_predicates, classified_relation_alignment,
                               faithfulness_mismatches, faithfulness_repair_mismatches,
                               faithfulness_status, intent_scope_review,
@@ -52,7 +54,8 @@ from lib.multi_impact import (claim_id_for_impact,
                               claim_id_for_impact_intent,
                               apply_multi_intent_coverage,
                               impact_intent_key,
-                              merge_claim_formalizations)
+                              merge_claim_formalizations,
+                              namespace_observability_contract)
 from lib.impact_cards import (APPLICABILITY_SCHEMA_VERSION,
                               APPLICABILITY_SCHEMA_VERSION_V1,
                               applicability_by_impact, applicability_payload,
@@ -70,6 +73,7 @@ from lib.salvage import (example_pinning_review, mixed_unit_scaling_review,
                                 normalize_element_ids, drop_unused_invalid_symbols,
                                 normalize_one_to_one_rate)
 from lib.stage3_consistency import binding_contract
+from lib.invariant_candidates import build as build_invariant_candidates
 from lib.ingest import (PROMPT as READINESS_PROMPT, explicit_impact_evidence_ids,
                         model_payload, validate_impact_evidence,
                         validate_readiness)
@@ -77,6 +81,42 @@ from lib.ingest import (PROMPT as READINESS_PROMPT, explicit_impact_evidence_ids
 
 def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
+
+
+def restore_replay_artifacts(output: Path, source: Path | None) -> tuple[dict | None, list[dict] | None]:
+    """Restore deterministic Stage-2 side artifacts for offline declaration replay.
+
+    Offline mode already receives saved elements/formalization.  The current
+    declaration writer also needs the impact inventory and formal-plan records
+    to emit weak-invariant triage without any model call.
+    """
+    if source is None or not Path(source).is_dir():
+        return None, None
+    source = Path(source)
+    for name in ('impact-inventory.json', 'formal-plan.json',
+                 'semantic-cards.json', 'impact-applicability.json'):
+        path = source / name
+        if path.is_file():
+            shutil.copy2(path, output / name)
+    plan_tree = source / 'impact-formalizations'
+    if plan_tree.is_dir():
+        shutil.copytree(plan_tree, output / 'impact-formalizations',
+                        dirs_exist_ok=True)
+    inventory = None
+    inventory_path = output / 'impact-inventory.json'
+    if inventory_path.is_file():
+        try:
+            inventory = json.loads(inventory_path.read_text())
+        except (OSError, ValueError):
+            inventory = None
+    plan_records = None
+    plan_path = output / 'formal-plan.json'
+    if plan_path.is_file():
+        try:
+            plan_records = json.loads(plan_path.read_text()).get('claims') or []
+        except (OSError, ValueError):
+            plan_records = None
+    return inventory, plan_records
 
 
 def stage2_assessment(readiness=None, bundle=None, elements=None,
@@ -2150,7 +2190,7 @@ def _build_parser():
                         help='one neural formalization call from saved, already-grounded elements')
     parser.add_argument('--allow-report-upload', action='store_true')
     parser.add_argument('--elements-only', action='store_true')
-    parser.add_argument('--provider', choices=('opencode', 'deepseek'), default='opencode',
+    parser.add_argument('--provider', choices=('opencode', 'opencode_api', 'deepseek'), default='opencode',
                         help='stage-2 model transport; direct DeepSeek requires a private local key file')
     parser.add_argument('--model')
     parser.add_argument('--deepseek-proxy', metavar='POLICY', default='environment',
@@ -2158,7 +2198,7 @@ def _build_parser():
                              'only, ignored otherwise): "environment" honours the '
                              'ambient *_proxy variables, "direct" ignores them, or '
                              'give an http(s):// URL. main.py injects "direct"')
-    parser.add_argument('--audit-provider', choices=('pipeline', 'opencode', 'deepseek'),
+    parser.add_argument('--audit-provider', choices=('pipeline', 'opencode', 'opencode_api', 'deepseek'),
                         default='pipeline',
                         help='transport for the S17 semantic faithfulness cross-audit '
                              'call (live prompt only): "pipeline" reuses the main '
@@ -2168,6 +2208,10 @@ def _build_parser():
                              'the chosen audit provider\'s default model')
     parser.add_argument('--evidence-mode', choices=('ids', 'quotes'), default='ids',
                         help='neural mode defaults to source IDs; quotes is legacy compatibility')
+    parser.add_argument('--report-input-policy', type=int, choices=(2, 3, 4, 5, 6),
+                        default=6,
+                        help='report.json prose allow-list; v6 adds PoC prose, '
+                             'still report-only and never reads source code')
     parser.add_argument('--formalization-scope', choices=('core', 'full'), default='core',
                         help='neural request scope: core formulas by default; deferred impacts remain review warnings')
     parser.add_argument('--formal-retries', type=int, choices=(0, 1, 2), default=None,
@@ -2260,7 +2304,9 @@ def _configure_neural_runtime(args, features, provenance, output):
                            else configured_model())
     extract_fn = (functools.partial(extract_deepseek,
                                     proxy=args.deepseek_proxy)
-                  if args.provider == 'deepseek' else r.extract)
+                  if args.provider == 'deepseek' else
+                  r.extract_opencode_api if args.provider == 'opencode_api'
+                  else r.extract)
     audit_extract_fn, audit_model = None, None
     if features['semantic_faithfulness_audit']:
         audit_provider = (args.provider if args.audit_provider == 'pipeline'
@@ -2273,7 +2319,9 @@ def _configure_neural_runtime(args, features, provenance, output):
             raise ValueError('unsupported audit model for deepseek transport')
         audit_extract_fn = (functools.partial(extract_deepseek,
                                               proxy=args.deepseek_proxy)
-                            if audit_provider == 'deepseek' else r.extract)
+                            if audit_provider == 'deepseek' else
+                            r.extract_opencode_api
+                            if audit_provider == 'opencode_api' else r.extract)
         provenance.update({'audit_provider': audit_provider,
                            'audit_model': audit_model})
     provenance.update({'model_provider': args.provider, 'model_name': model})
@@ -2320,10 +2368,18 @@ def main():
     parser = _build_parser()
     args, features, neural_formalization = _parse_args(parser)
     args.output.mkdir(parents=True, exist_ok=False)
+    replay_source = None
+    if not neural_formalization:
+        replay_source = (args.formalization or args.elements)
+        replay_source = Path(replay_source).parent if replay_source else None
+    replay_inventory, replay_plan_records = restore_replay_artifacts(
+        args.output, replay_source)
     calls = 0
     readiness = None
     try:
-        text, raw, provenance = load_report(args.case_dir, args.report)
+        text, raw, provenance = load_report(
+            args.case_dir, args.report,
+            input_policy_version=args.report_input_policy)
         provenance.update({'candidate_origin': 'external_model' if neural_formalization else args.origin,
                            'elements_source': str(args.elements) if args.elements else None,
                            'formalization_source': str(args.formalization) if args.formalization else None,
@@ -2387,9 +2443,9 @@ def main():
                 print(json.dumps(status))
                 return 2
         impact_sources = None
-        impact_inventory = None
+        impact_inventory = replay_inventory
         eligible_impact_ids = None
-        plan_records = None
+        plan_records = replay_plan_records
         not_applicable_impacts = None
         if args.extract:
             if args.evidence_mode == 'ids':
@@ -3213,11 +3269,16 @@ def main():
                 continue
         observability_artifact = {
             'schema_version': 'observability-contract/1',
-            'claims': {claim_id: observability_contract(plan)
+            'claims': {claim_id: namespace_observability_contract(
+                           claim_id, observability_contract(plan))
                        for claim_id, plan in plan_by_claim.items()},
         }
         write_json(args.output / 'observability-contract.json',
                    observability_artifact)
+        formalization_artifact = build_formalization_contract(
+            formal, observability_artifact.get('claims'))
+        write_json(args.output / 'formalization-contract.json',
+                   formalization_artifact)
         weak_triage = {}
         for claim in bundle['claims']:
             filename = claim['id'] + '.smt2'
@@ -3256,11 +3317,15 @@ def main():
                 query_file.write_text(result.pop('smt'))
                 result['path'] = str(query_file.relative_to(args.output))
                 result['sha256'] = r.sha(query_file.read_bytes())
-            observability = (observability_contract(claim_plan)['symbols']
-                             if claim_plan else None)
+            claim_observability = observability_artifact['claims'].get(
+                claim['id'])
+            observability = (claim_observability['symbols']
+                             if claim_observability else None)
             declarations.append({'claim_id': claim['id'], 'predicates_path': filename,
                                  'predicates_sha256': r.sha((args.output / filename).read_bytes()),
                                  'formalization_status': claim['formalization_status'],
+                                 'formalization_contract': formalization_artifact[
+                                     'claims'].get(claim['id']),
                                  'modality': claim['modality'], 'scope': claim['scope'],
                                  'report_queries': ['P AND V', 'P AND V AND NOT I', 'P AND V AND I'],
                                  'code_queries_after_binding': ['P AND T', 'P AND T AND NOT I',
@@ -3273,6 +3338,12 @@ def main():
             'schema_version': 'weak-invariant-triage/1',
             'claims': weak_triage,
         })
+        invariant_candidates = build_invariant_candidates(
+            elements, formal, weak_triage=weak_triage,
+            applicability=(applicability if 'applicability' in locals() else None),
+            plans=plan_by_claim)
+        write_json(args.output / 'invariant-candidates.json',
+                   invariant_candidates)
         triage = triage_bundle(bundle, unresolved_review, query_status)
         assessment = stage2_assessment(
             readiness=readiness, bundle=bundle,
@@ -3295,6 +3366,12 @@ def main():
             stage3_declarations = [row for row in declarations
                                    if row['claim_id'] in stage3_claim_ids]
         interface = {'schema_version': 'stage3-semantic-spec/1',
+                     'formalization_contract_path': 'formalization-contract.json',
+                     'formalization_contract_sha256': r.sha(
+                         (args.output / 'formalization-contract.json').read_bytes()),
+                 'invariant_candidates_path': 'invariant-candidates.json',
+                 'invariant_candidates_sha256': r.sha(
+                     (args.output / 'invariant-candidates.json').read_bytes()),
                      'observability_review_path': 'observability-review.json',
                      'observability_review_sha256': r.sha((args.output / 'observability-review.json').read_bytes()),
                      'catalog_path': 'evidence-catalog.json',

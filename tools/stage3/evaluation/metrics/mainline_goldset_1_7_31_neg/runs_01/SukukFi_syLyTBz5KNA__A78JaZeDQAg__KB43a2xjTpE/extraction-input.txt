@@ -1,0 +1,31 @@
+Post-fulfillDeposit Yield Reversal Causes Depositor Loss
+
+## Finding description and impact
+
+---
+
+The settlement ERC7575 vaults share token (`WERC7575ShareToken`) utilizes a yield management system that allows for the recording and subsequent cancellation of yield (`adjustBalance` and `cancelBalanceAdjustment`).
+
+On the Investment side, the user’s shares on deposit fulfillment are calculated based on total share token supply **and total asset’s ( which includes : asset’s not invested + invested asset’s + yield generated and recorded using `adjustBalance` )**
+
+The vulnerability exists in the timing mismatch between the calculation **of user shares** inside the Investment vault,  and the **finality of yield recording**.
+
+The flow proceeds as follows:
+
+1. **`requestDeposit`**: A user initiates a deposit request .
+2. **`adjustBalance`**: The system **records accrued yield**, updating the WERC7575 shareToken internal state. This increases the `totalAssets` in Investment side and, consequently, the Price Per Share (PPS).
+3. **`fulfillDeposit`**: The user's deposit is finalized. Crucially, the protocol calculates the shares to mint based on the **inflated PPS** resulting from step 2. The user receives fewer shares for their assets because the share price is currently high.
+4. **`cancelBalanceAdjustment`**: The yield recording is reversed (due to an external strategy failure, chain reorg, or accounting correction). The `totalAssets` decrease back to the pre-yield level.
+
+Because the user's share allocation was "locked in" during step 3 at the higher price, but the backing assets for that price were removed in step 4, the user is left holding shares that are instantly worth less than their deposit.
+
+### Impact 
+
+The user's deposit suffers **immediate and irreversible dilution** because they **overpaid for shares** based on a **temporarily inflated** Net Asset Value (NAV). When the falsely recorded yield is later reversed, the shares the user received are instantly worth less than the assets they deposited, resulting in a loss of principal.
+
+## Recommended mitigation steps
+
+The core protocol design must be revised with the objective of **ensuring `fulfillDeposit` never executes against a reversible value.**
+
+### PoC
+the PoC test can be run inside `AuditReproductionTest`

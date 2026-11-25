@@ -1,0 +1,951 @@
+{
+  "schema_version": "stage2-impact-review-set/2",
+  "by_impact_intent": {
+    "price_manipulation_sequencer_downtime::intent_validate_sequencer_before_snapshot": {
+      "schema_version": "semantic-faithfulness-audit/4",
+      "status": "completed",
+      "verdict_consistent": true,
+      "fidelity_status": "passed",
+      "checks": [
+        {
+          "source_id": "l2_deployment_with_centralized_sequencer",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth symbol directly encodes the deployment claim."
+        },
+        {
+          "source_id": "sequencer_downtime_occurs",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth symbol matches the sequencer downtime statement."
+        },
+        {
+          "source_id": "timestamp_frozen_during_downtime",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth symbol matches the frozen block.timestamp claim."
+        },
+        {
+          "source_id": "sequencer_restart_backlog",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth symbol matches the backlog executing with stale timestamp."
+        },
+        {
+          "source_id": "intent_validate_sequencer_before_snapshot",
+          "role": "I",
+          "verdict": "consistent",
+          "reason": "Implication encodes that on L2 with snapshot recorded, uptime must be validated first."
+        },
+        {
+          "source_id": "price_manipulation_sequencer_downtime",
+          "role": "V",
+          "verdict": "consistent",
+          "reason": "Predicate symbol directly encodes price manipulation via downtime windows."
+        }
+      ],
+      "piv_relation": {
+        "verdict": "consistent",
+        "reason": "relation_context e_e89564572100_0018 and e_e89564572100_0019/e_0022/e_0023 explicitly bridge frozen timestamp during downtime to manipulated-price trades recorded in snapshots, supporting V under P and the missing uptime check in I."
+      },
+      "relation_context": [
+        {
+          "statement_id": "first_swap_calls_maybe_insert_snapshot",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0017",
+              "text": "But, the oracle sees this as normal activity. The first swap that executes calls `maybeInsertSnapshot()`, which calculates:"
+            },
+            {
+              "evidence_id": "e_e89564572100_0027",
+              "text": "Tthis vulnerability strikes at the core of how the oracle collects data. The `maybeInsertSnapshot()` function isn't a helper for integrators - it's called directly by the protocol's `beforeSwap` and `beforeUpdatePosition` hooks:"
+            }
+          ]
+        },
+        {
+          "statement_id": "time_passed_computed_from_frozen_timestamp",
+          "role": "root_cause",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0006",
+              "text": "The function calculates `timePassed` using `block.timestamp`, creates cumulative values based on that time delta, and stores the snapshot. On L2s with centralized sequencers, this logic breaks down catastrophically during sequencer downtime."
+            },
+            {
+              "evidence_id": "e_e89564572100_0018",
+              "text": "If the sequencer was down for an hour but `block.timestamp` only advanced by seconds (because it was frozen), `timePassed` is artificially small. The snapshot gets written with cumulative values that don't reflect the real time gap."
+            }
+          ]
+        },
+        {
+          "statement_id": "no_sequencer_uptime_check",
+          "role": "root_cause",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0003",
+              "text": "The Oracle extension records price snapshots through hooks that fire on every swap and position update in the Ekubo protocol. These snapshots form the foundation for all time-weighted average price calculations consumed by external protocols. However, the snapshot insertion logic completely ignores Layer 2 sequencer status, which creates a critical vulnerability if Ekubo deploys on any L2 chain."
+            },
+            {
+              "evidence_id": "e_e89564572100_0004",
+              "text": "The README explicitly states Ekubo is a \"multi-chain ownerless and permissionless contract\" designed for the EVM. There's a reasonable expectation this code will run on chains with centralized sequencers. Yet the oracle has zero awareness of sequencer uptime."
+            }
+          ]
+        },
+        {
+          "statement_id": "trades_at_manipulated_prices_recorded",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0019",
+              "text": "Worse, trades execute at prices that may have been manipulated during the accumulation phase while the sequencer was down. These corrupted prices get locked into the oracle's TWAP history."
+            },
+            {
+              "evidence_id": "e_e89564572100_0022",
+              "text": "1. Execute trades during the first few blocks after restart at manipulated prices"
+            },
+            {
+              "evidence_id": "e_e89564572100_0023",
+              "text": "2. Have those trades recorded in oracle snapshots"
+            }
+          ]
+        },
+        {
+          "statement_id": "grace_period_trades_after_restart",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0021",
+              "text": "Even after the sequencer is back up and `block.timestamp` starts advancing normally, there's a window where the oracle data is still contaminated. Attackers can:"
+            }
+          ]
+        }
+      ],
+      "relationship_trace": {
+        "status": "explicit",
+        "links": [
+          {
+            "from_source_ids": [
+              "sequencer_downtime_occurs",
+              "timestamp_frozen_during_downtime",
+              "sequencer_restart_backlog",
+              "intent_validate_sequencer_before_snapshot",
+              "price_manipulation_sequencer_downtime"
+            ],
+            "context_statement_id": "time_passed_computed_from_frozen_timestamp",
+            "evidence_ids": [
+              "e_e89564572100_0006",
+              "e_e89564572100_0018"
+            ],
+            "reported_relation": "Frozen block.timestamp during sequencer downtime makes timePassed artificially small, so snapshots are written with cumulative values that do not reflect the real time gap."
+          },
+          {
+            "from_source_ids": [
+              "intent_validate_sequencer_before_snapshot",
+              "price_manipulation_sequencer_downtime"
+            ],
+            "context_statement_id": "no_sequencer_uptime_check",
+            "evidence_ids": [
+              "e_e89564572100_0003",
+              "e_e89564572100_0004"
+            ],
+            "reported_relation": "The snapshot insertion logic ignores L2 sequencer status, so the oracle has no awareness of sequencer uptime."
+          },
+          {
+            "from_source_ids": [
+              "sequencer_restart_backlog",
+              "price_manipulation_sequencer_downtime"
+            ],
+            "context_statement_id": "trades_at_manipulated_prices_recorded",
+            "evidence_ids": [
+              "e_e89564572100_0019",
+              "e_e89564572100_0022",
+              "e_e89564572100_0023"
+            ],
+            "reported_relation": "Trades execute at manipulated prices during the post-restart window and those corrupted prices get recorded in oracle snapshots."
+          }
+        ],
+        "gap": ""
+      },
+      "mismatch_count": 0,
+      "repair_finding_count": 0
+    },
+    "price_manipulation_sequencer_downtime::intent_detect_handle_downtime": {
+      "schema_version": "semantic-faithfulness-audit/4",
+      "status": "completed",
+      "verdict_consistent": false,
+      "fidelity_status": "failed",
+      "checks": [
+        {
+          "source_id": "l2_deployment_with_centralized_sequencer",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth symbol directly encodes the deployment on an L2 with centralized sequencer."
+        },
+        {
+          "source_id": "sequencer_downtime_occurs",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth symbol matches the statement that sequencer downtime occurs for minutes to hours."
+        },
+        {
+          "source_id": "timestamp_frozen_during_downtime",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth symbol encodes block.timestamp frozen during downtime."
+        },
+        {
+          "source_id": "sequencer_restart_backlog",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth symbol encodes backlog executing with stale timestamp on restart."
+        },
+        {
+          "source_id": "intent_detect_handle_downtime",
+          "role": "I",
+          "verdict": "other_mismatch",
+          "reason": "Statement asserts a mechanism is needed so snapshots are not recorded from stale timestamps, but predicate equates stale-snapshot recording with mechanism presence rather than encoding the requirement."
+        },
+        {
+          "source_id": "price_manipulation_sequencer_downtime",
+          "role": "V",
+          "verdict": "consistent",
+          "reason": "Predicate symbol directly encodes price manipulation through a sequencer downtime window."
+        }
+      ],
+      "piv_relation": {
+        "verdict": "consistent",
+        "reason": "relation_context statement time_passed_computed_from_frozen_timestamp (e_e89564572100_0006, e_e89564572100_0018) and trades_at_manipulated_prices_recorded (e_e89564572100_0019, e_e89564572100_0022, e_e89564572100_0023) explicitly bridge frozen timestamps and stale snapshots to price manipulation via downtime."
+      },
+      "relation_context": [
+        {
+          "statement_id": "first_swap_calls_maybe_insert_snapshot",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0017",
+              "text": "But, the oracle sees this as normal activity. The first swap that executes calls `maybeInsertSnapshot()`, which calculates:"
+            },
+            {
+              "evidence_id": "e_e89564572100_0027",
+              "text": "Tthis vulnerability strikes at the core of how the oracle collects data. The `maybeInsertSnapshot()` function isn't a helper for integrators - it's called directly by the protocol's `beforeSwap` and `beforeUpdatePosition` hooks:"
+            }
+          ]
+        },
+        {
+          "statement_id": "time_passed_computed_from_frozen_timestamp",
+          "role": "root_cause",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0006",
+              "text": "The function calculates `timePassed` using `block.timestamp`, creates cumulative values based on that time delta, and stores the snapshot. On L2s with centralized sequencers, this logic breaks down catastrophically during sequencer downtime."
+            },
+            {
+              "evidence_id": "e_e89564572100_0018",
+              "text": "If the sequencer was down for an hour but `block.timestamp` only advanced by seconds (because it was frozen), `timePassed` is artificially small. The snapshot gets written with cumulative values that don't reflect the real time gap."
+            }
+          ]
+        },
+        {
+          "statement_id": "no_sequencer_uptime_check",
+          "role": "root_cause",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0003",
+              "text": "The Oracle extension records price snapshots through hooks that fire on every swap and position update in the Ekubo protocol. These snapshots form the foundation for all time-weighted average price calculations consumed by external protocols. However, the snapshot insertion logic completely ignores Layer 2 sequencer status, which creates a critical vulnerability if Ekubo deploys on any L2 chain."
+            },
+            {
+              "evidence_id": "e_e89564572100_0004",
+              "text": "The README explicitly states Ekubo is a \"multi-chain ownerless and permissionless contract\" designed for the EVM. There's a reasonable expectation this code will run on chains with centralized sequencers. Yet the oracle has zero awareness of sequencer uptime."
+            }
+          ]
+        },
+        {
+          "statement_id": "trades_at_manipulated_prices_recorded",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0019",
+              "text": "Worse, trades execute at prices that may have been manipulated during the accumulation phase while the sequencer was down. These corrupted prices get locked into the oracle's TWAP history."
+            },
+            {
+              "evidence_id": "e_e89564572100_0022",
+              "text": "1. Execute trades during the first few blocks after restart at manipulated prices"
+            },
+            {
+              "evidence_id": "e_e89564572100_0023",
+              "text": "2. Have those trades recorded in oracle snapshots"
+            }
+          ]
+        },
+        {
+          "statement_id": "grace_period_trades_after_restart",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0021",
+              "text": "Even after the sequencer is back up and `block.timestamp` starts advancing normally, there's a window where the oracle data is still contaminated. Attackers can:"
+            }
+          ]
+        }
+      ],
+      "relationship_trace": {
+        "status": "explicit",
+        "links": [
+          {
+            "from_source_ids": [
+              "timestamp_frozen_during_downtime",
+              "sequencer_restart_backlog",
+              "intent_detect_handle_downtime"
+            ],
+            "context_statement_id": "time_passed_computed_from_frozen_timestamp",
+            "evidence_ids": [
+              "e_e89564572100_0006",
+              "e_e89564572100_0018"
+            ],
+            "reported_relation": "Frozen block.timestamp during downtime makes timePassed artificially small so snapshots are written with cumulative values that do not reflect the real time gap."
+          },
+          {
+            "from_source_ids": [
+              "intent_detect_handle_downtime",
+              "price_manipulation_sequencer_downtime"
+            ],
+            "context_statement_id": "trades_at_manipulated_prices_recorded",
+            "evidence_ids": [
+              "e_e89564572100_0019",
+              "e_e89564572100_0022",
+              "e_e89564572100_0023"
+            ],
+            "reported_relation": "Trades at manipulated prices after restart get recorded in oracle snapshots, enabling price manipulation through the downtime window."
+          }
+        ],
+        "gap": ""
+      },
+      "mismatch_count": 1,
+      "repair_finding_count": 1
+    },
+    "permanent_corruption_oracle_data::intent_validate_sequencer_before_snapshot": {
+      "schema_version": "semantic-faithfulness-audit/4",
+      "status": "completed",
+      "verdict_consistent": true,
+      "fidelity_status": "passed",
+      "checks": [
+        {
+          "source_id": "l2_deployment_with_centralized_sequencer",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth of l2_with_centralized_sequencer matches the statement."
+        },
+        {
+          "source_id": "sequencer_downtime_occurs",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth of sequencer_downtime_occurs matches the statement."
+        },
+        {
+          "source_id": "timestamp_frozen_during_downtime",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth of timestamp_frozen_during_downtime matches the statement."
+        },
+        {
+          "source_id": "sequencer_restart_backlog",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth of sequencer_restart_backlog matches the statement."
+        },
+        {
+          "source_id": "intent_validate_sequencer_before_snapshot",
+          "role": "I",
+          "verdict": "consistent",
+          "reason": "Implication that L2 snapshot recording requires prior uptime validation matches the intent."
+        },
+        {
+          "source_id": "permanent_corruption_oracle_data",
+          "role": "V",
+          "verdict": "consistent",
+          "reason": "Conjunction of oracle_data_permanently_corrupted with itself encodes the same corruption fact."
+        }
+      ],
+      "piv_relation": {
+        "verdict": "consistent",
+        "reason": "relation_context e_e89564572100_0003/0004 (no_sequencer_uptime_check) and e_e89564572100_0018/0019/0023 explicitly bridge missing uptime validation and frozen-timestamp snapshots to locked-in corrupted oracle data."
+      },
+      "relation_context": [
+        {
+          "statement_id": "first_swap_calls_maybe_insert_snapshot",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0017",
+              "text": "But, the oracle sees this as normal activity. The first swap that executes calls `maybeInsertSnapshot()`, which calculates:"
+            },
+            {
+              "evidence_id": "e_e89564572100_0027",
+              "text": "Tthis vulnerability strikes at the core of how the oracle collects data. The `maybeInsertSnapshot()` function isn't a helper for integrators - it's called directly by the protocol's `beforeSwap` and `beforeUpdatePosition` hooks:"
+            }
+          ]
+        },
+        {
+          "statement_id": "time_passed_computed_from_frozen_timestamp",
+          "role": "root_cause",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0006",
+              "text": "The function calculates `timePassed` using `block.timestamp`, creates cumulative values based on that time delta, and stores the snapshot. On L2s with centralized sequencers, this logic breaks down catastrophically during sequencer downtime."
+            },
+            {
+              "evidence_id": "e_e89564572100_0018",
+              "text": "If the sequencer was down for an hour but `block.timestamp` only advanced by seconds (because it was frozen), `timePassed` is artificially small. The snapshot gets written with cumulative values that don't reflect the real time gap."
+            }
+          ]
+        },
+        {
+          "statement_id": "no_sequencer_uptime_check",
+          "role": "root_cause",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0003",
+              "text": "The Oracle extension records price snapshots through hooks that fire on every swap and position update in the Ekubo protocol. These snapshots form the foundation for all time-weighted average price calculations consumed by external protocols. However, the snapshot insertion logic completely ignores Layer 2 sequencer status, which creates a critical vulnerability if Ekubo deploys on any L2 chain."
+            },
+            {
+              "evidence_id": "e_e89564572100_0004",
+              "text": "The README explicitly states Ekubo is a \"multi-chain ownerless and permissionless contract\" designed for the EVM. There's a reasonable expectation this code will run on chains with centralized sequencers. Yet the oracle has zero awareness of sequencer uptime."
+            }
+          ]
+        },
+        {
+          "statement_id": "trades_at_manipulated_prices_recorded",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0019",
+              "text": "Worse, trades execute at prices that may have been manipulated during the accumulation phase while the sequencer was down. These corrupted prices get locked into the oracle's TWAP history."
+            },
+            {
+              "evidence_id": "e_e89564572100_0022",
+              "text": "1. Execute trades during the first few blocks after restart at manipulated prices"
+            },
+            {
+              "evidence_id": "e_e89564572100_0023",
+              "text": "2. Have those trades recorded in oracle snapshots"
+            }
+          ]
+        },
+        {
+          "statement_id": "grace_period_trades_after_restart",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0021",
+              "text": "Even after the sequencer is back up and `block.timestamp` starts advancing normally, there's a window where the oracle data is still contaminated. Attackers can:"
+            }
+          ]
+        }
+      ],
+      "relationship_trace": {
+        "status": "explicit",
+        "links": [
+          {
+            "from_source_ids": [
+              "intent_validate_sequencer_before_snapshot",
+              "permanent_corruption_oracle_data"
+            ],
+            "context_statement_id": "no_sequencer_uptime_check",
+            "evidence_ids": [
+              "e_e89564572100_0003",
+              "e_e89564572100_0004"
+            ],
+            "reported_relation": "The snapshot insertion logic ignores sequencer status, so snapshots are recorded without uptime validation, enabling oracle data corruption."
+          },
+          {
+            "from_source_ids": [
+              "sequencer_restart_backlog",
+              "permanent_corruption_oracle_data"
+            ],
+            "context_statement_id": "time_passed_computed_from_frozen_timestamp",
+            "evidence_ids": [
+              "e_e89564572100_0006",
+              "e_e89564572100_0018"
+            ],
+            "reported_relation": "Backlog transactions execute with a stale frozen block.timestamp, producing snapshots with cumulative values that do not reflect the real time gap."
+          },
+          {
+            "from_source_ids": [
+              "timestamp_frozen_during_downtime",
+              "permanent_corruption_oracle_data"
+            ],
+            "context_statement_id": "trades_at_manipulated_prices_recorded",
+            "evidence_ids": [
+              "e_e89564572100_0019",
+              "e_e89564572100_0023"
+            ],
+            "reported_relation": "Trades at manipulated prices during the downtime get recorded into oracle snapshots, locking corrupted prices into TWAP history."
+          }
+        ],
+        "gap": ""
+      },
+      "mismatch_count": 0,
+      "repair_finding_count": 0
+    },
+    "permanent_corruption_oracle_data::intent_detect_handle_downtime": {
+      "schema_version": "semantic-faithfulness-audit/4",
+      "status": "completed",
+      "verdict_consistent": false,
+      "fidelity_status": "failed",
+      "checks": [
+        {
+          "source_id": "l2_deployment_with_centralized_sequencer",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate asserts the same deployment-on-centralized-sequencer fact as the statement."
+        },
+        {
+          "source_id": "sequencer_downtime_occurs",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate truth symbol matches the statement's downtime occurrence claim."
+        },
+        {
+          "source_id": "timestamp_frozen_during_downtime",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate encodes the frozen block.timestamp during downtime as stated."
+        },
+        {
+          "source_id": "sequencer_restart_backlog",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate captures backlog executing with the same stale timestamp on restart."
+        },
+        {
+          "source_id": "intent_detect_handle_downtime",
+          "role": "I",
+          "verdict": "other_mismatch",
+          "reason": "Statement requires a detection mechanism so snapshots are not recorded from stale timestamps, but predicate asserts mechanism presence equals stale-snapshot recording, inverting the intended relationship."
+        },
+        {
+          "source_id": "permanent_corruption_oracle_data",
+          "role": "V",
+          "verdict": "consistent",
+          "reason": "Predicate asserts oracle data permanently corrupted, matching the statement."
+        }
+      ],
+      "piv_relation": {
+        "verdict": "weakened",
+        "reason": "relation_context (e_e89564572100_0003, e_e89564572100_0004) supports missing uptime check leading to stale snapshots, but the I predicate's equality form contradicts the intended 'not recorded from stale timestamps' semantics, leaving the V-I link ambiguous."
+      },
+      "relation_context": [
+        {
+          "statement_id": "first_swap_calls_maybe_insert_snapshot",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0017",
+              "text": "But, the oracle sees this as normal activity. The first swap that executes calls `maybeInsertSnapshot()`, which calculates:"
+            },
+            {
+              "evidence_id": "e_e89564572100_0027",
+              "text": "Tthis vulnerability strikes at the core of how the oracle collects data. The `maybeInsertSnapshot()` function isn't a helper for integrators - it's called directly by the protocol's `beforeSwap` and `beforeUpdatePosition` hooks:"
+            }
+          ]
+        },
+        {
+          "statement_id": "time_passed_computed_from_frozen_timestamp",
+          "role": "root_cause",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0006",
+              "text": "The function calculates `timePassed` using `block.timestamp`, creates cumulative values based on that time delta, and stores the snapshot. On L2s with centralized sequencers, this logic breaks down catastrophically during sequencer downtime."
+            },
+            {
+              "evidence_id": "e_e89564572100_0018",
+              "text": "If the sequencer was down for an hour but `block.timestamp` only advanced by seconds (because it was frozen), `timePassed` is artificially small. The snapshot gets written with cumulative values that don't reflect the real time gap."
+            }
+          ]
+        },
+        {
+          "statement_id": "no_sequencer_uptime_check",
+          "role": "root_cause",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0003",
+              "text": "The Oracle extension records price snapshots through hooks that fire on every swap and position update in the Ekubo protocol. These snapshots form the foundation for all time-weighted average price calculations consumed by external protocols. However, the snapshot insertion logic completely ignores Layer 2 sequencer status, which creates a critical vulnerability if Ekubo deploys on any L2 chain."
+            },
+            {
+              "evidence_id": "e_e89564572100_0004",
+              "text": "The README explicitly states Ekubo is a \"multi-chain ownerless and permissionless contract\" designed for the EVM. There's a reasonable expectation this code will run on chains with centralized sequencers. Yet the oracle has zero awareness of sequencer uptime."
+            }
+          ]
+        },
+        {
+          "statement_id": "trades_at_manipulated_prices_recorded",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0019",
+              "text": "Worse, trades execute at prices that may have been manipulated during the accumulation phase while the sequencer was down. These corrupted prices get locked into the oracle's TWAP history."
+            },
+            {
+              "evidence_id": "e_e89564572100_0022",
+              "text": "1. Execute trades during the first few blocks after restart at manipulated prices"
+            },
+            {
+              "evidence_id": "e_e89564572100_0023",
+              "text": "2. Have those trades recorded in oracle snapshots"
+            }
+          ]
+        },
+        {
+          "statement_id": "grace_period_trades_after_restart",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0021",
+              "text": "Even after the sequencer is back up and `block.timestamp` starts advancing normally, there's a window where the oracle data is still contaminated. Attackers can:"
+            }
+          ]
+        }
+      ],
+      "relationship_trace": {
+        "status": "explicit",
+        "links": [
+          {
+            "from_source_ids": [
+              "intent_detect_handle_downtime",
+              "permanent_corruption_oracle_data"
+            ],
+            "context_statement_id": "no_sequencer_uptime_check",
+            "evidence_ids": [
+              "e_e89564572100_0003",
+              "e_e89564572100_0004"
+            ],
+            "reported_relation": "The snapshot insertion logic ignores sequencer status, so without a downtime-detection mechanism snapshots are recorded from stale timestamps, corrupting oracle data."
+          }
+        ],
+        "gap": ""
+      },
+      "mismatch_count": 2,
+      "repair_finding_count": 1
+    },
+    "exploitation_protocols_depending_oracle::intent_validate_sequencer_before_snapshot": {
+      "schema_version": "semantic-faithfulness-audit/4",
+      "status": "completed",
+      "verdict_consistent": true,
+      "fidelity_status": "passed",
+      "checks": [
+        {
+          "source_id": "l2_deployment_with_centralized_sequencer",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate asserts the same truth as the statement about L2 deployment with centralized sequencer."
+        },
+        {
+          "source_id": "sequencer_downtime_occurs",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate asserts the same truth as the statement about sequencer downtime lasting minutes to hours."
+        },
+        {
+          "source_id": "timestamp_frozen_during_downtime",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate asserts the same truth as the statement about block.timestamp being frozen during downtime."
+        },
+        {
+          "source_id": "sequencer_restart_backlog",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate asserts the same truth as the statement about backlog executing with stale timestamp on restart."
+        },
+        {
+          "source_id": "intent_validate_sequencer_before_snapshot",
+          "role": "I",
+          "verdict": "consistent",
+          "reason": "Predicate encodes the same requirement that the oracle validates sequencer uptime before recording snapshots."
+        },
+        {
+          "source_id": "exploitation_protocols_depending_oracle",
+          "role": "V",
+          "verdict": "consistent",
+          "reason": "Predicate asserts protocols depending on the oracle are exploited, matching the statement."
+        }
+      ],
+      "piv_relation": {
+        "verdict": "consistent",
+        "reason": "relation_context e_e89564572100_0006/0018 (time_passed_computed_from_frozen_timestamp) and e_e89564572100_0019/0023 (trades_at_manipulated_prices_recorded) explicitly bridge frozen timestamp snapshots to contaminated TWAP exploited by dependent protocols, supporting the V-I link under P."
+      },
+      "relation_context": [
+        {
+          "statement_id": "first_swap_calls_maybe_insert_snapshot",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0017",
+              "text": "But, the oracle sees this as normal activity. The first swap that executes calls `maybeInsertSnapshot()`, which calculates:"
+            },
+            {
+              "evidence_id": "e_e89564572100_0027",
+              "text": "Tthis vulnerability strikes at the core of how the oracle collects data. The `maybeInsertSnapshot()` function isn't a helper for integrators - it's called directly by the protocol's `beforeSwap` and `beforeUpdatePosition` hooks:"
+            }
+          ]
+        },
+        {
+          "statement_id": "time_passed_computed_from_frozen_timestamp",
+          "role": "root_cause",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0006",
+              "text": "The function calculates `timePassed` using `block.timestamp`, creates cumulative values based on that time delta, and stores the snapshot. On L2s with centralized sequencers, this logic breaks down catastrophically during sequencer downtime."
+            },
+            {
+              "evidence_id": "e_e89564572100_0018",
+              "text": "If the sequencer was down for an hour but `block.timestamp` only advanced by seconds (because it was frozen), `timePassed` is artificially small. The snapshot gets written with cumulative values that don't reflect the real time gap."
+            }
+          ]
+        },
+        {
+          "statement_id": "no_sequencer_uptime_check",
+          "role": "root_cause",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0003",
+              "text": "The Oracle extension records price snapshots through hooks that fire on every swap and position update in the Ekubo protocol. These snapshots form the foundation for all time-weighted average price calculations consumed by external protocols. However, the snapshot insertion logic completely ignores Layer 2 sequencer status, which creates a critical vulnerability if Ekubo deploys on any L2 chain."
+            },
+            {
+              "evidence_id": "e_e89564572100_0004",
+              "text": "The README explicitly states Ekubo is a \"multi-chain ownerless and permissionless contract\" designed for the EVM. There's a reasonable expectation this code will run on chains with centralized sequencers. Yet the oracle has zero awareness of sequencer uptime."
+            }
+          ]
+        },
+        {
+          "statement_id": "trades_at_manipulated_prices_recorded",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0019",
+              "text": "Worse, trades execute at prices that may have been manipulated during the accumulation phase while the sequencer was down. These corrupted prices get locked into the oracle's TWAP history."
+            },
+            {
+              "evidence_id": "e_e89564572100_0022",
+              "text": "1. Execute trades during the first few blocks after restart at manipulated prices"
+            },
+            {
+              "evidence_id": "e_e89564572100_0023",
+              "text": "2. Have those trades recorded in oracle snapshots"
+            }
+          ]
+        },
+        {
+          "statement_id": "grace_period_trades_after_restart",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0021",
+              "text": "Even after the sequencer is back up and `block.timestamp` starts advancing normally, there's a window where the oracle data is still contaminated. Attackers can:"
+            }
+          ]
+        }
+      ],
+      "relationship_trace": {
+        "status": "explicit",
+        "links": [
+          {
+            "from_source_ids": [
+              "timestamp_frozen_during_downtime",
+              "sequencer_restart_backlog",
+              "intent_validate_sequencer_before_snapshot"
+            ],
+            "context_statement_id": "time_passed_computed_from_frozen_timestamp",
+            "evidence_ids": [
+              "e_e89564572100_0006",
+              "e_e89564572100_0018"
+            ],
+            "reported_relation": "Snapshot insertion computes timePassed from a frozen block.timestamp, so snapshots are written with cumulative values that do not reflect the real time gap, which the intent requires to be prevented by validating sequencer uptime before recording."
+          },
+          {
+            "from_source_ids": [
+              "intent_validate_sequencer_before_snapshot",
+              "exploitation_protocols_depending_oracle"
+            ],
+            "context_statement_id": "trades_at_manipulated_prices_recorded",
+            "evidence_ids": [
+              "e_e89564572100_0019",
+              "e_e89564572100_0022",
+              "e_e89564572100_0023"
+            ],
+            "reported_relation": "Trades at manipulated prices get recorded into oracle snapshots, contaminating TWAP history consumed by protocols depending on the oracle."
+          }
+        ],
+        "gap": ""
+      },
+      "mismatch_count": 0,
+      "repair_finding_count": 0
+    },
+    "loss_of_funds_liquidations_trades::intent_validate_sequencer_before_snapshot": {
+      "schema_version": "semantic-faithfulness-audit/4",
+      "status": "completed",
+      "verdict_consistent": true,
+      "fidelity_status": "passed",
+      "checks": [
+        {
+          "source_id": "l2_deployment_with_centralized_sequencer",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate asserts the same deployment fact as the statement."
+        },
+        {
+          "source_id": "sequencer_downtime_occurs",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate asserts sequencer downtime occurs, matching the statement."
+        },
+        {
+          "source_id": "timestamp_frozen_during_downtime",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate asserts timestamp frozen during downtime, matching the statement."
+        },
+        {
+          "source_id": "sequencer_restart_backlog",
+          "role": "P",
+          "verdict": "consistent",
+          "reason": "Predicate asserts restart backlog with stale timestamp, matching the statement."
+        },
+        {
+          "source_id": "intent_validate_sequencer_before_snapshot",
+          "role": "I",
+          "verdict": "consistent",
+          "reason": "Predicate encodes that on L2 with snapshot recorded, uptime must be validated before snapshot, matching the intent."
+        },
+        {
+          "source_id": "loss_of_funds_liquidations_trades",
+          "role": "V",
+          "verdict": "consistent",
+          "reason": "Predicate symbol directly encodes loss of funds from corrupted-price trades."
+        }
+      ],
+      "piv_relation": {
+        "verdict": "consistent",
+        "reason": "relation_context e_e89564572100_0006/0018 show frozen timestamp corrupting snapshots, and e_e89564572100_0019/0022/0023 show corrupted prices locked into TWAP enabling loss of funds, bridging V to I under P."
+      },
+      "relation_context": [
+        {
+          "statement_id": "first_swap_calls_maybe_insert_snapshot",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0017",
+              "text": "But, the oracle sees this as normal activity. The first swap that executes calls `maybeInsertSnapshot()`, which calculates:"
+            },
+            {
+              "evidence_id": "e_e89564572100_0027",
+              "text": "Tthis vulnerability strikes at the core of how the oracle collects data. The `maybeInsertSnapshot()` function isn't a helper for integrators - it's called directly by the protocol's `beforeSwap` and `beforeUpdatePosition` hooks:"
+            }
+          ]
+        },
+        {
+          "statement_id": "time_passed_computed_from_frozen_timestamp",
+          "role": "root_cause",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0006",
+              "text": "The function calculates `timePassed` using `block.timestamp`, creates cumulative values based on that time delta, and stores the snapshot. On L2s with centralized sequencers, this logic breaks down catastrophically during sequencer downtime."
+            },
+            {
+              "evidence_id": "e_e89564572100_0018",
+              "text": "If the sequencer was down for an hour but `block.timestamp` only advanced by seconds (because it was frozen), `timePassed` is artificially small. The snapshot gets written with cumulative values that don't reflect the real time gap."
+            }
+          ]
+        },
+        {
+          "statement_id": "no_sequencer_uptime_check",
+          "role": "root_cause",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0003",
+              "text": "The Oracle extension records price snapshots through hooks that fire on every swap and position update in the Ekubo protocol. These snapshots form the foundation for all time-weighted average price calculations consumed by external protocols. However, the snapshot insertion logic completely ignores Layer 2 sequencer status, which creates a critical vulnerability if Ekubo deploys on any L2 chain."
+            },
+            {
+              "evidence_id": "e_e89564572100_0004",
+              "text": "The README explicitly states Ekubo is a \"multi-chain ownerless and permissionless contract\" designed for the EVM. There's a reasonable expectation this code will run on chains with centralized sequencers. Yet the oracle has zero awareness of sequencer uptime."
+            }
+          ]
+        },
+        {
+          "statement_id": "trades_at_manipulated_prices_recorded",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0019",
+              "text": "Worse, trades execute at prices that may have been manipulated during the accumulation phase while the sequencer was down. These corrupted prices get locked into the oracle's TWAP history."
+            },
+            {
+              "evidence_id": "e_e89564572100_0022",
+              "text": "1. Execute trades during the first few blocks after restart at manipulated prices"
+            },
+            {
+              "evidence_id": "e_e89564572100_0023",
+              "text": "2. Have those trades recorded in oracle snapshots"
+            }
+          ]
+        },
+        {
+          "statement_id": "grace_period_trades_after_restart",
+          "role": "action",
+          "evidence": [
+            {
+              "evidence_id": "e_e89564572100_0021",
+              "text": "Even after the sequencer is back up and `block.timestamp` starts advancing normally, there's a window where the oracle data is still contaminated. Attackers can:"
+            }
+          ]
+        }
+      ],
+      "relationship_trace": {
+        "status": "explicit",
+        "links": [
+          {
+            "from_source_ids": [
+              "timestamp_frozen_during_downtime",
+              "sequencer_restart_backlog",
+              "intent_validate_sequencer_before_snapshot"
+            ],
+            "context_statement_id": "time_passed_computed_from_frozen_timestamp",
+            "evidence_ids": [
+              "e_e89564572100_0006",
+              "e_e89564572100_0018"
+            ],
+            "reported_relation": "Snapshot insertion computes timePassed from block.timestamp, which is frozen during sequencer downtime, so snapshots are written with cumulative values not reflecting the real time gap."
+          },
+          {
+            "from_source_ids": [
+              "intent_validate_sequencer_before_snapshot",
+              "loss_of_funds_liquidations_trades"
+            ],
+            "context_statement_id": "trades_at_manipulated_prices_recorded",
+            "evidence_ids": [
+              "e_e89564572100_0019",
+              "e_e89564572100_0022",
+              "e_e89564572100_0023"
+            ],
+            "reported_relation": "Trades execute at manipulated prices after restart and those corrupted prices get locked into the oracle TWAP history, enabling loss of funds from liquidations/trades."
+          },
+          {
+            "from_source_ids": [
+              "l2_deployment_with_centralized_sequencer",
+              "intent_validate_sequencer_before_snapshot"
+            ],
+            "context_statement_id": "no_sequencer_uptime_check",
+            "evidence_ids": [
+              "e_e89564572100_0003",
+              "e_e89564572100_0004"
+            ],
+            "reported_relation": "The snapshot insertion logic ignores L2 sequencer status, so the oracle does not validate sequencer uptime before recording snapshots."
+          }
+        ],
+        "gap": ""
+      },
+      "mismatch_count": 0,
+      "repair_finding_count": 0
+    }
+  }
+}

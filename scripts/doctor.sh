@@ -41,6 +41,55 @@ else
   fail "cargo/rustc 未找到：curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
 fi
 
+for key_file in config/llm.env config/opencode.local.env config/stage2_deepseek.local.env; do
+  if [ -f "$key_file" ]; then
+    if "$PY" - "$key_file" <<'PY'
+import stat
+import sys
+raise SystemExit(0 if not stat.S_IMODE(__import__('os').stat(sys.argv[1]).st_mode) & 0o077 else 1)
+PY
+    then
+      okp "private key file ($key_file)"
+    else
+      fail "$key_file is group/world accessible: chmod 600 $key_file"
+    fi
+  fi
+done
+
+echo
+if "$PY" - <<'PY'
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.getcwd(), 'tools', 'stage3'))
+from lib import path_config
+
+report = path_config.describe()
+for name in ('c4_output_root', 'verified_flatten_root',
+             'negative_flatten_root'):
+    path = Path(report[name])
+    if not path.is_dir():
+        raise SystemExit(f'missing {name}: {path}')
+summary = Path(report['negative_flatten_summary'])
+if summary.is_file():
+    print(summary)
+else:
+    slices = sorted(Path(report['negative_flatten_root']).glob(
+        '*/contract.flattened.t.sol'))
+    if not slices:
+        raise SystemExit(
+            'missing negative_flatten_summary and no flatten slices under '
+            + report['negative_flatten_root'])
+    print(f'{len(slices)} negative flatten slices; summary optional')
+print(report['verified_flatten_root'])
+PY
+then
+  okp "portable path config"
+else
+  fail "portable path config: see config/paths.env.example"
+fi
+
 echo
 if [ "$ok" -eq 1 ]; then
   echo "结论：环境可用。下一步："

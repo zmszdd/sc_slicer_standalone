@@ -1,0 +1,142 @@
+{
+  "schema_version": "semantic-faithfulness-audit/4",
+  "status": "completed",
+  "verdict_consistent": true,
+  "fidelity_status": "passed",
+  "checks": [
+    {
+      "source_id": "user_holds_launched_tokens_bonding_phase",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate truth of user_holds_launched_tokens matches the statement's claim."
+    },
+    {
+      "source_id": "user_has_pending_rewards",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate requires pending rewards > 0, matching the claim that pending rewards exist."
+    },
+    {
+      "source_id": "launchpad_cannot_recover_tokens",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate asserts launchpad_can_recover_tokens is false, matching the no-recovery claim."
+    },
+    {
+      "source_id": "rewards_should_go_to_recipient_not_caller",
+      "role": "I",
+      "verdict": "consistent",
+      "reason": "Implication that holding tokens yields recipient equal to intended recipient encodes sending rewards to the user not msg.sender."
+    },
+    {
+      "source_id": "loss_of_accumulated_rewards_on_buy_or_sell",
+      "role": "V",
+      "verdict": "consistent",
+      "reason": "Conjunction of rewards_lost_on_buy_or_sell with itself encodes the loss-on-buy-or-sell claim."
+    }
+  ],
+  "piv_relation": {
+    "verdict": "consistent",
+    "reason": "Evidence e_3a4a26d0f46e_0003 and e_3a4a26d0f46e_0013 explicitly bridge pending rewards sent to Launchpad instead of user, and e_3a4a26d0f46e_0016 confirms no recovery, supporting V from I under P."
+  },
+  "relation_context": [
+    {
+      "statement_id": "user_buys_or_sells_tokens",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_3a4a26d0f46e_0003",
+          "text": "The GTE launchpad system includes a reward distribution mechanism where users who hold launched tokens during the bonding phase earn rewards from trading fees. When users buy or sell tokens in the GTE launchpad system, any pending rewards that should go to the user are incorrectly sent to the Launchpad contract instead. This happens because the reward distribution function always sends tokens to the caller (msg.sender), but during token purchases, the caller becomes the Launchpad contract rather than the user. Since the Launchpad contract has no mechanism to recover or redistribute these tokens, user rewards are permanently lost."
+        },
+        {
+          "evidence_id": "e_3a4a26d0f46e_0008",
+          "text": "1. User calls `Launchpad.buy()` which transfers tokens to the user"
+        },
+        {
+          "evidence_id": "e_3a4a26d0f46e_0014",
+          "text": "The same issue occurs with `decreaseStake` when users sell tokens or transfer them, following the same problematic call chain."
+        }
+      ]
+    },
+    {
+      "statement_id": "purchase_call_chain_reaches_distribute_assets",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_3a4a26d0f46e_0007",
+          "text": "When a user buys tokens, the following call chain happens:"
+        },
+        {
+          "evidence_id": "e_3a4a26d0f46e_0009",
+          "text": "2. The token transfer triggers `LaunchToken._beforeTokenTransfer()`"
+        },
+        {
+          "evidence_id": "e_3a4a26d0f46e_0010",
+          "text": "3. This calls `_increaseFeeShares()` which calls the Launchpad:"
+        },
+        {
+          "evidence_id": "e_3a4a26d0f46e_0011",
+          "text": "4. The Launchpad's `increaseStake` function then calls the Distributor:"
+        },
+        {
+          "evidence_id": "e_3a4a26d0f46e_0012",
+          "text": "5. Finally, the Distributor's `increaseStake` calls `_distributeAssets`:"
+        },
+        {
+          "evidence_id": "e_3a4a26d0f46e_0013",
+          "text": "At this point, `msg.sender` is the Launchpad contract, not the user, so any pending rewards get sent to the Launchpad contract instead of the intended user."
+        }
+      ]
+    },
+    {
+      "statement_id": "distribute_assets_sends_to_msg_sender",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_3a4a26d0f46e_0004",
+          "text": "The issue is in the `_distributeAssets` function within the Distributor contract, which handles sending rewards to recipients."
+        },
+        {
+          "evidence_id": "e_3a4a26d0f46e_0005",
+          "text": "The `_distributeAssets` function is designed to transfer pending rewards but always sends them to `msg.sender`:"
+        },
+        {
+          "evidence_id": "e_3a4a26d0f46e_0016",
+          "text": "Also, the Launchpad contract has no functions to recover or redistribute ERC20 tokens that are incorrectly sent to it. The `pullFees()` function only handles ETH, and there are no admin functions for token recovery."
+        }
+      ]
+    }
+  ],
+  "relationship_trace": {
+    "status": "explicit",
+    "links": [
+      {
+        "from_source_ids": [
+          "user_has_pending_rewards",
+          "rewards_should_go_to_recipient_not_caller",
+          "loss_of_accumulated_rewards_on_buy_or_sell"
+        ],
+        "context_statement_id": "distribute_assets_sends_to_msg_sender",
+        "evidence_ids": [
+          "e_3a4a26d0f46e_0005",
+          "e_3a4a26d0f46e_0016"
+        ],
+        "reported_relation": "_distributeAssets always sends pending rewards to msg.sender, and the Launchpad cannot recover them, so user rewards are lost."
+      },
+      {
+        "from_source_ids": [
+          "user_holds_launched_tokens_bonding_phase",
+          "user_has_pending_rewards",
+          "loss_of_accumulated_rewards_on_buy_or_sell"
+        ],
+        "context_statement_id": "purchase_call_chain_reaches_distribute_assets",
+        "evidence_ids": [
+          "e_3a4a26d0f46e_0013"
+        ],
+        "reported_relation": "During buy/sell the call chain reaches _distributeAssets with msg.sender being the Launchpad, so pending rewards go to the Launchpad instead of the user."
+      }
+    ]
+  },
+  "mismatch_count": 0,
+  "repair_finding_count": 0
+}

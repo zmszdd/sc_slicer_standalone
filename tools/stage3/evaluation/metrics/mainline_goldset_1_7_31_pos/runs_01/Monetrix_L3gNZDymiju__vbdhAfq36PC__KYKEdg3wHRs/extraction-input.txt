@@ -1,0 +1,185 @@
+0x811 Borrow-Lend Liabilities Are Ignored, Allowing Phantom Surplus to Be Settled as Yield
+
+## Summary
+
+`MonetrixAccountant` treats HyperCore 0x811 Borrow-Lend state as supply-only. It counts `supply.value` as protocol backing, but it never reads or subtracts `borrow.value`.
+
+HyperCore 0x811 is not a supply-only state. The public Hyperliquid EVM precompile library models the user token state as `BorrowLendUserTokenState`, containing both `borrow` and `supply`, each with `basis` and `value`. The Hyperliquid Portfolio Margin documentation also describes borrowed assets as real liabilities that accrue interest and are borrowed against eligible collateral. See [`PrecompileLib.sol`](https://github.com/hyperliquid-dev/hyper-evm-lib/blob/main/src/PrecompileLib.sol) and [`Portfolio margin`](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/portfolio-margin).
+
+Because Monetrix only accounts the positive supply side, a Borrow-Lend liability can be omitted from backing. This inflates `totalBackingSigned()`, makes `surplus()` and `distributableSurplus()` artificially positive, and allows `MonetrixVault.settle()` to move real USDC into `YieldEscrow` as yield even when the correct net surplus is zero.
+
+##
+
+### Severity: **Medium**
+
+##
+
+## Impact
+
+The impact is material surplus overstatement and unbacked yield settlement.
+
+If the Vault has this 0x811 state:
+
+
+The correct net Borrow-Lend value is:
+
+
+The current Accountant reports:
+
+
+because it counts only `supply.value`.
+
+That phantom surplus can pass the `settleDailyPnL()` distributable-surplus gate and cause the Vault to transfer real USDC to `YieldEscrow`. This is not only an incorrect view. The proof of concept shows `settle(100e6)` succeeds, `YieldEscrow` receives `100e6` USDC, and the correct net surplus becomes negative afterward.
+
+This is Medium severity because it breaks core backing and yield-settlement invariants. It is not High because the path is not a direct permissionless drain, the settlement path is still bounded by the yield pipeline, and the issue depends on a Borrow-Lend liability existing in the Vault's Portfolio Margin state.
+
+---
+
+## Why this is not an Operator trust assumption
+
+This issue does not rely on a compromised Operator.
+
+The Operator only uses normal protocol functions:
+
+* `supplyToBlp()` to register supplied slots through the intended BLP path
+* `settle()` to run the intended yield settlement path
+
+The bug is in the Accountant's interpretation of the 0x811 state. Once the protocol uses Borrow-Lend supply values as backing, it must also account for Borrow-Lend liabilities. The contracts do not enforce `borrow.value == 0`, do not subtract `borrow.value`, and do not prove the liability is netted elsewhere before settling yield.
+
+The Accountant is the on-chain gate that should prevent phantom surplus from being settled. The Operator submits an amount that the on-chain gate accepts. The failure is that the gate is computed from gross supply accounting instead of net Borrow-Lend accounting.
+
+So the issue is not:
+
+* Operator theft
+* Governor compromise
+* Upgrader compromise
+* emergency function abuse
+* multisig backing abuse
+* sUSDM virtual share behavior
+* the previously reported `_sendL1Bridge` held-balance issue
+
+The issue is incomplete net accounting of a backing source.
+
+---
+
+## Why the Borrow-Lend liability must reduce backing
+
+The 0x811 state includes both sides of the Borrow-Lend position:
+
+
+That state exposes an asset side and a liability side. Treating the returned state as supply-only is economically incorrect. See [`PrecompileLib.sol`](https://github.com/hyperliquid-dev/hyper-evm-lib/blob/main/src/PrecompileLib.sol).
+
+The Portfolio Margin documentation states that insufficient balances can be borrowed against eligible collateral, and that borrowed assets accrue interest. That means the borrow side is a real liability, not harmless metadata. See [`Portfolio margin`](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/portfolio-margin).
+
+The account abstraction documentation also states that for unified account and portfolio margin, balances and holds appear in the spot clearinghouse state and individual perp DEX user states are not meaningful. That makes it unsafe for Monetrix to assume that a Borrow-Lend liability is always netted somewhere else in `accountValueSigned()`. See [`Account abstraction modes`](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/account-abstraction-modes).
+
+---
+
+## Vulnerability details
+
+### 1. `suppliedBalance()` decodes the 0x811 response but returns only the fourth field
+
+From [`PrecompileReader.sol`](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/PrecompileReader.sol#L84-L91):
+
+
+The decoded response contains four `uint64` values. Under the 0x811 Borrow-Lend layout, these correspond to:
+
+
+The code discards the first three fields and returns only the fourth field, `supply.value`.
+
+This means `borrow.value` is ignored at the first accounting boundary.
+
+---
+
+### 2. USDC supplied value is converted to EVM units, but USDC borrow value is never read
+
+From [`PrecompileReader.sol`](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/PrecompileReader.sol#L132-L136):
+
+
+This helper converts only the returned `supplied` value into 6-decimal EVM USDC units. There is no matching helper for `borrow.value`, and there is no netting step.
+
+As a result, a USDC Borrow-Lend liability can be present in 0x811 while contributing nothing negative to backing.
+
+---
+
+### 3. Non-USDC supplied collateral is valued as USDC notional, but non-USDC borrow liabilities are also ignored
+
+From [`PrecompileReader.sol`](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/PrecompileReader.sol#L151-L162):
+
+
+For non-USDC assets, the code values `supply.value` through the oracle and decimal path, then counts that amount as USDC backing. Again, the borrow side of the same Borrow-Lend state is not read or subtracted.
+
+The proof of concept uses this stronger cross-token shape:
+
+
+This avoids relying on a same-token supply and borrow state.
+
+---
+
+### 4. The notional conversion is correct, but it is applied only to the supply side
+
+From [`TokenMath.sol`](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/TokenMath.sol#L56-L69):
+
+
+The proof of concept uses the real conversion path:
+
+
+The issue is not the decimal math. The issue is that the converted value is added for supplied collateral while the matching Borrow-Lend liability is omitted.
+
+---
+
+### 5. `totalBackingSigned()` uses `_readL1Backing()` as part of protocol backing
+
+From [`MonetrixAccountant.sol`](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/MonetrixAccountant.sol#L117-L134):
+
+
+The output of `_readL1Backing()` directly affects the signed backing value used by the rest of the accounting system.
+
+---
+
+### 6. `_readL1Backing()` adds supplied values but never subtracts Borrow-Lend liabilities
+
+From [`MonetrixAccountant.sol`](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/MonetrixAccountant.sol#L137-L172):
+
+
+The 0x811 loop only adds supplied values. It never reads `borrow.value` and never applies a negative adjustment for liabilities.
+
+This causes `totalBackingSigned()` to be overstated whenever the Vault has a Borrow-Lend liability.
+
+---
+
+### 7. `supplyToBlp()` registers supplied slots through the real Vault path
+
+From [`MonetrixVault.sol`](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/MonetrixVault.sol#L333-L346):
+
+
+The proof of concept uses this real path to register both the non-USDC supplied slot and the USDC liability slot. The bug is not caused by manually writing to the Accountant registry.
+
+---
+
+### 8. The inflated backing directly feeds `surplus()` and `distributableSurplus()`
+
+From [`MonetrixAccountant.sol`](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/MonetrixAccountant.sol#L180-L191):
+
+
+If `totalBackingSigned()` is inflated by ignored debt, `surplus()` and `distributableSurplus()` are inflated by the same amount.
+
+---
+
+### 9. `settleDailyPnL()` accepts yield against the inflated `distributableSurplus()`
+
+From [`MonetrixAccountant.sol`](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/MonetrixAccountant.sol#L200-L227):
+
+
+Gate 3 is intended to prevent settlement above real distributable surplus. Because Borrow-Lend liabilities are omitted, this gate can approve yield that does not exist under net backing.
+
+---
+
+### 10. `settle()` then moves real USDC into `YieldEscrow`
+
+From [`MonetrixVault.sol`](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/MonetrixVault.sol#L364-L375):
+
+
+This converts the accounting error into a real asset movement. USDC leaves the Vault and enters `YieldEscrow` as yield even though net backing has no surplus.
+
+---

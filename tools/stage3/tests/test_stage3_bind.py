@@ -55,10 +55,13 @@ class Stage3BindFailurePathTest(unittest.TestCase):
 class Stage3BindReuseTest(unittest.TestCase):
     def test_reuse_skips_existing_binding(self):
         case_dir = ROOT / 'cases' / '__stage3_bind_reuse__'
+        fixture = ROOT / 'cases' / 'panoptic_builder_init'
         case_dir.mkdir(exist_ok=True)
-        (case_dir / 'src').mkdir(exist_ok=True)
+        shutil.copytree(fixture / 'src', case_dir / 'src')
+        shutil.copytree(fixture / 'test', case_dir / 'test')
         (case_dir / 'bindings').mkdir(exist_ok=True)
-        (case_dir / 'bindings' / 'core_claim.json').write_text('{}')
+        valid = (fixture / 'binding.json').read_text()
+        (case_dir / 'bindings' / 'core_claim.json').write_text(valid)
 
         def _boom(*a, **k):
             raise AssertionError('LLM subprocess must not run with --reuse')
@@ -84,6 +87,43 @@ class Stage3BindReuseTest(unittest.TestCase):
         self.assertEqual(summary['bound'], 0)
         self.assertEqual(summary['failed'], 0)
         self.assertEqual(summary['claims'][0]['status'], 'reused')
+
+
+class Stage3BindStaleTest(unittest.TestCase):
+    def test_reuse_rejects_stale_binding_without_llm(self):
+        case_dir = ROOT / 'cases' / '__stage3_bind_stale__'
+        fixture = ROOT / 'cases' / 'panoptic_builder_init'
+        case_dir.mkdir(exist_ok=True)
+        shutil.copytree(fixture / 'src', case_dir / 'src')
+        shutil.copytree(fixture / 'test', case_dir / 'test')
+        (case_dir / 'bindings').mkdir(exist_ok=True)
+        (case_dir / 'bindings' / 'core_claim.json').write_text('{}')
+
+        def _boom(*a, **k):
+            raise AssertionError('LLM subprocess must not run with --reuse')
+
+        original = stage3_bind.subprocess.run
+        stage3_bind.subprocess.run = _boom
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                rc = stage3_bind.main([
+                    '--case-dir', str(case_dir),
+                    '--stage2-run', str(STAGE2_RUN),
+                    '--reuse',
+                ])
+        finally:
+            stage3_bind.subprocess.run = original
+            shutil.rmtree(case_dir, ignore_errors=True)
+
+        self.assertEqual(rc, 1)
+        summary = json.loads(buf.getvalue())
+        self.assertEqual(summary['total_claims'], 1)
+        self.assertEqual(summary['reused'], 0)
+        self.assertEqual(summary['bound'], 0)
+        self.assertEqual(summary['failed'], 1)
+        self.assertEqual(summary['claims'][0]['status'], 'stale')
+        self.assertTrue(summary['claims'][0].get('detail'))
 
 
 if __name__ == '__main__':

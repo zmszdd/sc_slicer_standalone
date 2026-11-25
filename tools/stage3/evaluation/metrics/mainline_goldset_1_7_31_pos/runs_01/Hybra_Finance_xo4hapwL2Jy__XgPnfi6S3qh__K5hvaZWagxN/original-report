@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Hybra Finance_xo4hapwL2Jy",
+    "audit_uid": "xo4hapwL2Jy",
+    "requested_submission_uid": "K5hvaZWagxN",
+    "requested_finding_uid": "XgPnfi6S3qh",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Hybra_Finance_xo4hapwL2Jy/20260618_145600/findings.json",
+    "source_submission_uid": "K5hvaZWagxN",
+    "source_finding_uid": "XgPnfi6S3qh",
+    "original_report_path": "Hybra Finance_xo4hapwL2Jy\\low_valid_K5hvaZWagxN.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "K5hvaZWagxN",
+  "finding_uid": "XgPnfi6S3qh",
+  "finding_number": "55",
+  "title": "GovernanceHYBR full-exit withdrawal reverts via zero-weight split",
+  "severity": "medium",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "zzebra83",
+  "body": "### Summary\nGovernanceHYBR’s withdraw flow is broken under common conditions: it always performs a three‑way split of the pooled veNFT into [remainder, user, fee] via VotingEscrow.multiSplit, but multiSplit treats inputs as “weights” and forbids zeros. On a full exit, the remainder becomes 0, so multiSplit reverts with “ZW”, making full‑exit withdrawals impossible. Separately, multiSplit is gated by a team‑controlled toggle (splitAllowed); unless governance enables splitting for gHYBR, any withdrawal reverts with “!SPLIT”. The result is a functional DoS of withdrawals without proper setup, and an inherent inability to fully exit even when split is enabled.\n\n\n### Finding Description\n- GovernanceHYBR implements withdrawals by splitting the pooled `veTokenId` into three portions: remainder (contract), user, and fee. It passes absolute amounts to `VotingEscrow.multiSplit`:\n```161:206:ve33/contracts/GovernanceHYBR.sol\nfunction withdraw(uint256 shares) external nonReentrant returns (uint256 userTokenId) {\n    ...\n    uint256 veBalance = totalAssets();\n    ...\n    uint256 remainingAmount = veBalance - userAmount - feeAmount;  \n    require(remainingAmount >= 0, \"Cannot withdraw entire veNFT\");\n    ...\n    uint256[] memory amounts = new uint256[](3);\n    amounts[0] = remainingAmount; // Amount staying with gHYBR \n    amounts[1] = userAmount;      // Amount going to user (after fee)\n    amounts[2] = feeAmount;      // Amount going to fee recipient\n\n    uint256[] memory newTokenIds = IVotingEscrow(votingEscrow).multiSplit(veTokenId, amounts);\n    ...\n}\n```\n- `VotingEscrow.multiSplit` treats the input as “weights” and forbids zero values:\n```1167:1171:ve33/contracts/VotingEscrow.sol\n// Calculate total weight\nuint totalWeight = 0;\nfor(uint i = 0; i < amounts.length; i++) {\n    require(amounts[i] > 0, \"ZW\"); // Zero weight not allowed\n    totalWeight += amounts[i];\n}\n```\n- When a user withdraws all shares, `remainingAmount == 0`. The call reaches `multiSplit` and reverts with “ZW”.\n- Separately, `multiSplit` is protected by `splitAllowed(_from)`; unless the team enables it for `gHYBR`, any withdrawal via `multiSplit` reverts with “!SPLIT”. Enabling split reveals the “ZW” failure for full‑exit:\n```1210:1213:ve33/contracts/VotingEscrow.sol\nfunction toggleSplit(address _account, bool _bool) external {\n    require(msg.sender == team);\n    canSplit[_account] = _bool;\n}\n```\n\n### Why it’s a bug (not by design)\n- The withdrawal path is clearly intended (time window, fee handling, `Withdraw` event).\n- The guard explicitly allows zero remainder (`remainingAmount >= 0`) but later fails in `multiSplit` on zero weight; that’s an integration mismatch, not an explicit prohibition of full exits.\n\n### Impact\n- Functional DoS of full-exit withdrawals: last user and exact-proportion cases cannot exit.\n\n### Proof of Concept\n- Test file: `ve33/test/GHYBRFullExitRevert.t.sol`\n- Flow:\n  - Deposit to initialize `veTokenId`.\n  - Warp into valid withdraw window.\n  - Enable splitting: `votingEscrow.toggleSplit(address(gHybr), true)`.\n  - Attempt `withdraw(all shares)`.\n  - Expect revert with `bytes(\"ZW\")`.\n- The test passed, confirming deterministic failure of full-exit.\n\n### Affected Components\n- `ve33/contracts/GovernanceHYBR.sol` — `withdraw(uint256 shares)`\n- `ve33/contracts/VotingEscrow.sol` — `multiSplit(...)`, `toggleSplit(...)`\n\n### Root Cause\n- GovernanceHYBR passes absolute amounts to a weight-based splitter that prohibits zero. No special case for `remainingAmount == 0`.\n- Withdrawals are hard-wired to `multiSplit`, which is gated by `splitAllowed`.\n\n### Recommendations\n\n  - Add a full‑exit branch:\n    - If `remainingAmount == 0`, avoid `multiSplit`. Create user and fee NFTs (two‑way split or direct mint), burn or reinitialize the pooled lock, and set `veTokenId` properly.",
+  "proof_of_concept": "````\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.13;\n\nimport \"forge-std/Test.sol\";\nimport {C4PoCTestbed} from \"./C4PoCTestbed.t.sol\";\nimport {HybraTimeLibrary} from \"../contracts/libraries/HybraTimeLibrary.sol\";\n\ncontract GHYBRFullExitRevert is C4PoCTestbed {\n    function test_GHYBR_FullExit_RevertsOnZeroRemaining() external {\n        // Arrange: deposit into gHYBR to initialize veTokenId\n        uint256 amount = 10_000e18;\n        hybr.approve(address(gHybr), amount);\n        gHybr.deposit(amount, address(this));\n\n        // Move into valid withdraw window (between head_not_withdraw_time and tail_not_withdraw_time)\n        uint256 start = HybraTimeLibrary.epochStart(block.timestamp);\n        vm.warp(start + gHybr.head_not_withdraw_time() + 1);\n\n        // Compute full shares (withdraw all)\n        uint256 shares = gHybr.balanceOf(address(this));\n        assertGt(shares, 0, \"no shares\");\n\n        // Enable split for gHYBR on VotingEscrow so multiSplit passes splitAllowed modifier\n        votingEscrow.toggleSplit(address(gHybr), true);\n\n        // Act + Assert: full exit sets remainingAmount == 0, multiSplit reverts with \"ZW\" (zero weight)\n        vm.expectRevert(bytes(\"ZW\"));\n        gHybr.withdraw(shares);\n    }\n}\n\n\n````",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/VotingEscrow.sol#L1168-L1171"
+  ],
+  "source_record": {
+    "project_id": "xo4hapwL2Jy",
+    "submission_index": "517",
+    "api_submission_id": "",
+    "uid": "K5hvaZWagxN",
+    "number": "517",
+    "title": "GovernanceHYBR full-exit withdrawal reverts via zero-weight split",
+    "severity": "medium",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "zzebra83",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/VotingEscrow.sol#L1168-L1171"
+    ],
+    "body": "### Summary\nGovernanceHYBR’s withdraw flow is broken under common conditions: it always performs a three‑way split of the pooled veNFT into [remainder, user, fee] via VotingEscrow.multiSplit, but multiSplit treats inputs as “weights” and forbids zeros. On a full exit, the remainder becomes 0, so multiSplit reverts with “ZW”, making full‑exit withdrawals impossible. Separately, multiSplit is gated by a team‑controlled toggle (splitAllowed); unless governance enables splitting for gHYBR, any withdrawal reverts with “!SPLIT”. The result is a functional DoS of withdrawals without proper setup, and an inherent inability to fully exit even when split is enabled.\n\n\n### Finding Description\n- GovernanceHYBR implements withdrawals by splitting the pooled `veTokenId` into three portions: remainder (contract), user, and fee. It passes absolute amounts to `VotingEscrow.multiSplit`:\n```161:206:ve33/contracts/GovernanceHYBR.sol\nfunction withdraw(uint256 shares) external nonReentrant returns (uint256 userTokenId) {\n    ...\n    uint256 veBalance = totalAssets();\n    ...\n    uint256 remainingAmount = veBalance - userAmount - feeAmount;  \n    require(remainingAmount >= 0, \"Cannot withdraw entire veNFT\");\n    ...\n    uint256[] memory amounts = new uint256[](3);\n    amounts[0] = remainingAmount; // Amount staying with gHYBR \n    amounts[1] = userAmount;      // Amount going to user (after fee)\n    amounts[2] = feeAmount;      // Amount going to fee recipient\n\n    uint256[] memory newTokenIds = IVotingEscrow(votingEscrow).multiSplit(veTokenId, amounts);\n    ...\n}\n```\n- `VotingEscrow.multiSplit` treats the input as “weights” and forbids zero values:\n```1167:1171:ve33/contracts/VotingEscrow.sol\n// Calculate total weight\nuint totalWeight = 0;\nfor(uint i = 0; i < amounts.length; i++) {\n    require(amounts[i] > 0, \"ZW\"); // Zero weight not allowed\n    totalWeight += amounts[i];\n}\n```\n- When a user withdraws all shares, `remainingAmount == 0`. The call reaches `multiSplit` and reverts with “ZW”.\n- Separately, `multiSplit` is protected by `splitAllowed(_from)`; unless the team enables it for `gHYBR`, any withdrawal via `multiSplit` reverts with “!SPLIT”. Enabling split reveals the “ZW” failure for full‑exit:\n```1210:1213:ve33/contracts/VotingEscrow.sol\nfunction toggleSplit(address _account, bool _bool) external {\n    require(msg.sender == team);\n    canSplit[_account] = _bool;\n}\n```\n\n### Why it’s a bug (not by design)\n- The withdrawal path is clearly intended (time window, fee handling, `Withdraw` event).\n- The guard explicitly allows zero remainder (`remainingAmount >= 0`) but later fails in `multiSplit` on zero weight; that’s an integration mismatch, not an explicit prohibition of full exits.\n\n### Impact\n- Functional DoS of full-exit withdrawals: last user and exact-proportion cases cannot exit.\n\n### Proof of Concept\n- Test file: `ve33/test/GHYBRFullExitRevert.t.sol`\n- Flow:\n  - Deposit to initialize `veTokenId`.\n  - Warp into valid withdraw window.\n  - Enable splitting: `votingEscrow.toggleSplit(address(gHybr), true)`.\n  - Attempt `withdraw(all shares)`.\n  - Expect revert with `bytes(\"ZW\")`.\n- The test passed, confirming deterministic failure of full-exit.\n\n### Affected Components\n- `ve33/contracts/GovernanceHYBR.sol` — `withdraw(uint256 shares)`\n- `ve33/contracts/VotingEscrow.sol` — `multiSplit(...)`, `toggleSplit(...)`\n\n### Root Cause\n- GovernanceHYBR passes absolute amounts to a weight-based splitter that prohibits zero. No special case for `remainingAmount == 0`.\n- Withdrawals are hard-wired to `multiSplit`, which is gated by `splitAllowed`.\n\n### Recommendations\n\n  - Add a full‑exit branch:\n    - If `remainingAmount == 0`, avoid `multiSplit`. Create user and fee NFTs (two‑way split or direct mint), burn or reinitialize the pooled lock, and set `veTokenId` properly.",
+    "proof_of_concept": "````\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.13;\n\nimport \"forge-std/Test.sol\";\nimport {C4PoCTestbed} from \"./C4PoCTestbed.t.sol\";\nimport {HybraTimeLibrary} from \"../contracts/libraries/HybraTimeLibrary.sol\";\n\ncontract GHYBRFullExitRevert is C4PoCTestbed {\n    function test_GHYBR_FullExit_RevertsOnZeroRemaining() external {\n        // Arrange: deposit into gHYBR to initialize veTokenId\n        uint256 amount = 10_000e18;\n        hybr.approve(address(gHybr), amount);\n        gHybr.deposit(amount, address(this));\n\n        // Move into valid withdraw window (between head_not_withdraw_time and tail_not_withdraw_time)\n        uint256 start = HybraTimeLibrary.epochStart(block.timestamp);\n        vm.warp(start + gHybr.head_not_withdraw_time() + 1);\n\n        // Compute full shares (withdraw all)\n        uint256 shares = gHybr.balanceOf(address(this));\n        assertGt(shares, 0, \"no shares\");\n\n        // Enable split for gHYBR on VotingEscrow so multiSplit passes splitAllowed modifier\n        votingEscrow.toggleSplit(address(gHybr), true);\n\n        // Act + Assert: full exit sets remainingAmount == 0, multiSplit reverts with \"ZW\" (zero weight)\n        vm.expectRevert(bytes(\"ZW\"));\n        gHybr.withdraw(shares);\n    }\n}\n\n\n````",
+    "detail_url": "https://code4rena.com/api/v1/audits/xo4hapwL2Jy/submissions/517",
+    "raw": {
+      "auditUid": "xo4hapwL2Jy",
+      "createdAt": "2025-10-14T14:18:27.998Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "gvUJuYjw7QN",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-15T07:02:46.109Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "XgPnfi6S3qh"
+        },
+        {
+          "uid": "hRBT5A6ATnk",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-18T10:31:01.352Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "K5hvaZWagxN",
+          "findingUid": null
+        },
+        {
+          "uid": "KNNaD5KmkXY",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-26T22:37:30.391Z",
+          "type": "severity",
+          "value": "low",
+          "submissionUid": null,
+          "findingUid": "XgPnfi6S3qh"
+        }
+      ],
+      "finding": {
+        "uid": "XgPnfi6S3qh",
+        "number": 55,
+        "duplicates": 23
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "low",
+        "validity": "valid",
+        "updatedAt": "2025-10-31T00:53:52.369Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "medium",
+      "team": null,
+      "title": "GovernanceHYBR full-exit withdrawal reverts via zero-weight split",
+      "uid": "K5hvaZWagxN",
+      "updatedAt": "2025-10-14T14:18:27.998Z",
+      "user": {
+        "uid": "9xM9DDnWfkU",
+        "handle": "zzebra83"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Summary\nGovernanceHYBR’s withdraw flow is broken under common conditions: it always performs a three‑way split of the pooled veNFT into [remainder, user, fee] via VotingEscrow.multiSplit, but multiSplit treats inputs as “weights” and forbids zeros. On a full exit, the remainder becomes 0, so multiSplit reverts with “ZW”, making full‑exit withdrawals impossible. Separately, multiSplit is gated by a team‑controlled toggle (splitAllowed); unless governance enables splitting for gHYBR, any withdrawal reverts with “!SPLIT”. The result is a functional DoS of withdrawals without proper setup, and an inherent inability to fully exit even when split is enabled.\n\n\n### Finding Description\n- GovernanceHYBR implements withdrawals by splitting the pooled `veTokenId` into three portions: remainder (contract), user, and fee. It passes absolute amounts to `VotingEscrow.multiSplit`:\n```161:206:ve33/contracts/GovernanceHYBR.sol\nfunction withdraw(uint256 shares) external nonReentrant returns (uint256 userTokenId) {\n    ...\n    uint256 veBalance = totalAssets();\n    ...\n    uint256 remainingAmount = veBalance - userAmount - feeAmount;  \n    require(remainingAmount >= 0, \"Cannot withdraw entire veNFT\");\n    ...\n    uint256[] memory amounts = new uint256[](3);\n    amounts[0] = remainingAmount; // Amount staying with gHYBR \n    amounts[1] = userAmount;      // Amount going to user (after fee)\n    amounts[2] = feeAmount;      // Amount going to fee recipient\n\n    uint256[] memory newTokenIds = IVotingEscrow(votingEscrow).multiSplit(veTokenId, amounts);\n    ...\n}\n```\n- `VotingEscrow.multiSplit` treats the input as “weights” and forbids zero values:\n```1167:1171:ve33/contracts/VotingEscrow.sol\n// Calculate total weight\nuint totalWeight = 0;\nfor(uint i = 0; i < amounts.length; i++) {\n    require(amounts[i] > 0, \"ZW\"); // Zero weight not allowed\n    totalWeight += amounts[i];\n}\n```\n- When a user withdraws all shares, `remainingAmount == 0`. The call reaches `multiSplit` and reverts with “ZW”.\n- Separately, `multiSplit` is protected by `splitAllowed(_from)`; unless the team enables it for `gHYBR`, any withdrawal via `multiSplit` reverts with “!SPLIT”. Enabling split reveals the “ZW” failure for full‑exit:\n```1210:1213:ve33/contracts/VotingEscrow.sol\nfunction toggleSplit(address _account, bool _bool) external {\n    require(msg.sender == team);\n    canSplit[_account] = _bool;\n}\n```\n\n### Why it’s a bug (not by design)\n- The withdrawal path is clearly intended (time window, fee handling, `Withdraw` event).\n- The guard explicitly allows zero remainder (`remainingAmount >= 0`) but later fails in `multiSplit` on zero weight; that’s an integration mismatch, not an explicit prohibition of full exits.\n\n### Impact\n- Functional DoS of full-exit withdrawals: last user and exact-proportion cases cannot exit.\n\n### Proof of Concept\n- Test file: `ve33/test/GHYBRFullExitRevert.t.sol`\n- Flow:\n  - Deposit to initialize `veTokenId`.\n  - Warp into valid withdraw window.\n  - Enable splitting: `votingEscrow.toggleSplit(address(gHybr), true)`.\n  - Attempt `withdraw(all shares)`.\n  - Expect revert with `bytes(\"ZW\")`.\n- The test passed, confirming deterministic failure of full-exit.\n\n### Affected Components\n- `ve33/contracts/GovernanceHYBR.sol` — `withdraw(uint256 shares)`\n- `ve33/contracts/VotingEscrow.sol` — `multiSplit(...)`, `toggleSplit(...)`\n\n### Root Cause\n- GovernanceHYBR passes absolute amounts to a weight-based splitter that prohibits zero. No special case for `remainingAmount == 0`.\n- Withdrawals are hard-wired to `multiSplit`, which is gated by `splitAllowed`.\n\n### Recommendations\n\n  - Add a full‑exit branch:\n    - If `remainingAmount == 0`, avoid `multiSplit`. Create user and fee NFTs (two‑way split or direct mint), burn or reinitialize the pooled lock, and set `veTokenId` properly.",
+      "proofOfConcept": "````\n// SPDX-License-Identifier: MIT\npragma solidity 0.8.13;\n\nimport \"forge-std/Test.sol\";\nimport {C4PoCTestbed} from \"./C4PoCTestbed.t.sol\";\nimport {HybraTimeLibrary} from \"../contracts/libraries/HybraTimeLibrary.sol\";\n\ncontract GHYBRFullExitRevert is C4PoCTestbed {\n    function test_GHYBR_FullExit_RevertsOnZeroRemaining() external {\n        // Arrange: deposit into gHYBR to initialize veTokenId\n        uint256 amount = 10_000e18;\n        hybr.approve(address(gHybr), amount);\n        gHybr.deposit(amount, address(this));\n\n        // Move into valid withdraw window (between head_not_withdraw_time and tail_not_withdraw_time)\n        uint256 start = HybraTimeLibrary.epochStart(block.timestamp);\n        vm.warp(start + gHybr.head_not_withdraw_time() + 1);\n\n        // Compute full shares (withdraw all)\n        uint256 shares = gHybr.balanceOf(address(this));\n        assertGt(shares, 0, \"no shares\");\n\n        // Enable split for gHYBR on VotingEscrow so multiSplit passes splitAllowed modifier\n        votingEscrow.toggleSplit(address(gHybr), true);\n\n        // Act + Assert: full exit sets remainingAmount == 0, multiSplit reverts with \"ZW\" (zero weight)\n        vm.expectRevert(bytes(\"ZW\"));\n        gHybr.withdraw(shares);\n    }\n}\n\n\n````",
+      "linesOfCode": "https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/VotingEscrow.sol#L1168-L1171",
+      "number": 517,
+      "aiExplanation": null,
+      "_index": 517
+    }
+  }
+}

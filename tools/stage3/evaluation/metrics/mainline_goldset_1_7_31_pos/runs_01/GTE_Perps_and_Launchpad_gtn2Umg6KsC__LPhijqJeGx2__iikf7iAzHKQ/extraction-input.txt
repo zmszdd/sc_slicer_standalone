@@ -1,0 +1,54 @@
+Missing protocol state checks allow deposit and withdraw operations when protocol is inactive
+
+## Description:
+
+The protocol implements an emergency pause mechanism through the `onlyActiveProtocol` modifier that checks `clearingHouse.active` status before allowing critical operations. However, this protection is inconsistently applied across the codebase. While trading functions like `placeOrder`, `liquidate`, and `backstopLiquidate` properly use the `onlyActiveProtocol` modifier, all deposit and withdrawal functions lack this essential safety check.
+
+The affected functions include:
+- `deposit(address account, uint256 amount)` in PerpManager
+- `withdraw(address account, uint256 amount)` in PerpManager  
+- `depositTo(address account, uint256 amount)` in PerpManager
+- `depositFromSpot(address account, uint256 amount)` in PerpManager
+- `withdrawToSpot(address account, uint256 amount)` in PerpManager
+- `deposit(address account, address token, uint256 amount)` in AccountManager
+- `withdraw(address account, address token, uint256 amount)` in AccountManager
+
+This means users can continue moving funds in and out of the protocol even when administrators have intentionally paused it due to security concerns, bugs, or other critical issues.
+
+## Attack path:
+
+1. **Protocol vulnerability discovered**: A critical security issue is identified in the protocol
+
+2. **Admin attempts emergency pause**: Protocol administrators call `deactivateProtocol()` to pause trading operations and prevent further damage
+
+3. **Trading functions correctly blocked**: All trading operations (`placeOrder`, `liquidate`, etc.) properly revert with `ProtocolNotActive` error
+
+4. **Deposit/withdraw operations continue**: Malicious actors or uninformed users can still:
+   - Deposit funds into a compromised protocol via `deposit()` or `depositTo()`
+   - Withdraw funds during the pause via `withdraw()` or `withdrawToSpot()`
+   - Move funds between spot and perp accounts via `depositFromSpot()`
+
+5. **State inconsistency and damage amplification**: The continued movement of funds during the emergency pause can:
+   - Worsen the impact of the original vulnerability
+   - Create inconsistent protocol state that complicates recovery efforts
+
+## Impact:
+
+- **Ineffective emergency response**: The protocol's emergency pause mechanism fails to provide complete protection, undermining its primary safety purpose
+- **Increased vulnerability window**: Attackers have additional time to exploit vulnerabilities through fund movements even after trading is paused
+- **User fund risk**: New deposits can be lost if deposited into a protocol with known critical issues
+
+## Recommended Mitigation:
+
+### Option 1: Extend existing `onlyActiveProtocol` modifier
+
+Apply the existing `onlyActiveProtocol` modifier to all deposit and withdrawal functions
+
+### Option 2: Separate modifiers for trading vs fund operations
+
+Create two distinct control mechanisms:
+
+
+### Option 3: Granular control with three separate modifiers (Compound style model)
+
+Implement fine-grained control for maximum flexibility:

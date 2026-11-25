@@ -1,0 +1,139 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "7bf3b40c6a3aa33da3993018a051844d8f3041e7ff4df27a08a16906eeb83f32",
+  "fragments": [
+    {
+      "id": "e_7bf3b40c6a3a_0001",
+      "text": "DoS of all swap-and-bridge flows because TrustSwapAndBridgeRouter cannot accept ETH from Slipstream's refundETH()",
+      "start": 0,
+      "end": 113,
+      "line": 1
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0002",
+      "text": "## Description:",
+      "start": 115,
+      "end": 130,
+      "line": 3
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0003",
+      "text": "`TrustSwapAndBridgeRouter` delegates swaps to the Slipstream (Aerodrome CL) SwapRouter via `exactInput()`.",
+      "start": 132,
+      "end": 238,
+      "line": 5
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0004",
+      "text": "After the swap, the Slipstream router calls `refundETH()` (from PeripheryPayments) to return any leftover ETH to the caller:",
+      "start": 241,
+      "end": 365,
+      "line": 7
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0005",
+      "text": "So the Slipstream router sends its full ETH balance to `msg.sender`, which is `TrustSwapAndBridgeRouter`. `TrustSwapAndBridgeRouter` has no `receive()` or `fallback()` and does not handle incoming ETH. A plain ETH transfer to it reverts. Therefore, if the Slipstream SwapRouter has any ETH balance at the time of the call, the entire `swapAndBridgeWithETH` or `swapAndBridgeWithERC20` transaction reverts.",
+      "start": 368,
+      "end": 773,
+      "line": 10
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0006",
+      "text": "An attacker can force ETH onto the Slipstream SwapRouter using a contract that calls `selfdestruct(router)`. `selfdestruct()` after EIP-6780 (Cancun) only forwards ETH to the beneficiary without destroying the contract bytecode and does not allow the target to reject ETH; the Slipstream router cannot refuse this. With as little as 1 wei on the Slipstream router, every subsequent `swapAndBridgeWithETH` and `swapAndBridgeWithERC20` call fails. The same selfdestruct contract can be reused (bytecode is no longer removed), so the attack is cheap and repeatable.",
+      "start": 775,
+      "end": 1337,
+      "line": 12
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0007",
+      "text": "## Scenario:",
+      "start": 1339,
+      "end": 1351,
+      "line": 14
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0008",
+      "text": "1. Victim prepares a transaction calling `swapAndBridgeWithETH()` or `swapAndBridgeWithERC20()` and broadcasts it to the mempool.",
+      "start": 1353,
+      "end": 1482,
+      "line": 16
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0009",
+      "text": "2. Attacker sees the transaction and frontruns it. Attacker deploys a small contract that accepts ETH and has a function that calls `selfdestruct(slipstreamSwapRouter)`.",
+      "start": 1484,
+      "end": 1653,
+      "line": 18
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0010",
+      "text": "3. Attacker sends 1 wei to this contract and calls the function. The contract selfdestructs and forces 1 wei to the Slipstream SwapRouter. The router cannot reject this transfer.",
+      "start": 1655,
+      "end": 1833,
+      "line": 20
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0011",
+      "text": "4. Victim's transaction is included. It calls `exactInput()` on the Slipstream router. The swap executes, then the Slipstream router calls `refundETH()` and attempts to send its balance (at least 1 wei) to `TrustSwapAndBridgeRouter`.",
+      "start": 1835,
+      "end": 2068,
+      "line": 22
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0012",
+      "text": "5. The transfer to `TrustSwapAndBridgeRouter` reverts because the contract has no `receive()` or `fallback()`. The whole transaction reverts and the victim's swap and bridge do not execute.",
+      "start": 2070,
+      "end": 2259,
+      "line": 24
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0013",
+      "text": "6. All users are affected: every `swapAndBridgeWithETH` and `swapAndBridgeWithERC20` call fails. The attacker can repeatedly send 1 wei to the Slipstream router using the same contract (EIP-6780 leaves bytecode in place).",
+      "start": 2261,
+      "end": 2482,
+      "line": 26
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0014",
+      "text": "## Impact:",
+      "start": 2484,
+      "end": 2494,
+      "line": 28
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0015",
+      "text": "Full DoS of swap-and-bridge. Both `swapAndBridgeWithETH` and `swapAndBridgeWithERC20` are unusable whenever the Slipstream SwapRouter holds any ETH. Users cannot swap and bridge from Base to the destination chain via the protocol.",
+      "start": 2496,
+      "end": 2726,
+      "line": 30
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0016",
+      "text": "Low cost of attack. Can be repeated many times. One wei per attack (+gas); the selfdestruct contract can be reused. No need to hold or lock significant funds.",
+      "start": 2728,
+      "end": 2886,
+      "line": 32
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0017",
+      "text": "## Recommended Mitigation:",
+      "start": 2888,
+      "end": 2914,
+      "line": 34
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0018",
+      "text": "Add a `receive()` to `TrustSwapAndBridgeRouter` so it can accept ETH sent by the Slipstream router in `refundETH()`:",
+      "start": 2916,
+      "end": 3032,
+      "line": 36
+    },
+    {
+      "id": "e_7bf3b40c6a3a_0019",
+      "text": "Additionally add a function to pull any accidental or refunded ETH to a designated recipient",
+      "start": 3035,
+      "end": 3127,
+      "line": 39
+    }
+  ]
+}

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -25,26 +26,88 @@ OUT_MD = HERE / 'blind_build_status.md'
 REPO = Path(__file__).resolve().parents[4]
 RESURRECT = REPO / 'run_sol_resurrect.sh'
 PILOT_ROOT = REPO / 'runs' / 'sol_resurrect' / 'blind_pilot'
+CANONICAL_ROOT = HERE / 'blind_flatten_root'
+CASE_ROOT = REPO / 'tools' / 'stage3' / 'cases'
 
 
 def case_output_dir(case: str) -> Path:
     return PILOT_ROOT / case
 
 
-def compile_status(case_dir: Path) -> dict:
-    """Return compile status for a resurrected case dir, if present."""
-    test_file = case_dir / 'test' / 'Resurrected.t.sol'
+def canonical_artifact(case: str) -> Path | None:
+    """Return the mainline stage-1 artifact when the flatten pass exists.
+
+    ``blind_flatten_root`` is the canonical stage-1 contract used by
+    ``manifest_gen``/``stage3_eval_run``.  The ``sol_resurrect`` pilot was a
+    fallback skeleton builder and must not mask a verified flattened harness.
+    """
+    path = CANONICAL_ROOT / case / 'contract.flattened.t.sol'
+    return path if path.is_file() else None
+
+
+def artifact_path(case_dir: Path) -> Path:
+    """Return the canonical resurrected file, tolerating both legacy layouts.
+
+    ``sol_resurrect_tool`` historically wrote ``Resurrected.t.sol`` at the
+    case root, while older audits looked only under ``test/``.  Treat both as
+    the same stage-1 artifact so a successful build cannot be reported as
+    ``missing_test``.
+    """
+    for candidate in (case_dir / 'test' / 'Resurrected.t.sol',
+                      case_dir / 'Resurrected.t.sol'):
+        if candidate.is_file():
+            return candidate
+    return case_dir / 'test' / 'Resurrected.t.sol'
+
+
+def compile_status(case_dir: Path, artifact: Path | None = None,
+                   build_dir: Path | None = None) -> dict:
+    """Return compile status for one stage-1 artifact, if present."""
+    test_file = Path(artifact) if artifact else artifact_path(case_dir)
+    forge_dir = Path(build_dir) if build_dir else case_dir
     if not test_file.is_file():
         return {'built': False, 'compile': 'missing_test'}
+    if not (forge_dir / 'foundry.toml').is_file():
+        return {'built': True, 'compile': 'unverified',
+                'artifact': str(test_file), 'test_entrypoint': False}
     proc = subprocess.run(
-        ['forge', 'build'], cwd=str(case_dir), capture_output=True, text=True)
+        ['forge', 'build'], cwd=str(forge_dir), capture_output=True, text=True)
     log = (proc.stdout or '') + (proc.stderr or '')
-    return {
+    text = test_file.read_text(errors='replace')
+    status = {
         'built': True,
         'compile': 'ok' if proc.returncode == 0 else 'failed',
         'exit': proc.returncode,
+        'artifact': str(test_file),
+        'test_entrypoint': bool(re.search(r'\bfunction\s+test[A-Za-z0-9_]*\s*\(', text)),
         'log_tail': log[-800:],
     }
+    if status['compile'] == 'failed':
+        status['failure_class'] = compile_failure_class(log)
+    return status
+
+
+def compile_failure_class(log: str) -> str:
+    """Classify a deterministic compile failure without case-specific rules."""
+    text = log or ''
+    if 'Stack too deep' in text or 'too deep in the stack' in text:
+        return 'stack_too_deep'
+    if ('Error (7858)' in text
+            or 'Expected pragma, import directive or contract/' in text):
+        return 'structural_parse'
+    if ('Error (6651)' in text
+            or 'Data location can only be specified' in text):
+        return 'type_or_data_location'
+    if ('Identifier not found' in text
+            or 'not found or not visible' in text
+            or 'not found or not unique' in text
+            or 'Undeclared identifier' in text):
+        return 'missing_symbol'
+    if ('Error (2314)' in text or 'Expected \'{\'' in text
+            or 'Expected \';\'' in text or 'Expected \',\'' in text
+            or 'Expected \')\'' in text):
+        return 'malformed_signature'
+    return 'other'
 
 
 def resurrect(case: dict) -> dict:
@@ -80,22 +143,36 @@ def main() -> int:
         case = item['case']
         case_dir = case_output_dir(case)
         in_scope = wanted is None or case in wanted
-        if (case_dir / 'Resurrected.t.sol').is_file():
+        canonical = canonical_artifact(case)
+        if canonical is not None:
+            status = compile_status(
+                case_dir, artifact=canonical, build_dir=CASE_ROOT / case)
+            status['stage1_route'] = 'flatten_root'
+        elif artifact_path(case_dir).is_file():
             status = compile_status(case_dir)
+            status['stage1_route'] = 'sol_resurrect'
         elif in_scope and args.build and (args.limit == 0 or built < args.limit):
             status = resurrect(item)
+            status['stage1_route'] = 'sol_resurrect'
             built += 1
         else:
             status = {'built': False, 'compile': 'pending_resurrection'}
+            status['stage1_route'] = None
         rows.append({'case': case, 'project': item['project'], **status})
 
     ok = sum(1 for r in rows if r.get('compile') == 'ok')
+    entrypoints = sum(1 for r in rows if r.get('test_entrypoint'))
     report = {
         'schema_version': 'blind-build-status/1',
         'generated': '2026-11-13',
         'total': len(rows),
         'built': sum(1 for r in rows if r.get('built')),
         'compile_ok': ok,
+        'test_entrypoints': entrypoints,
+        'canonical_ready': sum(
+            1 for r in rows
+            if r.get('stage1_route') == 'flatten_root'
+            and r.get('compile') == 'ok' and r.get('test_entrypoint')),
         'rows': rows,
     }
     OUT_JSON.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
@@ -103,16 +180,22 @@ def main() -> int:
     lines = [
         '# 盲测 PoC 骨架构建状态',
         '',
-        f'盲测样本 **{len(rows)}**；已重建 **{report["built"]}**；'
-        f'编译通过 **{ok}**。',
+        '阶段一优先使用 `blind_flatten_root` 的正式 flatten 产物；'
+        '`sol_resurrect` 仅作为骨架回退。',
         '',
-        '| case | project | 状态 | forge |',
-        '| --- | --- | --- | --- |',
+        f'盲测样本 **{len(rows)}**；已重建 **{report["built"]}**；'
+        f'编译通过 **{ok}**；有 test entrypoint **{entrypoints}**；'
+        f'正式 flatten 就绪 **{report["canonical_ready"]}**。',
+        '',
+        '| case | project | 状态 | 阶段一路径 | forge | 失败类 | test entrypoint |',
+        '| --- | --- | --- | --- | --- | --- | --- |',
     ]
     for r in rows:
         state = 'built' if r.get('built') else 'pending'
         lines.append(f"| {r['case']} | {r['project']} | {state} | "
-                     f"{r.get('compile')} |")
+                     f"{r.get('stage1_route') or '-'} | {r.get('compile')} | "
+                     f"{r.get('failure_class') or '-'} | "
+                     f"{bool(r.get('test_entrypoint'))} |")
     OUT_MD.write_text('\n'.join(lines) + '\n')
 
     print(json.dumps(report, ensure_ascii=False, indent=2))

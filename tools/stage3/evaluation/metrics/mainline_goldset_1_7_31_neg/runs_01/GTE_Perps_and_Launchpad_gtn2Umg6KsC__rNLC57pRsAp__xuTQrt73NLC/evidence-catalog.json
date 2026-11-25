@@ -1,0 +1,146 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "0de37ccac87cc14b9365a7fa51b05be5e91bad835cf68c4a1f46f351dc082d02",
+  "fragments": [
+    {
+      "id": "e_0de37ccac87c_0001",
+      "text": "Updating the LP vault address desynchronizes pairs and permanently disables launchpad rewards for new markets",
+      "start": 0,
+      "end": 109,
+      "line": 1
+    },
+    {
+      "id": "e_0de37ccac87c_0002",
+      "text": "## Finding description and impact",
+      "start": 111,
+      "end": 144,
+      "line": 3
+    },
+    {
+      "id": "e_0de37ccac87c_0003",
+      "text": "The launch flow coordinates three components: the `Launchpad` contract mints and locks initial liquidity at graduation via `addLiquidity()` on a Uniswap V2 router; the `GTELaunchpadV2PairFactory` deploys pairs and writes launchpad-specific configuration into each pair at creation; the `GTELaunchpadV2Pair` accrues and forwards a portion of swap fees to the launchpad’s distributor based on the LP balance held by the launchpad’s vault.",
+      "start": 146,
+      "end": 582,
+      "line": 5
+    },
+    {
+      "id": "e_0de37ccac87c_0004",
+      "text": "- In [`@Launchpad._createPairAndSwapRemaining`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Launchpad.sol#L658-L729), liquidity minted at graduation is sent to `launchpadLPVault` (the `to` of `addLiquidity()`), and the address can be changed/updated post-deploy via [`updateLaunchpadLPVault()`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Launchpad.sol#L578-L590).",
+      "start": 584,
+      "end": 1088,
+      "line": 7
+    },
+    {
+      "id": "e_0de37ccac87c_0005",
+      "text": "- In [`@GTELaunchpadV2PairFactory.sol`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/uniswap/GTELaunchpadV2PairFactory.sol), the constructor stores `launchpadLp` and `launchpadFeeDistributor` as **constructor-time constants**. On `createPair()`, the factory embeds these into the pair (via `initialize()`).",
+      "start": 1089,
+      "end": 1464,
+      "line": 8
+    },
+    {
+      "id": "e_0de37ccac87c_0006",
+      "text": "- In `@GTELaunchpadV2Pair.sol`, fee accounting uses `balanceOf(launchpadLp)` (plus `MINIMUM_LIQUIDITY`) inside [`_getLaunchpadFees()`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol#L380-L404) to compute the launchpad’s fee share, and [`_distributeLaunchpadFees()`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/uniswap/GTELaunchpadV2Pair.sol#L406-L425) forwards those fees to `launchpadFeeDistributor`.",
+      "start": 1465,
+      "end": 2034,
+      "line": 9
+    },
+    {
+      "id": "e_0de37ccac87c_0007",
+      "text": "The root cause is that `updateLaunchpadLPVault()` in `Launchpad` changes where new LP tokens are minted, but **the factory and pairs continue to reference the old `launchpadLp`**. New pairs created after the update will cache the **old vault address** because the factory’s `launchpadLp` is fixed at construction and written into each pair at `initialize()`. As a result, pairs will measure `balanceOf(launchpadLp)` on the stale address, while **all LP tokens are minted to the new vault**.",
+      "start": 2036,
+      "end": 2526,
+      "line": 11
+    },
+    {
+      "id": "e_0de37ccac87c_0008",
+      "text": "Highest impact scenario:",
+      "start": 2528,
+      "end": 2552,
+      "line": 13
+    },
+    {
+      "id": "e_0de37ccac87c_0009",
+      "text": "- For every market that graduates after the LP vault address update, `GTELaunchpadV2Pair._getLaunchpadFees()` reads `balanceOf(launchpadLp)` on the old address, which is zero, so **the computed fee share is zero**. No rewards accrue and nothing is distributed to the `distributor`, effectively DoSing the protocol’s fee revenue for all subsequently graduated markets or with other words all fees will be lost.",
+      "start": 2553,
+      "end": 2962,
+      "line": 14
+    },
+    {
+      "id": "e_0de37ccac87c_0010",
+      "text": "- This persists indefinitely because pairs cache `launchpadLp` at initialization; the factory fields are also fixed, so subsequent markets remain misconfigured unless the factory is redeployed and the `Launchpad` is redeployed too.",
+      "start": 2963,
+      "end": 3194,
+      "line": 15
+    },
+    {
+      "id": "e_0de37ccac87c_0011",
+      "text": "## Recommended mitigation steps",
+      "start": 3196,
+      "end": 3227,
+      "line": 17
+    },
+    {
+      "id": "e_0de37ccac87c_0012",
+      "text": "Prioritize one of the following designs:",
+      "start": 3229,
+      "end": 3269,
+      "line": 19
+    },
+    {
+      "id": "e_0de37ccac87c_0013",
+      "text": "- Make the vault immutable:",
+      "start": 3271,
+      "end": 3298,
+      "line": 21
+    },
+    {
+      "id": "e_0de37ccac87c_0014",
+      "text": "- Remove or hard-freeze `updateLaunchpadLPVault()` after initialization (or after the first launch), ensuring the vault used as `addLiquidity()` recipient always matches the address embedded in pairs via the factory.",
+      "start": 3301,
+      "end": 3517,
+      "line": 22
+    },
+    {
+      "id": "e_0de37ccac87c_0015",
+      "text": "- If configurability is required, make pair and factory config rotatable:",
+      "start": 3519,
+      "end": 3592,
+      "line": 24
+    },
+    {
+      "id": "e_0de37ccac87c_0016",
+      "text": "- Replace factory constructor-time constants with storage variables and add controlled setters (e.g., `setLaunchpadConfig(launchpadLp, launchpadFeeDistributor)` restricted to a governance role).",
+      "start": 3595,
+      "end": 3789,
+      "line": 25
+    },
+    {
+      "id": "e_0de37ccac87c_0017",
+      "text": "- In `GTELaunchpadV2Pair`, add a guarded `setLaunchpadLp()` (and optionally `setLaunchpadFeeDistributor()`) callable by the factory or a dedicated role, to update existing pairs when the vault/distributor rotates.",
+      "start": 3792,
+      "end": 4005,
+      "line": 26
+    },
+    {
+      "id": "e_0de37ccac87c_0018",
+      "text": "- Update `Launchpad.updateLaunchpadLPVault()` to also update factory config for future pairs and to invoke the per-pair setter for any already created pairs of active markets (if necessary).",
+      "start": 4008,
+      "end": 4198,
+      "line": 27
+    },
+    {
+      "id": "e_0de37ccac87c_0019",
+      "text": "- Alternative (more robust, slightly more gas):",
+      "start": 4200,
+      "end": 4247,
+      "line": 29
+    },
+    {
+      "id": "e_0de37ccac87c_0020",
+      "text": "- In pairs, store only the `launchpad` address and query the current `launchpadLPVault()` and `distributor()` from `Launchpad` at use-time when computing/distributing fees, eliminating configuration drift between components.",
+      "start": 4250,
+      "end": 4474,
+      "line": 30
+    }
+  ]
+}

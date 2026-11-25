@@ -54,3 +54,33 @@ class HardCeilingTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PartitionUnboundTest(unittest.TestCase):
+    def _binding(self, exprs):
+        return {'bindings': {name: {'solidity_expr': expr}
+                             for name, expr in exprs.items()}}
+
+    def test_v_only_unbound_does_not_block_invariant_probe(self):
+        from cli.stage3_pipeline import partition_unbound
+        binding = self._binding({'p': 'true', 'i': 'flag', 'v': 'UNBOUND'})
+        unbound, invariant_unbound, effect_unbound = partition_unbound(
+            binding, {'p', 'i'})
+        self.assertEqual(unbound, ['v'])
+        self.assertEqual(invariant_unbound, [])
+        self.assertEqual(effect_unbound, ['v'])
+
+    def test_i_unbound_blocks(self):
+        from cli.stage3_pipeline import partition_unbound
+        binding = self._binding({'i': 'UNBOUND', 'v': 'flag'})
+        _, invariant_unbound, _ = partition_unbound(binding, {'i'})
+        self.assertEqual(invariant_unbound, ['i'])
+
+    def test_mixed_split(self):
+        from cli.stage3_pipeline import partition_unbound
+        binding = self._binding({'p': 'UNBOUND', 'v': 'UNBOUND'})
+        unbound, invariant_unbound, effect_unbound = partition_unbound(
+            binding, {'p'})
+        self.assertEqual(unbound, ['p', 'v'])
+        self.assertEqual(invariant_unbound, ['p'])
+        self.assertEqual(effect_unbound, ['v'])

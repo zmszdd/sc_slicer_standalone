@@ -1,6 +1,6 @@
 # 阶段二现状与收口计划
 
-> **当前快照（2026-11-12）**：阶段二主线未变（P/I/V 规则化 + `stage3-spec.json` 交接）；阶段二全量回归 472/472 通过。下文按时间顺序保留历史实验记录，历史“下一步”与本快照冲突时以本快照为准。
+> **当前快照（2026-11-20）**：阶段二主线未变（P/I/V 规则化 + `stage3-spec.json` 交接）；阶段二全量回归 525/525 通过。下文按时间顺序保留历史实验记录，历史“下一步”与本快照冲突时以本快照为准。
 
 状态摘要更新于 2026-10-28。下文按时间顺序保留实验记录；若历史记录中的“下一步”与本节冲突，以本节为准。最终状态：`direct_v_prescreen` 回滚为默认 `False`。同一 20 份报告配对对照显示 prescreen OFF 优于 ON：Impact 规则化率 45/75（60.0%）vs 30/66（45.5%）、`candidate_checks_passed` 8/20 vs 6/20、`stage2_can_continue=true` 17/18（94.4%）vs 14/18（77.8%）、模型调用 362 vs 211。省调用不能以主链覆盖率与交接稳定性为代价，故保留 OFF。
 
@@ -1113,3 +1113,20 @@ faithful 37 / weakened 117；完成率盲批 25/35。批 08 完全忠实份额
 0%（批 05 为 33%）——S16+C 后各批在 faithful/weakened 边界上波动
 大，边界由判卷措辞敏感度主导，核心信号是 unfaithful 稳定为极低。
 调用预算：管线 20 + 判卷 10 = 30 次。
+
+## 2026-11-20：report-only A+ 三步落地
+
+- **候选抽取**：新增 `lib/invariant_candidates.py`，只消费 report 派生的
+  elements/formalization/weak-triage/applicability，不读源码、不新增模型调用；
+  输出 `invariant-candidates.json`，包含 canonical I、显式 intent 备选、
+  derivation、evidence ID、归一化 checkpoint 和 quality label。
+- **输入策略**：新增 `report-json-input/6`，只增加 PoC 的自然语言叙述，
+  继续排除 fenced code、`source_record`、`pairing`、`contract_code`；
+  v2–v5 保持字节可重放。
+- **门槛分层**：Stage3 A+ gate 把 snapshot/review/restatement 类标签降级为
+  quality label；checkpoint、observable、independence 仍是硬门槛。
+- **top-k**：Stage3 按候选质量和 contract 质量排序 claim，默认执行 top-3；
+  `--claim-top-k 0` 保留旧的全量口径用于 A/B。
+
+该改动只改变执行选择和标签语义，不把软标签直接转成 TN，也不允许在缺
+independent witness 时把弱 I 当成漏洞 TP。

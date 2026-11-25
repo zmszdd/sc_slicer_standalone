@@ -8,7 +8,12 @@ CASES = Path(__file__).resolve().parents[1] / 'cases'
 
 
 class BindingValidateTest(unittest.TestCase):
+    def _require_case(self, case):
+        if not (CASES / case).is_dir():
+            self.skipTest(f'optional case fixture {case} is not present')
+
     def _lint(self, case, binding=None, strict=False):
+        self._require_case(case)
         binding = binding or load_binding(CASES / case / 'binding.json')
         return lint_binding(binding, CASES / case / 'src',
                             test_dir=CASES / case / 'test', strict=strict)
@@ -47,6 +52,7 @@ class BindingValidateTest(unittest.TestCase):
         self.assertEqual(sev.get('bindings.b.solidity_expr'), 'warning')
 
     def test_missing_patch_file_is_error(self):
+        self._require_case('smoke_vault')
         binding = load_binding(CASES / 'smoke_vault' / 'binding.json')
         binding['patch'] = {'file': 'Nope.sol', 'functions': [{'name': 'withdraw'}]}
         record = self._lint('smoke_vault', binding=binding)
@@ -55,6 +61,7 @@ class BindingValidateTest(unittest.TestCase):
                             for p in record['problems'] if p['where'] == 'patch.file'))
 
     def test_strict_escalates_warning(self):
+        self._require_case('smoke_vault')
         binding = load_binding(CASES / 'smoke_vault' / 'binding.json')
         binding['bindings']['balance_after']['solidity_expr'] = 'ghost_var'
         record = self._lint('smoke_vault', binding=binding, strict=True)
@@ -64,6 +71,7 @@ class BindingValidateTest(unittest.TestCase):
 
     def test_cross_contract_state_var_reference_flagged(self):
         case = CASES / 'Kinetiq_k8aVPPVguSE__Et2e5TnpUga__wHqL6oK9ToF'
+        self._require_case(case.name)
         binding = {
             'schema_version': 'stage3-binding/1',
             'claim_id': 'x',
@@ -145,6 +153,7 @@ class BindingValidateTest(unittest.TestCase):
                              for p in record['problems']), record['problems'])
 
     def test_constant_p_bool_not_flagged_when_not_in_safety(self):
+        self._require_case('smoke_vault')
         # A PoC that calls the target directly makes a P-side boolean a
         # faithful constant (e.g. direct_call_occurred == true). Only I-side
         # constants vacate the differential witness, so scoping the check to
@@ -242,3 +251,68 @@ class FileLevelVarLintTest(unittest.TestCase):
             record = lint_binding(binding, src_dir, strict=True)
             self.assertFalse(any('cross-contract' in p['message']
                                  for p in record['problems']), record['problems'])
+
+
+class ShapeAndContractLintTest(unittest.TestCase):
+    def test_tuple_and_kind_shape_mismatches_are_errors(self):
+        import tempfile
+        from pathlib import Path
+        from lib.binding_validate import lint_binding
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / 'src'
+            src.mkdir()
+            (src / 'Contract.sol').write_text('''
+contract A {
+    function pair() external view returns (uint256, uint256) { return (1, 2); }
+    function flag() external view returns (bool) { return true; }
+    function count() external view returns (uint256) { return 1; }
+    function f() external {}
+}
+''')
+            binding = {
+                'schema_version': 'stage3-binding/1', 'claim_id': 'x',
+                'bindings': {
+                    'a': {'kind': 'numeric_value', 'solidity_expr': 'pair()',
+                          'checkpoint': 'after', 'source': 'Contract.sol:f'},
+                    'b': {'kind': 'numeric_value', 'solidity_expr': 'flag()',
+                          'checkpoint': 'after', 'source': 'Contract.sol:f'},
+                    'c': {'kind': 'boolean_predicate', 'solidity_expr': 'count()',
+                          'checkpoint': 'after', 'source': 'Contract.sol:f'},
+                    'd': {'kind': 'address_value', 'solidity_expr': 'count()',
+                          'checkpoint': 'after', 'source': 'Contract.sol:f'},
+                },
+                'patch': {'file': 'Contract.sol', 'contract': 'A',
+                          'functions': [{'name': 'f', 'file': 'Contract.sol'}]},
+                'probe': {'contract': 'A', 'exploit_test': 'f',
+                          'safety_test': None},
+            }
+            record = lint_binding(binding, src)
+            codes = {problem.get('code') for problem in record['problems']}
+            self.assertIn('BINDING_SHAPE_TUPLE_AS_SCALAR', codes)
+            self.assertIn('BINDING_SHAPE_KIND_MISMATCH', codes)
+            self.assertFalse(record['ok'])
+
+    def test_single_i_checkpoint_is_warning(self):
+        if not (CASES / 'smoke_vault').is_dir():
+            self.skipTest('optional smoke_vault fixture is not present')
+        from lib.binding_validate import lint_binding
+        binding = load_binding(CASES / 'smoke_vault' / 'binding.json')
+        names = list(binding['bindings'])[:2]
+        for name in names:
+            binding['bindings'][name]['checkpoint'] = 'after'
+        record = lint_binding(binding, CASES / 'smoke_vault' / 'src',
+                              test_dir=CASES / 'smoke_vault' / 'test',
+                              safety_symbols=set(names))
+        self.assertTrue(any(problem.get('code') == 'I_SINGLE_CHECKPOINT'
+                            for problem in record['problems']))
+
+    def test_observable_ir_audit_is_attached(self):
+        if not (CASES / 'smoke_vault').is_dir():
+            self.skipTest('optional smoke_vault fixture is not present')
+        from lib.binding_validate import lint_binding
+        binding = load_binding(CASES / 'smoke_vault' / 'binding.json')
+        ir = {'symbols': {}}
+        record = lint_binding(binding, CASES / 'smoke_vault' / 'src',
+                              test_dir=CASES / 'smoke_vault' / 'test',
+                              observable_ir=ir)
+        self.assertIsNotNone(record['observable_ir_audit'])

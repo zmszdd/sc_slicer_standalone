@@ -27,7 +27,7 @@ RUNS = ROOT / 'runs'
 VALID = {'valid', 'fixed', 'wontfix'}
 
 GT = HERE / 'judge_ground_truth.json'
-PE = HERE / 'positive_eval_105.json'
+PE = HERE / 'positive_eval_161.json'
 JUDGE = HERE / 'judge_anchored_metrics.json'
 P2_AUTO = HERE / 'p2_auto_reproductions_20261110.json'
 OUT_JSON = HERE / 'recall_recoverability.json'

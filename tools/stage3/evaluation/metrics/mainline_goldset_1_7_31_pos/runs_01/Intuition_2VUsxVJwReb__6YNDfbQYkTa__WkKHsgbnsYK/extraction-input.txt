@@ -1,0 +1,32 @@
+Assembly overread in signature suffix extraction allows arbitrary timestamp poisoning via trailing calldata
+
+## Finding description and impact
+
+**Contract(s) Affected:**
+`AtomWallet.sol` (specifically `_extractValidUntilAndValidAfterFromSignature`)
+**Relevant Lines / PR:** Lines ~337–361 (extraction logic), introduced/fixed in PR #135 (ERC-4337 alignment)
+## Impact
+**High** — Attacker can fully control the `validAfter` and `validUntil` timestamps returned in `validationData` without invalidating the ECDSA signature. This enables:
+- Perpetual validity (`validUntil = type(uint48).max`)
+- Forced execution in future/past windows
+- Replay attacks or time-window bypass on any UserOp
+- Potential session key abuse, delayed execution griefing, or unauthorized ops if time bounds are used for rate limiting or revocation
+
+## Likelihood
+**High** — Requires only a malicious bundler/relayer to append 20+ poison bytes after the 77-byte signature in calldata. No special privileges, no signature forgery needed.
+
+## Root Cause
+In `_extractValidUntilAndValidAfterFromSignature`:
+- `meta` is a 12-byte slice (`validUntil + validAfter`).
+- `add(meta, 32)` points 32 bytes after meta start → `mload` loads 32 bytes starting 20 bytes past the end of the signature calldata.
+- Trailing calldata bytes (after the 77-byte sig) are loaded into `word` → after `>> 160`, they directly poison the 96-bit `packed` value → attacker controls `validUntil`/`validAfter`.
+
+
+Break the invariant:- Strict 77-byte sig + suffix parsing only
+
+
+
+## Recommended mitigation steps
+Replace the unsafe assembly load with a safe extraction:
+
+Or use `calldataload` with bounds check + mask.

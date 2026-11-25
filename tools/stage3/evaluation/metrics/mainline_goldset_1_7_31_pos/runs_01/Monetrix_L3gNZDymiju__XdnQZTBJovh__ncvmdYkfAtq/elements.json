@@ -1,0 +1,228 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "sUSDM ERC-4626 share token decimals consistency with _decimalsOffset",
+    "environment": "OpenZeppelin ERC-4626 v5.x vault; USDM underlying with 6 decimals",
+    "evidence": [
+      "sUSDM breaks ERC-4626 decimals invariants (_decimalsOffset vs decimals)",
+      "sUSDM implements ERC-4626 with a non-zero _decimalsOffset() but overrides decimals() to an inconsistent value, causing share-unit mismatches between ERC-4626 math and what integrators/users think the share token decimals are. This can lead to incorrect pricing/quotes, wrong UI display, and unsafe integration behavior for any system relying on ERC-4626 semantics.",
+      "1. src/tokens/sUSDM.sol",
+      "- _decimalsOffset() returns 6",
+      "- decimals() is overridden to return 6",
+      "vaultDecimals=assetDecimals+_decimalsOffset()",
+      "USDM uses 6 decimals, so with _decimalsOffset() = 6, ERC-4626 expects sUSDM.decimals() to be 12.",
+      "In OZ ERC-4626 v5.x, the conversion functions rely on _decimalsOffset():",
+      "- _convertToShares uses totalSupply() + 10**_decimalsOffset()",
+      "- _convertToAssets uses totalSupply() + 10**_decimalsOffset()",
+      "So the contract’s internal accounting is explicitly configured for a +6 decimals offset (virtual shares model), but at the same time the token reports only 6 decimals via decimals().",
+      "1. sUSDM._decimalsOffset() returns 6, enabling the OZ ERC-4626 “virtual shares” mechanism at 10**6.",
+      "2. OZ ERC-4626 defines decimals() as underlyingDecimals + _decimalsOffset().",
+      "3. sUSDM.decimals() is overridden to always return 6, contradicting the ERC-4626 implementation assumptions."
+    ]
+  },
+  "entities": [
+    {
+      "id": "susdm",
+      "name": "sUSDM vault token",
+      "role": "contract",
+      "evidence": [
+        "1. src/tokens/sUSDM.sol",
+        "- _decimalsOffset() returns 6",
+        "- decimals() is overridden to return 6"
+      ]
+    },
+    {
+      "id": "usdm",
+      "name": "USDM underlying asset",
+      "role": "asset",
+      "evidence": [
+        "USDM uses 6 decimals, so with _decimalsOffset() = 6, ERC-4626 expects sUSDM.decimals() to be 12."
+      ]
+    },
+    {
+      "id": "oz_erc4626",
+      "name": "OpenZeppelin ERC-4626 implementation",
+      "role": "contract",
+      "evidence": [
+        "Under OpenZeppelin ERC-4626, the vault’s decimals should be:",
+        "In OZ ERC-4626 v5.x, the conversion functions rely on _decimalsOffset():",
+        "- _convertToShares uses totalSupply() + 10**_decimalsOffset()",
+        "- _convertToAssets uses totalSupply() + 10**_decimalsOffset()",
+        "2. OZ ERC-4626 defines decimals() as underlyingDecimals + _decimalsOffset()."
+      ]
+    },
+    {
+      "id": "integrators",
+      "name": "integrators, wallets, indexers, routers, aggregators",
+      "role": "other",
+      "evidence": [
+        "- Off-chain and integrator assumptions (wallets, indexers, routers, vault aggregators, price/oracle adapters) will treat shares as 6 decimals and may scale values incorrectly.",
+        "1. Incorrect share pricing / quoting: integrators computing price-per-share, exchange rates, or minOut/maxIn using share decimals can produce incorrect values.",
+        "2. Unsafe integration behavior: vault routers and aggregators may pass wrongly-scaled amounts (especially in systems that normalize to 18 or to decimals()), potentially causing:"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "usdm_has_6_decimals",
+      "kind": "precondition",
+      "text": "USDM, the underlying asset, uses 6 decimals.",
+      "modality": "asserted",
+      "entity_ids": [
+        "usdm"
+      ],
+      "evidence": [
+        "USDM uses 6 decimals, so with _decimalsOffset() = 6, ERC-4626 expects sUSDM.decimals() to be 12."
+      ]
+    },
+    {
+      "id": "offset_returns_6",
+      "kind": "precondition",
+      "text": "sUSDM._decimalsOffset() returns 6.",
+      "modality": "asserted",
+      "entity_ids": [
+        "susdm"
+      ],
+      "evidence": [
+        "- _decimalsOffset() returns 6",
+        "1. sUSDM._decimalsOffset() returns 6, enabling the OZ ERC-4626 “virtual shares” mechanism at 10**6."
+      ]
+    },
+    {
+      "id": "decimals_override_6",
+      "kind": "precondition",
+      "text": "sUSDM.decimals() is overridden to always return 6.",
+      "modality": "asserted",
+      "entity_ids": [
+        "susdm"
+      ],
+      "evidence": [
+        "- decimals() is overridden to return 6",
+        "3. sUSDM.decimals() is overridden to always return 6, contradicting the ERC-4626 implementation assumptions."
+      ]
+    },
+    {
+      "id": "oz_math_uses_offset",
+      "kind": "root_cause",
+      "text": "OZ ERC-4626 conversion functions use totalSupply() + 10**_decimalsOffset(), so internal accounting is configured for a +6 decimals offset while decimals() reports only 6, creating a semantic inconsistency.",
+      "modality": "asserted",
+      "entity_ids": [
+        "susdm",
+        "oz_erc4626"
+      ],
+      "evidence": [
+        "- _convertToShares uses totalSupply() + 10**_decimalsOffset()",
+        "- _convertToAssets uses totalSupply() + 10**_decimalsOffset()",
+        "So the contract’s internal accounting is explicitly configured for a +6 decimals offset (virtual shares model), but at the same time the token reports only 6 decimals via decimals()."
+      ]
+    },
+    {
+      "id": "integrators_scale_by_decimals",
+      "kind": "action",
+      "text": "Off-chain and integrator systems (wallets, indexers, routers, vault aggregators, price/oracle adapters) treat shares as 6 decimals and scale values using decimals().",
+      "modality": "potential",
+      "entity_ids": [
+        "integrators",
+        "susdm"
+      ],
+      "evidence": [
+        "- Off-chain and integrator assumptions (wallets, indexers, routers, vault aggregators, price/oracle adapters) will treat shares as 6 decimals and may scale values incorrectly.",
+        "1. Incorrect share pricing / quoting: integrators computing price-per-share, exchange rates, or minOut/maxIn using share decimals can produce incorrect values.",
+        "2. Unsafe integration behavior: vault routers and aggregators may pass wrongly-scaled amounts (especially in systems that normalize to 18 or to decimals()), potentially causing:"
+      ]
+    },
+    {
+      "id": "intent_decimals_matches_offset",
+      "kind": "security_intent",
+      "text": "sUSDM.decimals() must equal assetDecimals + _decimalsOffset() (i.e., 12 given USDM's 6 decimals and offset 6), matching ERC-4626 semantics.",
+      "modality": "asserted",
+      "entity_ids": [
+        "susdm",
+        "usdm",
+        "oz_erc4626"
+      ],
+      "evidence": [
+        "Under OpenZeppelin ERC-4626, the vault’s decimals should be:",
+        "vaultDecimals=assetDecimals+_decimalsOffset()",
+        "USDM uses 6 decimals, so with _decimalsOffset() = 6, ERC-4626 expects sUSDM.decimals() to be 12.",
+        "2. OZ ERC-4626 defines decimals() as underlyingDecimals + _decimalsOffset().",
+        "- Result: sUSDM.decimals() becomes 12 (given USDM has 6 decimals), matching ERC-4626 semantics."
+      ]
+    },
+    {
+      "id": "intent_consistent_share_model",
+      "kind": "security_intent",
+      "text": "The share token must use one consistent decimals model so that ERC-4626 math and reported share decimals agree.",
+      "modality": "asserted",
+      "entity_ids": [
+        "susdm"
+      ],
+      "evidence": [
+        "sUSDM implements ERC-4626 with a non-zero _decimalsOffset() but overrides decimals() to an inconsistent value, causing share-unit mismatches between ERC-4626 math and what integrators/users think the share token decimals are. This can lead to incorrect pricing/quotes, wrong UI display, and unsafe integration behavior for any system relying on ERC-4626 semantics.",
+        "its better to just choose one consistent model:",
+        "- Result: shares and assets both use 6 decimals, and ERC-4626 semantics stay consistent."
+      ]
+    },
+    {
+      "id": "incorrect_share_pricing_quoting",
+      "kind": "impact",
+      "text": "integrators computing price-per-share, exchange rates, or minOut/maxIn using share decimals can produce incorrect values.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "1. Incorrect share pricing / quoting: integrators computing price-per-share, exchange rates, or minOut/maxIn using share decimals can produce incorrect values."
+      ]
+    },
+    {
+      "id": "deposits_mints_failing_unexpectedly",
+      "kind": "impact",
+      "text": "deposits/mints failing unexpectedly,",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "2. Unsafe integration behavior: vault routers and aggregators may pass wrongly-scaled amounts (especially in systems that normalize to 18 or to decimals()), potentially causing:",
+        "- deposits/mints failing unexpectedly,"
+      ]
+    },
+    {
+      "id": "wrong_slippage_protections",
+      "kind": "impact",
+      "text": "wrong slippage protections,",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "2. Unsafe integration behavior: vault routers and aggregators may pass wrongly-scaled amounts (especially in systems that normalize to 18 or to decimals()), potentially causing:",
+        "- wrong slippage protections,"
+      ]
+    },
+    {
+      "id": "misleading_ui_amounts_users_sign_unintended",
+      "kind": "impact",
+      "text": "misleading UI amounts that cause users to sign transactions they don’t intend.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "2. Unsafe integration behavior: vault routers and aggregators may pass wrongly-scaled amounts (especially in systems that normalize to 18 or to decimals()), potentially causing:",
+        "- misleading UI amounts that cause users to sign transactions they don’t intend."
+      ]
+    },
+    {
+      "id": "accounting_reporting_drift",
+      "kind": "impact",
+      "text": "dashboards and off-chain accounting that rely on decimals() to format shares can misreport balances and APY.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "3. Accounting/reporting drift: dashboards and off-chain accounting that rely on decimals() to format shares can misreport balances and APY."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "integrators_scale_by_decimals"
+  ],
+  "ambiguities": [
+    "No concrete transaction or actor is described; the scenario is a configuration-level inconsistency rather than an executed attack.",
+    "The report does not state a specific numeric expected-vs-actual share amount for a concrete deposit/mint; impacts are qualitative integration consequences.",
+    "Whether decimals() override or _decimalsOffset() is the intended canonical value is left as a design choice in the recommendation."
+  ]
+}

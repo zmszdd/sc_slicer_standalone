@@ -19,6 +19,8 @@ class AnchorResolverRealCaseTest(unittest.TestCase):
 
     def test_intuition_cross_contract_is_multi_contract(self):
         case = CASES / ('Intuition_2VUsxVJwReb__6YNDfbQYkTa__KcTHtNrsMFs')
+        if not case.is_dir():
+            self.skipTest('optional real-case fixture is not present')
         result = resolve_anchors(
             case / 'stage2_run',
             'impact_claim_dos_via_expired_window_8ceee315_ddfa6e3d',

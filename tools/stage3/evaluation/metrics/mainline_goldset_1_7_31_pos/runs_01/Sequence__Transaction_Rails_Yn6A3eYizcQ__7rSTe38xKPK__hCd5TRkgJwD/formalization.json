@@ -1,0 +1,368 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "c6d81da3e_router_holds_nonzero_funds": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "router holds nonzero residual ETH and/or ERC20 funds",
+      "checkpoint": "before public entrypoint invocation",
+      "entity_ids": [
+        "trails_router",
+        "router_funds"
+      ],
+      "evidence": "- `receive()` accepting ETH."
+    },
+    "c6d81da3e_public_entrypoint_callable": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "TrailsRouter execute/pullAmountAndExecute entrypoints are publicly callable",
+      "checkpoint": "before public entrypoint invocation",
+      "entity_ids": [
+        "trails_router",
+        "third_party"
+      ],
+      "evidence": "Public execute and pullAmountAndExecute allow draining router-held residual funds via delegated Multicall3."
+    },
+    "c6d81da3e_arbitrary_multicall3_target_moves_router_balance": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "a public entrypoint permits an arbitrary Multicall3 target that moves the router's own held ETH/token balance",
+      "checkpoint": "during public entrypoint execution",
+      "entity_ids": [
+        "trails_router",
+        "multicall3"
+      ],
+      "evidence": "- For ERC20, ensure only transfers sourced from msg.sender path are allowed; disallow direct calls that move router’s own token balance."
+    },
+    "c6d81da3e_router_funds_exfiltrated": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "residual ETH and/or ERC20 held by the router is directly stolen by a third party",
+      "checkpoint": "after public entrypoint execution",
+      "entity_ids": [
+        "trails_router",
+        "router_funds",
+        "third_party"
+      ],
+      "evidence": "- Direct theft of residual ETH and/or ERC20 stuck/dusted in router, independent of user mistakes."
+    },
+    "c2d6a8177_router_residual_funds_nonzero": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "router holds nonzero residual ETH and/or ERC20 funds accumulated via receive(), injectSweepAndCall pulls, unrefunded overpaid ETH, or target returns",
+      "checkpoint": "before third-party execute call",
+      "entity_ids": [
+        "trails_router",
+        "router_funds"
+      ],
+      "evidence": "- `receive()` accepting ETH."
+    },
+    "c2d6a8177_execute_publicly_callable": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "TrailsRouter execute and pullAmountAndExecute entrypoints are publicly callable",
+      "checkpoint": "before third-party execute call",
+      "entity_ids": [
+        "trails_router",
+        "third_party"
+      ],
+      "evidence": "Public execute and pullAmountAndExecute allow draining router-held residual funds via delegated Multicall3."
+    },
+    "c2d6a8177_forwarded_value_equals_msg_value": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "value forwarded by the router equals msg.value with no access to the existing router balance",
+      "checkpoint": "during router value forwarding",
+      "entity_ids": [
+        "trails_router"
+      ],
+      "evidence": "- Enforce that value forwarded equals msg.value (no access to existing router balance)."
+    },
+    "c2d6a8177_residual_funds_theft_occurred": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "direct theft of residual ETH and/or ERC20 stuck/dusted in router occurred, independent of user mistakes",
+      "checkpoint": "after third-party execute call",
+      "entity_ids": [
+        "trails_router",
+        "router_funds",
+        "third_party"
+      ],
+      "evidence": "- Direct theft of residual ETH and/or ERC20 stuck/dusted in router, independent of user mistakes."
+    }
+  },
+  "claims": [
+    {
+      "id": "impact_claim_theft_of_residual_eth_erc20_3d64289f_30f71113",
+      "scope": "Direct theft of residual ETH and/or ERC20 stuck/dusted in router, independent of user mistakes.",
+      "modality": "asserted",
+      "impact_ids": [
+        "theft_of_residual_eth_erc20_in_router"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The router holds nonzero residual ETH and/or ERC20 funds accumulated via receive(), injectSweepAndCall pulls, unrefunded overpaid ETH, or target returns.; TrailsRouter's execute and pullAmountAndExecute entrypoints are publicly callable.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c6d81da3e_router_holds_nonzero_funds"
+              },
+              {
+                "var": "c6d81da3e_public_entrypoint_callable"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "router_holds_nonzero_funds",
+            "public_entrypoint_callable"
+          ],
+          "evidence": [
+            "- `receive()` accepting ETH.",
+            "- ERC20 pulled in `injectSweepAndCall`.",
+            "- Overpaid ETH not refunded in `pullAmountAndExecute`.",
+            "- Targets returning ETH/tokens to the router. Thus, any nonzero router-held funds can be exfiltrated by a third party via `execute`.",
+            "Public execute and pullAmountAndExecute allow draining router-held residual funds via delegated Multicall3.",
+            "Root cause: `TrailsRouter` is publicly callable and `delegatecall`s Multicall3 aggregate3Value, permitting arbitrary targets and ETH values drawn from `address(this)`. The router can accumulate value via:"
+          ]
+        },
+        "safety": {
+          "text": "Public entrypoints must not permit arbitrary Multicall3 targets that move the router's own held ETH/token balance.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "var": "c6d81da3e_arbitrary_multicall3_target_moves_router_balance"
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "var": "c6d81da3e_public_entrypoint_callable"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_no_arbitrary_targets_public"
+          ],
+          "evidence": [
+            "- For ERC20, ensure only transfers sourced from msg.sender path are allowed; disallow direct calls that move router’s own token balance.",
+            "- Add allowlist/role checks or a guard that forbids arbitrary targets via Multicall3 from public entrypoints."
+          ]
+        },
+        "effects": {
+          "text": "Direct theft of residual ETH and/or ERC20 stuck/dusted in router, independent of user mistakes.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c6d81da3e_arbitrary_multicall3_target_moves_router_balance"
+                  },
+                  {
+                    "var": "c6d81da3e_public_entrypoint_callable"
+                  }
+                ]
+              },
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c6d81da3e_router_funds_exfiltrated"
+                  },
+                  {
+                    "var": "c6d81da3e_arbitrary_multicall3_target_moves_router_balance"
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "theft_of_residual_eth_erc20_in_router"
+          ],
+          "evidence": [
+            "- Direct theft of residual ETH and/or ERC20 stuck/dusted in router, independent of user mistakes."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "router_holds_nonzero_funds",
+            "public_entrypoint_callable"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_no_arbitrary_targets_public"
+          ],
+          "args.1": [
+            "intent_no_arbitrary_targets_public"
+          ]
+        },
+        "effects": {
+          "": [
+            "theft_of_residual_eth_erc20_in_router"
+          ],
+          "args.0": [
+            "theft_of_residual_eth_erc20_in_router"
+          ],
+          "args.1": [
+            "theft_of_residual_eth_erc20_in_router"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "theft_of_residual_eth_erc20_in_router",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "Public entrypoint invocation is the checked action; the router's residual balance is the protected asset."
+      ],
+      "unresolved": []
+    },
+    {
+      "id": "impact_claim_theft_of_residual_eth_erc20_3d64289f_65d66618",
+      "scope": "Direct theft of residual ETH and/or ERC20 stuck/dusted in router, independent of user mistakes.",
+      "modality": "asserted",
+      "impact_ids": [
+        "theft_of_residual_eth_erc20_in_router"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "The router holds nonzero residual ETH and/or ERC20 funds accumulated via receive(), injectSweepAndCall pulls, unrefunded overpaid ETH, or target returns.; TrailsRouter's execute and pullAmountAndExecute entrypoints are publicly callable.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "c2d6a8177_router_residual_funds_nonzero"
+              },
+              {
+                "var": "c2d6a8177_execute_publicly_callable"
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "router_holds_nonzero_funds",
+            "public_entrypoint_callable"
+          ],
+          "evidence": [
+            "- `receive()` accepting ETH.",
+            "- ERC20 pulled in `injectSweepAndCall`.",
+            "- Overpaid ETH not refunded in `pullAmountAndExecute`.",
+            "- Targets returning ETH/tokens to the router. Thus, any nonzero router-held funds can be exfiltrated by a third party via `execute`.",
+            "Public execute and pullAmountAndExecute allow draining router-held residual funds via delegated Multicall3.",
+            "Root cause: `TrailsRouter` is publicly callable and `delegatecall`s Multicall3 aggregate3Value, permitting arbitrary targets and ETH values drawn from `address(this)`. The router can accumulate value via:"
+          ]
+        },
+        "safety": {
+          "text": "Value forwarded by the router must equal msg.value, with no access to the existing router balance.",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "var": "c2d6a8177_execute_publicly_callable"
+              },
+              {
+                "var": "c2d6a8177_forwarded_value_equals_msg_value"
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "intent_value_equals_msg_value"
+          ],
+          "evidence": [
+            "- Enforce that value forwarded equals msg.value (no access to existing router balance)."
+          ]
+        },
+        "effects": {
+          "text": "Direct theft of residual ETH and/or ERC20 stuck/dusted in router, independent of user mistakes.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "and",
+                "args": [
+                  {
+                    "var": "c2d6a8177_execute_publicly_callable"
+                  },
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "var": "c2d6a8177_forwarded_value_equals_msg_value"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "var": "c2d6a8177_residual_funds_theft_occurred"
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "theft_of_residual_eth_erc20_in_router"
+          ],
+          "evidence": [
+            "- Direct theft of residual ETH and/or ERC20 stuck/dusted in router, independent of user mistakes."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "router_holds_nonzero_funds",
+            "public_entrypoint_callable"
+          ]
+        },
+        "safety": {
+          "": [
+            "intent_value_equals_msg_value"
+          ]
+        },
+        "effects": {
+          "": [
+            "theft_of_residual_eth_erc20_in_router"
+          ],
+          "args.0": [
+            "theft_of_residual_eth_erc20_in_router"
+          ],
+          "args.0.args.1": [
+            "theft_of_residual_eth_erc20_in_router"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "theft_of_residual_eth_erc20_in_router",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "The router's value-forwarding behavior is observable at the checkpoint of the execute call."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "V is a grounded Boolean because the report gives no numeric amount or specific token/ETH quantity for the theft.",
+    "The intent's value-equality relation is represented as a single grounded Boolean because the report supplies no numeric operands for forwarded value or msg.value.",
+    "The impact is represented as a Boolean outcome because the report does not state a concrete stolen amount or transfer event.",
+    "theft_of_residual_eth_erc20_in_router/intent_balance_snapshot_invariant: No rule candidate produced after bounded generation: direct P/I/V relationship is absent or infeasible: I_TAUTOLOGY: safety consequent is a tautological self-equality; EFFECT_CONTRADICTION: effects contains an unsatisfiable negation of a self-equality; I_IMPLIED_BY_P: P entails I, so I adds no independent safety content beyond the preconditions; V_INCONSISTENT_WITH_P: P and V are not jointly satisfiable: P_and_V=unsat (expected sat); I_NOT_FALSIFIED_BY_V: P, V and NOT I are not jointly satisfiable: P_and_V_and_not_I=unsat (expected sat)"
+  ]
+}

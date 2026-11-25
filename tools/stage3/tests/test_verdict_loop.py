@@ -1,4 +1,7 @@
 import unittest
+import json
+import tempfile
+from pathlib import Path
 
 from lib.verdict_loop import BINDING_FIXABLE_VERDICTS, EVIDENCE_VERDICTS, \
     NON_FIXABLE_VERDICTS, REPAIR_LOOP_VERDICTS, TERMINAL_VERDICTS, \
@@ -16,6 +19,31 @@ class VerdictLoopTest(unittest.TestCase):
         for verdict in NON_FIXABLE_VERDICTS:
             self.assertEqual(verdict_action(verdict), 'skip', verdict)
         self.assertEqual(verdict_action(None), 'rebind')
+
+    def test_terminal_semantic_unbound_skips_rebinding(self):
+        summary = {
+            'consistency_verdict': 'partial_binding',
+            'partial_binding': {
+                'unbound_route_suggestion':
+                    'stage2_restate_or_reference_patch',
+                'semantic_terminal_unresolved': True,
+            },
+        }
+        self.assertEqual(verdict_action('partial_binding', summary), 'skip')
+
+    def test_partial_binding_hint_names_semantic_buckets(self):
+        summary = {
+            'consistency_verdict': 'partial_binding',
+            'partial_binding': {
+                'unbound_symbols': ['a'],
+                'unbound_buckets': {'semantic_time_window': 1,
+                                    'semantic_effect_only': 2},
+            },
+        }
+        hint = repair_hint(summary, None)
+        self.assertIn('semantic_time_window', hint)
+        self.assertNotIn('semantic_effect_only', hint)
+        self.assertIn('one attempt', hint)
 
     def test_compile_error_hint_mentions_neutralized(self):
         summary = {
@@ -210,3 +238,53 @@ class Stage3MultiDigTest(unittest.TestCase):
         from cli.stage3_multi import _dig
         self.assertEqual(_dig({'forge': {}}, ['forge', 'exploit', 'status'], 'D'),
                          'D')
+
+
+class PocShapeTest(unittest.TestCase):
+    def _case(self, src_files: dict[str, str], probe: dict | None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        src = root / 'src'
+        src.mkdir()
+        for name, text in src_files.items():
+            (src / name).write_text(text)
+        bindings = root / 'bindings'
+        bindings.mkdir()
+        (bindings / 'p.json').write_text(json.dumps({'probe': probe}))
+        return root
+
+    def test_exploit_body_expect_revert_is_revert_expected(self):
+        from cli.stage3_verdict_loop import _poc_shape
+        case = self._case(
+            {'A.sol': 'function test_exploit() public {\n'
+                      '    vm.expectRevert(bytes("boom"));\n'
+                      '    target.run();\n'
+                      '}\n'},
+            {'exploit_test': 'test_exploit'})
+        self.assertEqual(_poc_shape(case), 'revert_expected_test')
+
+    def test_other_file_expect_revert_does_not_poison_state_assert(self):
+        from cli.stage3_verdict_loop import _poc_shape
+        case = self._case(
+            {'A.sol': 'function helper() public pure returns (bool) {\n'
+                      '    return true;\n'
+                      '}\n',
+             'B.sol': 'function test_exploit() public {\n'
+                      '    assert(target.balance() == 0);\n'
+                      '}\n',
+             'C.sol': 'function unrelated() public { vm.expectRevert(); }\n'},
+            {'exploit_test': 'test_exploit'})
+        self.assertEqual(_poc_shape(case), 'state_assert_test')
+
+    def test_missing_exploit_test_is_no_body(self):
+        from cli.stage3_verdict_loop import _poc_shape
+        case = self._case({'A.sol': 'contract A {}'}, {})
+        self.assertEqual(_poc_shape(case), 'no_body')
+
+    def test_function_not_found_is_other_test(self):
+        from cli.stage3_verdict_loop import _poc_shape
+        case = self._case(
+            {'A.sol': 'contract A { function run() public {} }'},
+            {'exploit_test': 'test_missing'})
+        self.assertEqual(_poc_shape(case), 'other_test')

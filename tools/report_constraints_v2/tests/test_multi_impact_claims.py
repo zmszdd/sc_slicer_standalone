@@ -5,10 +5,13 @@ import tempfile
 from pathlib import Path
 
 from lib.multi_impact import (claim_id_for_impact, merge_claim_formalizations,
-                              namespace_formalization)
+                              namespace_formalization,
+                              namespace_observability_contract)
+from lib.formalization_audit import build_contract
 from lib.ingest import build_catalog, hydrate_elements, hydrate_formalization
 from lib.plan_synthesizer import synthesize_id_formalization
 from lib.semantic_core import compile_bundle, symbols_for_claim
+from lib.stage3_consistency import binding_contract
 from lib.solving import solve_queries
 from cli.batch_verify import verify_multi_impact_plans
 from tests.test_evidence_ids import id_inputs, TEXT
@@ -33,6 +36,32 @@ class MultiImpactClaimTests(unittest.TestCase):
         used = symbols_for_claim(claim, renamed['symbols'])
         self.assertTrue(used)
         self.assertTrue(all(name.startswith('c') for name in used))
+
+    def test_observability_contract_matches_namespaced_formal_symbols(self):
+        elements, _ = id_inputs()
+        formal = synthesize_id_formalization(plan(), elements)
+        claim_id = claim_id_for_impact('impact_revert')
+        renamed = namespace_formalization(formal, claim_id)
+        plan_contract = {
+            'schema_version': 'observability-contract/1',
+            'contract_present': True,
+            'symbols': {
+                name: {'observable_kind': 'getter', 'scope': 'business',
+                       'binding_risk': 'low'}
+                for name in formal['symbols']},
+            'high_risk': [],
+        }
+        contract = namespace_observability_contract(claim_id, plan_contract)
+        self.assertEqual(set(contract['symbols']), set(renamed['symbols']))
+        audit = build_contract(renamed, {claim_id: contract})['claims'][claim_id]
+        self.assertFalse(audit['observable_missing'])
+        self.assertNotIn('OBSERVABLE_KIND_MISSING', audit['warnings'])
+        binding = binding_contract(renamed, renamed['claims'][0],
+                                   contract['symbols'])
+        rows = [row for row in binding['symbols'] if row['appears_in']]
+        self.assertTrue(rows)
+        self.assertTrue(all(row.get('observable_kind') == 'getter'
+                            for row in rows))
 
     def test_every_impact_gets_one_formal_or_explicit_unformalized_claim(self):
         elements, _ = id_inputs()

@@ -1,0 +1,218 @@
+{
+  "schema_version": "stage2-repair-base/1",
+  "formal_plan": {
+    "schema_version": "report-formal-plan/8",
+    "relation_class": "state_correspondence",
+    "precondition_ids": [
+      "alice_blacklisted",
+      "alice_cooldown_complete",
+      "unstake_callable_by_blacklisted"
+    ],
+    "intent_id": "blacklist_should_not_strand_funds",
+    "impact_ids": [
+      "tokens_locked_in_adapter_no_rescue"
+    ],
+    "symbols": {
+      "alice_is_blacklisted": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "Alice is a blacklisted user",
+        "checkpoint": "before unstake credit attempt",
+        "entity_ids": [
+          "alice"
+        ],
+        "source_ids": [
+          "alice_blacklisted"
+        ],
+        "observable_kind": "state",
+        "scope": "business",
+        "receiver": null,
+        "contract_type": null,
+        "binding_risk": "medium"
+      },
+      "alice_cooldown_tokens": {
+        "sort": "int",
+        "unit": "iTRY tokens",
+        "meaning": "amount of iTRY tokens for which Alice has completed the cooldown",
+        "checkpoint": "before unstake credit attempt",
+        "entity_ids": [
+          "alice",
+          "itry_tokens"
+        ],
+        "source_ids": [
+          "alice_cooldown_complete"
+        ],
+        "observable_kind": "state",
+        "scope": "business",
+        "receiver": null,
+        "contract_type": null,
+        "binding_risk": "medium"
+      },
+      "unstake_callable_by_blacklisted": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "UnstakeMessenger.unstake() can be called even by blacklisted users",
+        "checkpoint": "before unstake call",
+        "entity_ids": [
+          "unstake_messenger",
+          "alice"
+        ],
+        "source_ids": [
+          "unstake_callable_by_blacklisted"
+        ],
+        "observable_kind": "call",
+        "scope": "cross_contract",
+        "receiver": "unstake_messenger",
+        "contract_type": "UnstakeMessenger",
+        "binding_risk": "medium"
+      },
+      "credit_failed_for_blacklisted": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the unstake credit (_credit/_mint) failed because the user is blacklisted",
+        "checkpoint": "after unstake credit attempt",
+        "entity_ids": [
+          "alice"
+        ],
+        "source_ids": [
+          "blacklist_should_not_strand_funds"
+        ],
+        "observable_kind": "call",
+        "scope": "cross_contract",
+        "receiver": "itry_token_oft_adapter",
+        "contract_type": "iTryTokenOFTAdapter",
+        "binding_risk": "medium"
+      },
+      "tokens_locked_in_adapter": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "the user's iTRY tokens remain locked in iTryTokenOFTAdapter with no rescue mechanism",
+        "checkpoint": "after failed unstake credit",
+        "entity_ids": [
+          "itry_token_oft_adapter",
+          "itry_tokens"
+        ],
+        "source_ids": [
+          "tokens_locked_in_adapter_no_rescue"
+        ],
+        "observable_kind": "state",
+        "scope": "cross_contract",
+        "receiver": "itry_token_oft_adapter",
+        "contract_type": "iTryTokenOFTAdapter",
+        "binding_risk": "high"
+      },
+      "rescue_mechanism_available": {
+        "sort": "bool",
+        "unit": null,
+        "meaning": "a rescue mechanism exists to recover tokens locked in iTryTokenOFTAdapter",
+        "checkpoint": "after failed unstake credit",
+        "entity_ids": [
+          "itry_token_oft_adapter"
+        ],
+        "source_ids": [
+          "tokens_locked_in_adapter_no_rescue"
+        ],
+        "observable_kind": "state",
+        "scope": "cross_contract",
+        "receiver": "itry_token_oft_adapter",
+        "contract_type": "iTryTokenOFTAdapter",
+        "binding_risk": "high"
+      }
+    },
+    "precondition_terms": [
+      {
+        "source_id": "alice_blacklisted",
+        "predicate": {
+          "kind": "truth",
+          "symbol": "alice_is_blacklisted",
+          "value": true
+        }
+      },
+      {
+        "source_id": "alice_cooldown_complete",
+        "predicate": {
+          "kind": "comparison",
+          "left": "alice_cooldown_tokens",
+          "operator": "eq",
+          "right": {
+            "const": 100
+          }
+        }
+      },
+      {
+        "source_id": "unstake_callable_by_blacklisted",
+        "predicate": {
+          "kind": "truth",
+          "symbol": "unstake_callable_by_blacklisted",
+          "value": true
+        }
+      }
+    ],
+    "impact_outcome": {
+      "source_id": "tokens_locked_in_adapter_no_rescue",
+      "predicate": {
+        "kind": "all_of",
+        "terms": [
+          {
+            "kind": "truth",
+            "symbol": "credit_failed_for_blacklisted",
+            "value": true
+          },
+          {
+            "kind": "truth",
+            "symbol": "tokens_locked_in_adapter",
+            "value": true
+          },
+          {
+            "kind": "truth",
+            "symbol": "rescue_mechanism_available",
+            "value": false
+          }
+        ]
+      }
+    },
+    "impact_context_terms": [
+      {
+        "source_id": "tokens_locked_in_adapter_no_rescue",
+        "qualifier_types": [
+          "trigger"
+        ],
+        "predicate": {
+          "kind": "truth",
+          "symbol": "credit_failed_for_blacklisted",
+          "value": true
+        }
+      }
+    ],
+    "derived_definitions": [],
+    "pattern": {
+      "kind": "correspondence",
+      "condition": {
+        "kind": "truth",
+        "symbol": "credit_failed_for_blacklisted",
+        "value": true
+      },
+      "observed_symbol": "tokens_locked_in_adapter",
+      "expected_symbol": "rescue_mechanism_available"
+    },
+    "assumptions": [
+      "Alice's blacklisted status and completed cooldown are observable before the unstake credit attempt.",
+      "The 100 iTRY amount is the cooldown amount for Alice's unstake."
+    ],
+    "unresolved": [
+      {
+        "category": "unsupported_relation",
+        "description": "The intent requires that tokens not remain locked without a rescue mechanism; the correspondence pattern compares a locked-tokens boolean against a rescue-availability boolean, which is a proxy rather than a direct equality of the same observable.",
+        "source_ids": [
+          "blacklist_should_not_strand_funds",
+          "tokens_locked_in_adapter_no_rescue"
+        ],
+        "blocks_formalization": false
+      }
+    ],
+    "limitations": [
+      "The rescue mechanism availability and locked-token state are qualitative booleans; no numeric definition is given in the report.",
+      "The correspondence pattern is used as the closest available encoding of the intent's 'must not remain locked without rescue' requirement."
+    ]
+  }
+}

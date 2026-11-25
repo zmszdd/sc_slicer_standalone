@@ -99,7 +99,7 @@ def main(argv=None) -> int:
     parser.add_argument('--judge-ground-truth', type=Path,
                         default=Path(__file__).with_name('judge_ground_truth.json'))
     parser.add_argument('--positive-eval', type=Path,
-                        default=Path(__file__).with_name('positive_eval_105.json'))
+                        default=Path(__file__).with_name('positive_eval_161.json'))
     parser.add_argument('--blind-invalid-eval', type=Path, action='append', default=[])
     parser.add_argument('--impact-gate', type=Path,
                         default=Path(__file__).with_name('impact_insufficient_cases.json'),
@@ -163,7 +163,9 @@ def main(argv=None) -> int:
     judge_valid = [row for row in positive
                    if judges.get(row.get('case'), {}).get('validity') in VALID_STATES]
     judge_valid_dynamic = [row for row in judge_valid
-                           if any(v in DYNAMIC for v in (row.get('verdicts') or []))]
+                           if (int(row.get('reproduced') or 0) > 0
+                               or any(v in DYNAMIC
+                                      for v in (row.get('verdicts') or [])))]
     relevant = len(judge_valid)
     relevant_dynamic = len(judge_valid_dynamic)
     recall_e2e = len(tp_clean) / relevant if relevant else 0.0

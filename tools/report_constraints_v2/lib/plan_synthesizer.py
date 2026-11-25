@@ -338,6 +338,106 @@ def _predicate(value, symbols, depth=0, enforce_units=True):
     return expression
 
 
+_BOUNDED_VIOLATION_OP = {'le': 'gt', 'lt': 'ge', 'ge': 'lt', 'gt': 'le'}
+
+
+def _truth_symbols(value) -> set[str]:
+    if not isinstance(value, dict):
+        return set()
+    found = set()
+    if value.get('kind') == 'truth' and isinstance(value.get('symbol'), str):
+        found.add(value['symbol'])
+    for key in ('terms', 'condition', 'predicate', 'left', 'right'):
+        child = value.get(key)
+        if isinstance(child, list):
+            for item in child:
+                found |= _truth_symbols(item)
+        elif isinstance(child, dict):
+            found |= _truth_symbols(child)
+    return found
+
+
+def _qualitative_shadow_symbols(plan, version: str) -> set[str]:
+    pattern = plan.get('pattern')
+    if version != LIVE_EXPANDED_PLAN_VERSION or not isinstance(pattern, dict) \
+            or pattern.get('kind') != 'bounded_relation':
+        return set()
+    candidates = _truth_symbols(pattern.get('condition'))
+    outcome = plan.get('impact_outcome')
+    if isinstance(outcome, dict):
+        candidates |= _truth_symbols(outcome.get('predicate'))
+    for term in plan.get('impact_context_terms') or []:
+        if isinstance(term, dict):
+            candidates |= _truth_symbols(term.get('predicate'))
+    symbols = plan.get('symbols') or {}
+    return {name for name in candidates
+            if name in symbols and symbols[name].get('sort') == 'bool'}
+
+
+def _bounded_relation_expressions(pattern: dict, symbols: dict) -> tuple[dict, dict]:
+    operator = pattern.get('operator')
+    require(operator in _BOUNDED_VIOLATION_OP, 'invalid bounded relation operator')
+    operands = [
+        _quantity_expression(pattern.get('value'), symbols, enforce_units=True),
+        _quantity_expression(pattern.get('bound'), symbols, enforce_units=True),
+    ]
+    safety = {'op': operator, 'args': operands}
+    violation = {'op': _BOUNDED_VIOLATION_OP[operator], 'args': operands}
+    for expression in (safety, violation):
+        require(r.expr_type(expression, symbols, enforce_units=True) == ('bool', None),
+                'qualitative shadow replacement is not a Boolean relation')
+    return safety, violation
+
+
+def _replace_qualitative_shadow(node, names: set[str],
+                                safety: dict, violation: dict):
+    if not isinstance(node, dict):
+        return node
+    if set(node) == {'var'} and node.get('var') in names:
+        return json.loads(json.dumps(violation))
+    if (node.get('op') == 'not' and len(node.get('args') or []) == 1
+            and set(node['args'][0]) == {'var'}
+            and node['args'][0].get('var') in names):
+        return json.loads(json.dumps(safety))
+    return {key: [_replace_qualitative_shadow(item, names, safety, violation)
+                  for item in value] if isinstance(value, list)
+            else _replace_qualitative_shadow(value, names, safety, violation)
+            if isinstance(value, dict) else value
+            for key, value in node.items()}
+
+
+def _checkpoint_layer(checkpoint) -> str:
+    value = str(checkpoint or '').lower()
+    if re.search(r'\bbefore\b|\bpre\b|\binitial\b', value):
+        return 'before'
+    if re.search(r'\bafter\b|\bpost\b|\bfinal\b', value):
+        return 'after'
+    return 'other'
+
+
+def _separate_correspondence_checkpoints(plan: dict, output_symbols: dict) -> None:
+    pattern = plan.get('pattern')
+    if not isinstance(pattern, dict) or pattern.get('kind') != 'correspondence':
+        return
+    observed = pattern.get('observed_symbol')
+    expected = pattern.get('expected_symbol')
+    if observed not in output_symbols or expected not in output_symbols \
+            or observed == expected:
+        return
+    observed_layer = _checkpoint_layer(
+        output_symbols[observed].get('checkpoint'))
+    expected_layer = _checkpoint_layer(
+        output_symbols[expected].get('checkpoint'))
+    if observed_layer != expected_layer:
+        return
+    if expected_layer != 'before':
+        output_symbols[expected]['checkpoint'] = (
+            'before expected ' + str(output_symbols[expected]['checkpoint']))
+    if observed_layer != 'after':
+        output_symbols[observed]['checkpoint'] = (
+            'after observed ' + str(output_symbols[observed]['checkpoint']))
+
+
 def _and(expressions):
     require(bool(expressions), 'empty conjunction')
     return expressions[0] if len(expressions) == 1 else {'op': 'and', 'args': expressions}
@@ -1930,6 +2030,9 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
         output_symbols[name] = {**symbols[name], 'evidence_ids': evidence_ids,
                                 'entity_ids': item['entity_ids']}
 
+    if version == LIVE_EXPANDED_PLAN_VERSION and not fidelity_only:
+        _separate_correspondence_checkpoints(plan, output_symbols)
+
     definition_expressions = []
     if version in (FIXED_PLAN_VERSION, *EXPANDED_PLAN_VERSIONS):
         definitions = plan['derived_definitions']
@@ -2108,6 +2211,18 @@ def synthesize_id_formalization(plan, elements, claim_id='core_claim',
     if direct_witness_effects:
         safety = _collapse_double_negation(safety)
         effects = _collapse_double_negation(effects)
+    if version == LIVE_EXPANDED_PLAN_VERSION and not fidelity_only:
+        shadow_names = _qualitative_shadow_symbols(plan, version)
+        if shadow_names:
+            shadow_safety, shadow_violation = _bounded_relation_expressions(
+                plan['pattern'], symbols)
+            if p_expression is not None:
+                p_expression = _replace_qualitative_shadow(
+                    p_expression, shadow_names, shadow_safety, shadow_violation)
+            safety = _replace_qualitative_shadow(
+                safety, shadow_names, shadow_safety, shadow_violation)
+            effects = _replace_qualitative_shadow(
+                effects, shadow_names, shadow_safety, shadow_violation)
     require(r.expr_type(safety, symbols, enforce_units=True) == ('bool', None) and
             r.expr_type(effects, symbols, enforce_units=True) == ('bool', None),
             'synthesized property is not Boolean')

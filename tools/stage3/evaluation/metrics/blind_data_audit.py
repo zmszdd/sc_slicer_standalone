@@ -28,6 +28,7 @@ BUILD_STATUS = HERE / 'blind_build_status.json'
 OUT_JSON = HERE / 'blind_data_audit.json'
 OUT_MD = HERE / 'blind_data_audit.md'
 POC_STATUS = HERE / 'blind_poc_harness_status.json'
+FLATTEN_ROOT = HERE / 'blind_flatten_root'
 
 _CODE_BLOCK_RE = re.compile(r'```(?:solidity|sol)?\s*\n(.*?)```', re.S | re.I)
 
@@ -61,11 +62,21 @@ def _harness_has_test(case_dir: Path) -> bool:
     """A resurrected harness is stage-3 runnable only when it declares a
     ``test_*`` entrypoint; a stub that merely compiles cannot drive
     ``forge test`` and is still a blocker for e2e differential."""
-    test = case_dir / 'test' / 'Resurrected.t.sol'
-    if not test.is_file():
+    for test in (case_dir / 'test' / 'Resurrected.t.sol',
+                 case_dir / 'Resurrected.t.sol'):
+        if not test.is_file():
+            continue
+        text = test.read_text(errors='replace')
+        if re.search(r'\bfunction\s+test[A-Za-z0-9_]*\s*\(', text):
+            return True
+    return False
+
+
+def _artifact_has_test(path: Path) -> bool:
+    if not path.is_file():
         return False
-    text = test.read_text()
-    return 'function test' in text or 'function test_' in text
+    return bool(re.search(r'\bfunction\s+test[A-Za-z0-9_]*\s*\(',
+                          path.read_text(errors='replace')))
 
 
 def main() -> int:
@@ -86,8 +97,17 @@ def main() -> int:
         build = build_rows.get(case['case'], {})
         poc_cls = poc_rows.get(case['case'], {})
         pilot_dir = ROOT / 'runs' / 'sol_resurrect' / 'blind_pilot' / case['case']
-        harness_ready = _harness_has_test(pilot_dir)
+        canonical = FLATTEN_ROOT / case['case'] / 'contract.flattened.t.sol'
+        stage1_route = build.get('stage1_route')
+        if canonical.is_file():
+            stage1_route = 'flatten_root'
+        harness_ready = bool(build.get('test_entrypoint')) \
+            or _harness_has_test(pilot_dir) \
+            or _artifact_has_test(canonical)
         poc_action = poc_cls.get('action', 'no_poc_code')
+        skeleton_compile = build.get('contract_compile') or build.get('compile')
+        if canonical.is_file() and stage1_route == 'flatten_root':
+            skeleton_compile = skeleton_compile or 'unverified'
         blockers = []
         if sub is None:
             blockers.append('missing_submission_dump')
@@ -95,9 +115,9 @@ def main() -> int:
             blockers.append('no_poc_code_block')
         if poc_action == 'fork_rpc':
             blockers.append('poc_forks_live_rpc')
-        if poc_action == 'snippet_only':
+        if poc_action == 'snippet_only' and not harness_ready:
             blockers.append('poc_is_snippet_not_harness')
-        if build.get('compile') != 'ok':
+        if skeleton_compile != 'ok':
             blockers.append('contract_skeleton_not_compiling')
         if not harness_ready:
             blockers.append('no_test_entrypoint_in_harness')
@@ -110,8 +130,10 @@ def main() -> int:
             'submission_path': None,
             'poc_code_blocks': len(poc),
             'poc_action': poc_action,
-            'contract_built': bool(build.get('built')),
-            'contract_compile': build.get('compile'),
+            'stage1_route': stage1_route,
+            'stage1_artifact': str(canonical) if canonical.is_file() else None,
+            'contract_built': bool(build.get('built')) or canonical.is_file(),
+            'contract_compile': skeleton_compile,
             'harness_has_test': harness_ready,
             'blockers': blockers,
             'stage_ready': stage_ready,
@@ -126,6 +148,8 @@ def main() -> int:
         'poc_present': sum(1 for r in rows if r['poc_code_blocks'] > 0),
         'contract_compiling': sum(
             1 for r in rows if r['contract_compile'] == 'ok'),
+        'canonical_stage1': sum(
+            1 for r in rows if r['stage1_route'] == 'flatten_root'),
         'rows': rows,
     }
     OUT_JSON.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
@@ -136,16 +160,19 @@ def main() -> int:
         f"样本 **{report['total']}**；submission 在本地 **{report['submission_present']}**；"
         f"含 PoC 代码块 **{report['poc_present']}**；"
         f"合约骨架可编译 **{report['contract_compiling']}**；"
+        f"正式 flatten 阶段一产物 **{report['canonical_stage1']}**；"
         f"完全就绪 **{report['stage_ready']}**。",
         '',
-        '| case | project | submission | PoC 块 | PoC 动作 | 骨架编译 | blockers |',
-        '| --- | --- | ---: | ---: | --- | --- | --- |',
+        '| case | project | submission | PoC 块 | PoC 动作 | 阶段一路径 | 编译 | test | blockers |',
+        '| --- | --- | ---: | ---: | --- | --- | --- | --- | --- |',
     ]
     for r in rows:
         lines.append(
             f"| {r['case']} | {r['project']} | "
             f"{'Y' if r['submission_present'] else 'N'} | {r['poc_code_blocks']} | "
-            f"{r['poc_action']} | {r['contract_compile']} | "
+            f"{r['poc_action']} | {r.get('stage1_route') or '-'} | "
+            f"{r['contract_compile']} | "
+            f"{'Y' if r['harness_has_test'] else 'N'} | "
             f"{', '.join(r['blockers']) or '-'} |")
     OUT_MD.write_text('\n'.join(lines) + '\n')
 

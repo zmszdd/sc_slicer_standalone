@@ -10,6 +10,11 @@ CASE = Path(__file__).resolve().parents[1] / 'cases' / 'smoke_vault'
 
 
 class BindingTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not CASE.is_dir():
+            raise unittest.SkipTest('optional smoke_vault fixture is not present')
+
     def setUp(self):
         self.stage2 = load_stage2_run(CASE / 'stage2_run')
         self.binding = load_binding(CASE / 'binding.json')

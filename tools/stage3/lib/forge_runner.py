@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 FORGE_BIN = os.environ.get('FORGE', 'forge')
+FORGE_TIMEOUT_SECONDS = int(os.environ.get('FORGE_TIMEOUT_SECONDS', '1800'))
 
 
 class CompileError(RuntimeError):
@@ -29,7 +30,7 @@ def _no_tests_found(stdout: str) -> bool:
 def run_forge(project_root: Path) -> dict:
     proc = subprocess.run(
         [FORGE_BIN, 'test', '--root', str(project_root), '--json'],
-        capture_output=True, text=True)
+        capture_output=True, text=True, timeout=FORGE_TIMEOUT_SECONDS)
     if _no_tests_found(proc.stdout):
         raise RuntimeError(
             f'no test entrypoint in {project_root}: harness must declare a '
@@ -74,9 +75,19 @@ def run_forge_safe(project_root: Path) -> dict:
     can persist a ``compile-error.json`` record instead of silently losing a
     verdict.
     """
-    proc = subprocess.run(
-        [FORGE_BIN, 'test', '--root', str(project_root), '--json'],
-        capture_output=True, text=True)
+    try:
+        proc = subprocess.run(
+            [FORGE_BIN, 'test', '--root', str(project_root), '--json'],
+            capture_output=True, text=True, timeout=FORGE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        return {
+            'ok': False,
+            'project': str(project_root),
+            'timeout_seconds': FORGE_TIMEOUT_SECONDS,
+            'compile_error': (
+                f'forge test timed out after {FORGE_TIMEOUT_SECONDS}s'
+                + (f': {exc.stderr[:1000]}' if exc.stderr else '')),
+        }
     if _no_tests_found(proc.stdout):
         return {
             'ok': False,
@@ -109,7 +120,10 @@ def _find_test(parsed: dict, test_name: str) -> dict | None:
             continue
         results = suite.get('test_results', {})
         for key, value in results.items():
-            normalized = key.removesuffix('()')
+            # Forge JSON keys are ``test()`` for a no-argument test and
+            # ``test(uint88)`` for a fuzzed test; both must resolve to the
+            # bare ``test`` name the binding probe carries.
+            normalized = key.split('(', 1)[0]
             if normalized == test_name or key == test_name:
                 return value
     return None

@@ -16,6 +16,9 @@ REQUIRED = {
 }
 
 
+FIXTURE = Path(__file__).resolve().parents[0] / 'fixtures' / 'gte_swap_dos'
+
+
 def _proposal(unbound=(), placeholder=()):
     bindings = {}
     for sym in REQUIRED:
@@ -72,12 +75,47 @@ class SymbolsPayloadTest(unittest.TestCase):
         self.assertEqual(payload[1]['observability'], 'low')
         self.assertNotIn('candidate_identifiers', payload[1])
 
+    def test_medium_executable_recipe_is_not_ready_payload(self):
+        contract = {'symbols': [{'symbol': 'a', 'appears_in': 'f'}]}
+        recipes = {'a': [
+            {'recipe_id': 'a:direct:0', 'kind': 'state_snapshot',
+             'expression': 'value', 'executable': True,
+             'confidence': 'medium'},
+        ]}
+        payload = _symbols_payload(contract, recipes=recipes)
+        self.assertNotIn('ready_observable_recipes', payload[0])
+        self.assertEqual(len(payload[0]['planned_observable_recipes']), 1)
+
 
 class ProposePartialTest(unittest.TestCase):
+    def test_p_side_unbound_is_not_silently_bound_to_true(self):
+        stage2_dir = FIXTURE / 'stage2_run'
+        src_dir = FIXTURE / 'src'
+        symbol = 'ce8278392_rewards_pool_total_shares'
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+
+            class FakeLLM:
+                def chat_json(self, system, user, *, model=None):
+                    return _proposal(unbound={symbol})
+
+            original = binding_llm.llm.chat_json
+            binding_llm.llm.chat_json = FakeLLM().chat_json
+            try:
+                proposal = propose_binding(stage2_dir, CLAIM, src_dir, out)
+            finally:
+                binding_llm.llm.chat_json = original
+            self.assertTrue(proposal['partial'])
+            self.assertIn(symbol, proposal['unbound'])
+            written = json.loads((out / 'binding.proposal.json').read_text())
+            entry = written['bindings'][symbol]
+            self.assertEqual(entry['solidity_expr'], 'UNBOUND')
+            self.assertTrue(entry.get('degraded'))
+            self.assertIn('not auto-bound to true', entry['degraded_reason'])
+
     def test_partial_binding_written(self):
-        stage2_dir = Path(__file__).resolve().parents[1] / 'cases' / (
-            'GTE_Perps_and_Launchpad_gtn2Umg6KsC__7yYS2jorBMq__2vNFaZP7xME') / 'stage2_run'
-        src_dir = stage2_dir.parent / 'src'
+        stage2_dir = FIXTURE / 'stage2_run'
+        src_dir = FIXTURE / 'src'
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
 
@@ -100,9 +138,8 @@ class ProposePartialTest(unittest.TestCase):
                 'UNBOUND')
 
     def test_injection_point_overridden_from_source(self):
-        stage2_dir = Path(__file__).resolve().parents[1] / 'cases' / (
-            'GTE_Perps_and_Launchpad_gtn2Umg6KsC__7yYS2jorBMq__2vNFaZP7xME') / 'stage2_run'
-        src_dir = stage2_dir.parent / 'src'
+        stage2_dir = FIXTURE / 'stage2_run'
+        src_dir = FIXTURE / 'src'
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
 
@@ -130,9 +167,8 @@ class ProposePartialTest(unittest.TestCase):
                              'test_submissionValidity')
 
     def test_focused_rebind_merges_existing(self):
-        stage2_dir = Path(__file__).resolve().parents[1] / 'cases' / (
-            'GTE_Perps_and_Launchpad_gtn2Umg6KsC__7yYS2jorBMq__2vNFaZP7xME') / 'stage2_run'
-        src_dir = stage2_dir.parent / 'src'
+        stage2_dir = FIXTURE / 'stage2_run'
+        src_dir = FIXTURE / 'src'
         existing = _proposal(unbound={'ce8278392_swap_denied'})
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

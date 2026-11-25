@@ -1,0 +1,43 @@
+Missing access control in withdraw/redeem functions allows complete theft of user funds
+
+## Finding description and impact
+
+The WERC7575Vault withdraw and redeem functions fail to validate that the caller has permission to burn the owner's shares. Any attacker can drain any user's vault balance by simply calling these functions with the victim as owner and attacker as receiver.
+
+Users deposit assets into WERC7575Vault and receive shares. To use these shares (for transfers), users must set a self-allowance via the permit function, where allowance(user, user) is set to enable the protocol's transfer mechanism.
+
+The withdraw and redeem functions in WERC7575Vault accept three parameters:
+
+These functions should verify that msg.sender has permission to act on behalf of owner. However, they only call:
+
+The spendSelfAllowance function checks only that allowance(owner, owner) >= shares. It never checks that msg.sender has any relationship to owner or permission to burn their shares.
+
+For instance,
+
+- Victim deposits 100 assets into vault, receives 100 shares
+- Victim sets self-allowance of 100 via permit(victim, victim, 100) (required for normal protocol usage)
+- Attacker calls vault.withdraw(100, attacker, victim):
+
+owner = victim (whose shares to burn)
+receiver = attacker (who receives the assets)
+
+- The vault checks allowance(victim, victim) >= 100 (passes)
+- The vault burns victim's 100 shares
+- The vault sends 100 assets to attacker
+- No check that attacker has permission from victim
+
+The root cause is that ERC4626 vaults include this check:
+
+This validates that either the caller IS the owner, or the caller has an allowance FROM the owner. The WERC7575Vault completely omits this validation, relying only on the self-allowance check which is irrelevant to the caller's authorization.
+
+IMPACT:
+Any user with a self-allowance (required for normal protocol operations like transfers) can have their entire vault balance stolen by any attacker. The attacker simply needs to:
+
+- Identify victims who have set self-allowances (standard protocol usage)
+- Call withdraw or redeem specifying victim as owner and attacker as receiver
+- Receive the victim's assets while the victim's shares are burned
+
+
+## Recommended mitigation steps
+
+Add standard ERC4626 access control checks to both functions:

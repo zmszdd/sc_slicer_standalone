@@ -1,0 +1,188 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "9468ce8f54df26eb60a2facee383a0b6e54fc3470e1d2bf6d89ceb52daa25ea5",
+  "fragments": [
+    {
+      "id": "e_9468ce8f54df_0001",
+      "text": "Token–pair mismatch in Distributor.addRewards lets anyone brick quote payouts (per-pool DoS)",
+      "start": 0,
+      "end": 92,
+      "line": 1
+    },
+    {
+      "id": "e_9468ce8f54df_0002",
+      "text": "## Summary",
+      "start": 94,
+      "end": 104,
+      "line": 3
+    },
+    {
+      "id": "e_9468ce8f54df_0003",
+      "text": "An attacker can call:",
+      "start": 106,
+      "end": 127,
+      "line": 5
+    },
+    {
+      "id": "e_9468ce8f54df_0004",
+      "text": "addRewards finds the pool via launchAsset but never checks that token1 == rs.quoteAsset. It:",
+      "start": 130,
+      "end": 222,
+      "line": 8
+    },
+    {
+      "id": "e_9468ce8f54df_0005",
+      "text": "* calls rs.addQuoteRewards(launchAsset, fakeToken, X)",
+      "start": 223,
+      "end": 276,
+      "line": 9
+    },
+    {
+      "id": "e_9468ce8f54df_0006",
+      "text": "* credits totalPendingRewards[fakeToken] += X",
+      "start": 277,
+      "end": 322,
+      "line": 10
+    },
+    {
+      "id": "e_9468ce8f54df_0007",
+      "text": "* pulls fakeToken via transferFrom",
+      "start": 323,
+      "end": 357,
+      "line": 11
+    },
+    {
+      "id": "e_9468ce8f54df_0008",
+      "text": "Internally, the pool accrues quote pending for users. Later, claimRewards(launchAsset) tries to pay out the real quote token and calls:",
+      "start": 359,
+      "end": 494,
+      "line": 13
+    },
+    {
+      "id": "e_9468ce8f54df_0009",
+      "text": "This underflows (totalPendingRewards[realQuote] == 0) → ClaimAmountExceedsTotalPendingRewards() → DoS for all quote claims on that pool.",
+      "start": 497,
+      "end": 633,
+      "line": 16
+    },
+    {
+      "id": "e_9468ce8f54df_0010",
+      "text": "## Affected code",
+      "start": 635,
+      "end": 651,
+      "line": 18
+    },
+    {
+      "id": "e_9468ce8f54df_0011",
+      "text": "* contracts/launchpad/Distributor.sol — addRewards(...) selects the pool by token0/token1 but never enforces that the “other” token equals rs.quoteAsset; it then credits pending under the attacker-supplied token and transfers that token in.",
+      "start": 653,
+      "end": 893,
+      "line": 20
+    },
+    {
+      "id": "e_9468ce8f54df_0012",
+      "text": "* contracts/launchpad/Distributor.sol — _decreaseTotalPending(quote, amount) reverts when user later claims real quote rewards because totalPendingRewards[realQuote] wasn’t credited.",
+      "start": 894,
+      "end": 1076,
+      "line": 21
+    },
+    {
+      "id": "e_9468ce8f54df_0013",
+      "text": "## Root cause",
+      "start": 1078,
+      "end": 1091,
+      "line": 23
+    },
+    {
+      "id": "e_9468ce8f54df_0014",
+      "text": "* Missing invariant: the token pair passed into addRewards is not validated to match the established {launchAsset, rs.quoteAsset} pair. As a result, external input decides which token key is used for both totalPendingRewards[...] and the incoming transfer.",
+      "start": 1092,
+      "end": 1348,
+      "line": 24
+    },
+    {
+      "id": "e_9468ce8f54df_0015",
+      "text": "## Impact",
+      "start": 1350,
+      "end": 1359,
+      "line": 26
+    },
+    {
+      "id": "e_9468ce8f54df_0016",
+      "text": "* Per-pool permanent DoS of quote reward claims (until a migration/upgrade).",
+      "start": 1361,
+      "end": 1437,
+      "line": 28
+    },
+    {
+      "id": "e_9468ce8f54df_0017",
+      "text": "* Funds accounting becomes inconsistent: users see positive pendingQuote but the distributor has pending tracked under a different token key.",
+      "start": 1438,
+      "end": 1579,
+      "line": 29
+    },
+    {
+      "id": "e_9468ce8f54df_0018",
+      "text": "## Attack / trigger scenario",
+      "start": 1581,
+      "end": 1609,
+      "line": 31
+    },
+    {
+      "id": "e_9468ce8f54df_0019",
+      "text": "1. Pool exists and has totalShares > 0.",
+      "start": 1611,
+      "end": 1650,
+      "line": 33
+    },
+    {
+      "id": "e_9468ce8f54df_0020",
+      "text": "2. Attacker deploys fakeToken and approves the Distributor.",
+      "start": 1651,
+      "end": 1710,
+      "line": 34
+    },
+    {
+      "id": "e_9468ce8f54df_0021",
+      "text": "3. Calls addRewards(launchAsset, fakeToken, 0, X).",
+      "start": 1711,
+      "end": 1761,
+      "line": 35
+    },
+    {
+      "id": "e_9468ce8f54df_0022",
+      "text": "4. Users now have pendingQuote > 0 internally, but totalPendingRewards[realQuote] == 0 and totalPendingRewards[fakeToken] == X.",
+      "start": 1762,
+      "end": 1889,
+      "line": 36
+    },
+    {
+      "id": "e_9468ce8f54df_0023",
+      "text": "5. Any claimRewards(launchAsset) reverts with ClaimAmountExceedsTotalPendingRewards.",
+      "start": 1890,
+      "end": 1974,
+      "line": 37
+    },
+    {
+      "id": "e_9468ce8f54df_0024",
+      "text": "## Recommended mitigation steps",
+      "start": 1976,
+      "end": 2007,
+      "line": 39
+    },
+    {
+      "id": "e_9468ce8f54df_0025",
+      "text": "Enforce that the provided pair exactly matches the configured pool pair and use the canonical quote asset for accounting and transfers:",
+      "start": 2009,
+      "end": 2144,
+      "line": 41
+    },
+    {
+      "id": "e_9468ce8f54df_0026",
+      "text": "This both validates the pair and removes reliance on untrusted quoteAsset for accounting/transfer.",
+      "start": 2146,
+      "end": 2244,
+      "line": 43
+    }
+  ]
+}

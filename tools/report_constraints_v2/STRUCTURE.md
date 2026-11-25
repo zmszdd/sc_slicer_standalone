@@ -28,8 +28,8 @@ tools/report_constraints_v2/
 │   ├── definitions.py        # P/I/V 集中式语义定义
 │   ├── active.py             # 生产 Prompt 显式解析与哈希
 │   ├── registry.py
-│   ├── current.py            # semantic-live-17 当前提示词
-│   ├── live16_snapshot.py    # semantic-live-16 历史提示词重放快照
+│   ├── current.py            # semantic-live 当前提示词（版本见 PROMPT_VERSION）
+│   ├── live*_snapshot.py     # 历史提示词重放快照
 │   └── versions/
 ├── tests/                    # 全部自动测试
 ├── docs/                     # 设计、状态和历史说明
@@ -329,7 +329,7 @@ python main.py frozen        # 校验，有漂移则退出码 1
 python main.py frozen --write  # 确认是预期变更后重新生成
 ```
 
-覆盖范围见 `main.py` 的 `FROZEN_SCOPES`（21 项）。`.slicer_cache.json` 是可变的运
+覆盖范围见 `main.py` 的 `FROZEN_SCOPES` 和 `PROTECTED_HASHES.json` 的实际条目。`.slicer_cache.json` 是可变的运
 行缓存，故意不纳入冻结清单。
 
 ### 另一套冻结哈希：`evaluation/` 里的 `code_sha256`

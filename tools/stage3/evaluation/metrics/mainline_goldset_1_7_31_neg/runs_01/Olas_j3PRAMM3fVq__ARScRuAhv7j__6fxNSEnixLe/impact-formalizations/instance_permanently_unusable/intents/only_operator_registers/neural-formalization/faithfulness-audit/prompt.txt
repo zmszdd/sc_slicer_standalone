@@ -1,0 +1,62 @@
+You are a semantic faithfulness auditor. For each
+listed source you get its role (P, I, or V), the report statement text, the
+generated predicate that claims to encode it, and the meanings of the symbols
+the predicate uses. A null predicate means that the generated rule omitted
+that frozen source; mark it other_mismatch. You also receive the full P/I/V relation,
+exact report excerpts from cited action/root-cause evidence as relation_context, and
+a generator-proposed relationship_trace that cites a path through those excerpts.
+Judge ONLY whether each predicate faithfully encodes its report
+source, and whether the report supports a relationship between V and I under P.
+The relationship may be direct or mediated by an intermediate mechanism, but an
+indirect link is consistent only when relation_context or the P/I/V excerpts
+explicitly support that bridge. relation_context may support the relationship only;
+it cannot replace or change any frozen source. Do not infer a causal bridge from
+protocol knowledge or shared vocabulary. When relation_context supports your verdict,
+name the relevant statement_id and evidence_id in the piv_relation reason. If the
+P/I/V excerpts alone support the verdict, name the relevant frozen source ID instead.
+Treat relationship_trace as an unverified pointer: confirm every cited statement,
+evidence fragment and source ID exists and that the exact text supports the claimed
+link. A trace never upgrades a verdict without supporting excerpts; missing, inaccurate,
+or incomplete trace links do not erase evidence that is present in relation_context.
+Distinguish a formula mapping defect (a source check mismatch) from a relationship
+that the report does not clearly establish (weakened); do not treat the latter as a
+formula defect. Style, optimality and code truth are out of scope; never rewrite or
+propose predicates.
+
+A predicate is unfaithful when any of the following holds:
+- inverted: the predicate asserts the opposite direction or polarity of the
+  statement's claim, e.g. the statement says a fee accrues / an amount exists /
+  a balance is held (so a faithful encoding implies a positive or nonzero
+  quantity) and the predicate checks equality against zero, or the statement
+  says "at most N" and the predicate demands strictly less than N, or the
+  statement says "exceeds N" and the predicate accepts N itself.
+- wrong_constant: a numeric literal in the predicate is not the statement's
+  own quantity -- it belongs to a different statement, a different quantity,
+  or to nothing in the statement at all.
+- wrong_symbol: a symbol the predicate uses does not carry the meaning the
+  statement's fact requires (e.g. the statement is about the fee amount while
+  the predicate's symbol means elapsed time).
+- other_mismatch: the predicate encodes a different fact than the statement
+  states.
+Otherwise the source encoding is consistent. A tautologically weak but
+direction-correct bound (e.g. >= 0) is consistent, NOT inverted; the report's
+own semantics set the standard, not mathematical strength. For the relation
+check, mark consistent when formulas and supplied report excerpts support a direct
+or explicit indirect link. Mark weakened when that relationship is insufficiently
+supported or ambiguous; this means needs review, not that a source formula is wrong.
+Mark mismatch only when the relationship is clearly contradictory or report evidence
+establishes that V is unrelated to I under P. A downstream V is not a mismatch just
+because it is not the literal negation of I. Do not call an unsupported but explicitly
+unformalized claim faithful.
+
+Return JSON only, exactly:
+{"checks":[{"source_id":ID,"role":"P|I|V","verdict":"consistent"|"inverted"|"wrong_constant"|
+"wrong_symbol"|"other_mismatch","reason":ONE_SHORT_SENTENCE}],
+ "piv_relation":{"verdict":"consistent"|"weakened"|"mismatch","reason":ONE_SHORT_SENTENCE}}
+Cover every listed source_id exactly once, with its role, and only listed ones. The relation
+check must assess the supplied P/I/V formulas together and use relation_context and
+relationship_trace only as pointers to exact report evidence for an explicit bridge,
+not as replacement sources. Independently verify every trace ID against the supplied
+context; an unsupported or inaccurate trace cannot improve the verdict. If the trace
+omits a bridge but the supplied excerpts establish it, judge the excerpts directly.
+{"schema_version":"faithfulness-audit-input/4","relation_class":"access_control","sources":[{"source_id":"bob_owns_instance","role":"P","statement_text":"Bob owns an agent instance and intends to register it to a legitimate service.","predicate":{"kind":"truth","symbol":"bob_owns_instance_flag","value":true},"symbol_meanings":{"bob_owns_instance_flag":{"sort":"bool","unit":null,"meaning":"Bob owns the agent instance and intends to register it to a legitimate service"}}},{"source_id":"alice_knows_instance_address","role":"P","statement_text":"Alice knows Bob's instance address before it is officially registered.","predicate":{"kind":"truth","symbol":"alice_knows_instance_address_flag","value":true},"symbol_meanings":{"alice_knows_instance_address_flag":{"sort":"bool","unit":null,"meaning":"Alice knows Bob's instance address before it is officially registered"}}},{"source_id":"fake_service_minimal_bond","role":"P","statement_text":"Alice creates a fake service with minimal bond requirements (e.g., 1 wei).","predicate":{"kind":"comparison","left":"fake_service_bond_wei","operator":"eq","right":{"const":1}},"symbol_meanings":{"fake_service_bond_wei":{"sort":"int","unit":"wei","meaning":"bond requirement of Alice's fake service (minimal, e.g. 1 wei)"}}},{"source_id":"instance_not_yet_registered","role":"P","statement_text":"Bob's agent instance is not yet registered to another service at the time Alice acts.","predicate":{"kind":"truth","symbol":"instance_not_yet_registered_flag","value":true},"symbol_meanings":{"instance_not_yet_registered_flag":{"sort":"bool","unit":null,"meaning":"Bob's agent instance is not yet registered to another service at the time Alice acts"}}},{"source_id":"only_operator_registers","role":"I","statement_text":"ServiceManager::registerAgents should verify that the caller is the designated operator of each instance being registered, so that only authorized entities can register a given instance.","predicate":{"op":"implies","args":[{"var":"register_agents_effect"},{"var":"caller_is_designated_operator"}]},"symbol_meanings":{"caller_is_designated_operator":{"sort":"bool","unit":null,"meaning":"the caller of registerAgents is the designated operator of the instance being registered"},"register_agents_effect":{"sort":"bool","unit":null,"meaning":"ServiceManager::registerAgents registers the agent instance to a service"}}},{"source_id":"instance_permanently_unusable","role":"V","statement_text":"In cases where an agent instance holds funds and is non-upgradeable, being registered to a malicious service can render it permanently unusable","predicate":{"op":"and","args":[{"op":"and","args":[{"var":"instance_registered_to_malicious_service"},{"var":"instance_holds_funds_and_nonupgradeable"},{"var":"instance_permanently_unusable_flag"}]},{"var":"instance_permanently_unusable_flag"}]},"symbol_meanings":{"instance_holds_funds_and_nonupgradeable":{"sort":"bool","unit":null,"meaning":"the agent instance holds funds and is non-upgradeable"},"instance_permanently_unusable_flag":{"sort":"bool","unit":null,"meaning":"the agent instance is rendered permanently unusable"},"instance_registered_to_malicious_service":{"sort":"bool","unit":null,"meaning":"the agent instance is registered to Alice's malicious fake service"}}}],"piv_relation":{"P":{"op":"and","args":[{"var":"bob_owns_instance_flag"},{"var":"alice_knows_instance_address_flag"},{"op":"eq","args":[{"var":"fake_service_bond_wei"},{"const":1}]},{"var":"instance_not_yet_registered_flag"}]},"I":{"op":"implies","args":[{"var":"register_agents_effect"},{"var":"caller_is_designated_operator"}]},"V":{"op":"and","args":[{"op":"and","args":[{"var":"register_agents_effect"},{"op":"not","args":[{"var":"caller_is_designated_operator"}]}]},{"op":"and","args":[{"var":"instance_registered_to_malicious_service"},{"var":"instance_holds_funds_and_nonupgradeable"},{"var":"instance_permanently_unusable_flag"}]},{"var":"instance_permanently_unusable_flag"}]}},"relation_context":[{"statement_id":"alice_registers_instance","role":"action","evidence":[{"evidence_id":"e_98fa9d5d6e72_0008","text":"3. Alice registers Bob’s instance to her fake service and deploys it. Once deployed, the instance cannot be unbonded."}]},{"statement_id":"bob_attempts_registration","role":"action","evidence":[{"evidence_id":"e_98fa9d5d6e72_0009","text":"4. When Bob attempts to register the same instance to the legitimate service, the transaction fails due to the instance already being registered elsewhere."}]},{"statement_id":"already_registered_check","role":"root_cause","evidence":[{"evidence_id":"e_98fa9d5d6e72_0003","text":"The `ServiceManager::registerAgents` function allows operators to register agent instances to a service. Internally, it calls `ServiceRegistry::registerAgents`, which includes a check to ensure that each agent instance is not already registered to another service:"},{"evidence_id":"e_98fa9d5d6e72_0004","text":"This check can be exploited by an attacker to prevent a legitimate instance from being registered to a valid service, effectively locking it indefinitely."}]},{"statement_id":"no_operator_verification","role":"root_cause","evidence":[{"evidence_id":"e_98fa9d5d6e72_0019","text":"`ServiceManager::registerAgents` should verify that the caller is the designated operator of each instance being registered. This would ensure that only authorized entities can register a given instance, preventing this form of griefing."}]}],"relationship_trace":{"status":"explicit","links":[{"from_source_ids":["only_operator_registers","instance_permanently_unusable"],"context_statement_id":"no_operator_verification","evidence_ids":["e_98fa9d5d6e72_0019"],"reported_relation":"registerAgents should verify the caller is the designated operator; without this, unauthorized registration enables the griefing that locks the instance."},{"from_source_ids":["instance_not_yet_registered","instance_permanently_unusable"],"context_statement_id":"alice_registers_instance","evidence_ids":["e_98fa9d5d6e72_0008"],"reported_relation":"Alice registers Bob's unregistered instance to her fake service; once deployed it cannot be unbonded, making it permanently unusable."},{"from_source_ids":["alice_knows_instance_address","fake_service_minimal_bond"],"context_statement_id":"already_registered_check","evidence_ids":["e_98fa9d5d6e72_0003","e_98fa9d5d6e72_0004"],"reported_relation":"Knowing the address and cheaply creating a fake service lets the attacker exploit the already-registered check to lock the instance indefinitely."}],"gap":""}}

@@ -463,7 +463,13 @@ class Assembler:
                 if name not in referenced['structs']:
                     referenced['contracts'].add(name)
 
-        referenced['structs'] -= referenced['contracts']
+        # A type used with a data location (``X memory/calldata/storage``) is a
+        # struct/enum value, even when it also appears after ``new``.  Let the
+        # stronger struct evidence win before subtracting references.  The old
+        # order erased ``InboundPacket`` from ``structs`` merely because the
+        # source contained ``new InboundPacket[](...)`` and then synthesized an
+        # empty contract placeholder, making every calldata occurrence invalid.
+        referenced['contracts'] -= referenced['structs']
         referenced['interfaces'] -= defined_names
         referenced['errors'] -= defined_names
         referenced['contracts'] -= defined_names

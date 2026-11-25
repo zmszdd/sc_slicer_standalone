@@ -35,7 +35,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, asdict
@@ -47,6 +49,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parents[1]
 BLIND = ROOT / 'tools' / 'stage3' / 'evaluation' / 'metrics' / 'blind_set.json'
 REPORTS = ROOT / 'code4rena_reports'
+REPO_CACHE = ROOT / 'c4_pipeline_output' / '_github_repos_by_project'
 DEFAULT_OUT = ROOT / 'c4_pipeline_output' / 'standalone_poc_batch'
 
 _CODE_BLOCK_RE = re.compile(r'```(?:solidity|sol|js)?\s*\n(.*?)```', re.S | re.I)
@@ -204,9 +207,42 @@ def _write_standalone(repo: Path, sub_uid: str, finding_uid: str,
 
 
 def _run(cmd: list[str], cwd: Path, timeout: int = 600) -> tuple[int, str]:
+    env = os.environ.copy()
+    env.setdefault('GIT_TERMINAL_PROMPT', '0')
+    env.setdefault('GIT_HTTP_LOW_SPEED_LIMIT', '1000')
+    env.setdefault('GIT_HTTP_LOW_SPEED_TIME', '5')
+    env.setdefault('GIT_CONFIG_COUNT', '1')
+    env.setdefault('GIT_CONFIG_KEY_0', 'protocol.allow')
+    env.setdefault('GIT_CONFIG_VALUE_0', 'never')
     proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
-                          timeout=timeout)
+                          timeout=timeout, env=env)
     return proc.returncode, (proc.stdout or '') + (proc.stderr or '')
+
+
+def _fill_submodules(repo: Path) -> list[str]:
+    gitmodules = repo / '.gitmodules'
+    if not gitmodules.is_file():
+        return []
+    filled = []
+    for line in gitmodules.read_text().splitlines():
+        match = re.match(r'\s*path\s*=\s*(.+?)\s*$', line)
+        if not match:
+            continue
+        target = repo / match.group(1)
+        if target.is_dir() and any(target.iterdir()):
+            continue
+        name = target.name
+        sources = sorted(
+            path for path in REPO_CACHE.glob(f'*/*/lib/{name}')
+            if path.is_dir() and any(path.iterdir())
+            and repo not in path.parents)
+        if not sources:
+            continue
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(sources[0], target, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns('.git'))
+        filled.append(name)
+    return filled
 
 
 def _test_passes(output: str, test_name: str) -> bool:
@@ -422,7 +458,8 @@ def _foundry_toml(repo: Path | None) -> str:
 
 
 def _run_entry(repo: Path, sub_uid: str, finding_uid: str,
-               block: str, test_name: str | None = None) -> tuple[str, str, str]:
+               block: str, test_name: str | None = None,
+               timeout: int = 600) -> tuple[str, str, str]:
     """Write the entry, run forge test, flatten, rerun.
 
     Returns (status, error, forge_output).
@@ -433,19 +470,23 @@ def _run_entry(repo: Path, sub_uid: str, finding_uid: str,
         return STATUS_FAILED, 'no_test_function', ''
     if not _ensure_forge_std(repo):
         return STATUS_BLOCKED, 'forge_std_unavailable', ''
+    _fill_submodules(repo)
     entry = _write_standalone(repo, sub_uid, finding_uid, block)
-    code, out_txt = _run(['forge', 'test', '--match-test', test_name], repo)
+    code, out_txt = _run(['forge', 'test', '--offline',
+                          '--match-test', test_name], repo, timeout=timeout)
     entry_ok = code == 0 and _test_passes(out_txt, test_name)
     if not entry_ok:
         return STATUS_ENTRY_ONLY, 'entry_test_failed', out_txt
     flat_dir = repo / '.poc_flattened'
     flat_dir.mkdir(parents=True, exist_ok=True)
     flat = flat_dir / f'Standalone_{sub_uid}_{finding_uid}.flattened.t.sol'
-    code, out_txt = _run(['forge', 'flatten', str(entry)], repo)
+    code, out_txt = _run(['forge', 'flatten', str(entry)], repo,
+                         timeout=timeout)
     if code != 0:
         return STATUS_ENTRY_ONLY, 'flatten_failed', out_txt
     flat.write_text(out_txt, encoding='utf-8')
-    code, out_txt = _run(['forge', 'test', '--match-test', test_name], repo)
+    code, out_txt = _run(['forge', 'test', '--offline',
+                          '--match-test', test_name], repo, timeout=timeout)
     if code == 0 and _test_passes(out_txt, test_name):
         return STATUS_PASS, '', out_txt
     return STATUS_ENTRY_ONLY, 'flattened_test_failed', out_txt
@@ -457,7 +498,8 @@ def _process_case(case: dict, args) -> CaseOutcome:
                   or case.get('finding_key') or 'unknown')
     finding_uid = str((finding or {}).get('number') or case.get('finding_key')
                       or 'unknown')
-    key = f"{case['project']}__{finding_uid}__{sub_uid}"
+    key = str(case.get('case') or
+              f"{case['project']}__{finding_uid}__{sub_uid}")
     repo = _repo_root(case)
 
     if finding is None:
@@ -512,7 +554,8 @@ def _process_case(case: dict, args) -> CaseOutcome:
                                STATUS_FAILED, 'authoring_failed')
         block = authored
 
-    status, error, out_txt = _run_entry(repo, sub_uid, finding_uid, block, test_name)
+    status, error, out_txt = _run_entry(repo, sub_uid, finding_uid, block,
+                                        test_name, timeout=args.timeout)
     if args.author and cls['action'] in ('snippet_only', 'bare_test_fn'):
         current = block
         for _ in range(3):
@@ -523,7 +566,8 @@ def _process_case(case: dict, args) -> CaseOutcome:
             if repaired is None or repaired.strip() == current.strip():
                 break
             current = repaired
-            status, error, out_txt = _run_entry(repo, sub_uid, finding_uid, repaired)
+            status, error, out_txt = _run_entry(repo, sub_uid, finding_uid,
+                                                repaired, timeout=args.timeout)
     return CaseOutcome(key, case['project'], sub_uid, finding_uid,
                        status, error)
 
@@ -532,21 +576,35 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--case', default=None, help='single blind-set case id')
     parser.add_argument('--all', action='store_true', help='process every case')
+    parser.add_argument('--cases-file', type=Path, default=None,
+                        help='JSON file with a {"cases": [...]} list; '
+                             'case ids and source paths are preserved')
     parser.add_argument('--out-dir', default=str(DEFAULT_OUT))
     parser.add_argument('--dry-run', action='store_true',
                         help='classify only; do not run forge or LLM')
     parser.add_argument('--author', action='store_true',
                         help='author standalone PoC via LLM for snippet cases')
+    parser.add_argument('--timeout', type=int, default=600,
+                        help='per forge subprocess timeout in seconds')
     args = parser.parse_args()
 
-    blind = _load_blind()
-    cases = blind['cases']
-    if args.case:
-        cases = [c for c in cases if c['case'] == args.case]
+    if args.cases_file:
+        data = json.loads(Path(args.cases_file).read_text())
+        cases = data.get('cases') or []
+        wanted = set(args.case.split(',') if args.case else [])
+        if wanted:
+            cases = [c for c in cases if c.get('case') in wanted]
         if not cases:
-            raise SystemExit(f'case not found: {args.case}')
-    elif not args.all:
-        raise SystemExit('pass --case <id> or --all')
+            raise SystemExit(f'no cases found in {args.cases_file}')
+    else:
+        blind = _load_blind()
+        cases = blind['cases']
+        if args.case:
+            cases = [c for c in cases if c['case'] == args.case]
+            if not cases:
+                raise SystemExit(f'case not found: {args.case}')
+        elif not args.all:
+            raise SystemExit('pass --case <id> or --all')
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)

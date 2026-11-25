@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "GTE Perps and Launchpad_gtn2Umg6KsC",
+    "audit_uid": "gtn2Umg6KsC",
+    "requested_submission_uid": "DrxMNRA5RNZ",
+    "requested_finding_uid": "B42T4SMoQbi",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/GTE_Perps_and_Launchpad_gtn2Umg6KsC/20260618_145637/findings.json",
+    "source_submission_uid": "DrxMNRA5RNZ",
+    "source_finding_uid": "B42T4SMoQbi",
+    "original_report_path": "GTE Perps and Launchpad_gtn2Umg6KsC\\medium_valid_DrxMNRA5RNZ.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "DrxMNRA5RNZ",
+  "finding_uid": "B42T4SMoQbi",
+  "finding_number": "8",
+  "title": "An issue in Reward Distribution logic during Token Purchases can lead to Permanent Loss of User Funds",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "udogodwin",
+  "body": "## Finding description and impact\n\nThe GTE launchpad system includes a reward distribution mechanism where users who hold launched tokens during the bonding phase earn rewards from trading fees. When users buy or sell tokens in the GTE launchpad system, any pending rewards that should go to the user are incorrectly sent to the Launchpad contract instead. This happens because the reward distribution function always sends tokens to the caller (msg.sender), but during token purchases, the caller becomes the Launchpad contract rather than the user. Since the Launchpad contract has no mechanism to recover or redistribute these tokens, user rewards are permanently lost.\n\nThe issue is in the `_distributeAssets` function within the Distributor contract, which handles sending rewards to recipients.\n\nThe `_distributeAssets` function is designed to transfer pending rewards but always sends them to `msg.sender`:\n\n```solidity\nfunction _distributeAssets(address base, uint256 baseAmount, address quote, uint256 quoteAmount) internal {\n    if (baseAmount > 0) {\n        _decreaseTotalPending(base, baseAmount);\n        base.safeTransfer(msg.sender, baseAmount);  // Always sends to msg.sender\n    }\n    if (quoteAmount > 0) {\n        _decreaseTotalPending(quote, quoteAmount);\n        quote.safeTransfer(msg.sender, quoteAmount);  // Always sends to msg.sender\n    }\n}\n```\n\nThis function works correctly when users directly call `claimRewards()`, because in that case `msg.sender` is the user. However, the problem occurs during the token purchase flow.\n\nWhen a user buys tokens, the following call chain happens:\n\n1. User calls `Launchpad.buy()` which transfers tokens to the user\n2. The token transfer triggers `LaunchToken._beforeTokenTransfer()` \n3. This calls `_increaseFeeShares()` which calls the Launchpad:\n\n```solidity\nfunction _increaseFeeShares(address account, uint256 amount) internal {\n    // ... update internal accounting ...\n    ILaunchpad(launchpad).increaseStake(account, uint96(amount));\n}\n```\n\n4. The Launchpad's `increaseStake` function then calls the Distributor:\n\n```solidity\nfunction increaseStake(address account, uint96 shares) external onlyLaunchAsset {\n    distributor.increaseStake(msg.sender, account, shares);  // msg.sender = LaunchToken\n}\n```\n\n5. Finally, the Distributor's `increaseStake` calls `_distributeAssets`:\n\n```solidity\nfunction increaseStake(address launchAsset, address account, uint96 shares)\n    external\n    onlyLaunchpad  // msg.sender = Launchpad contract\n{\n    RewardPoolData storage rs = RewardsTrackerStorage.getRewardPool(launchAsset);\n    (baseAmount, quoteAmount) = rs.stake(account, uint96(shares));\n    _distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount);  // Sends to Launchpad!\n}\n```\n\nAt this point, `msg.sender` is the Launchpad contract, not the user, so any pending rewards get sent to the Launchpad contract instead of the intended user.\n\nThe same issue occurs with `decreaseStake` when users sell tokens or transfer them, following the same problematic call chain.\n\nThis issue results in permanent loss of user funds. Every time users buy or sell tokens, they lose any accumulated rewards that should rightfully belong to them. \n\nAlso, the Launchpad contract has no functions to recover or redistribute ERC20 tokens that are incorrectly sent to it. The `pullFees()` function only handles ETH, and there are no admin functions for token recovery.\n\n## Recommended Mitigation Steps\n\nModify the `_distributeAssets` function in the Distributor contract to send to the recipient, instead of automatically using `msg.sender`, and then update the calling functions to pass the correct recipient:",
+  "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IDistributor} from \"contracts/launchpad/interfaces/IDistributor.sol\";\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    /**\n     * PoC demonstrates that rewards are incorrectly sent to Launchpad contract \n     * instead of users when tokens are bought (increaseStake flow)\n     */\n    function test_submissionValidity() external {\n        // Give user tokens and make initial purchase to create shares\n        deal(address(quoteToken), user, 1000 ether);\n        \n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            token: token,\n            account: user, \n            recipient: user,\n            amountOutBase: 1 ether,\n            maxAmountInQuote: 100 ether\n        }));\n\n        // Add rewards \n        deal(address(quoteToken), address(this), 100 ether);\n        quoteToken.approve(distributor, 100 ether);\n        IDistributor(distributor).addRewards(token, address(quoteToken), 0, 100 ether);\n\n        // Capture balances before second purchase\n        uint256 launchpadBalanceBefore = quoteToken.balanceOf(address(launchpad));\n\n        // Second purchase triggers increaseStake -> bug occurs\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            token: token,\n            account: user,\n            recipient: user, \n            amountOutBase: 1 ether,\n            maxAmountInQuote: 100 ether\n        }));\n\n        uint256 launchpadBalanceAfter = quoteToken.balanceOf(address(launchpad));\n        \n        // Launchpad received 100 ether rewards instead of user\n        uint256 rewardsToLaunchpad = launchpadBalanceAfter - launchpadBalanceBefore;\n        assert(rewardsToLaunchpad >= 99 ether); // Allow for small rounding\n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L167-L177"
+  ],
+  "source_record": {
+    "project_id": "gtn2Umg6KsC",
+    "submission_index": "510",
+    "api_submission_id": "",
+    "uid": "DrxMNRA5RNZ",
+    "number": "510",
+    "title": "An issue in Reward Distribution logic during Token Purchases can lead to Permanent Loss of User Funds",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "udogodwin",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L167-L177"
+    ],
+    "body": "## Finding description and impact\n\nThe GTE launchpad system includes a reward distribution mechanism where users who hold launched tokens during the bonding phase earn rewards from trading fees. When users buy or sell tokens in the GTE launchpad system, any pending rewards that should go to the user are incorrectly sent to the Launchpad contract instead. This happens because the reward distribution function always sends tokens to the caller (msg.sender), but during token purchases, the caller becomes the Launchpad contract rather than the user. Since the Launchpad contract has no mechanism to recover or redistribute these tokens, user rewards are permanently lost.\n\nThe issue is in the `_distributeAssets` function within the Distributor contract, which handles sending rewards to recipients.\n\nThe `_distributeAssets` function is designed to transfer pending rewards but always sends them to `msg.sender`:\n\n```solidity\nfunction _distributeAssets(address base, uint256 baseAmount, address quote, uint256 quoteAmount) internal {\n    if (baseAmount > 0) {\n        _decreaseTotalPending(base, baseAmount);\n        base.safeTransfer(msg.sender, baseAmount);  // Always sends to msg.sender\n    }\n    if (quoteAmount > 0) {\n        _decreaseTotalPending(quote, quoteAmount);\n        quote.safeTransfer(msg.sender, quoteAmount);  // Always sends to msg.sender\n    }\n}\n```\n\nThis function works correctly when users directly call `claimRewards()`, because in that case `msg.sender` is the user. However, the problem occurs during the token purchase flow.\n\nWhen a user buys tokens, the following call chain happens:\n\n1. User calls `Launchpad.buy()` which transfers tokens to the user\n2. The token transfer triggers `LaunchToken._beforeTokenTransfer()` \n3. This calls `_increaseFeeShares()` which calls the Launchpad:\n\n```solidity\nfunction _increaseFeeShares(address account, uint256 amount) internal {\n    // ... update internal accounting ...\n    ILaunchpad(launchpad).increaseStake(account, uint96(amount));\n}\n```\n\n4. The Launchpad's `increaseStake` function then calls the Distributor:\n\n```solidity\nfunction increaseStake(address account, uint96 shares) external onlyLaunchAsset {\n    distributor.increaseStake(msg.sender, account, shares);  // msg.sender = LaunchToken\n}\n```\n\n5. Finally, the Distributor's `increaseStake` calls `_distributeAssets`:\n\n```solidity\nfunction increaseStake(address launchAsset, address account, uint96 shares)\n    external\n    onlyLaunchpad  // msg.sender = Launchpad contract\n{\n    RewardPoolData storage rs = RewardsTrackerStorage.getRewardPool(launchAsset);\n    (baseAmount, quoteAmount) = rs.stake(account, uint96(shares));\n    _distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount);  // Sends to Launchpad!\n}\n```\n\nAt this point, `msg.sender` is the Launchpad contract, not the user, so any pending rewards get sent to the Launchpad contract instead of the intended user.\n\nThe same issue occurs with `decreaseStake` when users sell tokens or transfer them, following the same problematic call chain.\n\nThis issue results in permanent loss of user funds. Every time users buy or sell tokens, they lose any accumulated rewards that should rightfully belong to them. \n\nAlso, the Launchpad contract has no functions to recover or redistribute ERC20 tokens that are incorrectly sent to it. The `pullFees()` function only handles ETH, and there are no admin functions for token recovery.\n\n## Recommended Mitigation Steps\n\nModify the `_distributeAssets` function in the Distributor contract to send to the recipient, instead of automatically using `msg.sender`, and then update the calling functions to pass the correct recipient:",
+    "proof_of_concept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IDistributor} from \"contracts/launchpad/interfaces/IDistributor.sol\";\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    /**\n     * PoC demonstrates that rewards are incorrectly sent to Launchpad contract \n     * instead of users when tokens are bought (increaseStake flow)\n     */\n    function test_submissionValidity() external {\n        // Give user tokens and make initial purchase to create shares\n        deal(address(quoteToken), user, 1000 ether);\n        \n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            token: token,\n            account: user, \n            recipient: user,\n            amountOutBase: 1 ether,\n            maxAmountInQuote: 100 ether\n        }));\n\n        // Add rewards \n        deal(address(quoteToken), address(this), 100 ether);\n        quoteToken.approve(distributor, 100 ether);\n        IDistributor(distributor).addRewards(token, address(quoteToken), 0, 100 ether);\n\n        // Capture balances before second purchase\n        uint256 launchpadBalanceBefore = quoteToken.balanceOf(address(launchpad));\n\n        // Second purchase triggers increaseStake -> bug occurs\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            token: token,\n            account: user,\n            recipient: user, \n            amountOutBase: 1 ether,\n            maxAmountInQuote: 100 ether\n        }));\n\n        uint256 launchpadBalanceAfter = quoteToken.balanceOf(address(launchpad));\n        \n        // Launchpad received 100 ether rewards instead of user\n        uint256 rewardsToLaunchpad = launchpadBalanceAfter - launchpadBalanceBefore;\n        assert(rewardsToLaunchpad >= 99 ether); // Allow for small rounding\n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/gtn2Umg6KsC/submissions/510",
+    "raw": {
+      "auditUid": "gtn2Umg6KsC",
+      "createdAt": "2025-09-16T22:38:46.717Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "v5ECBHCqf8Q",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:58:59.254Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "B42T4SMoQbi"
+        },
+        {
+          "uid": "acBG9hHzVuv",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-09-08T13:59:00.479Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "B42T4SMoQbi"
+        },
+        {
+          "uid": "Fhz6VKPtDxn",
+          "userUid": "S427KbaYy5Q",
+          "userAuditRole": "sponsor",
+          "createdAt": "2025-10-06T21:22:09.630Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "B42T4SMoQbi"
+        },
+        {
+          "uid": "aH7aNMkcrHC",
+          "userUid": "AqDoVWhQxFh",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-31T16:30:57.005Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "DrxMNRA5RNZ",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "B42T4SMoQbi",
+        "number": 8,
+        "duplicates": 75
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2025-11-02T21:31:39.271Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "An issue in Reward Distribution logic during Token Purchases can lead to Permanent Loss of User Funds",
+      "uid": "DrxMNRA5RNZ",
+      "updatedAt": "2025-09-16T22:38:46.717Z",
+      "user": {
+        "uid": "scPWT8q8ihw",
+        "handle": "udogodwin"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe GTE launchpad system includes a reward distribution mechanism where users who hold launched tokens during the bonding phase earn rewards from trading fees. When users buy or sell tokens in the GTE launchpad system, any pending rewards that should go to the user are incorrectly sent to the Launchpad contract instead. This happens because the reward distribution function always sends tokens to the caller (msg.sender), but during token purchases, the caller becomes the Launchpad contract rather than the user. Since the Launchpad contract has no mechanism to recover or redistribute these tokens, user rewards are permanently lost.\n\nThe issue is in the `_distributeAssets` function within the Distributor contract, which handles sending rewards to recipients.\n\nThe `_distributeAssets` function is designed to transfer pending rewards but always sends them to `msg.sender`:\n\n```solidity\nfunction _distributeAssets(address base, uint256 baseAmount, address quote, uint256 quoteAmount) internal {\n    if (baseAmount > 0) {\n        _decreaseTotalPending(base, baseAmount);\n        base.safeTransfer(msg.sender, baseAmount);  // Always sends to msg.sender\n    }\n    if (quoteAmount > 0) {\n        _decreaseTotalPending(quote, quoteAmount);\n        quote.safeTransfer(msg.sender, quoteAmount);  // Always sends to msg.sender\n    }\n}\n```\n\nThis function works correctly when users directly call `claimRewards()`, because in that case `msg.sender` is the user. However, the problem occurs during the token purchase flow.\n\nWhen a user buys tokens, the following call chain happens:\n\n1. User calls `Launchpad.buy()` which transfers tokens to the user\n2. The token transfer triggers `LaunchToken._beforeTokenTransfer()` \n3. This calls `_increaseFeeShares()` which calls the Launchpad:\n\n```solidity\nfunction _increaseFeeShares(address account, uint256 amount) internal {\n    // ... update internal accounting ...\n    ILaunchpad(launchpad).increaseStake(account, uint96(amount));\n}\n```\n\n4. The Launchpad's `increaseStake` function then calls the Distributor:\n\n```solidity\nfunction increaseStake(address account, uint96 shares) external onlyLaunchAsset {\n    distributor.increaseStake(msg.sender, account, shares);  // msg.sender = LaunchToken\n}\n```\n\n5. Finally, the Distributor's `increaseStake` calls `_distributeAssets`:\n\n```solidity\nfunction increaseStake(address launchAsset, address account, uint96 shares)\n    external\n    onlyLaunchpad  // msg.sender = Launchpad contract\n{\n    RewardPoolData storage rs = RewardsTrackerStorage.getRewardPool(launchAsset);\n    (baseAmount, quoteAmount) = rs.stake(account, uint96(shares));\n    _distributeAssets(launchAsset, baseAmount, rs.quoteAsset, quoteAmount);  // Sends to Launchpad!\n}\n```\n\nAt this point, `msg.sender` is the Launchpad contract, not the user, so any pending rewards get sent to the Launchpad contract instead of the intended user.\n\nThe same issue occurs with `decreaseStake` when users sell tokens or transfer them, following the same problematic call chain.\n\nThis issue results in permanent loss of user funds. Every time users buy or sell tokens, they lose any accumulated rewards that should rightfully belong to them. \n\nAlso, the Launchpad contract has no functions to recover or redistribute ERC20 tokens that are incorrectly sent to it. The `pullFees()` function only handles ETH, and there are no admin functions for token recovery.\n\n## Recommended Mitigation Steps\n\nModify the `_distributeAssets` function in the Distributor contract to send to the recipient, instead of automatically using `msg.sender`, and then update the calling functions to pass the correct recipient:",
+      "proofOfConcept": "```solidity\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport {LaunchpadTestBase} from \"./LaunchpadTestBase.sol\";\nimport {ILaunchpad} from \"contracts/launchpad/interfaces/ILaunchpad.sol\";\nimport {IDistributor} from \"contracts/launchpad/interfaces/IDistributor.sol\";\n\ncontract PoCLaunchpad is LaunchpadTestBase {\n    /**\n     * PoC demonstrates that rewards are incorrectly sent to Launchpad contract \n     * instead of users when tokens are bought (increaseStake flow)\n     */\n    function test_submissionValidity() external {\n        // Give user tokens and make initial purchase to create shares\n        deal(address(quoteToken), user, 1000 ether);\n        \n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            token: token,\n            account: user, \n            recipient: user,\n            amountOutBase: 1 ether,\n            maxAmountInQuote: 100 ether\n        }));\n\n        // Add rewards \n        deal(address(quoteToken), address(this), 100 ether);\n        quoteToken.approve(distributor, 100 ether);\n        IDistributor(distributor).addRewards(token, address(quoteToken), 0, 100 ether);\n\n        // Capture balances before second purchase\n        uint256 launchpadBalanceBefore = quoteToken.balanceOf(address(launchpad));\n\n        // Second purchase triggers increaseStake -> bug occurs\n        vm.prank(user);\n        launchpad.buy(ILaunchpad.BuyData({\n            token: token,\n            account: user,\n            recipient: user, \n            amountOutBase: 1 ether,\n            maxAmountInQuote: 100 ether\n        }));\n\n        uint256 launchpadBalanceAfter = quoteToken.balanceOf(address(launchpad));\n        \n        // Launchpad received 100 ether rewards instead of user\n        uint256 rewardsToLaunchpad = launchpadBalanceAfter - launchpadBalanceBefore;\n        assert(rewardsToLaunchpad >= 99 ether); // Allow for small rounding\n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Distributor.sol#L167-L177",
+      "number": 510,
+      "aiExplanation": null,
+      "_index": 510
+    }
+  }
+}

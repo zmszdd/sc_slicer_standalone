@@ -28,24 +28,26 @@ def compute_queries(probe: dict, original_result: dict | None,
                     patched_result: dict | None,
                     safety_patched: dict | None = None,
                     reference_patch: bool = False,
-                    effect_result: dict | None = None) -> dict:
+                    effect_result: dict | None = None,
+                    negative_result: dict | None = None) -> dict:
     results = {name: 'unknown' for name in QUERIES}
     if not original_result or not patched_result:
         return results
 
     original_ok = _success(original_result)
     patched_ok = _success(patched_result)
-    # Legacy fixtures only: the current codegen emits a plain assert(!P || I),
-    # so 'stage3:P' no longer appears in live run reasons.
+    # Live codegen now emits `require(!P || I, "stage3:I")`; the legacy
+    # `stage3:P` marker only appears in older fixtures.
     p_failed = _reason_has(patched_result, 'stage3:P')
     reason = str(patched_result.get('reason') or '') if patched_result else ''
-    i_failed = 'assertion' in reason or 'panic' in reason.lower()
+    i_failed = ('stage3:I' in reason or 'assertion' in reason
+                or 'panic' in reason.lower())
     halt_failed = 'stage3:halt' in reason
     precondition_unwitnessed = 'stage3:precondition_unwitnessed' in reason
 
     if original_ok and patched_ok:
-        # original PoC passes => P and T witnessed; patched assert(!P||I) also
-        # passes => I held (or P false), so the invariant was not contradicted.
+        # original PoC passes => P and T witnessed; patched require(!P||I)
+        # also passes => I held (or P false), so the invariant was not contradicted.
         # ``P_and_T_and_V`` is no longer hard-coded to unsat: the effect probe
         # (assert(!P || V)) witnesses V independently.  When I is vacuous on the
         # exploit path the effect still occurs, and the correct verdict is
@@ -84,11 +86,13 @@ def compute_queries(probe: dict, original_result: dict | None,
                 'P_and_T_and_V': 'sat',
             })
         elif i_failed:
-            # assert(!P || I) failed => P holds and I is contradicted.
+            # require(!P || I, "stage3:I") failed => P holds and I is contradicted.
             results.update({
                 'P_and_T': 'sat',
                 'P_and_T_and_not_I': 'sat',
-                'P_and_T_and_V': 'sat',
+                'P_and_T_and_V': ('sat' if _success(effect_result)
+                                  else 'unsat' if effect_result is not None
+                                  else 'unknown'),
             })
         elif reference_patch:
             # M1 reference fix: the patched contract reverted for a business
@@ -117,8 +121,11 @@ def compute_queries(probe: dict, original_result: dict | None,
             'P_and_T_and_V': 'unsat',
         })
 
-    # A safe path that passes on the patched contract witnesses P AND T AND NOT V
-    # (the invariant held and no violation was observed).
-    if safety_patched is not None and _success(safety_patched):
+    # An explicit negative probe (``assert(!P || !V)``) is the only independent
+    # witness for effect absence.  Legacy safety probes remain a fallback for
+    # replayed runs, but neither path rewrites the dynamic verdict.
+    if _success(negative_result):
+        results['P_and_T_and_not_V'] = 'sat'
+    elif safety_patched is not None and _success(safety_patched):
         results['P_and_T_and_not_V'] = 'sat'
     return results

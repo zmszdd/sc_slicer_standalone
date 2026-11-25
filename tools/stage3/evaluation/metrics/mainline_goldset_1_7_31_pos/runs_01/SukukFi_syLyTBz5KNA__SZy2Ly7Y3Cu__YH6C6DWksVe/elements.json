@@ -1,0 +1,224 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "WERC7575Vault withdraw/redeem share burning and asset redemption",
+    "environment": "ERC4626-style vault (WERC7575Vault) with self-allowance permit mechanism",
+    "evidence": [
+      "The WERC7575Vault withdraw and redeem functions fail to validate that the caller has permission to burn the owner's shares. Any attacker can drain any user's vault balance by simply calling these functions with the victim as owner and attacker as receiver.",
+      "Users deposit assets into WERC7575Vault and receive shares. To use these shares (for transfers), users must set a self-allowance via the permit function, where allowance(user, user) is set to enable the protocol's transfer mechanism.",
+      "These functions should verify that msg.sender has permission to act on behalf of owner. However, they only call:",
+      "The spendSelfAllowance function checks only that allowance(owner, owner) >= shares. It never checks that msg.sender has any relationship to owner or permission to burn their shares.",
+      "The root cause is that ERC4626 vaults include this check:",
+      "This validates that either the caller IS the owner, or the caller has an allowance FROM the owner. The WERC7575Vault completely omits this validation, relying only on the self-allowance check which is irrelevant to the caller's authorization.",
+      "Add standard ERC4626 access control checks to both functions:"
+    ]
+  },
+  "entities": [
+    {
+      "id": "attacker",
+      "name": "attacker",
+      "role": "attacker",
+      "evidence": [
+        "The WERC7575Vault withdraw and redeem functions fail to validate that the caller has permission to burn the owner's shares. Any attacker can drain any user's vault balance by simply calling these functions with the victim as owner and attacker as receiver.",
+        "- Attacker calls vault.withdraw(100, attacker, victim):",
+        "Any user with a self-allowance (required for normal protocol operations like transfers) can have their entire vault balance stolen by any attacker. The attacker simply needs to:"
+      ]
+    },
+    {
+      "id": "victim",
+      "name": "victim (owner)",
+      "role": "victim",
+      "evidence": [
+        "- Victim deposits 100 assets into vault, receives 100 shares",
+        "- Victim sets self-allowance of 100 via permit(victim, victim, 100) (required for normal protocol usage)",
+        "owner = victim (whose shares to burn)"
+      ]
+    },
+    {
+      "id": "vault",
+      "name": "WERC7575Vault",
+      "role": "contract",
+      "evidence": [
+        "The WERC7575Vault withdraw and redeem functions fail to validate that the caller has permission to burn the owner's shares. Any attacker can drain any user's vault balance by simply calling these functions with the victim as owner and attacker as receiver.",
+        "Users deposit assets into WERC7575Vault and receive shares. To use these shares (for transfers), users must set a self-allowance via the permit function, where allowance(user, user) is set to enable the protocol's transfer mechanism.",
+        "The spendSelfAllowance function checks only that allowance(owner, owner) >= shares. It never checks that msg.sender has any relationship to owner or permission to burn their shares."
+      ]
+    },
+    {
+      "id": "shares",
+      "name": "vault shares",
+      "role": "asset",
+      "evidence": [
+        "Users deposit assets into WERC7575Vault and receive shares. To use these shares (for transfers), users must set a self-allowance via the permit function, where allowance(user, user) is set to enable the protocol's transfer mechanism.",
+        "- Victim deposits 100 assets into vault, receives 100 shares",
+        "- The vault burns victim's 100 shares"
+      ]
+    },
+    {
+      "id": "assets",
+      "name": "vault assets",
+      "role": "asset",
+      "evidence": [
+        "- Victim deposits 100 assets into vault, receives 100 shares",
+        "- The vault sends 100 assets to attacker"
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "victim_deposits_assets",
+      "kind": "precondition",
+      "text": "Victim deposits 100 assets into the vault and receives 100 shares.",
+      "modality": "asserted",
+      "entity_ids": [
+        "victim",
+        "vault",
+        "assets",
+        "shares"
+      ],
+      "evidence": [
+        "- Victim deposits 100 assets into vault, receives 100 shares"
+      ]
+    },
+    {
+      "id": "victim_sets_self_allowance",
+      "kind": "precondition",
+      "text": "Victim sets a self-allowance of 100 via permit(victim, victim, 100), required for normal protocol usage.",
+      "modality": "asserted",
+      "entity_ids": [
+        "victim",
+        "vault",
+        "shares"
+      ],
+      "evidence": [
+        "- Victim sets self-allowance of 100 via permit(victim, victim, 100) (required for normal protocol usage)",
+        "Users deposit assets into WERC7575Vault and receive shares. To use these shares (for transfers), users must set a self-allowance via the permit function, where allowance(user, user) is set to enable the protocol's transfer mechanism."
+      ]
+    },
+    {
+      "id": "attacker_calls_withdraw",
+      "kind": "action",
+      "text": "Attacker calls vault.withdraw(100, attacker, victim) with victim as owner and attacker as receiver.",
+      "modality": "asserted",
+      "entity_ids": [
+        "attacker",
+        "victim",
+        "vault"
+      ],
+      "evidence": [
+        "- Attacker calls vault.withdraw(100, attacker, victim):",
+        "owner = victim (whose shares to burn)",
+        "receiver = attacker (who receives the assets)",
+        "- Call withdraw or redeem specifying victim as owner and attacker as receiver"
+      ]
+    },
+    {
+      "id": "spend_self_allowance_only",
+      "kind": "root_cause",
+      "text": "The withdraw/redeem functions call spendSelfAllowance, which checks only that allowance(owner, owner) >= shares and never checks that msg.sender has any relationship to owner or permission to burn their shares, omitting the ERC4626 check that the caller is the owner or has an allowance from the owner.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "attacker",
+        "victim",
+        "shares"
+      ],
+      "evidence": [
+        "These functions should verify that msg.sender has permission to act on behalf of owner. However, they only call:",
+        "The spendSelfAllowance function checks only that allowance(owner, owner) >= shares. It never checks that msg.sender has any relationship to owner or permission to burn their shares.",
+        "The root cause is that ERC4626 vaults include this check:",
+        "This validates that either the caller IS the owner, or the caller has an allowance FROM the owner. The WERC7575Vault completely omits this validation, relying only on the self-allowance check which is irrelevant to the caller's authorization."
+      ]
+    },
+    {
+      "id": "intent_caller_authorized",
+      "kind": "security_intent",
+      "text": "The withdraw and redeem functions must verify that msg.sender has permission to act on behalf of owner (is the owner or has an allowance from the owner) before burning the owner's shares.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "attacker",
+        "victim"
+      ],
+      "evidence": [
+        "These functions should verify that msg.sender has permission to act on behalf of owner. However, they only call:",
+        "This validates that either the caller IS the owner, or the caller has an allowance FROM the owner. The WERC7575Vault completely omits this validation, relying only on the self-allowance check which is irrelevant to the caller's authorization.",
+        "Add standard ERC4626 access control checks to both functions:"
+      ]
+    },
+    {
+      "id": "intent_self_allowance_not_authorization",
+      "kind": "security_intent",
+      "text": "The self-allowance check must not be treated as authorization for a caller other than the owner to burn the owner's shares.",
+      "modality": "asserted",
+      "entity_ids": [
+        "vault",
+        "attacker",
+        "victim",
+        "shares"
+      ],
+      "evidence": [
+        "The spendSelfAllowance function checks only that allowance(owner, owner) >= shares. It never checks that msg.sender has any relationship to owner or permission to burn their shares.",
+        "This validates that either the caller IS the owner, or the caller has an allowance FROM the owner. The WERC7575Vault completely omits this validation, relying only on the self-allowance check which is irrelevant to the caller's authorization."
+      ]
+    },
+    {
+      "id": "attacker_drains_vault_balance",
+      "kind": "impact",
+      "text": "Any attacker can drain any user's vault balance by simply calling these functions with the victim as owner and attacker as receiver.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "The WERC7575Vault withdraw and redeem functions fail to validate that the caller has permission to burn the owner's shares. Any attacker can drain any user's vault balance by simply calling these functions with the victim as owner and attacker as receiver."
+      ]
+    },
+    {
+      "id": "victim_shares_burned",
+      "kind": "impact",
+      "text": "The vault burns victim's 100 shares",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- The vault burns victim's 100 shares"
+      ]
+    },
+    {
+      "id": "assets_sent_to_attacker",
+      "kind": "impact",
+      "text": "The vault sends 100 assets to attacker",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- The vault sends 100 assets to attacker"
+      ]
+    },
+    {
+      "id": "entire_balance_stolen",
+      "kind": "impact",
+      "text": "Any user with a self-allowance (required for normal protocol operations like transfers) can have their entire vault balance stolen by any attacker.",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "Any user with a self-allowance (required for normal protocol operations like transfers) can have their entire vault balance stolen by any attacker. The attacker simply needs to:"
+      ]
+    },
+    {
+      "id": "attacker_receives_victim_assets",
+      "kind": "impact",
+      "text": "Receive the victim's assets while the victim's shares are burned",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- Receive the victim's assets while the victim's shares are burned"
+      ]
+    }
+  ],
+  "attack_steps": [
+    "attacker_calls_withdraw"
+  ],
+  "ambiguities": [
+    "Report does not state whether the attacker's call is a real observed transaction or a hypothetical scenario.",
+    "Report does not specify the exact ERC4626 check code, only that it validates caller is owner or has allowance from owner.",
+    "Report does not state whether redeem path differs from withdraw beyond sharing the same missing check."
+  ]
+}

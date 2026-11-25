@@ -1,0 +1,128 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Panoptic_ Next Core_iqcUwAhCZyD",
+    "audit_uid": "iqcUwAhCZyD",
+    "requested_submission_uid": "BCsgBaTYsPa",
+    "requested_finding_uid": "x6YHGbxHmh9",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Panoptic_Next_Core_iqcUwAhCZyD/20260618_141146/findings.json",
+    "source_submission_uid": "BCsgBaTYsPa",
+    "source_finding_uid": "x6YHGbxHmh9",
+    "original_report_path": "Panoptic_ Next Core_iqcUwAhCZyD\\medium_valid_BCsgBaTYsPa.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "BCsgBaTYsPa",
+  "finding_uid": "x6YHGbxHmh9",
+  "finding_number": "193",
+  "title": "RiskEngine: _computeDelayedSwap uses inverted logic (max vs sub), penalizing hedged positions",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "YZX0",
+  "body": "# RiskEngine: _computeDelayedSwap uses inverted logic (max vs sub), penalizing hedged positions\n\n## Description\nThe `_computeDelayedSwap` function in `RiskEngine.sol` is intended to calculate the collateral requirement for a \"Delayed Swap\" position (Loan + Credit). Logically, holding a credit (lending money) should reduce the collateral requirement of a loan (borrowing money).\nHowever, the implementation compares the `required` collateral against the `convertedCredit` using an `if/else` block that equates to `Math.max()`:\n\n```solidity\n// RiskEngine.sol lines 2035-2039\nif (required > convertedCredit) {\n    return required;\n} else {\n    return convertedCredit;\n}\n```\n\nThis logic is flawed. It returns the *maximum* of the debt or the credit.\nIf a user lends MORE money (`convertedCredit` > `required`), the system requires MORE collateral (`convertedCredit`), instead of 0.\n\n## Impact\n**Critical Severity**.\nUsers who employ \"Delayed Swap\" or similar hedged strategies are severely penalized. Instead of receiving capital efficiency (netting), they are subject to a collateral requirement that increases with their credit position. This completely breaks the risk model for these strategies, potentially leading to unfair liquidations or making the strategy economically unviable (DoS of functionality).\n\n## Real Life Scenario\n1. **Strategy:** A Market Maker (Bob) wants to execute a \"Delayed Swap\" strategy. He borrows 100 ETH (Short Position) and simultaneously lends 105 ETH worth of tokens in a credit position (Long Position) to hedge his risk.\n2. **Expectation:** Since his Credit ($105) covers his Debt ($100), Bob expects the protocol to require near-zero collateral (or a small safe margin).\n3. **Execution:** The `RiskEngine` calculates his collateral requirement using `_computeDelayedSwap`.\n4. **The Glitch:** The logic `if (required > convertedCredit) return required; else return convertedCredit;` triggers. Since Credit (105) > Debt (100), it returns **105**.\n5. **Consequence:** Instead of seeing a solvent, hedged account, the protocol incorrectly demands 105 ETH of *additional* collateral from Bob.\n6. **Liquidation:** If Bob doesn't have this extra capital (which he shouldn't need, as he is fully hedged), the protocol marks him as insolvent and liquidates his position immediately, causing massive unfair losses.\n\n## Recommended Mitigation\nChange the logic to subtract the credit from the requirement, flooring at a minimum safety value (e.g., 1 or `required`).\n\n```solidity\nif (required > convertedCredit) {\n    return required - convertedCredit;\n} else {\n    return 0; // Fully covered\n}",
+  "proof_of_concept": "## Proof of Concept\nA standalone Foundry test comparing the contract's logic vs the expected correct logic.\n\n```solidity\n// Save as test/foundry/core/RiskEngine/IsolatedLogicPoC.t.sol\n// Run with: forge test --match-contract IsolatedLogicPoC\npragma solidity ^0.8.24;\n\nimport \"forge-std/Test.sol\";\n\ncontract LogicPoC is Test {\n    // Flawed logic from RiskEngine.sol\n    function flawedLogic(uint256 required, uint256 credit) public pure returns (uint256) {\n        if (required > credit) {\n            return required;\n        } else {\n            return credit; // BUG: Should be 0 or min\n        }\n    }\n\n    function test_CriticalBug_InvertedLogic() public {\n        uint256 required = 120;  // Debt\n        uint256 credit = 1000;   // Credit (Asset)\n        \n        // The contract demands 1000 collateral instead of 0\n        uint256 actualResult = flawedLogic(required, credit);\n        assertEq(actualResult, 1000); \n    }\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/RiskEngine.sol#L2035-L2039"
+  ],
+  "source_record": {
+    "project_id": "iqcUwAhCZyD",
+    "submission_index": "135",
+    "api_submission_id": "",
+    "uid": "BCsgBaTYsPa",
+    "number": "135",
+    "title": "RiskEngine: _computeDelayedSwap uses inverted logic (max vs sub), penalizing hedged positions",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "YZX0",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/RiskEngine.sol#L2035-L2039"
+    ],
+    "body": "# RiskEngine: _computeDelayedSwap uses inverted logic (max vs sub), penalizing hedged positions\n\n## Description\nThe `_computeDelayedSwap` function in `RiskEngine.sol` is intended to calculate the collateral requirement for a \"Delayed Swap\" position (Loan + Credit). Logically, holding a credit (lending money) should reduce the collateral requirement of a loan (borrowing money).\nHowever, the implementation compares the `required` collateral against the `convertedCredit` using an `if/else` block that equates to `Math.max()`:\n\n```solidity\n// RiskEngine.sol lines 2035-2039\nif (required > convertedCredit) {\n    return required;\n} else {\n    return convertedCredit;\n}\n```\n\nThis logic is flawed. It returns the *maximum* of the debt or the credit.\nIf a user lends MORE money (`convertedCredit` > `required`), the system requires MORE collateral (`convertedCredit`), instead of 0.\n\n## Impact\n**Critical Severity**.\nUsers who employ \"Delayed Swap\" or similar hedged strategies are severely penalized. Instead of receiving capital efficiency (netting), they are subject to a collateral requirement that increases with their credit position. This completely breaks the risk model for these strategies, potentially leading to unfair liquidations or making the strategy economically unviable (DoS of functionality).\n\n## Real Life Scenario\n1. **Strategy:** A Market Maker (Bob) wants to execute a \"Delayed Swap\" strategy. He borrows 100 ETH (Short Position) and simultaneously lends 105 ETH worth of tokens in a credit position (Long Position) to hedge his risk.\n2. **Expectation:** Since his Credit ($105) covers his Debt ($100), Bob expects the protocol to require near-zero collateral (or a small safe margin).\n3. **Execution:** The `RiskEngine` calculates his collateral requirement using `_computeDelayedSwap`.\n4. **The Glitch:** The logic `if (required > convertedCredit) return required; else return convertedCredit;` triggers. Since Credit (105) > Debt (100), it returns **105**.\n5. **Consequence:** Instead of seeing a solvent, hedged account, the protocol incorrectly demands 105 ETH of *additional* collateral from Bob.\n6. **Liquidation:** If Bob doesn't have this extra capital (which he shouldn't need, as he is fully hedged), the protocol marks him as insolvent and liquidates his position immediately, causing massive unfair losses.\n\n## Recommended Mitigation\nChange the logic to subtract the credit from the requirement, flooring at a minimum safety value (e.g., 1 or `required`).\n\n```solidity\nif (required > convertedCredit) {\n    return required - convertedCredit;\n} else {\n    return 0; // Fully covered\n}",
+    "proof_of_concept": "## Proof of Concept\nA standalone Foundry test comparing the contract's logic vs the expected correct logic.\n\n```solidity\n// Save as test/foundry/core/RiskEngine/IsolatedLogicPoC.t.sol\n// Run with: forge test --match-contract IsolatedLogicPoC\npragma solidity ^0.8.24;\n\nimport \"forge-std/Test.sol\";\n\ncontract LogicPoC is Test {\n    // Flawed logic from RiskEngine.sol\n    function flawedLogic(uint256 required, uint256 credit) public pure returns (uint256) {\n        if (required > credit) {\n            return required;\n        } else {\n            return credit; // BUG: Should be 0 or min\n        }\n    }\n\n    function test_CriticalBug_InvertedLogic() public {\n        uint256 required = 120;  // Debt\n        uint256 credit = 1000;   // Credit (Asset)\n        \n        // The contract demands 1000 collateral instead of 0\n        uint256 actualResult = flawedLogic(required, credit);\n        assertEq(actualResult, 1000); \n    }\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/iqcUwAhCZyD/submissions/135",
+    "raw": {
+      "auditUid": "iqcUwAhCZyD",
+      "createdAt": "2025-12-22T08:47:44.259Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "xTzZN2nfMpV",
+          "userUid": "q9yEBhoN6NN",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-08T21:41:10.732Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "x6YHGbxHmh9"
+        },
+        {
+          "uid": "NQtbvFTpXM9",
+          "userUid": "q9yEBhoN6NN",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-08T21:41:12.570Z",
+          "type": "severity",
+          "value": "medium",
+          "submissionUid": null,
+          "findingUid": "x6YHGbxHmh9"
+        },
+        {
+          "uid": "CYyjXEKXXHK",
+          "userUid": "drB5cYgMy5X",
+          "userAuditRole": "sponsor",
+          "createdAt": "2026-01-13T20:54:08.536Z",
+          "type": "validity",
+          "value": "fixed",
+          "submissionUid": null,
+          "findingUid": "x6YHGbxHmh9"
+        },
+        {
+          "uid": "ucp2a4HMgQw",
+          "userUid": "q9yEBhoN6NN",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-17T08:29:16.717Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "BCsgBaTYsPa",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "x6YHGbxHmh9",
+        "number": 193,
+        "duplicates": 7
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "medium",
+        "validity": "valid",
+        "updatedAt": "2026-01-20T07:42:47.962Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "RiskEngine: _computeDelayedSwap uses inverted logic (max vs sub), penalizing hedged positions",
+      "uid": "BCsgBaTYsPa",
+      "updatedAt": "2025-12-22T08:47:44.259Z",
+      "user": {
+        "uid": "W4sHLcDqfuD",
+        "handle": "YZX0"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "# RiskEngine: _computeDelayedSwap uses inverted logic (max vs sub), penalizing hedged positions\n\n## Description\nThe `_computeDelayedSwap` function in `RiskEngine.sol` is intended to calculate the collateral requirement for a \"Delayed Swap\" position (Loan + Credit). Logically, holding a credit (lending money) should reduce the collateral requirement of a loan (borrowing money).\nHowever, the implementation compares the `required` collateral against the `convertedCredit` using an `if/else` block that equates to `Math.max()`:\n\n```solidity\n// RiskEngine.sol lines 2035-2039\nif (required > convertedCredit) {\n    return required;\n} else {\n    return convertedCredit;\n}\n```\n\nThis logic is flawed. It returns the *maximum* of the debt or the credit.\nIf a user lends MORE money (`convertedCredit` > `required`), the system requires MORE collateral (`convertedCredit`), instead of 0.\n\n## Impact\n**Critical Severity**.\nUsers who employ \"Delayed Swap\" or similar hedged strategies are severely penalized. Instead of receiving capital efficiency (netting), they are subject to a collateral requirement that increases with their credit position. This completely breaks the risk model for these strategies, potentially leading to unfair liquidations or making the strategy economically unviable (DoS of functionality).\n\n## Real Life Scenario\n1. **Strategy:** A Market Maker (Bob) wants to execute a \"Delayed Swap\" strategy. He borrows 100 ETH (Short Position) and simultaneously lends 105 ETH worth of tokens in a credit position (Long Position) to hedge his risk.\n2. **Expectation:** Since his Credit ($105) covers his Debt ($100), Bob expects the protocol to require near-zero collateral (or a small safe margin).\n3. **Execution:** The `RiskEngine` calculates his collateral requirement using `_computeDelayedSwap`.\n4. **The Glitch:** The logic `if (required > convertedCredit) return required; else return convertedCredit;` triggers. Since Credit (105) > Debt (100), it returns **105**.\n5. **Consequence:** Instead of seeing a solvent, hedged account, the protocol incorrectly demands 105 ETH of *additional* collateral from Bob.\n6. **Liquidation:** If Bob doesn't have this extra capital (which he shouldn't need, as he is fully hedged), the protocol marks him as insolvent and liquidates his position immediately, causing massive unfair losses.\n\n## Recommended Mitigation\nChange the logic to subtract the credit from the requirement, flooring at a minimum safety value (e.g., 1 or `required`).\n\n```solidity\nif (required > convertedCredit) {\n    return required - convertedCredit;\n} else {\n    return 0; // Fully covered\n}",
+      "proofOfConcept": "## Proof of Concept\nA standalone Foundry test comparing the contract's logic vs the expected correct logic.\n\n```solidity\n// Save as test/foundry/core/RiskEngine/IsolatedLogicPoC.t.sol\n// Run with: forge test --match-contract IsolatedLogicPoC\npragma solidity ^0.8.24;\n\nimport \"forge-std/Test.sol\";\n\ncontract LogicPoC is Test {\n    // Flawed logic from RiskEngine.sol\n    function flawedLogic(uint256 required, uint256 credit) public pure returns (uint256) {\n        if (required > credit) {\n            return required;\n        } else {\n            return credit; // BUG: Should be 0 or min\n        }\n    }\n\n    function test_CriticalBug_InvertedLogic() public {\n        uint256 required = 120;  // Debt\n        uint256 credit = 1000;   // Credit (Asset)\n        \n        // The contract demands 1000 collateral instead of 0\n        uint256 actualResult = flawedLogic(required, credit);\n        assertEq(actualResult, 1000); \n    }\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-12-panoptic/blob/main/contracts/RiskEngine.sol#L2035-L2039",
+      "number": 135,
+      "aiExplanation": null,
+      "_index": 135
+    }
+  }
+}

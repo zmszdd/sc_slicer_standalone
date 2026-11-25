@@ -12,6 +12,14 @@ class DifferentialTest(unittest.TestCase):
         )
         self.assertEqual(queries['P_and_T'], 'sat')
         self.assertEqual(queries['P_and_T_and_not_I'], 'sat')
+        self.assertEqual(queries['P_and_T_and_V'], 'unknown')
+
+        queries = compute_queries(
+            {'exploit_test': 'test_double_withdraw'},
+            {'status': 'Success', 'reason': None},
+            {'status': 'Failure', 'reason': 'panic: assertion failed (0x01)'},
+            effect_result={'status': 'Success', 'reason': None},
+        )
         self.assertEqual(queries['P_and_T_and_V'], 'sat')
 
     def test_preconditions_infeasible(self):
@@ -59,6 +67,26 @@ class DifferentialTest(unittest.TestCase):
         )
         self.assertEqual(queries['P_and_T'], 'sat')
         self.assertEqual(queries['P_and_T_and_V'], 'unsat')
+
+    def test_negative_probe_witnesses_effect_absence(self):
+        queries = compute_queries(
+            {'exploit_test': 't'},
+            {'status': 'Success', 'reason': None},
+            {'status': 'Success', 'reason': None},
+            negative_result={'status': 'Success', 'reason': None},
+        )
+        self.assertEqual(queries['P_and_T'], 'sat')
+        self.assertEqual(queries['P_and_T_and_not_I'], 'unsat')
+        self.assertEqual(queries['P_and_T_and_not_V'], 'sat')
+
+    def test_failed_negative_probe_never_invents_witness(self):
+        queries = compute_queries(
+            {'exploit_test': 't'},
+            {'status': 'Success', 'reason': None},
+            {'status': 'Success', 'reason': None},
+            negative_result={'status': 'Failure', 'reason': 'stage3:not_V'},
+        )
+        self.assertEqual(queries['P_and_T_and_not_V'], 'unknown')
 
     def test_original_fails_patched_passes_is_preconditions_infeasible(self):
         queries = compute_queries(

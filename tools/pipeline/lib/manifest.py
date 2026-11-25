@@ -55,6 +55,9 @@ def validate_manifest(value: dict, base_dir: Path | None = None) -> dict:
     extra_args = stage2.get('args', [])
     _require(isinstance(extra_args, list) and all(isinstance(a, str) for a in extra_args),
              'stage2.args must be a list of strings')
+    reuse_verify = stage2.get('reuse_verify', True)
+    _require(isinstance(reuse_verify, bool),
+             'stage2.reuse_verify must be a bool')
 
     stage3 = value.get('stage3')
     _require(isinstance(stage3, dict), 'stage3 must be an object')
@@ -87,6 +90,7 @@ def validate_manifest(value: dict, base_dir: Path | None = None) -> dict:
             'run_dir': stage2.get('run_dir'),
             'output': stage2.get('output'),
             'args': extra_args,
+            'reuse_verify': reuse_verify,
         },
         'stage3': {
             'binding': stage3.get('binding'),
@@ -120,7 +124,8 @@ def build_manifest_from_case(*, case_id: str, src: Path, test: Path | None = Non
                              function: str | None = None,
                              binding: Path | None = None,
                              binding_rounds: int = 3,
-                             case_dir: Path | None = None) -> dict:
+                             case_dir: Path | None = None,
+                             stage2_reuse_verify: bool = True) -> dict:
     """Build a pipeline manifest for one flattened, self-contained case.
 
     The flattened PoC (``contract.flattened.t.sol``) is treated as the
@@ -143,6 +148,7 @@ def build_manifest_from_case(*, case_id: str, src: Path, test: Path | None = Non
         stage2 = {'run_dir': str(stage2_run_dir)}
     else:
         raise ManifestError('either report or stage2_run_dir is required')
+    stage2['reuse_verify'] = bool(stage2_reuse_verify)
 
     stage3 = {'case_dir': str(case_dir or (out_dir / 'case'))}
     if test is not None:

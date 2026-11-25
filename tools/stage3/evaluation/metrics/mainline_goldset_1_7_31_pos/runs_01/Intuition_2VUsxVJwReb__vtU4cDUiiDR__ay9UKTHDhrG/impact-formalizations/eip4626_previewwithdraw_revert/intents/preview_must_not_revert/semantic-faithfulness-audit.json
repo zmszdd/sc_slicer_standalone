@@ -1,0 +1,186 @@
+{
+  "schema_version": "semantic-faithfulness-audit/4",
+  "status": "completed",
+  "verdict_consistent": true,
+  "fidelity_status": "passed",
+  "checks": [
+    {
+      "source_id": "deployer_calls_initialize_with_zero_offset",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate checks offset18_initialized equals 0, matching the statement's offset18 = 0."
+    },
+    {
+      "source_id": "slope18_passes_validation",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate checks slope18_initialized equals 2e18, matching the statement's slope18 = 2e18."
+    },
+    {
+      "source_id": "first_deposit_occurs",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate checks assets = 2 wei and shares = 1414213562, matching the statement's deposit values."
+    },
+    {
+      "source_id": "preview_must_not_revert",
+      "role": "I",
+      "verdict": "consistent",
+      "reason": "Predicate asserts not preview_withdraw_reverted, matching the MUST NOT revert requirement."
+    },
+    {
+      "source_id": "eip4626_previewwithdraw_revert",
+      "role": "V",
+      "verdict": "consistent",
+      "reason": "Predicate asserts revert occurred with valid input (assets within max), matching the violation statement."
+    }
+  ],
+  "piv_relation": {
+    "verdict": "consistent",
+    "reason": "relation_context (e_30585a573f5e_0006, e_30585a573f5e_0025, e_30585a573f5e_0028) explicitly links offset18=0 and first deposit to the previewWithdraw underflow revert violating the MUST NOT revert requirement."
+  },
+  "relation_context": [
+    {
+      "statement_id": "initialize_accepts_zero_offset",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_30585a573f5e_0003",
+          "text": "`OffsetProgressiveCurve.initialize()` validates `slope18` but performs no validation on `offset18`, silently accepting"
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0014",
+          "text": "`slope18` is validated; `offset18` is not. Passing `offset18 = 0` stores `OFFSET = wrap(0)` and deploys successfully."
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0030",
+          "text": "- `initialize(\"MyOffsetCurve\", 2e18, 0)` executes without error."
+        }
+      ]
+    },
+    {
+      "statement_id": "preview_withdraw_full_pool_query",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_30585a573f5e_0006",
+          "text": "underflow revert already confirmed in `ProgressiveCurve`: after the first deposit, `previewWithdraw` panics for any"
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0037",
+          "text": "integrator, front-end, or aggregator calling `previewWithdraw(totalAssets, ...)` will receive a panic revert."
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0038",
+          "text": "2. **Full-pool withdrawal query permanently broken.** A depositor cannot preview their own full exit amount from a"
+        }
+      ]
+    },
+    {
+      "statement_id": "asymmetric_validation_no_offset_check",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_30585a573f5e_0004",
+          "text": "zero. When `offset18 = 0`, the stored `OFFSET = wrap(0)` contributes nothing to any formula, making the contract"
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0013",
+          "text": "**Root cause — asymmetric parameter validation in `initialize()`:**"
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0017",
+          "text": "calculations. With `OFFSET = wrap(0)`, every occurrence of `add(wrap(totalShares), OFFSET)` reduces to"
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0018",
+          "text": "`wrap(totalShares)` — the formula becomes identical to `ProgressiveCurve`. Specifically in `previewWithdraw`:"
+        }
+      ]
+    },
+    {
+      "statement_id": "underflow_from_floor_sqrt_gap",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_30585a573f5e_0007",
+          "text": "full-pool withdrawal query because `divUp(assets, HALF_SLOPE)` exceeds `square(totalShares)` due to the floor-sqrt"
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0023",
+          "text": "| `square(wrap(1414213562))`   | `floor(1414213562² / 1e18)` = `floor(1.9999… × 10¹⁸ / 10¹⁸)` | = **1** (raw UD60x18) |"
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0024",
+          "text": "| `divUp(wrap(2), HALF_SLOPE)` | `ceil(2 × 1e18 / 1e18)`                                      | = **2** (raw UD60x18) |"
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0025",
+          "text": "| `sub(wrap(1), wrap(2))`      | underflow                                                    | **REVERT**            |"
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0026",
+          "text": "The revert occurs because the floor-sqrt rounding in `_convertToShares` creates a permanent gap: `totalAssets` grows"
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0027",
+          "text": "faster than `HALF_SLOPE × totalShares²`. When `previewWithdraw` uses `divUp` (correct per spec) and then subtracts, the"
+        },
+        {
+          "evidence_id": "e_30585a573f5e_0028",
+          "text": "operand order produces an underflow. With `OFFSET = 0`, no offset term closes this gap."
+        }
+      ]
+    }
+  ],
+  "relationship_trace": {
+    "status": "explicit",
+    "links": [
+      {
+        "from_source_ids": [
+          "deployer_calls_initialize_with_zero_offset",
+          "preview_must_not_revert",
+          "eip4626_previewwithdraw_revert"
+        ],
+        "context_statement_id": "initialize_accepts_zero_offset",
+        "evidence_ids": [
+          "e_30585a573f5e_0003",
+          "e_30585a573f5e_0014",
+          "e_30585a573f5e_0030"
+        ],
+        "reported_relation": "initialize accepts offset18 = 0 without validation, storing OFFSET = 0."
+      },
+      {
+        "from_source_ids": [
+          "first_deposit_occurs",
+          "preview_must_not_revert",
+          "eip4626_previewwithdraw_revert"
+        ],
+        "context_statement_id": "preview_withdraw_full_pool_query",
+        "evidence_ids": [
+          "e_30585a573f5e_0006",
+          "e_30585a573f5e_0037",
+          "e_30585a573f5e_0038"
+        ],
+        "reported_relation": "after the first deposit, previewWithdraw panics for the full-pool query, violating the MUST NOT revert requirement."
+      },
+      {
+        "from_source_ids": [
+          "preview_must_not_revert",
+          "eip4626_previewwithdraw_revert"
+        ],
+        "context_statement_id": "underflow_from_floor_sqrt_gap",
+        "evidence_ids": [
+          "e_30585a573f5e_0025",
+          "e_30585a573f5e_0026",
+          "e_30585a573f5e_0027",
+          "e_30585a573f5e_0028"
+        ],
+        "reported_relation": "the floor-sqrt gap with OFFSET = 0 causes an underflow revert in previewWithdraw."
+      }
+    ],
+    "gap": ""
+  },
+  "mismatch_count": 0,
+  "repair_finding_count": 0
+}

@@ -1,0 +1,158 @@
+{
+  "schema_version": "semantic-faithfulness-audit/4",
+  "status": "completed",
+  "verdict_consistent": false,
+  "fidelity_status": "failed",
+  "checks": [
+    {
+      "source_id": "alice_blacklisted",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate asserts Alice is blacklisted, matching the statement."
+    },
+    {
+      "source_id": "alice_cooldown_complete",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate checks cooldown tokens equal 100, matching the statement's quantity."
+    },
+    {
+      "source_id": "unstake_callable_by_blacklisted",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate asserts unstake callable by blacklisted users, matching the statement."
+    },
+    {
+      "source_id": "blacklist_should_not_strand_funds",
+      "role": "I",
+      "verdict": "other_mismatch",
+      "reason": "Statement requires tokens not remain locked without rescue, but predicate equates tokens_locked_in_adapter with rescue_mechanism_available, encoding a different fact."
+    },
+    {
+      "source_id": "tokens_locked_in_adapter_no_rescue",
+      "role": "V",
+      "verdict": "consistent",
+      "reason": "Predicate conjoins credit failure, tokens locked, and no rescue mechanism, matching the statement."
+    }
+  ],
+  "piv_relation": {
+    "verdict": "weakened",
+    "reason": "relation_context e_1d78047210d5_0024 and e_1d78047210d5_0021 support credit failure stranding tokens, but the I predicate's equality encoding does not clearly express the no-rescue requirement, leaving the V-I link ambiguous."
+  },
+  "relation_context": [
+    {
+      "statement_id": "alice_calls_unstake",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_1d78047210d5_0009",
+          "text": "2. Alice calls ``UnstakeMessenger.unstake(0.05 ETH)``"
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0010",
+          "text": "- Pays 0.1 ETH total (0.05 for spoke→hub, 0.05 for return) │"
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0011",
+          "text": "- Message: UnstakeMessage({user: Alice, ...})               │"
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0012",
+          "text": "- LayerZero message sent to hub"
+        }
+      ]
+    },
+    {
+      "statement_id": "hub_unstake_flow",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_1d78047210d5_0013",
+          "text": "3. LayerZero Endpoint calls ``wiTryVaultComposer._lzReceive()``"
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0014",
+          "text": "4. ``_lzReceive()`` decodes message and calls ``_handleUnstake()``"
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0015",
+          "text": "5. StakediTryCrosschain.unstakeThroughComposer(Alice) is called"
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0016",
+          "text": "6. ``_handleUnstake()`` continues"
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0017",
+          "text": "7. ``iTryTokenOFTAdapter.send()`` is called"
+        }
+      ]
+    },
+    {
+      "statement_id": "lzreceive_credit_mint",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_1d78047210d5_0018",
+          "text": "8. LayerZero Endpoint delivers message"
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0019",
+          "text": "- Calls: iTryTokenOFT._lzReceive()"
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0020",
+          "text": "9. ``iTryTokenOFT._lzReceive()`` executes:"
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0021",
+          "text": "10. ``_credit()`` calls ``_mint()``"
+        }
+      ]
+    },
+    {
+      "statement_id": "beforetokentransfer_blocks_blacklisted",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_1d78047210d5_0003",
+          "text": "``_beforeTokenTransfer()`` in ``iTryTokenOFT.sol`` prevents ``blacklisted`` users from transferring any token:"
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0022",
+          "text": "11. ``_mint()`` triggers ``_beforeTokenTransfer()`` which ``reverts()``."
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0023",
+          "text": "This is how ``unstake()`` of ``unstakeMessenger.sol`` calls ``_beforeTokenTransfer()`` on ``iTryTokenOFT.sol``."
+        },
+        {
+          "evidence_id": "e_1d78047210d5_0024",
+          "text": "Now the main problem is when our ``_credit()`` fails due to ``blacklisted``,  our ``100 iTRY`` tokens are still locked in ``iTryTokenOFTAdapter()`` with no ``rescue`` mechanism."
+        }
+      ]
+    }
+  ],
+  "relationship_trace": {
+    "status": "explicit",
+    "links": [
+      {
+        "from_source_ids": [
+          "alice_blacklisted",
+          "alice_cooldown_complete",
+          "unstake_callable_by_blacklisted",
+          "blacklist_should_not_strand_funds",
+          "tokens_locked_in_adapter_no_rescue"
+        ],
+        "context_statement_id": "lzreceive_credit_mint",
+        "evidence_ids": [
+          "e_1d78047210d5_0021",
+          "e_1d78047210d5_0024"
+        ],
+        "reported_relation": "_credit() calls _mint(); when _credit() fails due to blacklisted, the 100 iTRY tokens remain locked in iTryTokenOFTAdapter with no rescue mechanism."
+      }
+    ]
+  },
+  "mismatch_count": 2,
+  "repair_finding_count": 1
+}

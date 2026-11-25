@@ -1,0 +1,95 @@
+Fee-on-Transfer Tokens Cause Accounting Mismatch in `creatorBalance` System, Leading to Contract Insolvency and Loss of User Funds
+
+### Finding Description and Impact
+
+#### Background: Fee-on-Transfer Tokens
+
+Fee-on-transfer (FoT) tokens automatically deduct a percentage during every transfer. When you call `transfer(recipient, 100)`, the recipient receives less than 100 tokens because a fee is taken. Common examples:
+
+| Token | Fee |
+|-------|-----|
+| PAXG (Paxos Gold) | 0.02% |
+| STA (Statera) | 1% |
+| USDT (configurable) | Up to 0.1% |
+| Various deflationary tokens | 1-10% |
+
+#### Root Cause Analysis
+
+The `increaseTokenBalance()` function assumes that the amount requested equals the amount received:
+
+
+The problem:
+1. User calls `increaseTokenBalance(user, FOT_TOKEN, 1000)`
+2. `safeTransferFrom` transfers 1000 tokens, but FoT takes 1% fee
+3. Contract actually receives 990 tokens
+4. `creatorBalance[user][FOT_TOKEN]` is credited with 1000 (not 990!)
+
+This creates an ever-growing deficit between recorded balances and actual token holdings.
+
+#### The Insolvency Math
+
+Let's trace through with a 1% fee token:
+
+**Deposit Phase:**
+
+**Withdrawal Phase:**
+
+Charlie is the victim. He deposited legitimately but cannot withdraw because earlier users took more than their fair share of the actual tokens.
+
+#### Impact Assessment
+
+**Severity: HIGH** - Guaranteed fund loss for some users
+
+**1. Guaranteed Insolvency:**
+With $n$ users each depositing amount $A$ with fee rate $f$:
+- Total recorded: $n \times A$
+- Actual received: $n \times A \times (1-f)$
+- Deficit: $n \times A \times f$
+
+For 100 users depositing 1000 tokens each with 1% fee:
+- Recorded: 100,000 tokens
+- Actual: 99,000 tokens
+- Deficit: 1,000 tokens
+
+**2. Last-User-Loses:**
+The deficit isn't distributed fairly. Whoever withdraws last bears the entire accumulated loss. This creates a "bank run" incentive where users race to withdraw before others.
+
+**3. Silent Accounting Corruption:**
+No errors occur during deposits. The `creatorBalance` mapping looks correct. Users have no indication of the problem until mass withdrawals begin.
+
+**4. Compounding Effect:**
+Each deposit increases the deficit. More users = larger gap = more severe loss for late withdrawers.
+
+**5. Campaign Creation Impact:**
+The same issue exists in `_pullTokens()` for campaign creation. Campaigns may be underfunded, meaning the distributor receives fewer tokens than recorded, causing later claimers to lose out.
+
+#### Affected Token Examples
+
+This vulnerability affects any FoT token that gets whitelisted. Real-world tokens include:
+- **PAXG**: Gold-backed token with transfer fees
+- **Deflationary tokens**: Many DeFi tokens burn on transfer
+- **Reflection tokens**: SafeMoon clones that redistribute fees
+
+If governance whitelists any such token without awareness of this bug, users will lose funds.
+
+### Recommended Mitigation Steps
+
+#### Option 1: Measure Actual Receipt (Recommended)
+
+Modify `increaseTokenBalance()` to credit only what was actually received:
+
+
+Apply the same pattern to `_pullTokens()`:
+
+
+#### Option 2: Reject FoT Tokens
+
+If supporting FoT tokens is not desired, explicitly reject them:
+
+
+#### Option 3: Governance Warning
+
+At minimum, add documentation and governance procedures:
+- Clearly document that FoT tokens are not supported
+- Add validation in `setRewardTokenMinAmounts()` to verify token behavior before whitelisting
+- Emit warnings when tokens with non-standard behavior are detected

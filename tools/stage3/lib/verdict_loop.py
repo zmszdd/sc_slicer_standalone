@@ -46,6 +46,14 @@ def verdict_action(verdict: str | None, summary: dict | None = None) -> str:
     """
     if verdict in TERMINAL_VERDICTS:
         return 'accept'
+    if verdict == 'partial_binding':
+        info = (summary or {}).get('partial_binding') or {}
+        if (info.get('unbound_route_suggestion') ==
+                'stage2_restate_or_reference_patch' and
+                info.get('semantic_terminal_unresolved')):
+            # Every remaining P/I symbol is genuinely unobservable: another
+            # binding round cannot help, so stop burning calls.
+            return 'skip'
     if verdict == 'preconditions_infeasible_on_code':
         failure = (summary or {}).get('precondition_failure')
         if failure == 'poc_not_witnessed':
@@ -92,8 +100,18 @@ def repair_hint(summary: dict, consistency: dict | None) -> str:
         if neutralized:
             prefix = f'previous blacklist retry neutralized: {neutralized}; '
         patched = str(compile_info.get('patched') or '')[:1200]
-        return (prefix + 'patched project failed to compile: ' + patched) \
-            if patched else (prefix + 'patched project failed to compile')
+        identifiers = None
+        try:
+            from lib.compile_retry import error_identifiers
+            identifiers = sorted(error_identifiers(patched))
+        except Exception:
+            identifiers = None
+        ident_hint = ''
+        if identifiers:
+            ident_hint = ('Fix exactly these identifiers (do not touch others): '
+                          + ', '.join(identifiers[:12]) + '. ')
+        return (prefix + ident_hint + 'patched project failed to compile: '
+                + patched) if patched else (prefix + 'patched project failed to compile')
     if verdict == 'effect_observed_invariant_holds':
         return ('effect observed while invariant holds: restate I or rebind the '
                 'I-side observable; current I is vacuous on the exploit path')
@@ -142,6 +160,14 @@ def repair_hint(summary: dict, consistency: dict | None) -> str:
             return 'unbound symbols: ' + ', '.join(unbound)
     if verdict == 'partial_binding':
         info = summary.get('partial_binding') or {}
+        buckets = info.get('unbound_buckets') or {}
+        active = [bucket for bucket, count in buckets.items()
+                  if count and bucket not in ('semantic_effect_only',)]
+        if active:
+            return ('unbound buckets: ' + ', '.join(sorted(active)) +
+                    '. Apply the bucket route (time window / receiver / '
+                    'derive / getter / token call) instead of repeating the '
+                    'same expression; stop after one attempt for a bucket.')
         unbound = info.get('unbound_symbols') or []
         if unbound:
             return 'unbound symbols: ' + ', '.join(unbound)

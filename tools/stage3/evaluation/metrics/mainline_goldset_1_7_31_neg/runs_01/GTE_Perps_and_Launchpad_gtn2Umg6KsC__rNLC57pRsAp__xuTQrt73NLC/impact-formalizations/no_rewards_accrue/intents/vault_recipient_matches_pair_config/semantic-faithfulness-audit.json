@@ -1,0 +1,93 @@
+{
+  "schema_version": "semantic-faithfulness-audit/4",
+  "status": "completed",
+  "verdict_consistent": false,
+  "fidelity_status": "needs_review",
+  "checks": [
+    {
+      "source_id": "lp_vault_updatable_post_deploy",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate truth symbol directly encodes that the launchpadLPVault address is updatable post-deploy."
+    },
+    {
+      "source_id": "factory_lp_fixed_at_construction",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate truth symbol directly encodes that launchpadLp is a constructor-time constant."
+    },
+    {
+      "source_id": "vault_recipient_matches_pair_config",
+      "role": "I",
+      "verdict": "consistent",
+      "reason": "Predicate encodes that the addLiquidity recipient must equal the pair-embedded vault, matching the statement."
+    },
+    {
+      "source_id": "no_rewards_accrue",
+      "role": "V",
+      "verdict": "consistent",
+      "reason": "Negation of distributor_rewards_accrued correctly encodes that no rewards accrue or are distributed."
+    }
+  ],
+  "piv_relation": {
+    "verdict": "weakened",
+    "reason": "The excerpts (e_0de37ccac87c_0004, e_0de37ccac87c_0007) establish the vault-update vs fixed-factory mismatch, but no supplied evidence links this to the no-rewards/distributor claim in V."
+  },
+  "relation_context": [
+    {
+      "statement_id": "lp_vault_updated",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_0de37ccac87c_0004",
+          "text": "- In [`@Launchpad._createPairAndSwapRemaining`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Launchpad.sol#L658-L729), liquidity minted at graduation is sent to `launchpadLPVault` (the `to` of `addLiquidity()`), and the address can be changed/updated post-deploy via [`updateLaunchpadLPVault()`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/Launchpad.sol#L578-L590)."
+        },
+        {
+          "evidence_id": "e_0de37ccac87c_0007",
+          "text": "The root cause is that `updateLaunchpadLPVault()` in `Launchpad` changes where new LP tokens are minted, but **the factory and pairs continue to reference the old `launchpadLp`**. New pairs created after the update will cache the **old vault address** because the factory’s `launchpadLp` is fixed at construction and written into each pair at `initialize()`. As a result, pairs will measure `balanceOf(launchpadLp)` on the stale address, while **all LP tokens are minted to the new vault**."
+        }
+      ]
+    },
+    {
+      "statement_id": "new_pair_created_after_update",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_0de37ccac87c_0005",
+          "text": "- In [`@GTELaunchpadV2PairFactory.sol`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/launchpad/uniswap/GTELaunchpadV2PairFactory.sol), the constructor stores `launchpadLp` and `launchpadFeeDistributor` as **constructor-time constants**. On `createPair()`, the factory embeds these into the pair (via `initialize()`)."
+        }
+      ]
+    }
+  ],
+  "relationship_trace": {
+    "status": "explicit",
+    "links": [
+      {
+        "from_source_ids": [
+          "lp_vault_updatable_post_deploy",
+          "factory_lp_fixed_at_construction",
+          "vault_recipient_matches_pair_config",
+          "no_rewards_accrue"
+        ],
+        "context_statement_id": "lp_vault_updated",
+        "evidence_ids": [
+          "e_0de37ccac87c_0004",
+          "e_0de37ccac87c_0007"
+        ],
+        "reported_relation": "updateLaunchpadLPVault() changes where new LP tokens are minted while the factory and pairs keep referencing the old launchpadLp, so pairs measure balanceOf on the stale address while LP tokens are minted to the new vault."
+      },
+      {
+        "from_source_ids": [
+          "no_rewards_accrue"
+        ],
+        "context_statement_id": "new_pair_created_after_update",
+        "evidence_ids": [
+          "e_0de37ccac87c_0005"
+        ],
+        "reported_relation": "The factory stores launchpadLp as a constructor-time constant and embeds it into each pair at initialize(), so new pairs cache the old vault address."
+      }
+    ]
+  },
+  "mismatch_count": 1,
+  "repair_finding_count": 0
+}

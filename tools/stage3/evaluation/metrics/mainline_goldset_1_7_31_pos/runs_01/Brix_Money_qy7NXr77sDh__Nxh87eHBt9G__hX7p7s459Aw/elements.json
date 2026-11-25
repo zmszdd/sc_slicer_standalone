@@ -1,0 +1,249 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Blacklisted user unstakes iTRY through UnstakeMessenger; cross-chain message reaches hub, iTryTokenOFT._lzReceive() calls _credit()/_mint(), which triggers _beforeTokenTransfer() and reverts, leaving the 100 iTRY locked in iTryTokenOFTAdapter with no rescue mechanism.",
+    "environment": "Brix Money cross-chain iTRY/wiTRY contracts: UnstakeMessenger.sol, wiTryVaultComposer, StakediTryCrosschain, iTryTokenOFTAdapter, iTryTokenOFT.sol",
+    "evidence": [
+      "Blacklisted users can call unstake() and lock the funds in the adapter forever.",
+      "``_beforeTokenTransfer()`` in ``iTryTokenOFT.sol`` prevents ``blacklisted`` users from transferring any token:",
+      "``unstake()`` on ``unstakeMessenger.sol`` can be called even by ``blacklisted`` users.",
+      "The whole flow works as follows:",
+      "1. Blacklisted user Alice completes cooldown for ``100`` iTRY tokens.",
+      "2. Alice calls ``UnstakeMessenger.unstake(0.05 ETH)``",
+      "- Pays 0.1 ETH total (0.05 for spoke→hub, 0.05 for return) │",
+      "- Message: UnstakeMessage({user: Alice, ...})               │",
+      "- LayerZero message sent to hub",
+      "3. LayerZero Endpoint calls ``wiTryVaultComposer._lzReceive()``",
+      "4. ``_lzReceive()`` decodes message and calls ``_handleUnstake()``",
+      "5. StakediTryCrosschain.unstakeThroughComposer(Alice) is called",
+      "6. ``_handleUnstake()`` continues",
+      "7. ``iTryTokenOFTAdapter.send()`` is called",
+      "8. LayerZero Endpoint delivers message",
+      "- Calls: iTryTokenOFT._lzReceive()",
+      "9. ``iTryTokenOFT._lzReceive()`` executes:",
+      "10. ``_credit()`` calls ``_mint()``",
+      "11. ``_mint()`` triggers ``_beforeTokenTransfer()`` which ``reverts()``.",
+      "This is how ``unstake()`` of ``unstakeMessenger.sol`` calls ``_beforeTokenTransfer()`` on ``iTryTokenOFT.sol``.",
+      "Now the main problem is when our ``_credit()`` fails due to ``blacklisted``,  our ``100 iTRY`` tokens are still locked in ``iTryTokenOFTAdapter()`` with no ``rescue`` mechanism.",
+      "Similar to ``wiTRYOFT.sol``, ``_mint`` the funds to ``owner()`` when blacklisted users transfer:"
+    ]
+  },
+  "entities": [
+    {
+      "id": "alice",
+      "name": "Alice (blacklisted user)",
+      "role": "attacker",
+      "evidence": [
+        "1. Blacklisted user Alice completes cooldown for ``100`` iTRY tokens.",
+        "2. Alice calls ``UnstakeMessenger.unstake(0.05 ETH)``"
+      ]
+    },
+    {
+      "id": "itry_token_oft",
+      "name": "iTryTokenOFT",
+      "role": "contract",
+      "evidence": [
+        "``_beforeTokenTransfer()`` in ``iTryTokenOFT.sol`` prevents ``blacklisted`` users from transferring any token:",
+        "9. ``iTryTokenOFT._lzReceive()`` executes:",
+        "10. ``_credit()`` calls ``_mint()``",
+        "11. ``_mint()`` triggers ``_beforeTokenTransfer()`` which ``reverts()``."
+      ]
+    },
+    {
+      "id": "unstake_messenger",
+      "name": "UnstakeMessenger",
+      "role": "contract",
+      "evidence": [
+        "``unstake()`` on ``unstakeMessenger.sol`` can be called even by ``blacklisted`` users.",
+        "2. Alice calls ``UnstakeMessenger.unstake(0.05 ETH)``"
+      ]
+    },
+    {
+      "id": "itry_token_oft_adapter",
+      "name": "iTryTokenOFTAdapter",
+      "role": "contract",
+      "evidence": [
+        "7. ``iTryTokenOFTAdapter.send()`` is called",
+        "Now the main problem is when our ``_credit()`` fails due to ``blacklisted``,  our ``100 iTRY`` tokens are still locked in ``iTryTokenOFTAdapter()`` with no ``rescue`` mechanism."
+      ]
+    },
+    {
+      "id": "witrv_vault_composer",
+      "name": "wiTryVaultComposer",
+      "role": "contract",
+      "evidence": [
+        "3. LayerZero Endpoint calls ``wiTryVaultComposer._lzReceive()``",
+        "4. ``_lzReceive()`` decodes message and calls ``_handleUnstake()``",
+        "6. ``_handleUnstake()`` continues"
+      ]
+    },
+    {
+      "id": "staked_itry_crosschain",
+      "name": "StakediTryCrosschain",
+      "role": "contract",
+      "evidence": [
+        "5. StakediTryCrosschain.unstakeThroughComposer(Alice) is called"
+      ]
+    },
+    {
+      "id": "itry_tokens",
+      "name": "100 iTRY tokens",
+      "role": "asset",
+      "evidence": [
+        "1. Blacklisted user Alice completes cooldown for ``100`` iTRY tokens.",
+        "Now the main problem is when our ``_credit()`` fails due to ``blacklisted``,  our ``100 iTRY`` tokens are still locked in ``iTryTokenOFTAdapter()`` with no ``rescue`` mechanism."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "alice_blacklisted",
+      "kind": "precondition",
+      "text": "Alice is a blacklisted user.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice"
+      ],
+      "evidence": [
+        "1. Blacklisted user Alice completes cooldown for ``100`` iTRY tokens."
+      ]
+    },
+    {
+      "id": "alice_cooldown_complete",
+      "kind": "precondition",
+      "text": "Alice has completed the cooldown for 100 iTRY tokens.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "itry_tokens"
+      ],
+      "evidence": [
+        "1. Blacklisted user Alice completes cooldown for ``100`` iTRY tokens."
+      ]
+    },
+    {
+      "id": "unstake_callable_by_blacklisted",
+      "kind": "precondition",
+      "text": "UnstakeMessenger.unstake() can be called even by blacklisted users.",
+      "modality": "asserted",
+      "entity_ids": [
+        "unstake_messenger",
+        "alice"
+      ],
+      "evidence": [
+        "``unstake()`` on ``unstakeMessenger.sol`` can be called even by ``blacklisted`` users."
+      ]
+    },
+    {
+      "id": "alice_calls_unstake",
+      "kind": "action",
+      "text": "Alice calls UnstakeMessenger.unstake(0.05 ETH), paying 0.1 ETH total and sending an UnstakeMessage for Alice to the hub via LayerZero.",
+      "modality": "asserted",
+      "entity_ids": [
+        "alice",
+        "unstake_messenger"
+      ],
+      "evidence": [
+        "2. Alice calls ``UnstakeMessenger.unstake(0.05 ETH)``",
+        "- Pays 0.1 ETH total (0.05 for spoke→hub, 0.05 for return) │",
+        "- Message: UnstakeMessage({user: Alice, ...})               │",
+        "- LayerZero message sent to hub"
+      ]
+    },
+    {
+      "id": "hub_unstake_flow",
+      "kind": "action",
+      "text": "LayerZero Endpoint calls wiTryVaultComposer._lzReceive(), which decodes the message and calls _handleUnstake(); StakediTryCrosschain.unstakeThroughComposer(Alice) is called and _handleUnstake() continues, calling iTryTokenOFTAdapter.send().",
+      "modality": "asserted",
+      "entity_ids": [
+        "witrv_vault_composer",
+        "staked_itry_crosschain",
+        "itry_token_oft_adapter"
+      ],
+      "evidence": [
+        "3. LayerZero Endpoint calls ``wiTryVaultComposer._lzReceive()``",
+        "4. ``_lzReceive()`` decodes message and calls ``_handleUnstake()``",
+        "5. StakediTryCrosschain.unstakeThroughComposer(Alice) is called",
+        "6. ``_handleUnstake()`` continues",
+        "7. ``iTryTokenOFTAdapter.send()`` is called"
+      ]
+    },
+    {
+      "id": "lzreceive_credit_mint",
+      "kind": "action",
+      "text": "LayerZero Endpoint delivers the message; iTryTokenOFT._lzReceive() executes and _credit() calls _mint().",
+      "modality": "asserted",
+      "entity_ids": [
+        "itry_token_oft"
+      ],
+      "evidence": [
+        "8. LayerZero Endpoint delivers message",
+        "- Calls: iTryTokenOFT._lzReceive()",
+        "9. ``iTryTokenOFT._lzReceive()`` executes:",
+        "10. ``_credit()`` calls ``_mint()``"
+      ]
+    },
+    {
+      "id": "beforetokentransfer_blocks_blacklisted",
+      "kind": "root_cause",
+      "text": "_beforeTokenTransfer() in iTryTokenOFT.sol prevents blacklisted users from transferring any token, so the _mint() triggered by _credit() calls _beforeTokenTransfer() which reverts, and the 100 iTRY tokens remain locked in iTryTokenOFTAdapter with no rescue mechanism.",
+      "modality": "asserted",
+      "entity_ids": [
+        "itry_token_oft",
+        "itry_token_oft_adapter",
+        "itry_tokens"
+      ],
+      "evidence": [
+        "``_beforeTokenTransfer()`` in ``iTryTokenOFT.sol`` prevents ``blacklisted`` users from transferring any token:",
+        "11. ``_mint()`` triggers ``_beforeTokenTransfer()`` which ``reverts()``.",
+        "This is how ``unstake()`` of ``unstakeMessenger.sol`` calls ``_beforeTokenTransfer()`` on ``iTryTokenOFT.sol``.",
+        "Now the main problem is when our ``_credit()`` fails due to ``blacklisted``,  our ``100 iTRY`` tokens are still locked in ``iTryTokenOFTAdapter()`` with no ``rescue`` mechanism."
+      ]
+    },
+    {
+      "id": "blacklist_should_not_strand_funds",
+      "kind": "security_intent",
+      "text": "When a blacklisted user's unstake credit fails, the user's iTRY tokens must not remain locked in iTryTokenOFTAdapter without a rescue mechanism.",
+      "modality": "asserted",
+      "entity_ids": [
+        "itry_token_oft_adapter",
+        "itry_tokens"
+      ],
+      "evidence": [
+        "Now the main problem is when our ``_credit()`` fails due to ``blacklisted``,  our ``100 iTRY`` tokens are still locked in ``iTryTokenOFTAdapter()`` with no ``rescue`` mechanism."
+      ]
+    },
+    {
+      "id": "blacklisted_mint_should_route_to_owner",
+      "kind": "security_intent",
+      "text": "When blacklisted users transfer, _mint should route the funds to owner(), as wiTRYOFT.sol does.",
+      "modality": "inferred",
+      "entity_ids": [
+        "itry_token_oft"
+      ],
+      "evidence": [
+        "Similar to ``wiTRYOFT.sol``, ``_mint`` the funds to ``owner()`` when blacklisted users transfer:"
+      ]
+    },
+    {
+      "id": "tokens_locked_in_adapter_no_rescue",
+      "kind": "impact",
+      "text": "Now the main problem is when our ``_credit()`` fails due to ``blacklisted``,  our ``100 iTRY`` tokens are still locked in ``iTryTokenOFTAdapter()`` with no ``rescue`` mechanism.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "Now the main problem is when our ``_credit()`` fails due to ``blacklisted``,  our ``100 iTRY`` tokens are still locked in ``iTryTokenOFTAdapter()`` with no ``rescue`` mechanism."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "alice_calls_unstake",
+    "hub_unstake_flow",
+    "lzreceive_credit_mint"
+  ],
+  "ambiguities": [
+    "Report does not state whether the 100 iTRY were already locked in iTryTokenOFTAdapter before Alice's unstake call or only become locked as a result of the failed credit.",
+    "The mitigation (mint to owner()) is a suggested repair; the intended safety property is only partially stated, so the second security_intent is inferred.",
+    "Report does not specify the exact checkpoint at which the adapter holds the 100 iTRY relative to the send() and _lzReceive() steps."
+  ]
+}

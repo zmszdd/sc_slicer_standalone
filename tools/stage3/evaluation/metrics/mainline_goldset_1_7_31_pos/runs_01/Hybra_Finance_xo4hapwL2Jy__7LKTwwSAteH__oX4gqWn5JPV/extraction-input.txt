@@ -1,0 +1,35 @@
+Emissions notified at zero `totalWeight` are stranded in `GaugeManager`
+
+#### Summary
+
+The `GaugeManager` contract contains a critical flaw where emissions notified when `totalWeight` is zero are transferred into the contract but never allocated to gauges. This occurs because the `notifyRewardAmount` function transfers tokens but sets the ratio to zero when totalWeight is zero, preventing any index updates that would enable future distribution of these emissions.
+
+#### Description
+
+When `notifyRewardAmount()` is called while `IVoter(voter).totalWeight()` returns zero, the function transfers base tokens from the minter into GaugeManager but fails to update the global index properly. The emission accounting logic computes a ratio of zero when totalWeight is zero, resulting in no index increment. Since gauge distributions rely entirely on index deltas to calculate claimable amounts, these transferred tokens become permanently inaccessible.
+
+The vulnerable flow occurs in the notification process where totalWeight can legitimately be zero during early protocol operation or when voting weights temporarily drop to zero. The contract transfers the emission tokens but creates no mechanism to track or redistribute them once voting weight is restored. The `_updateForAfterDistribution()` function only processes index deltas, so previously unaccounted emissions remain stranded indefinitely.
+
+#### Affected Code
+
+`ve33/contracts/GaugeManager.sol:268-280`
+
+
+`ve33/contracts/GaugeManager.sol:371-395`
+
+
+
+#### Impact Explanation
+
+This vulnerability causes permanent loss of scheduled emissions intended for distribution to users. When totalWeight is zero during emission notification, the transferred tokens remain in GaugeManager indefinitely with no recovery mechanism. This breaks the emission distribution policy and creates unclaimable funds, undermining the protocol's token economics and causing direct financial losses to stakeholders expecting those emissions.
+
+#### Likelihood Explanation
+
+The vulnerability has medium likelihood as zero-weight epochs are realistic scenarios, particularly at protocol genesis before any votes are cast or during operational periods when voting weight temporarily drops to zero. Since emission notification occurs as part of regular epoch rollover without requiring special privileges, this condition can arise under normal operation sequencing, especially during protocol launch phases.
+
+#### Recommendation
+
+Consider implementing a pending emission mechanism to handle notifications when totalWeight is zero. One approach could be to track unallocated emissions in a separate variable when totalWeight is zero, then incorporate these pending amounts into the index calculation once totalWeight becomes positive. This would ensure that all notified emissions eventually reach their intended recipients regardless of timing.
+
+Alternatively, the notification function could be modified to either reject emissions when totalWeight is zero or defer the transfer until voting weight is established, preventing the accumulation of stranded tokens while maintaining emission schedule integrity.
+**Impact:** The proof of concept demonstrates that when `GaugeManager.notifyRewardAmount` is called while `IVoter(voter).totalWeight() == 0`, the full epoch emission is transferred into `GaugeManager` but does not increase the global index, leaving those tokens untracked. After votes are cast in the next epoch and distributions proceed, the newly minted emission is distributed to the gauge, while the previous epoch's tokens remain stuck in `GaugeManager` (balance does not decrease), proving passive value loss and permanently stranded emissions.

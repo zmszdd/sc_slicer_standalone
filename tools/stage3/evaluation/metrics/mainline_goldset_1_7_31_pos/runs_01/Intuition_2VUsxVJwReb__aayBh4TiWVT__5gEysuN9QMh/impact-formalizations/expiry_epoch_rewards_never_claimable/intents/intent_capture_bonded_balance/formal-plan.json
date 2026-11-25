@@ -1,0 +1,198 @@
+{
+  "schema_version": "report-formal-plan/8",
+  "relation_class": "value_relation",
+  "precondition_ids": [
+    "lock_expires_during_epoch_n",
+    "user_bonded_part_or_all_of_epoch_n"
+  ],
+  "intent_id": "intent_capture_bonded_balance",
+  "impact_ids": [
+    "expiry_epoch_rewards_never_claimable"
+  ],
+  "symbols": {
+    "lock_end": {
+      "sort": "int",
+      "unit": "timestamp",
+      "meaning": "locked.end, the timestamp at which the user's veTRUST lock expires",
+      "checkpoint": "before claim, lock configuration",
+      "entity_ids": [
+        "vetrust_lock",
+        "user"
+      ],
+      "source_ids": [
+        "lock_expires_during_epoch_n"
+      ],
+      "observable_kind": "state",
+      "scope": "cross_contract",
+      "receiver": "vetrust_lock",
+      "contract_type": "veTRUST",
+      "binding_risk": "medium"
+    },
+    "epoch_timestamp_end_n": {
+      "sort": "int",
+      "unit": "timestamp",
+      "meaning": "epochTimestampEnd(N), the end timestamp of epoch N",
+      "checkpoint": "epoch N boundary",
+      "entity_ids": [
+        "epoch"
+      ],
+      "source_ids": [
+        "lock_expires_during_epoch_n"
+      ],
+      "observable_kind": "getter",
+      "scope": "cross_contract",
+      "receiver": "trust_bonding",
+      "contract_type": "TrustBonding",
+      "binding_risk": "medium"
+    },
+    "user_bonded_during_epoch_n": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the user was bonded for part or all of epoch N",
+      "checkpoint": "during epoch N",
+      "entity_ids": [
+        "user",
+        "vetrust_lock",
+        "epoch"
+      ],
+      "source_ids": [
+        "user_bonded_part_or_all_of_epoch_n"
+      ],
+      "observable_kind": "derived",
+      "scope": "business",
+      "receiver": null,
+      "contract_type": null,
+      "binding_risk": "medium"
+    },
+    "captured_bonded_balance": {
+      "sort": "int",
+      "unit": "veTRUST",
+      "meaning": "the bonded balance the reward calculation captures for the user for epoch N (non-zero when sampled just before lock expiry)",
+      "checkpoint": "reward calculation for epoch N",
+      "entity_ids": [
+        "trust_bonding",
+        "user"
+      ],
+      "source_ids": [
+        "intent_capture_bonded_balance"
+      ],
+      "observable_kind": "derived",
+      "scope": "cross_contract",
+      "receiver": "trust_bonding",
+      "contract_type": "TrustBonding",
+      "binding_risk": "high"
+    },
+    "zero_balance": {
+      "sort": "int",
+      "unit": "veTRUST",
+      "meaning": "zero bonded balance (the value _balanceOf returns once decay has zeroed out)",
+      "checkpoint": "constant",
+      "entity_ids": [
+        "vetrust_lock"
+      ],
+      "source_ids": [
+        "intent_capture_bonded_balance"
+      ],
+      "observable_kind": "derived",
+      "scope": "business",
+      "receiver": null,
+      "contract_type": null,
+      "binding_risk": "low"
+    },
+    "epoch_n_rewards_claimable": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "the user can claim epoch N rewards",
+      "checkpoint": "after reward calculation for epoch N",
+      "entity_ids": [
+        "user",
+        "trust_bonding"
+      ],
+      "source_ids": [
+        "expiry_epoch_rewards_never_claimable"
+      ],
+      "observable_kind": "derived",
+      "scope": "cross_contract",
+      "receiver": "trust_bonding",
+      "contract_type": "TrustBonding",
+      "binding_risk": "high"
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "lock_expires_during_epoch_n",
+      "predicate": {
+        "kind": "comparison",
+        "left": "lock_end",
+        "operator": "le",
+        "right": {
+          "symbol": "epoch_timestamp_end_n"
+        }
+      }
+    },
+    {
+      "source_id": "user_bonded_part_or_all_of_epoch_n",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "user_bonded_during_epoch_n",
+        "value": true
+      }
+    }
+  ],
+  "impact_outcome": {
+    "source_id": "expiry_epoch_rewards_never_claimable",
+    "predicate": {
+      "kind": "truth",
+      "symbol": "epoch_n_rewards_claimable",
+      "value": false
+    }
+  },
+  "impact_context_terms": [],
+  "derived_definitions": [],
+  "pattern": {
+    "kind": "relation_obligation",
+    "condition": {
+      "kind": "all_of",
+      "terms": [
+        {
+          "kind": "comparison",
+          "left": "lock_end",
+          "operator": "le",
+          "right": {
+            "symbol": "epoch_timestamp_end_n"
+          }
+        },
+        {
+          "kind": "truth",
+          "symbol": "user_bonded_during_epoch_n",
+          "value": true
+        }
+      ]
+    },
+    "relation": {
+      "kind": "comparison",
+      "left": "captured_bonded_balance",
+      "operator": "ne",
+      "right": {
+        "symbol": "zero_balance"
+      }
+    }
+  },
+  "assumptions": [
+    "The reward calculation for epoch N is the checked action; the captured bonded balance is the value the calculation uses for the user's epoch N credit."
+  ],
+  "unresolved": [
+    {
+      "category": "unsupported_relation",
+      "description": "The intent requires sampling at locked.end - 1 (last bonded second) and proportional credit for time bonded; the report gives no numeric definition of the proportional credit amount, so the relation is encoded as non-zero captured balance rather than an exact proportional quantity.",
+      "source_ids": [
+        "intent_capture_bonded_balance"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "The proportional-credit magnitude is not numerically defined in the report; only the non-zero capture at locked.end - 1 is encoded.",
+    "captured_bonded_balance and epoch_n_rewards_claimable are derived observables whose concrete binding to contract code is deferred to stage 3."
+  ]
+}

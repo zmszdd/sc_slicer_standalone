@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -21,6 +22,7 @@ from pathlib import Path
 from lib.spec_loader import SpecError, load_stage2_run
 from lib.case_runner import (bind_claims, ceiling_verdict_for_bindability,
                              derive_verdicts, run_multi, verdict_counts)
+from lib.invariant_ranking import rank_claims
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,17 +34,23 @@ def _assemble(name, flatten, stage2_dir, cases_root, src_name):
     """Delegate to the shared case builder so eval and product share one path."""
     out = cases_root / name
     if out.exists():
-        return out
-    from lib.case_builder import assemble_case
-    return assemble_case(
-        name=name,
-        src=flatten,
-        stage2_run=stage2_dir,
-        test=None,
-        out=out,
-        default_foundry_toml=True,
-        src_name=src_name,
-    )
+        from lib.case_builder import refresh_stage2_run
+        refresh_stage2_run(stage2_dir, out)
+    else:
+        from lib.case_builder import assemble_case
+        assemble_case(
+            name=name,
+            src=flatten,
+            stage2_run=stage2_dir,
+            test=None,
+            out=out,
+            default_foundry_toml=True,
+            src_name=src_name,
+        )
+    source_manifest = Path(flatten).parent / 'harness-manifest.json'
+    if source_manifest.is_file():
+        shutil.copyfile(source_manifest, out / 'harness-manifest.json')
+    return out
 
 
 def main(argv=None):
@@ -57,6 +65,8 @@ def main(argv=None):
                         help='reuse existing bindings/ dir instead of re-proposing')
     parser.add_argument('--max-binding-rounds', type=int, default=3,
                         help='LLM binding repair rounds per claim (default 3)')
+    parser.add_argument('--claim-top-k', type=int, default=3,
+                        help='execute only the top-k ranked claims; 0 keeps all')
     args = parser.parse_args(argv)
 
     goldset = Path(args.goldset_root)
@@ -86,7 +96,15 @@ def main(argv=None):
             rows.append({'case': cid, 'status': 'stage2_blocked',
                          'detail': str(exc)})
             continue
-        claims = [r['claim_id'] for r in spec['spec'].get('claims', [])]
+        all_claims = [r['claim_id'] for r in spec['spec'].get('claims', [])
+                      if isinstance(r, dict) and r.get('claim_id')]
+        if not all_claims:
+            rows.append({'case': cid, 'status': 'zero_claims'})
+            continue
+        ranking = rank_claims(stage2_dir, spec['spec'], limit=args.claim_top_k)
+        available = set(all_claims)
+        claims = [claim_id for claim_id in ranking['selected_claim_ids']
+                  if claim_id in available]
         if not claims:
             rows.append({'case': cid, 'status': 'zero_claims'})
             continue
@@ -102,7 +120,7 @@ def main(argv=None):
 
         bind_result = bind_claims(
             case_dir=case_dir, stage2_dir=stage2_dir, src_dir=case_dir / 'src',
-            claims=claims, formal=spec['formal'],
+            claims=claims, formal=spec['formal'], spec=spec['spec'],
             max_rounds=args.max_binding_rounds, reuse=args.skip_llm,
             strict=False, apply_ceiling=True, run_fn=subprocess.run)
         bound_claim_ids = bind_result['bound_claim_ids']
@@ -115,15 +133,22 @@ def main(argv=None):
         from lib.bindability_contract import write_contract
         write_contract(case_dir, stage2_dir, claims)
 
-        multi_verdicts = run_multi(
+        multi_result = run_multi(
             case_dir=case_dir, bindings_dir=bindings_dir,
             stage2_run_dir=case_dir / 'stage2_run',
             bound_claim_ids=bound_claim_ids, run_id_prefix=cid,
             run_fn=subprocess.run)
+        multi_verdicts = multi_result['verdicts']
+        reference_patch_used = multi_result['reference_patch_used']
         verdicts = derive_verdicts(
             claims=claims, routed_verdicts=routed_verdicts,
             bound_claim_ids=bound_claim_ids, multi_verdicts=multi_verdicts)
         counts = verdict_counts(verdicts)
+        reference_patch_reproduced = sum(
+            1 for claim_id, verdict in multi_verdicts.items()
+            if verdict == 'violation_reproduced'
+            and reference_patch_used.get(claim_id))
+        automatic_reproduced = counts['reproduced'] - reference_patch_reproduced
         bound = len(bound_claim_ids)
 
         if bound == 0 and not routed_verdicts:
@@ -138,6 +163,8 @@ def main(argv=None):
             'claim_ids': claims,
             'verdicts': verdicts,
             'reproduced': counts['reproduced'],
+            'automatic_reproduced': automatic_reproduced,
+            'reference_patch_reproduced': reference_patch_reproduced,
             'compile_blocked': counts['compile_blocked'],
             'compile_error': counts['compile_error'],
             'not_dynamically_expressible': counts['not_dynamically_expressible'],
@@ -157,6 +184,10 @@ def main(argv=None):
         'done': sum(1 for r in rows if r['status'] == 'done'),
         'zero_claims': sum(1 for r in rows if r['status'] == 'zero_claims'),
         'reproduced_total': sum(r.get('reproduced', 0) for r in rows),
+        'automatic_reproduced_total': sum(
+            r.get('automatic_reproduced', 0) for r in rows),
+        'reference_patch_reproduced_total': sum(
+            r.get('reference_patch_reproduced', 0) for r in rows),
         'compile_blocked_total': sum(r.get('compile_blocked', 0) for r in rows),
         'compile_error_total': sum(r.get('compile_error', 0) for r in rows),
         'not_dynamically_expressible_total': sum(

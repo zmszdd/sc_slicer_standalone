@@ -1,0 +1,73 @@
+`OffsetProgressiveCurve.initialize()` Accepts `offset18 = 0`, Inheriting `previewWithdraw` Underflow Revert from `ProgressiveCurve`
+
+## Summary
+
+`OffsetProgressiveCurve.initialize()` validates `slope18` but performs no validation on `offset18`, silently accepting
+zero. When `offset18 = 0`, the stored `OFFSET = wrap(0)` contributes nothing to any formula, making the contract
+mathematically identical to `ProgressiveCurve`. This means the contract inherits the `previewWithdraw` arithmetic
+underflow revert already confirmed in `ProgressiveCurve`: after the first deposit, `previewWithdraw` panics for any
+full-pool withdrawal query because `divUp(assets, HALF_SLOPE)` exceeds `square(totalShares)` due to the floor-sqrt
+rounding in the deposit path. The contract is non-upgradeable, so a deployer who passes `offset18 = 0` cannot recover
+without redeployment and repointing every vault that references the broken curve address. EIP-4626 Section 4 explicitly
+requires preview functions MUST NOT revert for valid inputs.
+
+## Vulnerability details
+
+### Finding description and impact
+
+**Root cause — asymmetric parameter validation in `initialize()`:**
+
+
+`slope18` is validated; `offset18` is not. Passing `offset18 = 0` stores `OFFSET = wrap(0)` and deploys successfully.
+
+**How OFFSET = 0 collapses the contract to ProgressiveCurve:**
+
+The distinguishing feature of `OffsetProgressiveCurve` is the additive offset applied to the share count before curve
+calculations. With `OFFSET = wrap(0)`, every occurrence of `add(wrap(totalShares), OFFSET)` reduces to
+`wrap(totalShares)` — the formula becomes identical to `ProgressiveCurve`. Specifically in `previewWithdraw`:
+
+
+**Inherited underflow — concrete proof (slope = 2e18, HALF_SLOPE = 1e18, offset = 0):**
+
+| Step                         | Computation                                                  | Result                |
+| ---------------------------- | ------------------------------------------------------------ | --------------------- |
+| Deposit 2 wei (empty pool)   | `floor(sqrt(2 × 1e18))`                                      | `shares = 1414213562` |
+| `square(wrap(1414213562))`   | `floor(1414213562² / 1e18)` = `floor(1.9999… × 10¹⁸ / 10¹⁸)` | = **1** (raw UD60x18) |
+| `divUp(wrap(2), HALF_SLOPE)` | `ceil(2 × 1e18 / 1e18)`                                      | = **2** (raw UD60x18) |
+| `sub(wrap(1), wrap(2))`      | underflow                                                    | **REVERT**            |
+
+The revert occurs because the floor-sqrt rounding in `_convertToShares` creates a permanent gap: `totalAssets` grows
+faster than `HALF_SLOPE × totalShares²`. When `previewWithdraw` uses `divUp` (correct per spec) and then subtracts, the
+operand order produces an underflow. With `OFFSET = 0`, no offset term closes this gap.
+
+**Why the deployer has no warning:**
+
+- `initialize("MyOffsetCurve", 2e18, 0)` executes without error.
+- `slope18 = 2e18` passes validation (non-zero, even). `offset18 = 0` is never checked.
+- The contract emits no event, no revert, no log indicating the broken state.
+- `MAX_SHARES` is computed as `sub(sqrt(uMAX/uUNIT), wrap(0))` — the full unreduced range, which appears normal.
+- The first deposit succeeds. Only on the first full-withdrawal preview does the panic surface.
+
+**Impact:**
+
+1. **EIP-4626 spec violation.** `previewWithdraw` MUST NOT revert for valid inputs (`assets ≤ maxWithdraw`). Any
+   integrator, front-end, or aggregator calling `previewWithdraw(totalAssets, ...)` will receive a panic revert.
+2. **Full-pool withdrawal query permanently broken.** A depositor cannot preview their own full exit amount from a
+   zero-offset curve instance.
+3. **Non-upgradeable — redeployment required.** The broken `OFFSET` is immutable after initialization. Any vaults that
+   have registered this curve address must be repointed, which may not be possible depending on vault upgrade patterns.
+4. **Silent misconfiguration.** The deployer receives no feedback that `offset18 = 0` is semantically invalid. The
+   inconsistency between validated `slope18` and unvalidated `offset18` creates a false sense of security: if one
+   parameter is checked, a deployer reasonably assumes all are.
+
+## Recommended mitigation steps
+
+**Option A — Reject `offset18 = 0` in `initialize()` (Recommended):** Mirror the existing `slope18` validation pattern
+and add a matching guard for `offset18`:
+
+
+Add a corresponding custom error:
+
+
+This is a one-line fix that closes the misconfiguration window entirely and makes the validation symmetric with
+`slope18`.

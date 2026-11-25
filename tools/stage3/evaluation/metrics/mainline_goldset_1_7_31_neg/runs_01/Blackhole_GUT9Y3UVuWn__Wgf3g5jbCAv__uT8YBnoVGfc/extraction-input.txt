@@ -1,0 +1,35 @@
+`MinterUpgradeable::nudge()` Function Rendered Unusable Due to Invariant `weekly < TAIL_START` Condition
+
+## Description of Vulnerability
+
+The `MinterUpgradeable` contract includes a `nudge()` function, designed to enable the `BlackGovernor` to modify the `tailEmissionRate` based on governance decisions. However, this function is perpetually unusable under the contract's current design due to a conflicting state variable initialization and an unreachable update mechanism.
+
+The sequence of events leading to this bug is as follows:
+
+1.  **`initialize()` Function:** Upon initialization, the [`weekly`](https://github.com/code-423n4/2025-05-blackhole/blob/92fff849d3b266e609e6d63478c4164d9f608e91/contracts/MinterUpgradeable.sol#L77) state variable is set to `10_000_000 * 1e18` (10 million tokens with 18 decimals).
+    
+2.  [**`TAIL_START`](https://github.com/code-423n4/2025-05-blackhole/blob/92fff849d3b266e609e6d63478c4164d9f608e91/contracts/MinterUpgradeable.sol#L25) Constant:** The `TAIL_START` constant is defined as `8_969_150 * 1e18` (approximately 8.97 million tokens with 18 decimals). Crucially, the initial `weekly` value is greater than `TAIL_START`.
+    
+3.  **`update_period()` Function's Inoperability:** The `update_period()` function contains the logic responsible for gradually decreasing the `weekly` emission amount over time. However, this critical logic is gated by the condition `if (block.timestamp >= _period + WEEK && _initializer == address(0))`. In the current contract's `initialize()` function, `_initializer` is set to `msg.sender` (the `admin` in deployment) and is never subsequently set to `address(0)` in the `_initialize` function (which requires `_initializer == msg.sender`). As a result, the `_initializer == address(0)` part of the condition within `update_period()` will always evaluate to `false`, preventing the `weekly` value from ever decreasing naturally through the intended emission decay mechanism.
+    
+4.  **`nudge()` Function Rendered Unusable:** The `nudge()` function itself includes the [`require (weekly < TAIL_START);`](https://github.com/code-423n4/2025-05-blackhole/blob/92fff849d3b266e609e6d63478c4164d9f608e91/contracts/MinterUpgradeable.sol#L142) statement. Since `weekly` is initialized to a value greater than `TAIL_START` and can never decrease below it due to the inoperable `update_period()` logic, this `require` statement will always revert. Consequently, the `nudge()` function cannot be successfully called under any normal operational circumstances, rendering it completely unusable.
+    
+
+This bug prevents the `BlackGovernor` from ever successfully invoking `nudge()`, effectively deactivating a core governance mechanism for adjusting emission rates from the moment of contract deployment.
+
+## Impact
+
+The impact of this bug is substantial:
+
+-   **Complete Denial of Service for `tailEmissionRate` Governance:** The primary and most severe impact is that the protocol's governance cannot adjust the `tailEmissionRate` through the `nudge()` function. This critical parameter, which dictates future token emissions, becomes permanently locked into its initial behavior (or inaccessible to change).
+    
+-   **Stagnant Emission Policy:** The inability to `nudge()` means the emission schedule cannot be dynamically influenced by community votes or changing protocol needs once `weekly` is above `TAIL_START`. This eliminates a key mechanism for long-term economic adaptability.
+    
+-   **Undermining Decentralization:** If `nudge()` was intended to be a governance-controlled mechanism for emission adjustments, its uncallability directly undermines the decentralized control aspect of the protocol.
+    
+-   **Operational Stagnation:** Any future plans or economic models that rely on the `tailEmissionRate` being adjustable via `nudge()` will be unexecutable, leading to operational stagnation.
+    
+
+## Recommended Mitigation Steps
+
+To resolve this issue and make the `nudge()` function usable as presumably intended, the contract's logic for managing the `weekly` emission amount and its interaction with `TAIL_START` must be revisited.

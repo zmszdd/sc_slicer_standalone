@@ -1,0 +1,118 @@
+{
+  "schema_version": "report-evidence/1",
+  "source_sha256": "2a4a83cfb2e098f41c6fc8b10befb9722d917b5c8e5c99e145a036595721b38d",
+  "fragments": [
+    {
+      "id": "e_2a4a83cfb2e0_0001",
+      "text": "UniswapPriceOracle.validatePrice collapses to spot price, allowing slippage checks to pass under manipulation",
+      "start": 0,
+      "end": 109,
+      "line": 1
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0002",
+      "text": "## Summary",
+      "start": 111,
+      "end": 121,
+      "line": 3
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0003",
+      "text": "`UniswapPriceOracle.validatePrice()` computes a TWAP that is always equal to the current spot price, so the slippage check effectively never fails.",
+      "start": 122,
+      "end": 269,
+      "line": 4
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0004",
+      "text": "## Finding Description",
+      "start": 271,
+      "end": 293,
+      "line": 6
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0005",
+      "text": "`validatePrice()` uses the pair’s cumulative price at the last update (`cumulativePriceLast`) and the current spot price (`tradePrice`) to synthesize a new cumulative price. It then computes the TWAP using:",
+      "start": 294,
+      "end": 500,
+      "line": 7
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0006",
+      "text": "But since `cumulativePrice` is computed as `cumulativePriceLast + tradePrice * elapsedTime`, the TWAP simplifies to `tradePrice`. This makes the `derivation` always 0, causing `validatePrice()` to return `true` whenever at least one block has elapsed. As a result, the slippage guard in `BuyBackBurner._buyOLAS()` becomes ineffective and the contract can execute swaps at manipulated prices.",
+      "start": 503,
+      "end": 894,
+      "line": 10
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0007",
+      "text": "This breaks the expected security guarantee that buybacks are protected by a TWAP-based slippage check. A malicious actor can temporarily skew the Uniswap V2 pool (e.g., with a flash loan) and call `buyBack`, causing the protocol to trade at a distorted price. Because the check uses the manipulated spot price as the “TWAP,” it passes even for extreme deviations.",
+      "start": 896,
+      "end": 1260,
+      "line": 12
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0008",
+      "text": "## Impact Explanation",
+      "start": 1262,
+      "end": 1283,
+      "line": 14
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0009",
+      "text": "Buybacks can be executed at arbitrarily manipulated prices, enabling extraction of value from the treasury/BuyBackBurner contract. This is a direct loss scenario when the pool is manipulated around the buyback transaction.",
+      "start": 1284,
+      "end": 1506,
+      "line": 15
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0010",
+      "text": "## Likelihood Explanation",
+      "start": 1508,
+      "end": 1533,
+      "line": 17
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0011",
+      "text": "The bug is deterministic and always present when `validatePrice()` is used. Uniswap V2 pools are trivially manipulable within a single transaction via flash liquidity, and `buyBack` is permissionless. A motivated attacker can exploit this whenever funds are available.",
+      "start": 1534,
+      "end": 1802,
+      "line": 18
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0012",
+      "text": "## Recommendation",
+      "start": 1804,
+      "end": 1821,
+      "line": 20
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0013",
+      "text": "Implement a true TWAP calculation using two different cumulative price observations over time. For example:",
+      "start": 1822,
+      "end": 1929,
+      "line": 21
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0014",
+      "text": "- Store `cumulativePriceLast` and `blockTimestampLast` in the oracle, update them on a fixed interval, and compare the current cumulative price to the stored values; or",
+      "start": 1930,
+      "end": 2098,
+      "line": 22
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0015",
+      "text": "- Use UniswapV2OracleLibrary’s `currentCumulativePrices()` and compute TWAP over a minimum window.",
+      "start": 2099,
+      "end": 2197,
+      "line": 23
+    },
+    {
+      "id": "e_2a4a83cfb2e0_0016",
+      "text": "Additionally, set `amountOutMinimum` on swaps based on the oracle to avoid trading at bad spot prices even if oracle validation is bypassed.",
+      "start": 2199,
+      "end": 2339,
+      "line": 25
+    }
+  ]
+}

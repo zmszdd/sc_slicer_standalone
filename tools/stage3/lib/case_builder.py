@@ -18,6 +18,7 @@ from pathlib import Path
 
 from lib.spec_loader import SpecError, load_stage2_run
 from lib.binding import load_binding, validate_binding
+from lib import harness_manifest
 
 STAGE2_ARTIFACTS = ('stage3-spec.json', 'constraints.json', 'formalization.json')
 
@@ -37,6 +38,23 @@ def _copy_tree(src: Path, dst: Path):
     if not src.is_dir():
         raise SpecError(f'missing directory: {src}')
     shutil.copytree(src, dst, dirs_exist_ok=True)
+
+
+def refresh_stage2_run(stage2_run: Path, case_dir: Path) -> None:
+    """Sync stage-2 artifacts inside an existing case directory.
+
+    ``stage3_eval_run`` derives the claim list from the goldset stage-2 run but
+    ``stage3_multi`` runs against ``case_dir/stage2_run``.  When the goldset
+    spec is regenerated, the cached copy drifts and ``stage3_multi`` cannot
+    resolve the new claim ids, silently collapsing to ``binding_failed``.
+    Refreshing the three artifacts keeps the two sources identical without
+    touching ``src``/``bindings``; stale bindings are caught separately by
+    ``bind_claims`` reuse-time lint.
+    """
+    case_stage2 = Path(case_dir) / 'stage2_run'
+    case_stage2.mkdir(parents=True, exist_ok=True)
+    for artifact in STAGE2_ARTIFACTS:
+        _copy_file(Path(stage2_run) / artifact, case_stage2 / artifact)
 
 
 def _copy_source(src: Path, dst_dir: Path, src_name: str | None = None):
@@ -65,6 +83,7 @@ def assemble_case(*, name: str, src: Path, stage2_run: Path,
                   default_foundry_toml: bool = False, lib: Path | None = None,
                   remappings: Path | None = None, expected: Path | None = None,
                   overwrite: bool = False, src_name: str | None = None) -> Path:
+    """Assemble a case and record its Stage-1 harness route contract."""
     if not isinstance(name, str) or not name.strip():
         raise SpecError('case name is required')
     out = Path(out)
@@ -100,6 +119,7 @@ def assemble_case(*, name: str, src: Path, stage2_run: Path,
         _copy_file(Path(remappings), out / 'remappings.txt')
     if expected is not None:
         _copy_file(Path(expected), out / 'expected' / 'expected.json')
+    harness_manifest.write(out)
 
     (out / 'case.json').write_text(json.dumps({
         'schema_version': 'stage3-case-manifest/1',

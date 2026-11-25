@@ -1,0 +1,54 @@
+Exercise Cost Manipulation via Atomic Price Deviation Enables Value Extraction
+
+## Vulnerability details
+
+The `exerciseCost()` function in `RiskEngine.sol` calculates exercise fees using `currentTick` (spot price) for value computation while the staleness check only ensures deviation from TWAP is under 513 ticks (~5%). An attacker can atomically manipulate the pool price by up to 512 ticks to extract value from position holders during force exercise operations.
+
+### Root Cause
+
+The staleness threshold is defined in RiskEngine.sol:76:
+
+Value is calculated using currentTick (manipulable spot) in RiskEngine.sol:450-458:
+
+Exercise fees are based on the difference in RiskEngine.sol:467-472:
+
+### Attack Scenario
+
+1. Attacker identifies a long ITM position eligible for force exercise
+2. In a single atomic transaction:
+   - Flash loan large amount of Token0
+   - Swap to push currentTick DOWN by 512 ticks (just under 513 limit)
+   - Call forceExercise() - position is exercised at manipulated price
+   - Position holder receives ~5% less value than fair price
+   - Swap back to original price
+   - Repay flash loan
+3. Net profit: ~4.43% of position value
+
+### Impact
+
+**HIGH** - Direct theft of funds from position holders:
+
+| Component              | Value              |
+|------------------------|--------------------|
+| Position Value         | $100,000           |
+| Max Manipulation       | 512 ticks (~5.12%) |
+| Value Extracted        | $5,120             |
+| Flash Loan Fee (0.09%) | $90                |
+| Swap Fees (0.6% x2)    | $600               |
+| **Net Profit**         | **$4,430**         |
+
+Attack is profitable for any position over ~$25,000 in value. This is atomic manipulation within a single transaction, which is explicitly IN SCOPE per contest rules. 
+
+## Recommended Mitigation
+
+### Option 1: Use oracle price for exercise settlement (Recommended)
+
+
+### Option 2: Reduce manipulation threshold
+
+Lower `MAX_TWAP_DELTA_LIQUIDATION` to make attacks unprofitable:
+
+
+At 100 ticks (~1%), attack profit drops to ~0.3% which is below typical costs.
+
+### Option 3: Add manipulation-resistant price bounds

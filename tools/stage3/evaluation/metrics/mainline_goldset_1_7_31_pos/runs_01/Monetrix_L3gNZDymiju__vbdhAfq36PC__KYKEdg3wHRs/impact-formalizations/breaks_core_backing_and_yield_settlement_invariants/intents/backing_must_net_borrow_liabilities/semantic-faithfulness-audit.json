@@ -1,0 +1,141 @@
+{
+  "schema_version": "semantic-faithfulness-audit/4",
+  "status": "completed",
+  "verdict_consistent": true,
+  "fidelity_status": "passed",
+  "checks": [
+    {
+      "source_id": "vault_has_borrow_lend_liability",
+      "role": "P",
+      "verdict": "consistent",
+      "reason": "Predicate asserts borrow_value_present true, matching the statement that the 0x811 state contains a borrow liability."
+    },
+    {
+      "source_id": "backing_must_net_borrow_liabilities",
+      "role": "I",
+      "verdict": "consistent",
+      "reason": "Predicate encodes that totalBackingSigned() accounts for borrow liabilities rather than supply-only, matching the statement."
+    },
+    {
+      "source_id": "breaks_core_backing_and_yield_settlement_invariants",
+      "role": "V",
+      "verdict": "consistent",
+      "reason": "Predicate asserts core backing and yield-settlement invariants broken, matching the statement."
+    }
+  ],
+  "piv_relation": {
+    "verdict": "consistent",
+    "reason": "relation_context e_48e20ec1fe72_0070/0071 show the loop ignores borrow.value overstating totalBackingSigned(), and e_48e20ec1fe72_0079/0083 show inflated surplus lets the gate approve nonexistent yield, breaking backing and yield-settlement invariants."
+  },
+  "relation_context": [
+    {
+      "statement_id": "operator_submits_settle_amount",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_48e20ec1fe72_0022",
+          "text": "* `settle()` to run the intended yield settlement path"
+        },
+        {
+          "evidence_id": "e_48e20ec1fe72_0024",
+          "text": "The Accountant is the on-chain gate that should prevent phantom surplus from being settled. The Operator submits an amount that the on-chain gate accepts. The failure is that the gate is computed from gross supply accounting instead of net Borrow-Lend accounting."
+        }
+      ]
+    },
+    {
+      "statement_id": "accountant_reads_only_supply_value",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_48e20ec1fe72_0044",
+          "text": "The decoded response contains four `uint64` values. Under the 0x811 Borrow-Lend layout, these correspond to:"
+        },
+        {
+          "evidence_id": "e_48e20ec1fe72_0045",
+          "text": "The code discards the first three fields and returns only the fourth field, `supply.value`."
+        },
+        {
+          "evidence_id": "e_48e20ec1fe72_0046",
+          "text": "This means `borrow.value` is ignored at the first accounting boundary."
+        }
+      ]
+    },
+    {
+      "statement_id": "read_l1_backing_adds_supply_never_subtracts_borrow",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_48e20ec1fe72_0069",
+          "text": "From [`MonetrixAccountant.sol`](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/MonetrixAccountant.sol#L137-L172):"
+        },
+        {
+          "evidence_id": "e_48e20ec1fe72_0070",
+          "text": "The 0x811 loop only adds supplied values. It never reads `borrow.value` and never applies a negative adjustment for liabilities."
+        },
+        {
+          "evidence_id": "e_48e20ec1fe72_0071",
+          "text": "This causes `totalBackingSigned()` to be overstated whenever the Vault has a Borrow-Lend liability."
+        }
+      ]
+    },
+    {
+      "statement_id": "inflated_backing_inflates_surplus",
+      "role": "root_cause",
+      "evidence": [
+        {
+          "evidence_id": "e_48e20ec1fe72_0079",
+          "text": "If `totalBackingSigned()` is inflated by ignored debt, `surplus()` and `distributableSurplus()` are inflated by the same amount."
+        },
+        {
+          "evidence_id": "e_48e20ec1fe72_0083",
+          "text": "Gate 3 is intended to prevent settlement above real distributable surplus. Because Borrow-Lend liabilities are omitted, this gate can approve yield that does not exist under net backing."
+        }
+      ]
+    },
+    {
+      "statement_id": "settle_moves_usdc_to_escrow",
+      "role": "action",
+      "evidence": [
+        {
+          "evidence_id": "e_48e20ec1fe72_0086",
+          "text": "From [`MonetrixVault.sol`](https://github.com/code-423n4/2026-04-monetrix/blob/3d94be1361ca01d959f9165a78f0d75c5657fe3e/src/core/MonetrixVault.sol#L364-L375):"
+        },
+        {
+          "evidence_id": "e_48e20ec1fe72_0087",
+          "text": "This converts the accounting error into a real asset movement. USDC leaves the Vault and enters `YieldEscrow` as yield even though net backing has no surplus."
+        }
+      ]
+    }
+  ],
+  "relationship_trace": {
+    "status": "explicit",
+    "links": [
+      {
+        "from_source_ids": [
+          "vault_has_borrow_lend_liability",
+          "backing_must_net_borrow_liabilities"
+        ],
+        "context_statement_id": "read_l1_backing_adds_supply_never_subtracts_borrow",
+        "evidence_ids": [
+          "e_48e20ec1fe72_0070",
+          "e_48e20ec1fe72_0071"
+        ],
+        "reported_relation": "The 0x811 loop only adds supplied values and never subtracts borrow.value, so totalBackingSigned() is overstated whenever the Vault has a Borrow-Lend liability."
+      },
+      {
+        "from_source_ids": [
+          "backing_must_net_borrow_liabilities",
+          "breaks_core_backing_and_yield_settlement_invariants"
+        ],
+        "context_statement_id": "inflated_backing_inflates_surplus",
+        "evidence_ids": [
+          "e_48e20ec1fe72_0079",
+          "e_48e20ec1fe72_0083"
+        ],
+        "reported_relation": "Ignored debt inflates surplus and distributableSurplus, letting the settlement gate approve yield that does not exist under net backing, breaking backing and yield-settlement invariants."
+      }
+    ]
+  },
+  "mismatch_count": 0,
+  "repair_finding_count": 0
+}

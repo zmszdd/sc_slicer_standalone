@@ -1,0 +1,37 @@
+An issue in Reward Distribution logic during Token Purchases can lead to Permanent Loss of User Funds
+
+## Finding description and impact
+
+The GTE launchpad system includes a reward distribution mechanism where users who hold launched tokens during the bonding phase earn rewards from trading fees. When users buy or sell tokens in the GTE launchpad system, any pending rewards that should go to the user are incorrectly sent to the Launchpad contract instead. This happens because the reward distribution function always sends tokens to the caller (msg.sender), but during token purchases, the caller becomes the Launchpad contract rather than the user. Since the Launchpad contract has no mechanism to recover or redistribute these tokens, user rewards are permanently lost.
+
+The issue is in the `_distributeAssets` function within the Distributor contract, which handles sending rewards to recipients.
+
+The `_distributeAssets` function is designed to transfer pending rewards but always sends them to `msg.sender`:
+
+
+This function works correctly when users directly call `claimRewards()`, because in that case `msg.sender` is the user. However, the problem occurs during the token purchase flow.
+
+When a user buys tokens, the following call chain happens:
+
+1. User calls `Launchpad.buy()` which transfers tokens to the user
+2. The token transfer triggers `LaunchToken._beforeTokenTransfer()` 
+3. This calls `_increaseFeeShares()` which calls the Launchpad:
+
+
+4. The Launchpad's `increaseStake` function then calls the Distributor:
+
+
+5. Finally, the Distributor's `increaseStake` calls `_distributeAssets`:
+
+
+At this point, `msg.sender` is the Launchpad contract, not the user, so any pending rewards get sent to the Launchpad contract instead of the intended user.
+
+The same issue occurs with `decreaseStake` when users sell tokens or transfer them, following the same problematic call chain.
+
+This issue results in permanent loss of user funds. Every time users buy or sell tokens, they lose any accumulated rewards that should rightfully belong to them. 
+
+Also, the Launchpad contract has no functions to recover or redistribute ERC20 tokens that are incorrectly sent to it. The `pullFees()` function only handles ETH, and there are no admin functions for token recovery.
+
+## Recommended Mitigation Steps
+
+Modify the `_distributeAssets` function in the Distributor contract to send to the recipient, instead of automatically using `msg.sender`, and then update the calling functions to pass the correct recipient:

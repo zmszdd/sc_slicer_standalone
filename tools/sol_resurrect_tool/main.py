@@ -54,16 +54,41 @@ def _ensure_parent_dir(output_path: str) -> None:
 def _normalize_solidity_output(code: str) -> str:
     code = normalize_primitive_type_aliases(code)
     code = _ensure_required_imports(code)
+    code = _restore_referenced_duplicate_constants(code)
     code, _ = _repair_missing_array_declarations(code)
     code = _convert_placeholder_structs_used_as_contracts(code)
     code = _ensure_clone_immutable_arg_helpers(code)
     code = _ensure_known_solidity_schemas(code)
+    code = _ensure_address_library_helpers(code)
+    code, _ = _repair_placeholder_value_types(code)
+    code, _ = _ensure_missing_scoped_structs(code)
+    code, _ = _remove_invalid_struct_fields(code)
+    code, _ = _expand_zero_arg_struct_constructors(code)
+    code = re.sub(
+        r'\b([A-Za-z_$][A-Za-z0-9_$\.]*(?:\[[^\]]*\])*)\s+transient\s+',
+        r'\1 ', code)
     code, _ = _downgrade_external_contract_params_called_with_address(code)
+    code, _ = _ensure_external_data_locations(code)
+    code, _ = _ensure_return_data_locations(code)
+    code, _ = _repair_local_data_locations(code)
+    code, _ = _ensure_local_struct_data_locations(code)
+    code, _ = _align_override_data_locations(code)
     code = _remove_nested_errors_shadowing_globals(code)
     code, _ = _repair_zero_arg_custom_errors(code)
+    code, _ = _sanitize_error_argument_tokens(code)
+    code, _ = _repair_custom_error_arguments(code)
+    code, _ = _ensure_nested_qualified_types(code)
+    code, _ = _ensure_qualified_revert_errors(code)
+    code, _ = _repair_qualified_error_arguments(code)
+    code, _ = _repair_require_custom_errors(code)
+    code, _ = _ensure_qualified_emit_events(code)
+    code, _ = _repair_qualified_event_arguments(code)
+    code, _ = _remove_placeholder_structs_conflicting_with_errors(code)
     code, _ = _repair_duplicate_placeholder_modifiers(code)
     code, _ = _repair_keyword_param_names(code)
+    code, _ = _repair_malformed_function_signatures(code)
     code = _ensure_base_contracts_precede_derived(code)
+    code, _ = _wrap_orphan_top_level_prototypes(code)
     lines = code.splitlines()
     spdx = None
     pragma = None
@@ -117,6 +142,29 @@ def _ensure_required_imports(code: str) -> str:
         lines[insert_at:insert_at] = ["import 'forge-std/Test.sol';", ""]
         return "\n".join(lines)
     return code
+
+
+def _restore_referenced_duplicate_constants(code: str) -> str:
+    """Undo dedup comments when the only declaration is still referenced."""
+    lines = code.splitlines()
+    active_without_comments = re.sub(r'//.*', '', code)
+    for index, line in enumerate(lines):
+        match = re.match(
+            r'^\s*//\s*\[DUPLICATE REMOVED\]\s*(.*?\bconstant\s+'
+            r'([A-Za-z_$][A-Za-z0-9_$]*)\s*=.*;)\s*$', line)
+        if not match:
+            continue
+        declaration, name = match.group(1), match.group(2)
+        if not re.search(rf'\b{re.escape(name)}\b', active_without_comments):
+            continue
+        if re.search(
+                rf'\b[A-Za-z_$][A-Za-z0-9_$\.\[\]]*\s+(?:public\s+|private\s+|'
+                rf'internal\s+)?constant\s+{re.escape(name)}\s*=',
+                active_without_comments):
+            continue
+        indent = line[:len(line) - len(line.lstrip())]
+        lines[index] = indent + declaration
+    return '\n'.join(lines)
 
 
 def _write_output(output_path: str, final_code: str) -> None:
@@ -744,6 +792,30 @@ def _ensure_clone_immutable_arg_helpers(code: str) -> str:
     return code[:clone_end] + insertion + code[clone_end:]
 
 
+def _ensure_address_library_helpers(code: str) -> str:
+    """Restore Address helper members used by sliced OpenZeppelin call sites."""
+    if not re.search(r'\bAddress\s*\.\s*functionDelegateCall\s*\(', code):
+        return code
+    match = re.search(r'\blibrary\s+Address\b[^{]*\{', code)
+    if not match:
+        return code
+    end = _find_matching_brace_position(code, match.end() - 1)
+    if end is None:
+        return code
+    body = code[match.end():end]
+    if re.search(r'\bfunction\s+functionDelegateCall\s*\(', body):
+        return code
+    helper = (
+        '\n    function functionDelegateCall(address target, bytes memory data) '
+        'internal returns (bytes memory) {\n'
+        '        (bool success, bytes memory returndata) = target.delegatecall(data);\n'
+        '        require(success, "Address: low-level delegate call failed");\n'
+        '        return returndata;\n'
+        '    }\n'
+    )
+    return code[:end] + helper + code[end:]
+
+
 def _find_matching_brace_position(code: str, open_pos: int) -> int | None:
     depth = 0
     for idx in range(open_pos, len(code)):
@@ -1263,6 +1335,8 @@ def _downgrade_external_contract_params_called_with_address(code: str) -> tuple[
 def _ensure_external_data_locations(code: str) -> tuple[str, list[str]]:
     """Add memory to external/public parameters whose inferred types need a data location."""
     changes: list[str] = []
+    struct_names = set(re.findall(
+        r'\bstruct\s+([A-Za-z_$][A-Za-z0-9_$]*)', code))
     data_location_types = re.compile(
         r'^(?:bytes|string|[A-Za-z_][A-Za-z0-9_\.]*(?:\[[^\]]*\])+)$'
     )
@@ -1285,7 +1359,9 @@ def _ensure_external_data_locations(code: str) -> tuple[str, list[str]]:
                 continue
             type_part = " ".join(tokens[:-1])
             name_part = tokens[-1]
-            if data_location_types.match(type_part):
+            base_type = re.sub(r'\[[^\]]*\]', '', type_part).split('.')[-1]
+            if (data_location_types.match(type_part)
+                    or base_type in struct_names):
                 parts.append(f" {type_part} memory {name_part}")
                 changed = True
             else:
@@ -1295,9 +1371,204 @@ def _ensure_external_data_locations(code: str) -> tuple[str, list[str]]:
             return prefix + ",".join(parts).strip() + suffix
         return match.group(0)
 
-    pattern = re.compile(r'(function\s+\w+\s*\()([^)]*)(\)\s+(?:external|public)\b)', re.DOTALL)
+    pattern = re.compile(
+        r'(function\s+\w+\s*\()([^)]*)(\)\s+'
+        r'(?:external|public|internal|private)\b)', re.DOTALL)
     updated = pattern.sub(fix_params, code)
     return updated, changes
+
+
+def _ensure_return_data_locations(code: str) -> tuple[str, list[str]]:
+    """Add memory to struct/array/bytes/string return values when omitted."""
+    changes: list[str] = []
+    struct_names = set(re.findall(
+        r'\bstruct\s+([A-Za-z_$][A-Za-z0-9_$]*)', code))
+
+    def fix_returns(match: re.Match) -> str:
+        params = match.group(1)
+        parts = []
+        changed = False
+        for raw in params.split(','):
+            stripped = raw.strip()
+            if not stripped or re.search(
+                    r'\b(?:memory|calldata|storage)\b', stripped):
+                parts.append(raw)
+                continue
+            tokens = stripped.split()
+            if len(tokens) < 1:
+                parts.append(raw)
+                continue
+            type_token = tokens[0]
+            base_type = re.sub(r'\[[^\]]*\]', '', type_token).split('.')[-1]
+            if (type_token.endswith(']') or type_token in {'bytes', 'string'}
+                    or base_type in struct_names):
+                parts.append(f' {type_token} memory'
+                             + (f' {" ".join(tokens[1:])}' if len(tokens) > 1 else ''))
+                changed = True
+            else:
+                parts.append(raw)
+        if not changed:
+            return match.group(0)
+        changes.append('added memory data location to return value')
+        return 'returns (' + ','.join(parts).strip() + ')'
+
+    updated = re.sub(r'returns\s*\(([^)]*)\)', fix_returns, code,
+                     flags=re.DOTALL)
+    return updated, changes
+
+
+def _repair_local_data_locations(code: str) -> tuple[str, list[str]]:
+    """Local variables cannot use ``calldata``; convert sliced locals to memory."""
+    changes: list[str] = []
+    pattern = re.compile(
+        r'(?m)^(\s*)([A-Za-z_$][A-Za-z0-9_$\.]*(?:\[[^\]]*\])*)\s+'
+        r'calldata\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?==|;)'
+    )
+
+    def fix(match: re.Match) -> str:
+        changes.append(
+            f'converted local calldata variable `{match.group(3)}` to memory')
+        return (f'{match.group(1)}{match.group(2)} memory '
+                f'{match.group(3)}{match.group(0)[match.end(3) - match.start(0):]}')
+
+    updated = pattern.sub(fix, code)
+    return updated, list(dict.fromkeys(changes))
+
+
+def _ensure_local_struct_data_locations(code: str) -> tuple[str, list[str]]:
+    """Add ``memory`` to function-local struct values that omit a data location."""
+    changes: list[str] = []
+    struct_names = set(re.findall(
+        r'\bstruct\s+([A-Za-z_$][A-Za-z0-9_$]*)', code))
+    if not struct_names:
+        return code, changes
+    lines = code.splitlines()
+    depth = 0
+    function_depth: int | None = None
+    pending_function = False
+    declaration = re.compile(
+        r'^(\s*)([A-Za-z_$][A-Za-z0-9_$\.]*(?:\[[^\]]*\])?)\s+'
+        r'([A-Za-z_$][A-Za-z0-9_$]*)\s*(=|;)')
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if function_depth is None and re.match(
+                r'^(?:function|constructor|modifier)\b', stripped):
+            pending_function = True
+        before = depth
+        depth += line.count('{') - line.count('}')
+        if pending_function and '{' in line:
+            function_depth = depth
+            pending_function = False
+        if function_depth is not None and before >= function_depth:
+            match = declaration.match(line)
+            if match:
+                type_name, variable = match.group(2), match.group(3)
+                base_type = re.sub(r'\[[^\]]*\]', '', type_name).split('.')[-1]
+                if (base_type in struct_names
+                        and not re.search(r'\b(?:memory|calldata|storage)\b', line)
+                        and not re.search(r'\bnew\s+', line)):
+                    lines[index] = (
+                        f'{match.group(1)}{type_name} memory {variable}'
+                        f'{line[match.end(3):]}')
+                    changes.append(
+                        f'added memory data location to local struct {variable}')
+        if function_depth is not None and depth < function_depth:
+            function_depth = None
+    return '\n'.join(lines), list(dict.fromkeys(changes))
+
+
+def _align_override_data_locations(code: str) -> tuple[str, list[str]]:
+    """Copy reference parameter locations from a virtual base to overrides."""
+    changes: list[str] = []
+
+    def split_params(params: str) -> list[str]:
+        parts, start, depth = [], 0, 0
+        for index, char in enumerate(params):
+            if char in '([{':
+                depth += 1
+            elif char in ')]}':
+                depth = max(0, depth - 1)
+            elif char == ',' and depth == 0:
+                parts.append(params[start:index])
+                start = index + 1
+        parts.append(params[start:])
+        return parts
+
+    def parsed(raw: str) -> tuple[str, str | None, str] | None:
+        tokens = raw.strip().split()
+        if len(tokens) < 2:
+            return None
+        type_name = tokens[0]
+        location = None
+        name = tokens[-1]
+        for token in tokens[1:-1]:
+            if token in {'memory', 'calldata', 'storage'}:
+                location = token
+        return type_name, location, name
+
+    bases: dict[str, list[tuple[str, str | None]]] = {}
+    for match in re.finditer(
+            r'\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^;{]*?)\)'
+            r'[^;{]*?\bvirtual\b[^;{]*?;', code, re.DOTALL):
+        params = [parsed(raw) for raw in split_params(match.group(2))]
+        bases[match.group(1)] = [(item[0], item[1]) for item in params if item]
+
+    def fix_override(match: re.Match) -> str:
+        name = match.group(1)
+        if name not in bases:
+            return match.group(0)
+        raw_params = split_params(match.group(2))
+        expected = bases[name]
+        if len(raw_params) != len(expected):
+            return match.group(0)
+        changed = False
+        repaired = []
+        for raw, (base_type, base_location) in zip(raw_params, expected):
+            info = parsed(raw)
+            if not info or info[0] != base_type or not base_location:
+                repaired.append(raw)
+                continue
+            current_location = info[1]
+            if current_location == base_location:
+                repaired.append(raw)
+                continue
+            if current_location:
+                repaired.append(re.sub(
+                    rf'\b{current_location}\b', base_location, raw, count=1))
+            else:
+                repaired.append(re.sub(
+                    rf'\s+{re.escape(info[2])}\s*$',
+                    f' {base_location} {info[2]}', raw))
+            changed = True
+        if not changed:
+            return match.group(0)
+        changes.append(f'aligned override data locations for {name}')
+        return (f'function {name}(' + ','.join(repaired) + ')'
+                + match.group(3))
+
+    updated = re.sub(
+        r'\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^;{]*?)\)'
+        r'([^;{]*?\boverride\b[^{;]*?\{)', fix_override, code, flags=re.DOTALL)
+    return updated, changes
+
+
+def _remove_invalid_struct_fields(code: str) -> tuple[str, list[str]]:
+    """Drop fields whose type token was lost during slicing."""
+    changes: list[str] = []
+    kept = []
+    for line in code.splitlines():
+        if re.match(r'^\s*(?:constant|immutable|memory|storage|calldata|indexed)\s+'
+                    r'[A-Za-z_$][A-Za-z0-9_$]*\s*;\s*$', line):
+            changes.append('removed struct field with missing type')
+            continue
+        if re.match(r'^\s*indexed\s+', line):
+            line = re.sub(r'^(\s*)indexed\s+', r'\1', line)
+            changes.append('removed indexed token from struct field')
+        if re.match(r'^\s*payable\s+[A-Za-z_$][A-Za-z0-9_$]*\s*;\s*$', line):
+            line = re.sub(r'^(\s*)payable\s+', r'\1address payable ', line)
+            changes.append('restored address prefix for payable struct field')
+        kept.append(line)
+    return '\n'.join(kept), changes
 
 
 def _repair_malformed_function_signatures(code: str) -> tuple[str, list[str]]:
@@ -1315,6 +1586,41 @@ def _repair_malformed_function_signatures(code: str) -> tuple[str, list[str]]:
 
     for line_no, line in enumerate(code.splitlines(), start=1):
         original = line
+        # Lost ``mapping(key =>`` prefix: ``uint256 bool) storage x``.  The
+        # unmatched close parenthesis can only be a truncated mapping type in a
+        # parameter list, so restore a conservative address-keyed mapping.
+        mapping_match = re.match(
+            r'^(\s*)(?:[A-Za-z_][A-Za-z0-9_\.]*\s+)?'
+            r'(_?(?:bool|address|string|bytes(?:[1-9]|[12][0-9]|3[0-2])?|'
+            r'u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|'
+            r'136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?'
+            r'|[A-Z][A-Za-z0-9_\.]*))'
+            r'\)\s+(storage|memory|calldata)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
+            r'(\s*,?\s*)$', line)
+        mapping_repaired = line
+        if mapping_match:
+            value_type = mapping_match.group(2)
+            if value_type.startswith('_'):
+                value_type = value_type[1:]
+            variable = mapping_match.group(4)
+            indexed_name_match = re.search(
+                rf'\b{re.escape(variable)}\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]',
+                code)
+            key_type = 'address'
+            if indexed_name_match:
+                indexed_name = indexed_name_match.group(1)
+                declaration_match = re.search(
+                    rf'\b([A-Za-z_$][A-Za-z0-9_\.]*(?:\[[^\]]*\])*)\s+'
+                    rf'{re.escape(indexed_name)}\b', code)
+                if declaration_match:
+                    key_type = declaration_match.group(1)
+            mapping_repaired = (
+                f'{mapping_match.group(1)}mapping({key_type} => {value_type}) '
+                f'{mapping_match.group(3)} {variable}{mapping_match.group(5)}')
+        if mapping_repaired != line:
+            line = mapping_repaired
+            changes.append(
+                f'restored truncated mapping parameter at line {line_no}')
         if re.search(r"\bfunction\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", line):
             # Fix: function f(T a external view returns (...) {  -> function f(T a) external view returns (...) {
             line = re.sub(
@@ -1324,13 +1630,189 @@ def _repair_malformed_function_signatures(code: str) -> tuple[str, list[str]]:
             )
             # Fix accidental doubled close from repeated repair.
             line = re.sub(r"\)\s*\)\s+\b(external|public|internal|private)\b", r") \1", line)
+            # Fix: function f(address) payable arg) -> function f(address payable arg)
+            line = re.sub(
+                r"^(\s*function\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^\n{;)]*)\)"
+                r"\s+payable\s+([A-Za-z_$][A-Za-z0-9_$]*)(?=\s*[,)])",
+                r"\1 payable \2",
+                line,
+            )
             # Normalize keyword spacing in generated headers.
             line = re.sub(r"\s{2,}(?=(?:external|public|internal|private|view|pure|payable|virtual|override|returns)\b)", " ", line)
             if line != original:
                 changes.append(f"repaired malformed function signature at line {line_no}")
         updated_lines.append(line)
 
+    # A declaration that ends exactly at the closing parameter list and is
+    # immediately followed by another declaration has lost its visibility and
+    # terminator.  This is common in generated interfaces; append the only
+    # legal interface form rather than leaving an unparseable header.
+    for index, line in enumerate(updated_lines):
+        if not re.match(
+                r"^\s*function\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^\n{;]*\)\s*$",
+                line):
+            continue
+        next_line = next((candidate for candidate in updated_lines[index + 1:]
+                          if candidate.strip()
+                          and not candidate.lstrip().startswith('//')), "")
+        if re.match(r"^\s*(?:function|event|error|modifier|constructor)\b",
+                    next_line) or next_line.strip().startswith('}'):
+            updated_lines[index] = line.rstrip() + " external;"
+            changes.append(
+                f"restored terminator for unterminated interface declaration at line {index + 1}")
+
     return "\n".join(updated_lines), list(dict.fromkeys(changes))
+
+
+def _wrap_orphan_top_level_prototypes(code: str) -> tuple[str, list[str]]:
+    """Wrap interface members whose container header was lost during assembly.
+
+    A sliced interface can leave bare ``function ... external;`` declarations
+    (and an unmatched closing brace) at file scope.  Bare declarations are not
+    legal Solidity.  Remove only the unmatchable top-level closers, then place
+    each recovered declaration group in a synthetic interface.
+    """
+    changes: list[str] = []
+    lines = code.splitlines()
+    balanced: list[str] = []
+    depth = 0
+    filtered_events: list[str] = []
+    event_index = 0
+    while event_index < len(lines):
+        line = lines[event_index]
+        if re.match(r'^\s*event\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\(\s*$', line):
+            next_index = event_index + 1
+            while (next_index < len(lines)
+                   and (not lines[next_index].strip()
+                        or lines[next_index].lstrip().startswith('//'))):
+                next_index += 1
+            next_text = (lines[next_index].strip()
+                         if next_index < len(lines) else '')
+            if re.match(
+                    r'^(?:event|function|error|modifier|constructor|'
+                    r'interface|contract|library|struct|enum|abstract)\b'
+                    r'|^}', next_text):
+                changes.append('removed unterminated event declaration')
+                event_index += 1
+                continue
+        filtered_events.append(line)
+        event_index += 1
+    lines = filtered_events
+    reordered: list[str] = []
+    brace_depth = 0
+    interface_at_depth: int | None = None
+    active_declaration = False
+    index = 0
+    param_fragment = re.compile(
+        r'^\s*(?:address|bool|string|bytes(?:[1-9]|[12][0-9]|3[0-2])?|'
+        r'u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|'
+        r'136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?'
+        r'|[A-Z][A-Za-z0-9_\.]*(?:\[[^\]]*\])*)\s+[A-Za-z_$][A-Za-z0-9_$]*'
+        r'\s*(?:,|\)\s*;)\s*$')
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        in_interface = (interface_at_depth is not None
+                        and brace_depth >= interface_at_depth)
+        if in_interface and not active_declaration:
+            if re.match(r'^(?:function|event|error|modifier|constructor)\b',
+                        stripped):
+                active_declaration = True
+            elif param_fragment.match(line):
+                while index < len(lines) and ';' not in lines[index]:
+                    index += 1
+                index += 1
+                changes.append('removed orphan parameter fragment in interface')
+                continue
+        reordered.append(line)
+        if in_interface and active_declaration and ';' in stripped:
+            active_declaration = False
+        if re.match(r'^(?:abstract\s+)?interface\b[^{]*\{', stripped):
+            interface_at_depth = brace_depth + 1
+        brace_depth += line.count('{') - line.count('}')
+        if (interface_at_depth is not None
+                and brace_depth < interface_at_depth):
+            interface_at_depth = None
+            active_declaration = False
+        if brace_depth < 0:
+            brace_depth = 0
+        index += 1
+    lines = reordered
+    for line in lines:
+        if depth == 0 and re.match(r'^\s*\}\s*(?://.*)?$', line):
+            changes.append('removed unmatched top-level closing brace')
+            continue
+        balanced.append(line)
+        depth += line.count('{') - line.count('}')
+        if depth < 0:
+            depth = 0
+
+    # Some extracted events lose only their ``event Name(`` header.  The bare
+    # indexed parameter list then appears at file scope.  It cannot be attached
+    # to a declaration safely, so drop that orphan fragment while preserving
+    # all complete event/function declarations.
+    without_orphan_params: list[str] = []
+    depth = 0
+    index = 0
+    while index < len(balanced):
+        line = balanced[index]
+        if depth == 0 and re.match(
+                r'^\s*(?:address|bool|string|bytes(?:[1-9]|[12][0-9]|3[0-2])?|'
+                r'u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|'
+                r'136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)'
+                r'\s+indexed\b', line):
+            while index < len(balanced) and ';' not in balanced[index]:
+                index += 1
+            index += 1
+            changes.append('removed orphan event parameter fragment')
+            continue
+        without_orphan_params.append(line)
+        depth += line.count('{') - line.count('}')
+        if depth < 0:
+            depth = 0
+        index += 1
+    balanced = without_orphan_params
+
+    def prototype_end(start: int) -> int | None:
+        paren_depth = 0
+        for index in range(start, len(balanced)):
+            text = balanced[index].split('//', 1)[0]
+            for char in text:
+                if char == '{':
+                    return None
+                if char == '(':
+                    paren_depth += 1
+                elif char == ')':
+                    paren_depth = max(0, paren_depth - 1)
+                elif char == ';' and paren_depth == 0:
+                    return index
+        return None
+
+    wrapped: list[str] = []
+    depth = 0
+    index = 0
+    counter = 1
+    while index < len(balanced):
+        line = balanced[index]
+        if depth == 0 and re.match(r'^\s*(?:function|event)\b', line):
+            end = prototype_end(index)
+            if end is not None:
+                name = f'_RecoveredInterface_{counter}'
+                counter += 1
+                wrapped.append(f'interface {name} {{')
+                wrapped.extend(balanced[index:end + 1])
+                wrapped.append('}')
+                changes.append(
+                    f'wrapped orphan top-level prototype at line {index + 1}')
+                index = end + 1
+                continue
+        wrapped.append(line)
+        depth += line.count('{') - line.count('}')
+        if depth < 0:
+            depth = 0
+        index += 1
+
+    return '\n'.join(wrapped), list(dict.fromkeys(changes))
 
 
 def _deterministic_syntax_cleanup(code: str, compiler_output: str) -> tuple[str, list[str]]:
@@ -1432,6 +1914,26 @@ def _deterministic_syntax_cleanup(code: str, compiler_output: str) -> tuple[str,
     return updated, changes
 
 
+def _mark_contracts_abstract_from_compiler_output(
+        code: str, compiler_output: str) -> tuple[str, list[str]]:
+    """Honor solc's missing-implementation diagnostic for sliced contracts."""
+    changes: list[str] = []
+    names = re.findall(
+        r'Contract\s+"([A-Za-z_$][A-Za-z0-9_$]*)"\s+should be marked as abstract',
+        compiler_output or '')
+    for name in dict.fromkeys(names):
+        if re.search(rf'\bnew\s+{re.escape(name)}\s*\(', code):
+            continue
+        pattern = re.compile(
+            rf'(?m)^(\s*)contract\s+{re.escape(name)}\b')
+        updated, count = pattern.subn(
+            rf'\1abstract contract {name}', code, count=1)
+        if count:
+            code = updated
+            changes.append(f'marked {name} abstract for missing implementation')
+    return code, changes
+
+
 def _find_top_level_blocks(code: str) -> list[dict[str, object]]:
     lines = code.splitlines()
     blocks = []
@@ -1440,18 +1942,27 @@ def _find_top_level_blocks(code: str) -> list[dict[str, object]]:
     while i < len(lines):
         line = lines[i]
         stripped = line.strip()
-        m = re.match(r"^(contract|library|interface)\s+([A-Za-z_][A-Za-z0-9_]*)\b([^{};]*)\{", stripped)
+        m = re.match(
+            r"^((?:abstract\s+)?(?:contract|library|interface))\s+"
+            r"([A-Za-z_][A-Za-z0-9_]*)\b(.*)$", stripped)
         if depth == 0 and m:
             start = i
-            block_depth = line.count("{") - line.count("}")
+            header_lines = [stripped]
+            while '{' not in '\n'.join(header_lines) and i + 1 < len(lines):
+                i += 1
+                header_lines.append(lines[i].strip())
+            header = ' '.join(header_lines)
+            block_depth = sum(
+                part.count("{") - part.count("}") for part in header_lines)
             i += 1
             while i < len(lines) and block_depth > 0:
                 block_depth += lines[i].count("{") - lines[i].count("}")
                 i += 1
+            kind_match = re.search(r'(contract|library|interface)', m.group(1))
             blocks.append({
-                "kind": m.group(1),
+                "kind": kind_match.group(1) if kind_match else 'contract',
                 "name": m.group(2),
-                "header": stripped,
+                "header": header,
                 "start": start,
                 "end": i,
             })
@@ -1635,6 +2146,20 @@ _SOLIDITY_KEYWORDS = {
     'new', 'delete', 'return', 'require', 'assert', 'revert', 'indexed',
 }
 
+_PARAM_TYPE_KEYWORDS = {
+    'address', 'bool', 'string', 'bytes', 'byte', 'bytes1', 'bytes2', 'bytes3',
+    'bytes4', 'bytes8', 'bytes16', 'bytes32', 'uint', 'uint8', 'uint16',
+    'uint24', 'uint32', 'uint40', 'uint48', 'uint56', 'uint64', 'uint72',
+    'uint80', 'uint88', 'uint96', 'uint104', 'uint112', 'uint120', 'uint128',
+    'uint136', 'uint144', 'uint152', 'uint160', 'uint168', 'uint176', 'uint184',
+    'uint192', 'uint200', 'uint208', 'uint216', 'uint224', 'uint232', 'uint240',
+    'uint248', 'uint256', 'int', 'int8', 'int16', 'int24', 'int32', 'int40',
+    'int48', 'int56', 'int64', 'int72', 'int80', 'int88', 'int96', 'int104',
+    'int112', 'int120', 'int128', 'int136', 'int144', 'int152', 'int160',
+    'int168', 'int176', 'int184', 'int192', 'int200', 'int208', 'int216',
+    'int224', 'int232', 'int240', 'int248', 'int256', 'mapping', 'payable',
+}
+
 
 def _repair_keyword_param_names(code: str) -> tuple[str, list[str]]:
     """Rename function parameters that shadow a Solidity type/keyword.
@@ -1645,35 +2170,171 @@ def _repair_keyword_param_names(code: str) -> tuple[str, list[str]]:
     type, leaving multi-token types intact.
     """
     changes: list[str] = []
-    lines = code.splitlines()
 
-    def fix_line(line: str) -> str:
-        if 'function' not in line:
-            return line
-        m = re.match(r"^(\s*function\s+[A-Za-z_$][A-Za-z0-9_$]*\s*)\(([^)]*)\)(.*)$", line)
-        if not m:
-            return line
-        prefix, params, suffix = m.group(1) + '(', m.group(2), ')' + m.group(3)
-        parts = []
-        changed = False
-        for raw in params.split(','):
+    def split_params(params: str) -> list[str]:
+        parts: list[str] = []
+        start = 0
+        depth = 0
+        for index, char in enumerate(params):
+            if char in '([{':
+                depth += 1
+            elif char in ')]}':
+                depth = max(0, depth - 1)
+            elif char == ',' and depth == 0:
+                parts.append(params[start:index])
+                parts.append(',')
+                start = index + 1
+        parts.append(params[start:])
+        return parts
+
+    replacements: list[tuple[int, int, str]] = []
+    for match in re.finditer(r'\bfunction\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\(', code):
+        open_pos = code.find('(', match.start())
+        depth = 0
+        close_pos = None
+        for position in range(open_pos, len(code)):
+            char = code[position]
+            if char == '(':
+                depth += 1
+            elif char == ')':
+                depth -= 1
+                if depth == 0:
+                    close_pos = position
+                    break
+        if close_pos is None:
+            continue
+        params_start = open_pos + 1
+        params = code[params_start:close_pos]
+        cursor = params_start
+        renamed_params: list[str] = []
+        for raw in split_params(params):
+            if raw == ',':
+                cursor += len(raw)
+                continue
+            for indexed_match in re.finditer(r'\bindexed\s+', raw):
+                start = cursor + indexed_match.start()
+                replacements.append((start, cursor + indexed_match.end(), ''))
+                changes.append('removed event-only indexed modifier from parameter')
             stripped = raw.strip()
             tokens = stripped.split()
-            if len(tokens) >= 2 and tokens[-1] in _SOLIDITY_KEYWORDS:
-                new_name = '_' + tokens[-1]
-                tokens[-1] = new_name
-                changed = True
-                changes.append(f'renamed param {raw.strip()} -> {" ".join(tokens)}')
-            parts.append(' '.join(tokens) if changed else raw)
-        return prefix + ', '.join(parts) + suffix if changed else line
+            if len(tokens) >= 2 and tokens[-1] in _PARAM_TYPE_KEYWORDS:
+                old_name = tokens[-1]
+                name_match = re.search(rf'\b{re.escape(old_name)}\s*$', raw)
+                if name_match:
+                    start = cursor + name_match.start()
+                    replacements.append((start, start + len(old_name),
+                                         '_' + old_name))
+                    renamed_params.append(old_name)
+                    changes.append(
+                        f'renamed param {stripped} -> '
+                        f'{" ".join(tokens[:-1] + ["_" + old_name])}')
+            cursor += len(raw)
+        if renamed_params:
+            body_start = code.find('{', close_pos + 1)
+            declaration_end = code.find(';', close_pos + 1)
+            if (body_start != -1
+                    and (declaration_end == -1 or body_start < declaration_end)):
+                body_end = _find_matching_brace_position(code, body_start)
+                if body_end is not None:
+                    body = code[body_start + 1:body_end]
+                    for old_name in renamed_params:
+                        for usage in re.finditer(
+                                rf'\b{re.escape(old_name)}\b(?!\s*[\(\w])',
+                                body):
+                            start = body_start + 1 + usage.start()
+                            replacements.append(
+                                (start, start + len(old_name), '_' + old_name))
 
-    new_lines = [fix_line(line) for line in lines]
-    result = '\n'.join(new_lines)
-    if code.endswith('\n'):
-        result += '\n'
-    return result, changes
+    updated = code
+    for start, end, replacement in sorted(replacements, reverse=True):
+        updated = updated[:start] + replacement + updated[end:]
+    return updated, changes
 
-def _infer_error_arg_type(expr: str, code: str) -> str:
+def _infer_expression_type_at(expression: str, code: str,
+                              position: int | None = None) -> str:
+    """Infer a Solidity expression type, preferring the nearest declaration.
+
+    Slice output commonly contains many functions that reuse a parameter name
+    such as ``value`` with different integer signedness.  A file-wide first
+    match therefore produces unstable custom-error declarations.  When a call
+    site offset is available, use the last declaration before it instead.
+    """
+    expression = expression.strip()
+    if not expression:
+        return ''
+    primitive = re.match(
+        r'^(address|bool|string|bytes(?:[1-9]|[12][0-9]|3[0-2])?|'
+        r'u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|'
+        r'152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)\s*\(',
+        expression)
+    if primitive:
+        return primitive.group(1)
+    if re.match(r'^\d+$', expression):
+        return 'uint256'
+    if re.match(r'^(true|false)$', expression):
+        return 'bool'
+    if re.match(r'^["\']', expression):
+        return 'string memory'
+
+    type_token = (
+        r'(?:address(?:\s+payable)?|bool|string|bytes(?:[1-9]|[12][0-9]|3[0-2])?|'
+        r'u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|'
+        r'152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|'
+        r'[A-Z][A-Za-z0-9_$\.]*(?:\[[^\]]*\])*)'
+    )
+
+    def nearest_declaration(name: str) -> str:
+        prefix = code[:position] if position is not None else code
+        pattern = re.compile(
+            rf'(?<![.\w])({type_token})\s+(?:indexed\s+)?'
+            rf'(?:(?:memory|calldata|storage)\s+)?'
+            rf'{re.escape(name)}\b')
+        matches = list(pattern.finditer(prefix))
+        if not matches:
+            return ''
+        return matches[-1].group(1)
+
+    indexed = re.match(r'^([A-Za-z_$][A-Za-z0-9_$]*)\s*\[', expression)
+    if indexed:
+        declared = nearest_declaration(indexed.group(1))
+        if declared:
+            return re.sub(r'\[[^\]]*\]', '', declared)
+
+    member = re.match(
+        r'^([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)',
+        expression)
+    if member:
+        variable, field = member.group(1), member.group(2)
+        declared = nearest_declaration(variable)
+        struct_name = declared.split('.')[-1].strip()
+        struct_match = re.search(
+            rf'\bstruct\s+{re.escape(struct_name)}\s*\{{(.*?)\}}',
+            code, re.DOTALL)
+        if struct_match:
+            field_match = re.search(
+                rf'\b(address\s+payable|[A-Za-z_$][A-Za-z0-9_$\.]*(?:\[[^\]]*\])*)\s+'
+                rf'{re.escape(field)}\s*;', struct_match.group(1))
+            if field_match:
+                return field_match.group(1)
+
+    call = re.search(r'([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^()]*\)\s*$', expression)
+    if call:
+        return_match = re.search(
+            rf'\bfunction\s+{re.escape(call.group(1))}\s*\([^;{{}}]*?\)'
+            rf'[^;{{}}]*?\breturns\s*\(\s*'
+            rf'([A-Za-z_$][A-Za-z0-9_$\.]*(?:\[[^\]]*\])*)',
+            code, re.DOTALL)
+        if return_match:
+            return return_match.group(1)
+
+    identifier = re.match(r'^([A-Za-z_$][A-Za-z0-9_$]*)$', expression)
+    if identifier:
+        return nearest_declaration(identifier.group(1))
+    return ''
+
+
+def _infer_error_arg_type(expr: str, code: str,
+                          position: int | None = None) -> str:
     """Best-effort Solidity type for one revert error argument expression."""
     expr = expr.strip()
     if not expr:
@@ -1694,16 +2355,16 @@ def _infer_error_arg_type(expr: str, code: str) -> str:
         return 'bool'
     if expr in ('_msgSender()', 'msg.sender', 'tx.origin'):
         return 'address'
-    # Bare identifier: scan declarations anywhere in the file (best effort).
-    ident = re.match(r'^([A-Za-z_$][A-Za-z0-9_$]*)$', expr)
-    if ident:
-        name = ident.group(1)
-        for type_token in ('address', 'address payable', 'bool', 'uint256',
-                           'int256', 'bytes32', 'uint32', 'uint64', 'uint128'):
-            if re.search(rf'\b{re.escape(type_token)}\s+{re.escape(name)}\b',
-                         code):
-                return type_token
+    inferred = _infer_expression_type_at(expr, code, position)
+    if inferred:
+        return inferred
     return 'uint256'
+
+
+def _error_parameter_type(type_name: str) -> str:
+    """Custom-error parameters do not carry memory/calldata/storage markers."""
+    return re.sub(r'\s+(?:memory|calldata|storage)$', '',
+                  type_name.strip())
 
 
 def _repair_zero_arg_custom_errors(code: str) -> tuple[str, list[str]]:
@@ -1728,7 +2389,12 @@ def _repair_zero_arg_custom_errors(code: str) -> tuple[str, list[str]]:
 
     # Find revert call sites per error name.
     usage = {}
+    offsets = []
+    cursor = 0
     for line in lines:
+        offsets.append(cursor)
+        cursor += len(line) + 1
+    for line_no, line in enumerate(lines):
         for m in re.finditer(
                 rf"\brevert\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
                 line):
@@ -1751,14 +2417,22 @@ def _repair_zero_arg_custom_errors(code: str) -> tuple[str, list[str]]:
                 continue
             args_text = line[open_idx + 1:close_idx]
             args = [a.strip() for a in args_text.split(',') if a.strip()]
-            usage.setdefault(name, args)
+            usage.setdefault(name, (args, offsets[line_no] + m.start()))
 
     for name, index in sorted(decl_index.items(), key=lambda kv: kv[1],
                               reverse=True):
-        args = usage.get(name)
-        if not args:
+        usage_item = usage.get(name)
+        if not usage_item:
             continue
-        types = [_infer_error_arg_type(arg, code) for arg in args]
+        args, position = usage_item
+        types = [_error_parameter_type(_infer_error_arg_type(
+            arg, code, position + 1)) for arg in args]
+        if 'Int' in name or 'Uint' in name:
+            for arg_index, arg in enumerate(args):
+                if re.match(r'^\d+$', arg):
+                    continue
+                if re.match(r'^[A-Za-z_$][A-Za-z0-9_$]*$', arg):
+                    types[arg_index] = ('int256' if 'Int' in name else 'uint256')
         params = ', '.join(f'{typ} arg{i}' if typ.endswith(' memory')
                            else f'{typ} arg{i}'
                            for i, typ in enumerate(types))
@@ -1767,6 +2441,787 @@ def _repair_zero_arg_custom_errors(code: str) -> tuple[str, list[str]]:
         changes.append(f'expanded error {name} with {len(types)} arg(s)')
 
     return '\n'.join(lines), changes
+
+
+def _ensure_qualified_revert_errors(code: str) -> tuple[str, list[str]]:
+    """Restore missing ``revert Owner.Error(...)`` declarations.
+
+    Slice assembly can keep a library/contract shell while dropping one of its
+    nested custom errors.  Solidity then reports the member as missing even
+    though every revert site is present.  Add only members that have a real
+    qualified revert site in the same file.
+    """
+    changes: list[str] = []
+    declarations: dict[str, tuple[int, int]] = {}
+    for match in re.finditer(
+            r'\b(?:library|contract|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
+            r'\b[^{;]*\{', code):
+        open_brace = code.find('{', match.start())
+        close_brace = _find_matching_brace_position(code, open_brace)
+        if close_brace is not None:
+            declarations[match.group(1)] = (open_brace, close_brace)
+
+    insertions: dict[str, list[tuple[int, str]]] = {}
+    for owner, (open_brace, close_brace) in declarations.items():
+        body = code[open_brace + 1:close_brace]
+        pattern = re.compile(
+            rf'\brevert\s+{re.escape(owner)}\.([A-Za-z_$][A-Za-z0-9_$]*)'
+            rf'\s*\(([^;]*?)\)\s*;', re.DOTALL)
+        seen: set[str] = set()
+        for usage in pattern.finditer(code):
+            member, args_text = usage.group(1), usage.group(2)
+            if member in seen:
+                continue
+            seen.add(member)
+            if re.search(rf'\b(?:error|event|function|modifier)\s+'
+                         rf'{re.escape(member)}\b', body):
+                continue
+            args = [part.strip() for part in args_text.split(',') if part.strip()]
+            types = [_error_parameter_type(_infer_error_arg_type(
+                arg, code, usage.start())) for arg in args]
+            params = ', '.join(f'{typ} arg{i}' for i, typ in enumerate(types))
+            declaration = f'    error {member}({params});'
+            insertions.setdefault(owner, []).append((open_brace + 1, declaration))
+            changes.append(f'added missing qualified error {owner}.{member}')
+
+    if not insertions:
+        return code, changes
+
+    by_position: dict[int, list[str]] = {}
+    for owner_insertions in insertions.values():
+        for position, declaration in owner_insertions:
+            by_position.setdefault(position, []).append(declaration)
+    updated = code
+    for position in sorted(by_position, reverse=True):
+        block = '\n'.join(by_position[position])
+        updated = updated[:position] + '\n' + block + updated[position:]
+    return updated, changes
+
+
+def _ensure_qualified_emit_events(code: str) -> tuple[str, list[str]]:
+    """Restore library/contract events referenced by qualified emit sites."""
+    changes: list[str] = []
+    declarations: dict[str, tuple[int, int]] = {}
+    for match in re.finditer(
+            r'\b(?:library|contract|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
+            r'\b[^{;]*\{', code):
+        open_brace = code.find('{', match.start())
+        close_brace = _find_matching_brace_position(code, open_brace)
+        if close_brace is not None:
+            declarations[match.group(1)] = (open_brace, close_brace)
+
+    insertions: dict[str, list[tuple[int, str]]] = {}
+    for owner, (open_brace, close_brace) in declarations.items():
+        body = code[open_brace + 1:close_brace]
+        pattern = re.compile(
+            rf'\bemit\s+{re.escape(owner)}\.([A-Za-z_$][A-Za-z0-9_$]*)'
+            rf'\s*\(([^;]*?)\)\s*;', re.DOTALL)
+        seen: set[str] = set()
+        for usage in pattern.finditer(code):
+            member, args_text = usage.group(1), usage.group(2)
+            if member in seen:
+                continue
+            seen.add(member)
+            if re.search(rf'\bevent\s+{re.escape(member)}\b', body):
+                continue
+            args = [part.strip() for part in args_text.split(',') if part.strip()]
+            types = [_error_parameter_type(_infer_error_arg_type(
+                arg, code, usage.start())) for arg in args]
+            params = ', '.join(f'{typ} arg{i}' for i, typ in enumerate(types))
+            declaration = f'    event {member}({params});'
+            insertions.setdefault(owner, []).append((open_brace + 1, declaration))
+            changes.append(f'added missing qualified event {owner}.{member}')
+
+    if not insertions:
+        return code, changes
+    by_position: dict[int, list[str]] = {}
+    for owner_insertions in insertions.values():
+        for position, declaration in owner_insertions:
+            by_position.setdefault(position, []).append(declaration)
+    updated = code
+    for position in sorted(by_position, reverse=True):
+        block = '\n'.join(by_position[position])
+        updated = updated[:position] + '\n' + block + updated[position:]
+    return updated, changes
+
+
+def _repair_qualified_error_arguments(code: str) -> tuple[str, list[str]]:
+    """Match ``Owner.Error`` declarations to qualified revert call sites."""
+    changes: list[str] = []
+    declarations: dict[str, tuple[int, int]] = {}
+    for match in re.finditer(
+            r'\b(?:library|contract|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
+            r'\b[^{;]*\{', code):
+        open_brace = code.find('{', match.start())
+        close_brace = _find_matching_brace_position(code, open_brace)
+        if close_brace is not None:
+            declarations[match.group(1)] = (open_brace, close_brace)
+
+    for owner, (open_brace, close_brace) in declarations.items():
+        body = code[open_brace + 1:close_brace]
+        declared = {
+            match.group(1): match.group(2)
+            for match in re.finditer(
+                r'\berror\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*;',
+                body)
+        }
+        if not declared:
+            continue
+        call_types: dict[str, list[str]] = {}
+        for usage in re.finditer(
+                rf'\brevert\s+{re.escape(owner)}\.([A-Za-z_$][A-Za-z0-9_$]*)'
+                rf'\s*\(([^;]*?)\)\s*;', code, re.DOTALL):
+            name, args_text = usage.group(1), usage.group(2)
+            if name not in declared:
+                continue
+            args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
+            types = [_error_parameter_type(_infer_error_arg_type(
+                arg, code, usage.start())) for arg in args]
+            existing = call_types.get(name)
+            if existing is None:
+                call_types[name] = types
+            elif existing != types:
+                call_types.pop(name, None)
+        for name, types in call_types.items():
+            current = [part.strip().split()[0]
+                       for part in declared[name].split(',') if part.strip()]
+            if current == types:
+                continue
+            params = ', '.join(f'{typ} arg{i}' for i, typ in enumerate(types))
+            pattern = re.compile(
+                rf'(?m)^(\s*)error\s+{re.escape(name)}\s*\([^)]*\)\s*;')
+            updated, count = pattern.subn(
+                lambda m: f'{m.group(1)}error {name}({params});', code, count=1)
+            if count:
+                code = updated
+                changes.append(
+                    f'inferred argument types for qualified error {owner}.{name}')
+    return code, changes
+
+
+def _repair_qualified_event_arguments(code: str) -> tuple[str, list[str]]:
+    """Match qualified event declarations to their emit call sites."""
+    changes: list[str] = []
+    declarations: dict[str, tuple[int, int]] = {}
+    for match in re.finditer(
+            r'\b(?:library|contract|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
+            r'\b[^{;]*\{', code):
+        open_brace = code.find('{', match.start())
+        close_brace = _find_matching_brace_position(code, open_brace)
+        if close_brace is not None:
+            declarations[match.group(1)] = (open_brace, close_brace)
+
+    for owner, (open_brace, close_brace) in declarations.items():
+        body = code[open_brace + 1:close_brace]
+        declared = {
+            match.group(1): match.group(2)
+            for match in re.finditer(
+                r'\bevent\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*;',
+                body)
+        }
+        if not declared:
+            continue
+        call_types: dict[str, list[str]] = {}
+        for usage in re.finditer(
+                rf'\bemit\s+{re.escape(owner)}\.([A-Za-z_$][A-Za-z0-9_$]*)'
+                rf'\s*\(([^;]*?)\)\s*;', code, re.DOTALL):
+            name, args_text = usage.group(1), usage.group(2)
+            if name not in declared:
+                continue
+            args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
+            types = [_error_parameter_type(_infer_error_arg_type(
+                arg, code, usage.start())) for arg in args]
+            existing = call_types.get(name)
+            if existing is None:
+                call_types[name] = types
+            elif existing != types:
+                call_types.pop(name, None)
+        for name, types in call_types.items():
+            current = [part.strip().split()[0]
+                       for part in declared[name].split(',') if part.strip()]
+            if current == types:
+                continue
+            params = ', '.join(f'{typ} arg{i}' for i, typ in enumerate(types))
+            pattern = re.compile(
+                rf'(?m)^(\s*)event\s+{re.escape(name)}\s*\([^)]*\)\s*;')
+            updated, count = pattern.subn(
+                lambda m: f'{m.group(1)}event {name}({params});', code, count=1)
+            if count:
+                code = updated
+                changes.append(
+                    f'inferred argument types for qualified event {owner}.{name}')
+    return code, changes
+
+
+def _repair_require_custom_errors(code: str) -> tuple[str, list[str]]:
+    """Restore zero-arg custom errors used as ``require(cond, Owner.Error(hex""))``."""
+    changes: list[str] = []
+    declarations: dict[str, tuple[int, int]] = {}
+    for match in re.finditer(
+            r'\b(?:library|contract|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
+            r'\b[^{;]*\{', code):
+        open_brace = code.find('{', match.start())
+        close_brace = _find_matching_brace_position(code, open_brace)
+        if close_brace is not None:
+            declarations[match.group(1)] = (open_brace, close_brace)
+
+    insertions: dict[str, list[tuple[int, str]]] = {}
+    replacements: list[tuple[int, int, str]] = []
+    for owner, (open_brace, close_brace) in declarations.items():
+        body = code[open_brace + 1:close_brace]
+        pattern = re.compile(
+            rf'\brequire\s*\([^;]*?,\s*{re.escape(owner)}\.([A-Za-z_$][A-Za-z0-9_$]*)'
+            rf'\s*\(\s*hex""\s*\)\s*\)', re.DOTALL)
+        inserted: set[str] = set()
+        for usage in pattern.finditer(code):
+            member = usage.group(1)
+            call_start = usage.start(0) + usage.group(0).find(
+                f'{owner}.{member}')
+            call_end = usage.end(0) - 1
+            replacements.append((
+                call_start, call_end, f'{owner}.{member}()'))
+            if (member not in inserted
+                    and not re.search(rf'\berror\s+{re.escape(member)}\b', body)):
+                insertions.setdefault(owner, []).append((
+                    open_brace + 1, f'    error {member}();'))
+                changes.append(f'added missing require error {owner}.{member}')
+            inserted.add(member)
+
+    if not replacements:
+        return code, changes
+    updated = code
+    for start, end, replacement in sorted(replacements, reverse=True):
+        updated = updated[:start] + replacement + updated[end:]
+    by_position: dict[int, list[str]] = {}
+    for owner_insertions in insertions.values():
+        for position, declaration in owner_insertions:
+            by_position.setdefault(position, []).append(declaration)
+    for position in sorted(by_position, reverse=True):
+        block = '\n'.join(by_position[position])
+        updated = updated[:position] + '\n' + block + updated[position:]
+    return updated, changes
+
+
+def _infer_expression_type_in_code(expression: str, code: str) -> str:
+    """Infer a Solidity expression type from declarations in the same file."""
+    expression = expression.strip()
+    if not expression:
+        return ''
+    primitive = re.match(
+        r'^(address|bool|string|bytes(?:[1-9]|[12][0-9]|3[0-2])?|'
+        r'u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|'
+        r'152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)\s*\(',
+        expression)
+    if primitive:
+        return primitive.group(1)
+    if re.match(r'^\d+$', expression):
+        return 'uint256'
+    if re.match(r'^(true|false)$', expression):
+        return 'bool'
+    if re.match(r'^["\']', expression):
+        return 'string memory'
+
+    indexed = re.match(r'^([A-Za-z_$][A-Za-z0-9_$]*)\s*\[', expression)
+    if indexed:
+        declaration = re.search(
+            rf'\b([A-Za-z_$][A-Za-z0-9_$\.]*(?:\[[^\]]*\])*)\s+'
+            rf'(?:memory\s+|calldata\s+|storage\s+)?'
+            rf'{re.escape(indexed.group(1))}\b', code)
+        if declaration:
+            return re.sub(r'\[[^\]]*\]', '', declaration.group(1))
+
+    member = re.match(
+        r'^([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)',
+        expression)
+    if member:
+        variable, field = member.group(1), member.group(2)
+        declaration = re.search(
+            rf'\b([A-Z][A-Za-z0-9_$\.]*)\s+(?:memory\s+|calldata\s+|'
+            rf'storage\s+)?{re.escape(variable)}\b', code)
+        if declaration:
+            struct_name = declaration.group(1).split('.')[-1]
+            struct_match = re.search(
+                rf'\bstruct\s+{re.escape(struct_name)}\s*\{{(.*?)\}}',
+                code, re.DOTALL)
+            if struct_match:
+                field_match = re.search(
+                    rf'\b([A-Za-z_$][A-Za-z0-9_$\.]*(?:\[[^\]]*\])*)\s+'
+                    rf'{re.escape(field)}\s*;', struct_match.group(1))
+                if field_match:
+                    return field_match.group(1)
+
+    call = re.match(r'^([A-Za-z_$][A-Za-z0-9_$]*)\s*\(', expression)
+    if call:
+        return_match = re.search(
+            rf'\bfunction\s+{re.escape(call.group(1))}\s*\([^;{{}}]*?\)'
+            rf'[^;{{}}]*?\breturns\s*\(\s*'
+            rf'([A-Za-z_$][A-Za-z0-9_$\.]*(?:\[[^\]]*\])*)',
+            code, re.DOTALL)
+        if return_match:
+            return return_match.group(1)
+
+    identifier = re.match(r'^([A-Za-z_$][A-Za-z0-9_$]*)$', expression)
+    if identifier:
+        invalid_types = {
+            'indexed', 'constant', 'immutable', 'event', 'function', 'error',
+            'modifier', 'returns', 'public', 'private', 'internal', 'external',
+        }
+        for declaration in re.finditer(
+                rf'\b([A-Za-z_$][A-Za-z0-9_$\.]*(?:\[[^\]]*\])*)\s+'
+                rf'(?:memory\s+|calldata\s+|storage\s+)?'
+                rf'{re.escape(identifier.group(1))}\b', code):
+            if declaration.group(1) not in invalid_types:
+                return declaration.group(1)
+    return _infer_error_arg_type(expression, code)
+
+
+def _repair_custom_error_arguments(code: str) -> tuple[str, list[str]]:
+    """Match unqualified custom-error declarations to their revert call sites."""
+    changes: list[str] = []
+    declarations: dict[str, str] = {}
+    for match in re.finditer(
+            r'(?m)^(\s*)error\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*;',
+            code):
+        declarations[match.group(2)] = match.group(3)
+
+    call_types: dict[str, list[str]] = {}
+    for match in re.finditer(
+            r'\brevert\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^;]*?)\)\s*;',
+            code, re.DOTALL):
+        name, args_text = match.group(1), match.group(2)
+        if name not in declarations:
+            continue
+        args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
+        types = [_error_parameter_type(_infer_expression_type_at(
+            arg, code, match.start())) for arg in args]
+        if not types or any(not typ for typ in types):
+            continue
+        existing = call_types.get(name)
+        if existing is None:
+            call_types[name] = types
+        elif existing != types:
+            call_types.pop(name, None)
+
+    updated = code
+    for name, types in call_types.items():
+        current = [part.strip().split()[0]
+                   for part in declarations[name].split(',') if part.strip()]
+        if current == types:
+            continue
+        params = ', '.join(f'{typ} arg{i}' for i, typ in enumerate(types))
+        pattern = re.compile(
+            rf'(?m)^(\s*)error\s+{re.escape(name)}\s*\([^)]*\)\s*;')
+        updated, count = pattern.subn(
+            lambda m: f'{m.group(1)}error {name}({params});', updated, count=1)
+        if count:
+            changes.append(f'inferred argument types for error {name}')
+    return updated, changes
+
+
+def _sanitize_error_argument_tokens(code: str) -> tuple[str, list[str]]:
+    """Replace modifier/data-location tokens accidentally used as error types."""
+    changes: list[str] = []
+
+    def fix(match: re.Match) -> str:
+        params = match.group(2)
+        cleaned = re.sub(
+            r'\b(?:indexed|constant|immutable|public|private|internal|external|payable)\b',
+            'uint256', params)
+        cleaned = re.sub(
+            r'(?m)(^|,)\s*(?:memory|calldata|storage)\s+',
+            r'\1 uint256 ', cleaned)
+        if cleaned != params:
+            changes.append(f'sanitized argument types for error {match.group(1)}')
+        return f'{match.group(0)[:match.start(2) - match.start(0)]}{cleaned}' + \
+            match.group(0)[match.end(2) - match.start(0):]
+
+    updated = re.sub(
+        r'\berror\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)',
+        fix, code)
+    return updated, changes
+
+
+def _ensure_nested_qualified_types(code: str) -> tuple[str, list[str]]:
+    """Declare missing structs referenced as ``Contract.Type``.
+
+    Slicing can keep the outer interface shell but drop a nested proof/request
+    struct.  When the qualified nested name is used as a value type, an empty
+    outer interface is not enough.  Insert a conservative placeholder inside
+    the existing owner.
+    """
+    changes: list[str] = []
+    owners: dict[str, tuple[int, int]] = {}
+    for match in re.finditer(
+            r'\b(?:library|contract|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
+            r'\b[^{;]*\{', code):
+        open_brace = code.find('{', match.start())
+        close_brace = _find_matching_brace_position(code, open_brace)
+        if close_brace is not None:
+            owners[match.group(1)] = (open_brace, close_brace)
+
+    insertions: dict[str, list[tuple[int, str]]] = {}
+    seen: set[tuple[str, str]] = set()
+    for match in re.finditer(
+            r'\b([A-Z][A-Za-z0-9_]*)\.([A-Z][A-Za-z0-9_]*)\b', code):
+        owner, nested = match.group(1), match.group(2)
+        if owner not in owners or (owner, nested) in seen:
+            continue
+        seen.add((owner, nested))
+        open_brace, close_brace = owners[owner]
+        body = code[open_brace + 1:close_brace]
+        if re.search(rf'\b(?:struct|enum|type|contract|interface)\s+'
+                     rf'{re.escape(nested)}\b', body):
+            continue
+        declaration = f'    struct {nested} {{ bytes data; }}'
+        insertions.setdefault(owner, []).append((open_brace + 1, declaration))
+        changes.append(f'added missing nested type {owner}.{nested}')
+
+    if not insertions:
+        return code, changes
+    by_position: dict[int, list[str]] = {}
+    for owner_insertions in insertions.values():
+        for position, declaration in owner_insertions:
+            by_position.setdefault(position, []).append(declaration)
+    updated = code
+    for position in sorted(by_position, reverse=True):
+        block = '\n'.join(by_position[position])
+        updated = updated[:position] + '\n' + block + updated[position:]
+    return updated, changes
+
+
+def _remove_placeholder_structs_conflicting_with_errors(
+        code: str) -> tuple[str, list[str]]:
+    """Prefer real errors/events/constants over same-named placeholder structs."""
+    error_names = set(re.findall(
+        r'\berror\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(', code))
+    event_names = set(re.findall(
+        r'\bevent\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(', code))
+    constant_names = set(re.findall(
+        r'\b(?:string|bytes(?:[1-9]|[12][0-9]|3[0-2])?|'
+        r'u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|'
+        r'152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|address|bool)'
+        r'\s+(?:public\s+|private\s+|internal\s+)?constant\s+'
+        r'([A-Za-z_$][A-Za-z0-9_$]*)\s*=', code))
+    conflicts = error_names | event_names | constant_names
+    if not conflicts:
+        return code, []
+    changes: list[str] = []
+    updated = code
+    for name in sorted(conflicts, key=len, reverse=True):
+        pattern = re.compile(
+            rf'(?m)^\s*struct\s+{re.escape(name)}\s*\{{\s*'
+            rf'bytes\s+data\s*;\s*\}}\s*\n?')
+        updated, count = pattern.subn('', updated)
+        if count:
+            changes.append(
+                f'removed placeholder struct {name} conflicting with declaration')
+    return updated, changes
+
+
+def _repair_placeholder_value_types(code: str) -> tuple[str, list[str]]:
+    """Recover structs that were generated as empty contracts/placeholder structs.
+
+    Data locations are valid only for value types.  When a generated mock such
+    as ``contract InboundPacket {}`` is used as ``InboundPacket memory`` we can
+    prove it must be a struct.  Fields are inferred from the local variables'
+    member accesses and assignments so the recovered shape remains usable.
+    """
+    changes: list[str] = []
+    used_with_location = set()
+    variable_types: dict[str, set[str]] = {}
+    for match in re.finditer(
+            r'\b([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)?(?:\[\])*)'
+            r'\s+(?:memory|calldata|storage)\s+([A-Za-z_$][A-Za-z0-9_$]*)',
+            code):
+        type_name = re.sub(r'\[.*', '', match.group(1)).split('.')[-1]
+        used_with_location.add(type_name)
+        variable_types.setdefault(type_name, set()).add(match.group(2))
+    if not used_with_location:
+        return code, changes
+
+    returns_map: dict[str, str] = {}
+    for match in re.finditer(
+            r'\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^;{}]*?\)'
+            r'[^;{}]*?\breturns\s*\(\s*([A-Za-z_$][A-Za-z0-9_$\.]*(?:\[\])*)',
+            code, re.DOTALL):
+        returns_map[match.group(1)] = match.group(2)
+
+    def fallback_type(field: str) -> str:
+        lowered = field.lower()
+        if lowered in {'origin', 'proof', 'request', 'ticket', 'state'}:
+            return field[0].upper() + field[1:]
+        if any(token in lowered for token in ('guid', 'hash', 'salt', 'root')):
+            return 'bytes32'
+        if 'eid' in lowered:
+            return 'uint32'
+        if 'nonce' in lowered:
+            return 'uint64'
+        if any(token in lowered for token in
+               ('message', 'extradata', 'payload', 'data')):
+            return 'bytes'
+        if any(token in lowered for token in
+               ('executor', 'receiver', 'sender', 'owner', 'address', 'from', 'to')):
+            return 'address'
+        if lowered.startswith(('is', 'has')) or lowered.endswith(
+                ('enabled', 'flag', 'proved')):
+            return 'bool'
+        return _fallback_type_for_name(field)
+
+    def expression_type(expression: str) -> str:
+        expression = expression.strip()
+        constructor = re.match(
+            r'^([A-Z][A-Za-z0-9_\.]*)\s*(?:\(|\{)', expression)
+        if constructor:
+            return constructor.group(1)
+        call = re.match(r'^([A-Za-z_$][A-Za-z0-9_$]*)\s*\(', expression)
+        if call and call.group(1) in returns_map:
+            return returns_map[call.group(1)].replace(' calldata', '').replace(
+                ' memory', '')
+        primitive = re.match(
+            r'^(address|bool|string|bytes(?:[1-9]|[12][0-9]|3[0-2])?|'
+            r'u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|'
+            r'136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)'
+            r'\s*\(', expression)
+        if primitive:
+            return primitive.group(1)
+        if re.match(r'^(true|false)$', expression):
+            return 'bool'
+        if re.match(r'^".*"$', expression):
+            return 'string memory'
+        identifier = re.match(r'^([A-Za-z_$][A-Za-z0-9_$]*)$', expression)
+        if identifier:
+            declaration = re.search(
+                rf'\b([A-Za-z_$][A-Za-z0-9_$\.]*(?:\[[^\]]*\])*)\s+'
+                rf'(?:storage\s+|memory\s+|calldata\s+)?'
+                rf'{re.escape(identifier.group(1))}\b', code)
+            if declaration:
+                return declaration.group(1)
+        return ''
+
+    inferred_fields: dict[str, dict[str, str]] = {}
+    for type_name, variables in variable_types.items():
+        fields: dict[str, str] = {}
+        for variable in variables:
+            for access in re.finditer(
+                    rf'\b{re.escape(variable)}\.([A-Za-z_$][A-Za-z0-9_$]*)'
+                    rf'(?!\s*\()', code):
+                field = access.group(1)
+                fields.setdefault(field, '')
+            for assignment in re.finditer(
+                    rf'\b{re.escape(variable)}\.([A-Za-z_$][A-Za-z0-9_$]*)'
+                    rf'\s*=\s*([^;\n]+)', code):
+                field, expression = assignment.group(1), assignment.group(2)
+                inferred = expression_type(expression)
+                if inferred:
+                    fields[field] = inferred
+        for field in list(fields):
+            if not fields[field]:
+                fields[field] = fallback_type(field)
+        inferred_fields[type_name] = fields
+
+    def struct_body(type_name: str, indent: str) -> str:
+        fields = inferred_fields.get(type_name) or {'data': 'bytes'}
+        return '\n'.join(f'{indent}    {typ} {name};'
+                         for name, typ in fields.items())
+
+    updated = code
+    for type_name in sorted(used_with_location, key=len, reverse=True):
+        contract_pattern = re.compile(
+            rf'(?m)^(\s*)contract\s+{re.escape(type_name)}\s*\{{\s*\}}\s*$')
+        replacement = (lambda m, name=type_name:
+                       f'{m.group(1)}struct {name} {{\n'
+                       f'{struct_body(name, m.group(1))}\n{m.group(1)}}}')
+        updated, count = contract_pattern.subn(replacement, updated)
+        if count:
+            changes.append(f'recovered value type {type_name} as struct')
+
+        struct_pattern = re.compile(
+            rf'(?m)^(\s*)struct\s+{re.escape(type_name)}\s*\{{\s*'
+            rf'bytes\s+data\s*;\s*\}}\s*$')
+        replacement = (lambda m, name=type_name:
+                       f'{m.group(1)}struct {name} {{\n'
+                       f'{struct_body(name, m.group(1))}\n{m.group(1)}}}')
+        updated, count = struct_pattern.subn(replacement, updated)
+        if count:
+            changes.append(f'inferred fields for struct {type_name}')
+    return updated, changes
+
+
+def _expand_zero_arg_struct_constructors(code: str) -> tuple[str, list[str]]:
+    """Expand ``Struct()`` calls when slicing recovered a non-empty struct shape."""
+    changes: list[str] = []
+    structs: dict[str, list[tuple[str, str]]] = {}
+    for match in re.finditer(r'\bstruct\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\{', code):
+        end = _find_matching_brace_position(code, match.end() - 1)
+        if end is None:
+            continue
+        body = code[match.end():end]
+        fields: list[tuple[str, str]] = []
+        valid = True
+        body = re.sub(r'//.*', '', body)
+        for raw in re.split(r';\s*', body):
+            field = raw.strip().rstrip(';').strip()
+            if not field or field.startswith('//'):
+                continue
+            if field.startswith(('mapping', 'function', 'modifier', 'event')):
+                valid = False
+                break
+            tokens = field.rsplit(None, 1)
+            if len(tokens) != 2:
+                valid = False
+                break
+            field_type = tokens[0].strip()
+            for location in (' memory', ' calldata', ' storage'):
+                if field_type.endswith(location):
+                    field_type = field_type[:-len(location)].strip()
+            fields.append((field_type, tokens[1].strip()))
+        if valid and fields:
+            structs[match.group(1)] = fields
+    if not structs:
+        return code, changes
+
+    known_contracts = set(re.findall(
+        r'\b(?:contract|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b', code))
+    known_enums = set(re.findall(
+        r'\benum\s+([A-Za-z_$][A-Za-z0-9_$]*)\b', code))
+
+    def default_value(type_name: str, depth: int = 0) -> str | None:
+        if depth > 8:
+            return None
+        type_name = type_name.strip()
+        array = re.match(
+            r'^(.+?)\s*\[\s*([0-9]*)\s*\]$', type_name)
+        base = array.group(1).strip() if array else type_name
+        size = array.group(2) if array else ''
+        if array:
+            value = default_value(base, depth + 1)
+            if value is None:
+                return None
+            return f'new {base}[]({size})'
+        if base == 'string':
+            return '""'
+        if base == 'bytes':
+            return 'hex""'
+        if re.fullmatch(r'bytes(?:[1-9]|[12][0-9]|3[0-2])', base):
+            return f'{base}(0)'
+        if re.fullmatch(r'address(?:\s+payable)?', base):
+            return 'address(0)'
+        if base == 'bool':
+            return 'false'
+        if re.fullmatch(
+                r'u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|'
+                r'136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?',
+                base):
+            return '0'
+        if base in known_enums:
+            return f'{base}(0)'
+        if base in structs:
+            parts = [default_value(typ, depth + 1) for typ, _ in structs[base]]
+            if any(part is None for part in parts):
+                return None
+            return f'{base}(' + ', '.join(part for part in parts if part) + ')'
+        if base in known_contracts or base.startswith('I'):
+            return f'{base}(address(0))'
+        return None
+
+    for name, fields in structs.items():
+        defaults = [default_value(typ) for typ, _ in fields]
+        if any(value is None for value in defaults):
+            continue
+        pattern = re.compile(
+            rf'\b((?:[A-Za-z_$][A-Za-z0-9_$]*\.)?){re.escape(name)}'
+            rf'\s*\(\s*\)')
+
+        def replace(match: re.Match, values=defaults) -> str:
+            changes.append(f'expanded zero-arg constructor for struct {name}')
+            return f'{match.group(1)}{name}(' + ', '.join(values) + ')'
+
+        code = pattern.sub(replace, code)
+    return code, list(dict.fromkeys(changes))
+
+
+def _ensure_missing_scoped_structs(code: str) -> tuple[str, list[str]]:
+    """Declare a scoped ``State``-like struct when its storage type was sliced away."""
+    changes: list[str] = []
+    top_level_structs: set[str] = set()
+    depth = 0
+    for line in code.splitlines():
+        match = re.match(
+            r'^\s*struct\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\{', line)
+        if depth == 0 and match:
+            top_level_structs.add(match.group(1))
+        depth += line.count('{') - line.count('}')
+        if depth < 0:
+            depth = 0
+    insertions: list[tuple[int, str]] = []
+    for block in _find_top_level_blocks(code):
+        if block['kind'] not in {'contract', 'library'}:
+            continue
+        start = int(block['start']) + 1
+        end = int(block['end'])
+        body = '\n'.join(code.splitlines()[start:end])
+        local_types = set(re.findall(
+            r'\b(?:struct|enum|type|contract|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b',
+            body))
+        missing = sorted(set(re.findall(
+            r'\b([A-Z][A-Za-z0-9_$]*)\s+storage\s+[A-Za-z_$][A-Za-z0-9_$]*',
+            body)) - local_types - top_level_structs)
+        for type_name in missing:
+            variables = set(re.findall(
+                rf'\b{re.escape(type_name)}\s+storage\s+([A-Za-z_$][A-Za-z0-9_$]*)',
+                body))
+            fields: dict[str, str] = {}
+            for variable in variables:
+                value_types: dict[str, str] = {}
+                for match in re.finditer(
+                        rf'\b{re.escape(variable)}\.([A-Za-z_$][A-Za-z0-9_$]*)\s*'
+                        rf'\[\s*([^\]]+)\s*\]', body):
+                    field, key_expr = match.group(1), match.group(2).strip()
+                    key_type = _infer_expression_type_at(
+                        key_expr, body, match.start(2))
+                    if not key_type:
+                        key_type = 'bytes32'
+                    value_patterns = [
+                        (rf'\b([A-Za-z_$][A-Za-z0-9_$\.]*)\s+storage\s+'
+                         rf'[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*'
+                         rf'{re.escape(variable)}\.{re.escape(field)}\s*\[', False),
+                        (rf'{re.escape(variable)}\.{re.escape(field)}\s*\[[^\]]*\]'
+                         rf'\s*=\s*([^;\n]+)', True),
+                    ]
+                    for value_pattern, infer_value in value_patterns:
+                        value_match = re.search(value_pattern, body)
+                        if not value_match:
+                            continue
+                        candidate = value_match.group(1).strip()
+                        if infer_value:
+                            candidate = _infer_expression_type_at(
+                                candidate, body, value_match.start(1))
+                        if candidate and re.match(
+                                r'^(?:[A-Z][A-Za-z0-9_$]*|address|bool|'
+                                r'bytes(?:[1-9]|[12][0-9]|3[0-2])?|string|'
+                                r'u?int(?:[0-9]+)?)$', candidate):
+                            value_types[field] = candidate
+                            break
+                    if field not in value_types:
+                        value_types[field] = 'uint256'
+                for field, value_type in value_types.items():
+                    fields[field] = f'mapping({key_type} => {value_type})'
+            if fields:
+                members = '\n'.join(
+                    f'        {typ} {name};' for name, typ in fields.items())
+            else:
+                members = '        bytes data;'
+            declaration = f'\n    struct {type_name} {{\n{members}\n    }}\n'
+            insertions.append((start, declaration))
+            changes.append(f'added missing scoped struct {type_name}')
+
+    if not insertions:
+        return code, changes
+    lines = code.splitlines()
+    for index, declaration in sorted(insertions, reverse=True):
+        lines.insert(index, declaration)
+    return '\n'.join(lines), list(dict.fromkeys(changes))
+
 
 def _remove_nested_errors_shadowing_globals(code: str) -> str:
     global_errors = set()
@@ -2391,7 +3846,7 @@ def main():
 
     base_url = os.getenv("API_BASE_URL")
     model = os.getenv("MODEL_NAME")
-    resolved_model = model if model else ("opencode-go/deepseek-v4-flash" if provider == "opencode" else "gemini-2.0-flash-exp")
+    resolved_model = model if model else ("opencode-go/deepseek-v4.1-flash" if provider == "opencode" else "gemini-2.0-flash-exp")
     resolved_base_url = base_url if base_url else "https://generativelanguage.googleapis.com/v1beta/openai/"
     print(f"    -> LLM provider: {provider}")
     if provider == "opencode":
@@ -2580,6 +4035,22 @@ def main():
             pass # Do not block LLM for lowercase symbols (e.g. poolId)
 
         made_repair_change = False
+
+        abstract_code, abstract_changes = (
+            _mark_contracts_abstract_from_compiler_output(
+                final_code, compiler_output))
+        if abstract_changes:
+            final_code = abstract_code
+            _write_output(args.output, final_code)
+            for change in abstract_changes:
+                print(f"    -> {change}.")
+            success, compiler_output, compiler_cmd = _run_compile(
+                args.output, phase=f"repair iteration {attempt} after abstract repair")
+            if success:
+                print(f"    -> Compile passed via: {compiler_cmd}")
+            else:
+                print(f"    -> Compile failed again via: {compiler_cmd}")
+            continue
 
         if duplicate_declaration:
             print("    -> Routing to deterministic duplicate repair.")

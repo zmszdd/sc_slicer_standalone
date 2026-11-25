@@ -1,0 +1,62 @@
+You are a semantic faithfulness auditor. For each
+listed source you get its role (P, I, or V), the report statement text, the
+generated predicate that claims to encode it, and the meanings of the symbols
+the predicate uses. A null predicate means that the generated rule omitted
+that frozen source; mark it other_mismatch. You also receive the full P/I/V relation,
+exact report excerpts from cited action/root-cause evidence as relation_context, and
+a generator-proposed relationship_trace that cites a path through those excerpts.
+Judge ONLY whether each predicate faithfully encodes its report
+source, and whether the report supports a relationship between V and I under P.
+The relationship may be direct or mediated by an intermediate mechanism, but an
+indirect link is consistent only when relation_context or the P/I/V excerpts
+explicitly support that bridge. relation_context may support the relationship only;
+it cannot replace or change any frozen source. Do not infer a causal bridge from
+protocol knowledge or shared vocabulary. When relation_context supports your verdict,
+name the relevant statement_id and evidence_id in the piv_relation reason. If the
+P/I/V excerpts alone support the verdict, name the relevant frozen source ID instead.
+Treat relationship_trace as an unverified pointer: confirm every cited statement,
+evidence fragment and source ID exists and that the exact text supports the claimed
+link. A trace never upgrades a verdict without supporting excerpts; missing, inaccurate,
+or incomplete trace links do not erase evidence that is present in relation_context.
+Distinguish a formula mapping defect (a source check mismatch) from a relationship
+that the report does not clearly establish (weakened); do not treat the latter as a
+formula defect. Style, optimality and code truth are out of scope; never rewrite or
+propose predicates.
+
+A predicate is unfaithful when any of the following holds:
+- inverted: the predicate asserts the opposite direction or polarity of the
+  statement's claim, e.g. the statement says a fee accrues / an amount exists /
+  a balance is held (so a faithful encoding implies a positive or nonzero
+  quantity) and the predicate checks equality against zero, or the statement
+  says "at most N" and the predicate demands strictly less than N, or the
+  statement says "exceeds N" and the predicate accepts N itself.
+- wrong_constant: a numeric literal in the predicate is not the statement's
+  own quantity -- it belongs to a different statement, a different quantity,
+  or to nothing in the statement at all.
+- wrong_symbol: a symbol the predicate uses does not carry the meaning the
+  statement's fact requires (e.g. the statement is about the fee amount while
+  the predicate's symbol means elapsed time).
+- other_mismatch: the predicate encodes a different fact than the statement
+  states.
+Otherwise the source encoding is consistent. A tautologically weak but
+direction-correct bound (e.g. >= 0) is consistent, NOT inverted; the report's
+own semantics set the standard, not mathematical strength. For the relation
+check, mark consistent when formulas and supplied report excerpts support a direct
+or explicit indirect link. Mark weakened when that relationship is insufficiently
+supported or ambiguous; this means needs review, not that a source formula is wrong.
+Mark mismatch only when the relationship is clearly contradictory or report evidence
+establishes that V is unrelated to I under P. A downstream V is not a mismatch just
+because it is not the literal negation of I. Do not call an unsupported but explicitly
+unformalized claim faithful.
+
+Return JSON only, exactly:
+{"checks":[{"source_id":ID,"role":"P|I|V","verdict":"consistent"|"inverted"|"wrong_constant"|
+"wrong_symbol"|"other_mismatch","reason":ONE_SHORT_SENTENCE}],
+ "piv_relation":{"verdict":"consistent"|"weakened"|"mismatch","reason":ONE_SHORT_SENTENCE}}
+Cover every listed source_id exactly once, with its role, and only listed ones. The relation
+check must assess the supplied P/I/V formulas together and use relation_context and
+relationship_trace only as pointers to exact report evidence for an explicit bridge,
+not as replacement sources. Independently verify every trace ID against the supplied
+context; an unsupported or inaccurate trace cannot improve the verdict. If the trace
+omits a bridge but the supplied excerpts establish it, judge the excerpts directly.
+{"schema_version":"faithfulness-audit-input/4","relation_class":"progress_or_liveness","sources":[{"source_id":"user_can_queue_arbitrary_withdrawals","role":"P","statement_text":"A user is able to queue as many withdrawals as he wants with any amount of shares he wants by calling queueWithdrawal.","predicate":{"kind":"truth","symbol":"user_can_queue_arbitrary_withdrawals_occurred","value":true},"symbol_meanings":{"user_can_queue_arbitrary_withdrawals_occurred":{"sort":"bool","unit":null,"meaning":"a user queued an arbitrary number of withdrawals with an arbitrary amount of shares via queueWithdrawal"}}},{"source_id":"spam_requests_use_one_share","role":"P","statement_text":"A malicious user can submit withdrawal requests of a really small amount of shares (1 share).","predicate":{"kind":"truth","symbol":"spam_requests_one_share_occurred","value":true},"symbol_meanings":{"spam_requests_one_share_occurred":{"sort":"bool","unit":null,"meaning":"a malicious user submitted withdrawal requests of a really small amount of shares (1 share)"}}},{"source_id":"assumption_attacker_no_loss","role":"P","statement_text":"The attack costs the attacker nothing, so it can be repeated again and again.","predicate":{"kind":"truth","symbol":"attacker_no_loss_repeatable","value":true},"symbol_meanings":{"attacker_no_loss_repeatable":{"sort":"bool","unit":null,"meaning":"the attack costs the attacker nothing so it can be repeated again and again"}}},{"source_id":"intent_bounded_loop","role":"I","statement_text":"Processing and canceling queued withdrawals must be structured so that looping over the queue does not grow unbounded with the number of queued requests.","predicate":{"op":"implies","args":[{"var":"user_can_queue_arbitrary_withdrawals_occurred"},{"var":"queue_loop_bounded"}]},"symbol_meanings":{"queue_loop_bounded":{"sort":"bool","unit":null,"meaning":"looping over the queued withdrawals during processing and canceling does not grow unbounded with the number of queued requests"},"user_can_queue_arbitrary_withdrawals_occurred":{"sort":"bool","unit":null,"meaning":"a user queued an arbitrary number of withdrawals with an arbitrary amount of shares via queueWithdrawal"}}},{"source_id":"dos_contract_prevents_withdrawals","role":"V","statement_text":"The impact is DoS the contract which can prevent other users to withdrawal their stakes","predicate":{"var":"withdrawals_prevented_by_dos"},"symbol_meanings":{"withdrawals_prevented_by_dos":{"sort":"bool","unit":null,"meaning":"the contract is DoSed such that other users are prevented from withdrawing their stakes"}}}],"piv_relation":{"P":{"op":"and","args":[{"var":"user_can_queue_arbitrary_withdrawals_occurred"},{"var":"spam_requests_one_share_occurred"},{"var":"attacker_no_loss_repeatable"}]},"I":{"op":"implies","args":[{"var":"user_can_queue_arbitrary_withdrawals_occurred"},{"var":"queue_loop_bounded"}]},"V":{"op":"and","args":[{"op":"and","args":[{"var":"user_can_queue_arbitrary_withdrawals_occurred"},{"op":"not","args":[{"var":"queue_loop_bounded"}]}]},{"var":"withdrawals_prevented_by_dos"}]}},"relation_context":[{"statement_id":"queue_withdrawal_appends_request","role":"action","evidence":[{"evidence_id":"e_a691a9b140af_0004","text":"Basically the user is able to withdrawal his deposited amount in the GTL vault by providing amount of shares that he wants just by calling [`queueWithdrawal`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L101C3-L112C6). This will put in the array of queued withdraws a brand new one that should be processed by the admin:"}]},{"statement_id":"attacker_spams_queue","role":"action","evidence":[{"evidence_id":"e_a691a9b140af_0008","text":"The issue lies it that a malicious user can start spamming the vault, by sending a really small amount of shares(1 share) for withdrawal and all these spam requests will be stored in `_queuedWithdrawal` which makes the array really expensive for looping and maintaining."}]},{"statement_id":"attacker_cancels_via_dequeue","role":"action","evidence":[{"evidence_id":"e_a691a9b140af_0011","text":"- 2. The attacker can cancel all his queued withdrawal, which calling the [`_dequeue()`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L271C4-L283C6) function. The function itself expects the id of the withdrawal request as parameter and it looping trough all the queued withdraws, where it checks if the withdrawal id matches the input one. Looping trough all queued request will looping so much times that can run out of gas and eventually DoS the contract because of the amount of the requests."}]},{"statement_id":"no_input_amount_check","role":"root_cause","evidence":[{"evidence_id":"e_a691a9b140af_0001","text":"GTL vault can be gas overwhelmed and DoSed because of lack of input amount check"},{"evidence_id":"e_a691a9b140af_0003","text":"The issue occurs because of the ability for a user to queue as many withdraws as he wants with what amount of share he wants."},{"evidence_id":"e_a691a9b140af_0010","text":"- 1. If the exit for these queued withdrawals is (1) and they should be processed the admin should process more way 'batches' in order to safely process the withdrawals otherwise he can run out of gas and revert the tx."}]}],"relationship_trace":{"status":"explicit","links":[{"from_source_ids":["user_can_queue_arbitrary_withdrawals","spam_requests_use_one_share","intent_bounded_loop","dos_contract_prevents_withdrawals"],"context_statement_id":"attacker_cancels_via_dequeue","evidence_ids":["e_a691a9b140af_0011"],"reported_relation":"Unbounded looping over all queued withdrawals during _dequeue can run out of gas and DoS the contract, preventing other users from withdrawing."}],"gap":""}}

@@ -1,0 +1,168 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "Public execute/pullAmountAndExecute delegatecall to Multicall3 aggregate3Value allows third parties to move router-held residual ETH/ERC20 to arbitrary targets",
+    "environment": "TrailsRouter contract with Multicall3 delegatecall",
+    "evidence": [
+      "Public execute and pullAmountAndExecute allow draining router-held residual funds via delegated Multicall3.",
+      "Root cause: `TrailsRouter` is publicly callable and `delegatecall`s Multicall3 aggregate3Value, permitting arbitrary targets and ETH values drawn from `address(this)`. The router can accumulate value via:",
+      "- Targets returning ETH/tokens to the router. Thus, any nonzero router-held funds can be exfiltrated by a third party via `execute`."
+    ]
+  },
+  "entities": [
+    {
+      "id": "trails_router",
+      "name": "TrailsRouter",
+      "role": "contract",
+      "evidence": [
+        "Root cause: `TrailsRouter` is publicly callable and `delegatecall`s Multicall3 aggregate3Value, permitting arbitrary targets and ETH values drawn from `address(this)`. The router can accumulate value via:",
+        "- Targets returning ETH/tokens to the router. Thus, any nonzero router-held funds can be exfiltrated by a third party via `execute`."
+      ]
+    },
+    {
+      "id": "multicall3",
+      "name": "Multicall3 aggregate3Value",
+      "role": "contract",
+      "evidence": [
+        "Root cause: `TrailsRouter` is publicly callable and `delegatecall`s Multicall3 aggregate3Value, permitting arbitrary targets and ETH values drawn from `address(this)`. The router can accumulate value via:"
+      ]
+    },
+    {
+      "id": "third_party",
+      "name": "Third party caller",
+      "role": "attacker",
+      "evidence": [
+        "- Targets returning ETH/tokens to the router. Thus, any nonzero router-held funds can be exfiltrated by a third party via `execute`."
+      ]
+    },
+    {
+      "id": "router_funds",
+      "name": "Router-held residual ETH/ERC20",
+      "role": "asset",
+      "evidence": [
+        "- `receive()` accepting ETH.",
+        "- ERC20 pulled in `injectSweepAndCall`.",
+        "- Overpaid ETH not refunded in `pullAmountAndExecute`.",
+        "- Targets returning ETH/tokens to the router. Thus, any nonzero router-held funds can be exfiltrated by a third party via `execute`."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "router_holds_nonzero_funds",
+      "kind": "precondition",
+      "text": "The router holds nonzero residual ETH and/or ERC20 funds accumulated via receive(), injectSweepAndCall pulls, unrefunded overpaid ETH, or target returns.",
+      "modality": "potential",
+      "entity_ids": [
+        "trails_router",
+        "router_funds"
+      ],
+      "evidence": [
+        "- `receive()` accepting ETH.",
+        "- ERC20 pulled in `injectSweepAndCall`.",
+        "- Overpaid ETH not refunded in `pullAmountAndExecute`.",
+        "- Targets returning ETH/tokens to the router. Thus, any nonzero router-held funds can be exfiltrated by a third party via `execute`."
+      ]
+    },
+    {
+      "id": "public_entrypoint_callable",
+      "kind": "precondition",
+      "text": "TrailsRouter's execute and pullAmountAndExecute entrypoints are publicly callable.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router",
+        "third_party"
+      ],
+      "evidence": [
+        "Public execute and pullAmountAndExecute allow draining router-held residual funds via delegated Multicall3.",
+        "Root cause: `TrailsRouter` is publicly callable and `delegatecall`s Multicall3 aggregate3Value, permitting arbitrary targets and ETH values drawn from `address(this)`. The router can accumulate value via:"
+      ]
+    },
+    {
+      "id": "third_party_invokes_execute",
+      "kind": "action",
+      "text": "A third party calls the public execute entrypoint.",
+      "modality": "potential",
+      "entity_ids": [
+        "third_party",
+        "trails_router"
+      ],
+      "evidence": [
+        "- Targets returning ETH/tokens to the router. Thus, any nonzero router-held funds can be exfiltrated by a third party via `execute`."
+      ]
+    },
+    {
+      "id": "delegatecall_multicall3_arbitrary",
+      "kind": "root_cause",
+      "text": "execute delegatecalls Multicall3 aggregate3Value, permitting arbitrary targets and ETH values drawn from address(this), so any nonzero router-held funds can be exfiltrated by a third party.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router",
+        "multicall3",
+        "router_funds"
+      ],
+      "evidence": [
+        "Root cause: `TrailsRouter` is publicly callable and `delegatecall`s Multicall3 aggregate3Value, permitting arbitrary targets and ETH values drawn from `address(this)`. The router can accumulate value via:",
+        "- Targets returning ETH/tokens to the router. Thus, any nonzero router-held funds can be exfiltrated by a third party via `execute`."
+      ]
+    },
+    {
+      "id": "intent_no_arbitrary_targets_public",
+      "kind": "security_intent",
+      "text": "Public entrypoints must not permit arbitrary Multicall3 targets that move the router's own held ETH/token balance.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router",
+        "multicall3"
+      ],
+      "evidence": [
+        "- For ERC20, ensure only transfers sourced from msg.sender path are allowed; disallow direct calls that move router’s own token balance.",
+        "- Add allowlist/role checks or a guard that forbids arbitrary targets via Multicall3 from public entrypoints."
+      ]
+    },
+    {
+      "id": "intent_value_equals_msg_value",
+      "kind": "security_intent",
+      "text": "Value forwarded by the router must equal msg.value, with no access to the existing router balance.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router"
+      ],
+      "evidence": [
+        "- Enforce that value forwarded equals msg.value (no access to existing router balance)."
+      ]
+    },
+    {
+      "id": "intent_balance_snapshot_invariant",
+      "kind": "security_intent",
+      "text": "After execute, the router's native/token balances must not decrease except along explicitly allowed sweep/refund paths.",
+      "modality": "asserted",
+      "entity_ids": [
+        "trails_router",
+        "router_funds"
+      ],
+      "evidence": [
+        "- Consider a balance snapshot invariant: after execute, router’s native/token balances must not decrease except along explicitly allowed sweep/refund paths."
+      ]
+    },
+    {
+      "id": "theft_of_residual_eth_erc20_in_router",
+      "kind": "impact",
+      "text": "Direct theft of residual ETH and/or ERC20 stuck/dusted in router, independent of user mistakes.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "- Direct theft of residual ETH and/or ERC20 stuck/dusted in router, independent of user mistakes."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "third_party_invokes_execute"
+  ],
+  "ambiguities": [
+    "Report does not state whether the third party is unauthorized versus merely any caller; 'third party' exfiltration is asserted but permission model is not detailed.",
+    "No concrete numeric residual amount or specific transaction is given; nonzero-funds condition is qualitative.",
+    "Whether pullAmountAndExecute is also directly exploited (vs execute) is not separately described.",
+    "Fragment e_a52019574929_0011 states a likelihood about routes that partially spend, refund, or rebate but does not expressly state a distinct harmful outcome."
+  ]
+}

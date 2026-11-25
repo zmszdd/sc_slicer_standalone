@@ -203,7 +203,7 @@ fn quoted_token(message: &str) -> Option<String> {
 
 fn read_identifier(rest: &str) -> Option<String> {
     let trimmed = rest.trim_start();
-    let trimmed = trimmed.trim_start_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`');
+    let trimmed = trimmed.trim_start_matches(&['"', '\'', '`'][..]);
     let end = trimmed
         .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
         .unwrap_or(trimmed.len());

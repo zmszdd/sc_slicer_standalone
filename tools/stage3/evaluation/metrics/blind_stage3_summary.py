@@ -1,135 +1,119 @@
 #!/usr/bin/env python3
-"""Blind-set stage-3 outcome summary + failure-class root-cause analysis.
+"""Blind-set stage-3 outcome summary (mainline stage-3 eval snapshot).
 
-Reads the two blind eval snapshots (before/after the ``no_anchor`` ceiling fix)
-and the data audit, then writes ``blind_stage3_summary.{json,md}``. The point is
-a data-driven answer to "why is cross-project e2e recall still low": the blind
-set is not yet e2e-runnable because no case has a ``test_*`` harness, and the
-two pipeline bugs that previously masqueraded as ``not_dynamically_expressible``
-have been fixed so the remaining blockers are honest downstream verdicts.
+Reads the stage-3 eval JSON produced by ``cli.stage3_eval_run`` over
+``blind_goldset`` + ``blind_flatten_root``, plus the runnable selection and the
+stage-2 run dirs, then writes ``blind_stage3_summary.{json,md}``. Unlike the
+pre-harness audit this reflects live stage-3 verdicts, not data-readiness.
 """
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-BEFORE = HERE / 'blind_stage3_eval_before_fix.json'
-AFTER = HERE / 'blind_stage3_eval_after_fix.json'
-AUDIT = HERE / 'blind_data_audit.json'
-POC_STATUS = HERE / 'blind_poc_harness_status.json'
+SEL = HERE / 'blind_goldset' / 'selection.json'
+RUNS = HERE / 'blind_goldset' / 'runs_blind'
+DEFAULT_EVAL = HERE / 'blind_stage3_eval_20261118.json'
 OUT_JSON = HERE / 'blind_stage3_summary.json'
 OUT_MD = HERE / 'blind_stage3_summary.md'
 
 FAILURE_CLASSES = {
-    'not_dynamically_expressible': 'deterministic no_anchor ceiling discarded a '
-                                    'claim before LLM binding (fixed)',
-    'binding_error': 'binding is structurally invalid (e.g. library target '
-                     'misclassified as contract)',
-    'partial_binding': 'binding LLM left I/V symbols UNBOUND',
-    'compile_blocked': 'forge test could not run (no test entrypoint, or slice '
-                       'compile failure)',
-    'binding_failed': 'binding LLM produced no complete proposal',
-    'compile_error': 'patched project failed to compile after injection',
     'violation_reproduced': 'original=Success, patched=Failure (the only TP)',
+    'violation_not_reproduced': 'differential did not witness a violation',
+    'effect_observed_invariant_holds': 'effect probe passed; invariant holds on exploit path',
+    'reference_patch_required': 'not expressible as assert(I); needs a reference patch',
+    'binding_error': 'binding structurally invalid (e.g. library target)',
+    'binding_failed': 'binding LLM produced no complete proposal',
+    'partial_binding': 'binding LLM left I/V symbols UNBOUND',
+    'compile_blocked': 'forge test could not run',
+    'compile_error': 'patched project failed to compile',
+    'not_dynamically_expressible': 'deterministic no_anchor ceiling',
+    'halt_witness_required': 'needs halt-to-revert witness',
 }
 
 
-def _rows(path: Path) -> list[dict]:
-    data = json.loads(path.read_text())
-    return data.get('cases', [])
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--eval', type=Path, default=DEFAULT_EVAL)
+    args = parser.parse_args(argv)
 
+    eval_data = json.loads(args.eval.read_text())
+    rows = eval_data.get('cases', [])
+    selection = json.loads(SEL.read_text())
+    selected = [row['case'] for row in selection['cases']]
 
-def _verdict_counts(rows: list[dict]) -> dict[str, int]:
-    counts: dict[str, int] = {}
+    done = sum(1 for r in rows if r.get('status') == 'done')
+    reproduced = sum(int(r.get('reproduced') or 0) for r in rows)
+    claims_total = sum(r.get('claims') or 0 for r in rows)
+    stage2_runs = sum(1 for c in selected if (RUNS / c / 'stage3-spec.json').is_file())
+    verdict_counts: dict[str, int] = {}
     for row in rows:
         for verdict in row.get('verdicts') or []:
-            counts[verdict] = counts.get(verdict, 0) + 1
-    return counts
-
-
-def main() -> int:
-    before = _rows(BEFORE)
-    after = _rows(AFTER)
-    audit = json.loads(AUDIT.read_text())
-    poc_status = json.loads(POC_STATUS.read_text()) if POC_STATUS.is_file() else {}
+            verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
 
     report = {
-        'schema_version': 'blind-stage3-summary/1',
-        'generated': '2026-11-13',
-        'cases_total': len(after),
-        'claims_total': sum(r.get('claims', 0) for r in after),
-        'reproduced': sum(r.get('reproduced', 0) for r in after),
-        'e2e_recall': (sum(r.get('reproduced', 0) for r in after)
-                       / max(1, sum(r.get('claims', 0) for r in after))),
-        'before_fix_verdicts': _verdict_counts(before),
-        'after_fix_verdicts': _verdict_counts(after),
-        'audit': {
-            'stage_ready': audit.get('stage_ready'),
-            'submission_present': audit.get('submission_present'),
-            'poc_present': audit.get('poc_present'),
-            'contract_compiling': audit.get('contract_compiling'),
-        },
-        'poc_by_action': poc_status.get('by_action', {}),
-        'cases': after,
+        'schema_version': 'blind-stage3-summary/2',
+        'selected_runnable_cases': len(selected),
+        'stage2_runs': stage2_runs,
+        'stage3_done': done,
+        'claims_total': claims_total,
+        'reproduced': reproduced,
+        'claim_recall': reproduced / claims_total if claims_total else 0.0,
+        'verdict_counts': verdict_counts,
         'failure_classes': FAILURE_CLASSES,
+        'cases': rows,
     }
     OUT_JSON.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
 
-    vc = report['after_fix_verdicts']
     lines = [
-        '# 盲测阶段三结果与根因',
+        '# 盲测阶段三结果',
         '',
-        f"盲测 stage2 通过的 4 案例共 **{report['claims_total']}** claim，"
-        f"动态复现 **{report['reproduced']}**，端到端召回 "
-        f"**{report['e2e_recall']:.0%}**。",
+        f'可运行子集 **{len(selected)}** 案例；stage2 run **{stage2_runs}**；'
+        f'stage3 完成 **{done}**；claim 级复现 **{reproduced}/{claims_total}**。',
         '',
-        '| 案例 | claims | 复现 | 主要 verdict |',
+        '| 案例 | claims | 复现 | verdicts |',
         '| --- | ---: | ---: | --- |',
     ]
-    for row in after:
-        verdicts = ', '.join(sorted(set(row.get('verdicts') or [])))
+    for row in rows:
+        verdicts = ', '.join(sorted(set(row.get('verdicts') or []))) or row.get('status')
         lines.append(
-            f"| {row['case']} | {row.get('claims')} | "
-            f"{row.get('reproduced')} | {verdicts} |")
+            f"| {row['case']} | {row.get('claims') or '-'} | "
+            f"{row.get('reproduced') or 0} | {verdicts} |")
     lines += [
         '',
-        '## 修复前后 verdict 分布',
+        '## verdict 分布',
         '',
-        '| verdict | 修复前 | 修复后 |',
-        '| --- | ---: | ---: |',
+        '| verdict | 数 |',
+        '| --- | ---: |',
     ]
-    for verdict in sorted(set(report['before_fix_verdicts']) | set(vc)):
-        lines.append(
-            f"| {verdict} | {report['before_fix_verdicts'].get(verdict, 0)} | "
-            f"{vc.get(verdict, 0)} |")
+    for verdict in sorted(verdict_counts):
+        lines.append(f'| {verdict} | {verdict_counts[verdict]} |')
     lines += [
         '',
         '## 根因（按影响排序）',
         '',
-        f"- **无 test 入口（硬阻塞）**：盲测 audit `stage_ready={report['audit']['stage_ready']}`，"
-        f"PoC 动作分布 {report['poc_by_action']}（`no_poc_code` 33 / `snippet_only` 4 / "
-        f"`fork_rpc` 3 / `self_contained` 0）。"
-        f"所有案例 `Resurrected.t.sol` 都没有 `test_*` 函数；`forge test` 报 "
-        "`No tests found`，差分无法运行。合约级 flatten 只含 `src` 不含 PoC 测试。"
-        "实测 Sequence__144：submission 的 PoC 代码块可 `forge flatten` 成含 "
-        "`testCrossWalletReplayAttack` 的 harness，但该 PoC 依赖 `vm.envUint`/`vm.rpc` "
-        "fork 本地 RPC，不是自包含测试；sol_resurrect 产出为空壳 stub。",
-        f"- **`no_anchor` 过度路由（已修）**：确定性模糊匹配把 "
-        "「zero shares」映射不到 `_mint`/`balanceOf`，硬路由成 "
-        "`not_dynamically_expressible`（修复前 5/10）。现在只有 `low` 可观测性才硬路由，"
-        "其余交给 binding LLM。",
-        f"- **library/contract 定位（已修）**：patch 注入只匹配 `contract`，"
-        "`library SessionSig` 触发 `binding_error`；已扩展到 `abstract contract`/`library`。",
-        f"- **UNBOUND 符号**：`partial_binding` {vc.get('partial_binding', 0)} 例，"
-        "binding LLM 未完成 I/V 绑定，走 fn_work_queue 的 rebind。",
-        f"- **stage2 实体类型误判**：`contract` vs `library` 的语义提取错位。",
+        f"- **binding_error**：{verdict_counts.get('binding_error', 0)} 个 claim 的 I/V "
+        '绑定形状或类型与代码事实不匹配，在 forge 前被拒绝。',
+        f"- **stage2_restatement_required**："
+        f"{verdict_counts.get('stage2_restatement_required', 0)} 个 claim 命中快照/层错配"
+        '等语义硬门，必须回到阶段二重述 I，不得算 TN 或 FN。',
+        f"- **violation_reproduced**：{verdict_counts.get('violation_reproduced', 0)} 个 claim "
+        '完成 original=Success / patched=Failure 的定向差分，其中参考补丁路由命中 '
+        f"{sum(int(row.get('reference_patch_reproduced') or 0) for row in rows)} 个。",
+        f"- **compile_error**：{verdict_counts.get('compile_error', 0)} 个 claim 的补丁版"
+        '工程编译失败，按规则不计为漏洞成立。',
+        f"- **effect/not_reproduced**：effect_observed_invariant_holds "
+        f"{verdict_counts.get('effect_observed_invariant_holds', 0)}，"
+        f"violation_not_reproduced {verdict_counts.get('violation_not_reproduced', 0)}，"
+        '说明 I 未在 exploit 路径上被证伪或差分未产生见证。',
         '',
         '## 结论',
         '',
-        '盲测跨项目 e2e 目前无法测出真实召回，因为测试 harness 未就绪；'
-        '在 harness 补齐前不应据此调 dev 指标。两个 pipeline 级根因已修复，'
-        '剩余为数据就绪与绑定质量。',
+        f'盲测主线已端到端跑通（compile_blocked '
+        f"{eval_data.get('compile_blocked_total', 0)}）；当前剩余损失由绑定错误、"
+        '阶段二快照不变式和少量编译问题决定，不再是 stage-1 harness 缺失。',
     ]
     OUT_MD.write_text('\n'.join(lines) + '\n')
     print(json.dumps(report, ensure_ascii=False, indent=2))

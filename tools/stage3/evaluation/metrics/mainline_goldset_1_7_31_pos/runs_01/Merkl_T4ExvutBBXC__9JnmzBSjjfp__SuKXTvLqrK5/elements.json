@@ -1,0 +1,324 @@
+{
+  "schema_version": "report-elements/1",
+  "scope": {
+    "flow": "increaseTokenBalance deposit accounting and _pullTokens campaign funding with fee-on-transfer tokens",
+    "environment": "Solidity creatorBalance accounting system with whitelisted reward tokens",
+    "evidence": [
+      "Fee-on-Transfer Tokens Cause Accounting Mismatch in `creatorBalance` System, Leading to Contract Insolvency and Loss of User Funds",
+      "The `increaseTokenBalance()` function assumes that the amount requested equals the amount received:",
+      "The same issue exists in `_pullTokens()` for campaign creation. Campaigns may be underfunded, meaning the distributor receives fewer tokens than recorded, causing later claimers to lose out.",
+      "This vulnerability affects any FoT token that gets whitelisted. Real-world tokens include:"
+    ]
+  },
+  "entities": [
+    {
+      "id": "user",
+      "name": "depositing user",
+      "role": "victim",
+      "evidence": [
+        "1. User calls `increaseTokenBalance(user, FOT_TOKEN, 1000)`",
+        "Charlie is the victim. He deposited legitimately but cannot withdraw because earlier users took more than their fair share of the actual tokens."
+      ]
+    },
+    {
+      "id": "fot_token",
+      "name": "fee-on-transfer token",
+      "role": "asset",
+      "evidence": [
+        "Fee-on-transfer (FoT) tokens automatically deduct a percentage during every transfer. When you call `transfer(recipient, 100)`, the recipient receives less than 100 tokens because a fee is taken. Common examples:",
+        "This vulnerability affects any FoT token that gets whitelisted. Real-world tokens include:"
+      ]
+    },
+    {
+      "id": "increase_token_balance",
+      "name": "increaseTokenBalance()",
+      "role": "contract",
+      "evidence": [
+        "The `increaseTokenBalance()` function assumes that the amount requested equals the amount received:",
+        "Modify `increaseTokenBalance()` to credit only what was actually received:"
+      ]
+    },
+    {
+      "id": "pull_tokens",
+      "name": "_pullTokens()",
+      "role": "contract",
+      "evidence": [
+        "The same issue exists in `_pullTokens()` for campaign creation. Campaigns may be underfunded, meaning the distributor receives fewer tokens than recorded, causing later claimers to lose out.",
+        "Apply the same pattern to `_pullTokens()`:"
+      ]
+    },
+    {
+      "id": "creator_balance",
+      "name": "creatorBalance mapping",
+      "role": "contract",
+      "evidence": [
+        "4. `creatorBalance[user][FOT_TOKEN]` is credited with 1000 (not 990!)",
+        "No errors occur during deposits. The `creatorBalance` mapping looks correct. Users have no indication of the problem until mass withdrawals begin."
+      ]
+    },
+    {
+      "id": "governance",
+      "name": "governance whitelisting tokens",
+      "role": "authority",
+      "evidence": [
+        "This vulnerability affects any FoT token that gets whitelisted. Real-world tokens include:",
+        "If governance whitelists any such token without awareness of this bug, users will lose funds."
+      ]
+    }
+  ],
+  "statements": [
+    {
+      "id": "fot_token_whitelisted",
+      "kind": "precondition",
+      "text": "A fee-on-transfer token is whitelisted as a reward token.",
+      "modality": "potential",
+      "entity_ids": [
+        "fot_token",
+        "governance"
+      ],
+      "evidence": [
+        "This vulnerability affects any FoT token that gets whitelisted. Real-world tokens include:",
+        "If governance whitelists any such token without awareness of this bug, users will lose funds."
+      ]
+    },
+    {
+      "id": "fot_fee_deducted_on_transfer",
+      "kind": "precondition",
+      "text": "The token deducts a percentage fee on every transfer, so a transfer of 100 delivers less than 100 to the recipient.",
+      "modality": "asserted",
+      "entity_ids": [
+        "fot_token"
+      ],
+      "evidence": [
+        "Fee-on-transfer (FoT) tokens automatically deduct a percentage during every transfer. When you call `transfer(recipient, 100)`, the recipient receives less than 100 tokens because a fee is taken. Common examples:"
+      ]
+    },
+    {
+      "id": "user_calls_increase_balance",
+      "kind": "action",
+      "text": "User calls increaseTokenBalance(user, FOT_TOKEN, 1000).",
+      "modality": "potential",
+      "entity_ids": [
+        "user",
+        "increase_token_balance",
+        "fot_token"
+      ],
+      "evidence": [
+        "1. User calls `increaseTokenBalance(user, FOT_TOKEN, 1000)`"
+      ]
+    },
+    {
+      "id": "safe_transfer_from_executes",
+      "kind": "action",
+      "text": "safeTransferFrom transfers 1000 tokens while the FoT token takes a 1% fee, so the contract actually receives 990 tokens.",
+      "modality": "potential",
+      "entity_ids": [
+        "increase_token_balance",
+        "fot_token"
+      ],
+      "evidence": [
+        "2. `safeTransferFrom` transfers 1000 tokens, but FoT takes 1% fee",
+        "3. Contract actually receives 990 tokens"
+      ]
+    },
+    {
+      "id": "pull_tokens_campaign_creation",
+      "kind": "action",
+      "text": "_pullTokens() is used for campaign creation with the same transfer pattern.",
+      "modality": "potential",
+      "entity_ids": [
+        "pull_tokens",
+        "fot_token"
+      ],
+      "evidence": [
+        "The same issue exists in `_pullTokens()` for campaign creation. Campaigns may be underfunded, meaning the distributor receives fewer tokens than recorded, causing later claimers to lose out."
+      ]
+    },
+    {
+      "id": "assumes_requested_equals_received",
+      "kind": "root_cause",
+      "text": "increaseTokenBalance() assumes the amount requested equals the amount received, so creatorBalance[user][FOT_TOKEN] is credited with 1000 rather than the 990 actually received, creating an ever-growing deficit between recorded balances and actual token holdings.",
+      "modality": "asserted",
+      "entity_ids": [
+        "increase_token_balance",
+        "creator_balance",
+        "fot_token"
+      ],
+      "evidence": [
+        "The `increaseTokenBalance()` function assumes that the amount requested equals the amount received:",
+        "4. `creatorBalance[user][FOT_TOKEN]` is credited with 1000 (not 990!)",
+        "This creates an ever-growing deficit between recorded balances and actual token holdings."
+      ]
+    },
+    {
+      "id": "pull_tokens_same_defect",
+      "kind": "root_cause",
+      "text": "The same requested-equals-received assumption exists in _pullTokens() for campaign creation, so campaigns may be underfunded and the distributor receives fewer tokens than recorded.",
+      "modality": "potential",
+      "entity_ids": [
+        "pull_tokens",
+        "fot_token"
+      ],
+      "evidence": [
+        "The same issue exists in `_pullTokens()` for campaign creation. Campaigns may be underfunded, meaning the distributor receives fewer tokens than recorded, causing later claimers to lose out."
+      ]
+    },
+    {
+      "id": "credit_matches_actual_receipt",
+      "kind": "security_intent",
+      "text": "The balance credited to a user (and the amount recorded for a campaign pull) must equal the amount of tokens actually received by the contract, not the amount requested.",
+      "modality": "asserted",
+      "entity_ids": [
+        "increase_token_balance",
+        "pull_tokens",
+        "creator_balance"
+      ],
+      "evidence": [
+        "The `increaseTokenBalance()` function assumes that the amount requested equals the amount received:",
+        "Modify `increaseTokenBalance()` to credit only what was actually received:",
+        "Apply the same pattern to `_pullTokens()`:"
+      ]
+    },
+    {
+      "id": "recorded_balances_covered_by_holdings",
+      "kind": "security_intent",
+      "text": "Recorded creatorBalance totals must not exceed actual token holdings, so that recorded balances remain fully backed.",
+      "modality": "asserted",
+      "entity_ids": [
+        "creator_balance",
+        "fot_token"
+      ],
+      "evidence": [
+        "This creates an ever-growing deficit between recorded balances and actual token holdings.",
+        "**1. Guaranteed Insolvency:**"
+      ]
+    },
+    {
+      "id": "fot_tokens_rejected_or_documented",
+      "kind": "security_intent",
+      "text": "If supporting FoT tokens is not desired, such tokens must be explicitly rejected (or at minimum documented as unsupported) before whitelisting.",
+      "modality": "asserted",
+      "entity_ids": [
+        "governance",
+        "fot_token"
+      ],
+      "evidence": [
+        "#### Option 2: Reject FoT Tokens",
+        "- Clearly document that FoT tokens are not supported",
+        "- Add validation in `setRewardTokenMinAmounts()` to verify token behavior before whitelisting"
+      ]
+    },
+    {
+      "id": "guaranteed_fund_loss",
+      "kind": "impact",
+      "text": "Guaranteed fund loss for some users",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "**Severity: HIGH** - Guaranteed fund loss for some users"
+      ]
+    },
+    {
+      "id": "guaranteed_insolvency",
+      "kind": "impact",
+      "text": "Guaranteed Insolvency:",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "**1. Guaranteed Insolvency:**"
+      ]
+    },
+    {
+      "id": "last_user_bears_entire_loss",
+      "kind": "impact",
+      "text": "Whoever withdraws last bears the entire accumulated loss.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "The deficit isn't distributed fairly. Whoever withdraws last bears the entire accumulated loss. This creates a \"bank run\" incentive where users race to withdraw before others."
+      ]
+    },
+    {
+      "id": "bank_run_incentive",
+      "kind": "impact",
+      "text": "This creates a \"bank run\" incentive where users race to withdraw before others.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "The deficit isn't distributed fairly. Whoever withdraws last bears the entire accumulated loss. This creates a \"bank run\" incentive where users race to withdraw before others."
+      ]
+    },
+    {
+      "id": "users_unaware_until_mass_withdrawals",
+      "kind": "impact",
+      "text": "Users have no indication of the problem until mass withdrawals begin.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "No errors occur during deposits. The `creatorBalance` mapping looks correct. Users have no indication of the problem until mass withdrawals begin."
+      ]
+    },
+    {
+      "id": "more_severe_loss_for_late_withdrawers",
+      "kind": "impact",
+      "text": "More users = larger gap = more severe loss for late withdrawers.",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "Each deposit increases the deficit. More users = larger gap = more severe loss for late withdrawers."
+      ]
+    },
+    {
+      "id": "campaigns_underfunded",
+      "kind": "impact",
+      "text": "Campaigns may be underfunded",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "The same issue exists in `_pullTokens()` for campaign creation. Campaigns may be underfunded, meaning the distributor receives fewer tokens than recorded, causing later claimers to lose out."
+      ]
+    },
+    {
+      "id": "distributor_receives_fewer_tokens",
+      "kind": "impact",
+      "text": "the distributor receives fewer tokens than recorded",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "The same issue exists in `_pullTokens()` for campaign creation. Campaigns may be underfunded, meaning the distributor receives fewer tokens than recorded, causing later claimers to lose out."
+      ]
+    },
+    {
+      "id": "later_claimers_lose_out",
+      "kind": "impact",
+      "text": "causing later claimers to lose out",
+      "modality": "asserted",
+      "entity_ids": [],
+      "evidence": [
+        "The same issue exists in `_pullTokens()` for campaign creation. Campaigns may be underfunded, meaning the distributor receives fewer tokens than recorded, causing later claimers to lose out."
+      ]
+    },
+    {
+      "id": "users_lose_funds",
+      "kind": "impact",
+      "text": "users will lose funds",
+      "modality": "potential",
+      "entity_ids": [],
+      "evidence": [
+        "If governance whitelists any such token without awareness of this bug, users will lose funds."
+      ]
+    }
+  ],
+  "attack_steps": [
+    "user_calls_increase_balance",
+    "safe_transfer_from_executes",
+    "pull_tokens_campaign_creation"
+  ],
+  "ambiguities": [
+    "Report does not state who may call increaseTokenBalance or whether it is permissionless.",
+    "No explicit numeric bound or checkpoint for the deficit is given beyond the illustrative 1000/990 example.",
+    "Whether governance whitelisting is a required precondition or merely a risk factor is not fully specified.",
+    "The exact withdrawal mechanics and ordering that produce last-user loss are not described in prose.",
+    "Charlie cannot withdraw because earlier users took more than their fair share of the actual tokens (e_36efdb88a79c_0023) is a specific instance of the last-user loss rather than a separate outcome."
+  ]
+}

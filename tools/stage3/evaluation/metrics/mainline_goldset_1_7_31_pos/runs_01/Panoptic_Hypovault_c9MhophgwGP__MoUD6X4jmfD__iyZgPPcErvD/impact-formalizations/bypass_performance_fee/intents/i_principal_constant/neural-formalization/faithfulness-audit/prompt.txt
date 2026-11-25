@@ -1,0 +1,62 @@
+You are a semantic faithfulness auditor. For each
+listed source you get its role (P, I, or V), the report statement text, the
+generated predicate that claims to encode it, and the meanings of the symbols
+the predicate uses. A null predicate means that the generated rule omitted
+that frozen source; mark it other_mismatch. You also receive the full P/I/V relation,
+exact report excerpts from cited action/root-cause evidence as relation_context, and
+a generator-proposed relationship_trace that cites a path through those excerpts.
+Judge ONLY whether each predicate faithfully encodes its report
+source, and whether the report supports a relationship between V and I under P.
+The relationship may be direct or mediated by an intermediate mechanism, but an
+indirect link is consistent only when relation_context or the P/I/V excerpts
+explicitly support that bridge. relation_context may support the relationship only;
+it cannot replace or change any frozen source. Do not infer a causal bridge from
+protocol knowledge or shared vocabulary. When relation_context supports your verdict,
+name the relevant statement_id and evidence_id in the piv_relation reason. If the
+P/I/V excerpts alone support the verdict, name the relevant frozen source ID instead.
+Treat relationship_trace as an unverified pointer: confirm every cited statement,
+evidence fragment and source ID exists and that the exact text supports the claimed
+link. A trace never upgrades a verdict without supporting excerpts; missing, inaccurate,
+or incomplete trace links do not erase evidence that is present in relation_context.
+Distinguish a formula mapping defect (a source check mismatch) from a relationship
+that the report does not clearly establish (weakened); do not treat the latter as a
+formula defect. Style, optimality and code truth are out of scope; never rewrite or
+propose predicates.
+
+A predicate is unfaithful when any of the following holds:
+- inverted: the predicate asserts the opposite direction or polarity of the
+  statement's claim, e.g. the statement says a fee accrues / an amount exists /
+  a balance is held (so a faithful encoding implies a positive or nonzero
+  quantity) and the predicate checks equality against zero, or the statement
+  says "at most N" and the predicate demands strictly less than N, or the
+  statement says "exceeds N" and the predicate accepts N itself.
+- wrong_constant: a numeric literal in the predicate is not the statement's
+  own quantity -- it belongs to a different statement, a different quantity,
+  or to nothing in the statement at all.
+- wrong_symbol: a symbol the predicate uses does not carry the meaning the
+  statement's fact requires (e.g. the statement is about the fee amount while
+  the predicate's symbol means elapsed time).
+- other_mismatch: the predicate encodes a different fact than the statement
+  states.
+Otherwise the source encoding is consistent. A tautologically weak but
+direction-correct bound (e.g. >= 0) is consistent, NOT inverted; the report's
+own semantics set the standard, not mathematical strength. For the relation
+check, mark consistent when formulas and supplied report excerpts support a direct
+or explicit indirect link. Mark weakened when that relationship is insufficiently
+supported or ambiguous; this means needs review, not that a source formula is wrong.
+Mark mismatch only when the relationship is clearly contradictory or report evidence
+establishes that V is unrelated to I under P. A downstream V is not a mismatch just
+because it is not the literal negation of I. Do not call an unsupported but explicitly
+unformalized claim faithful.
+
+Return JSON only, exactly:
+{"checks":[{"source_id":ID,"role":"P|I|V","verdict":"consistent"|"inverted"|"wrong_constant"|
+"wrong_symbol"|"other_mismatch","reason":ONE_SHORT_SENTENCE}],
+ "piv_relation":{"verdict":"consistent"|"weakened"|"mismatch","reason":ONE_SHORT_SENTENCE}}
+Cover every listed source_id exactly once, with its role, and only listed ones. The relation
+check must assess the supplied P/I/V formulas together and use relation_context and
+relationship_trace only as pointers to exact report evidence for an explicit bridge,
+not as replacement sources. Independently verify every trace ID against the supplied
+context; an unsupported or inaccurate trace cannot improve the verdict. If the trace
+omits a bridge but the supplied excerpts establish it, judge the excerpts directly.
+{"schema_version":"faithfulness-audit-input/4","relation_class":"state_correspondence","sources":[{"source_id":"assump_transfer_allowed","role":"P","statement_text":"Users are able to call transfer()/transferFrom() to move shares and proportional userBasis between accounts.","predicate":{"kind":"truth","symbol":"transfer_moves_shares_and_basis","value":true},"symbol_meanings":{"transfer_moves_shares_and_basis":{"sort":"bool","unit":null,"meaning":"Users are able to call transfer()/transferFrom() to move shares and proportional userBasis between accounts"}}},{"source_id":"p_bob_positive_pnl","role":"P","statement_text":"Bob has a positive PNL of 20 - 18 = 2 and would owe a performance fee if he exits immediately.","predicate":{"kind":"truth","symbol":"bob_pnl_positive","value":true},"symbol_meanings":{"bob_pnl_positive":{"sort":"bool","unit":null,"meaning":"Bob has a positive PNL of 20 - 18 = 2 and would owe a performance fee if he exits immediately"}}},{"source_id":"i_principal_constant","role":"I","statement_text":"A user's userBasis, representing principal, should remain constant across transfers rather than being changed by transfers between users.","predicate":{"op":"implies","args":[{"var":"transfer_moves_shares_and_basis"},{"op":"eq","args":[{"var":"user_basis_after_transfer"},{"var":"user_basis_before_transfer"}]}]},"symbol_meanings":{"transfer_moves_shares_and_basis":{"sort":"bool","unit":null,"meaning":"Users are able to call transfer()/transferFrom() to move shares and proportional userBasis between accounts"},"user_basis_after_transfer":{"sort":"int","unit":"dimensionless","meaning":"Bob's userBasis (principal) after the inter-user transfers"},"user_basis_before_transfer":{"sort":"int","unit":"dimensionless","meaning":"Bob's userBasis (principal) before the inter-user transfers"}}},{"source_id":"bypass_performance_fee","role":"V","statement_text":"the winning user can fabricate a non-positive PNL to bypass the performance fee","predicate":{"var":"fabricated_nonpositive_pnl"},"symbol_meanings":{"fabricated_nonpositive_pnl":{"sort":"bool","unit":null,"meaning":"the winning user can fabricate a non-positive PNL to bypass the performance fee"}}}],"piv_relation":{"P":{"op":"and","args":[{"var":"transfer_moves_shares_and_basis"},{"var":"bob_pnl_positive"}]},"I":{"op":"implies","args":[{"var":"transfer_moves_shares_and_basis"},{"op":"eq","args":[{"var":"user_basis_after_transfer"},{"var":"user_basis_before_transfer"}]}]},"V":{"op":"and","args":[{"op":"and","args":[{"var":"transfer_moves_shares_and_basis"},{"op":"not","args":[{"op":"eq","args":[{"var":"user_basis_after_transfer"},{"var":"user_basis_before_transfer"}]}]}]},{"var":"fabricated_nonpositive_pnl"}]}},"relation_context":[{"statement_id":"a_alice_transfer_to_bob","role":"action","evidence":[{"evidence_id":"e_977b3a5bfdfa_0021","text":"6. Bob persuades Alice to transfer `10s` to him first."},{"evidence_id":"e_977b3a5bfdfa_0022","text":"7. Alice: (0s, 0p). Bob: (30s, 30p)."}]},{"statement_id":"a_bob_transfer_back","role":"action","evidence":[{"evidence_id":"e_977b3a5bfdfa_0023","text":"8. Bob transfers back `10s` to Alice."},{"evidence_id":"e_977b3a5bfdfa_0024","text":"9. Alice: (10s, 10p). Bob: (20s, 20p)."}]},{"statement_id":"rc_proportional_basis_transfer","role":"root_cause","evidence":[{"evidence_id":"e_977b3a5bfdfa_0004","text":"However, `userBasis` can be changed after user deposits through transfers. `transfer()` and `transferFrom()` allow users to transfer `balance` and `userBasis` proportionally at the same time."},{"evidence_id":"e_977b3a5bfdfa_0005","text":"Between different users, multiple transfers can make `balance` unchanged (representing the same withdrawable amount despite fees) while changing `userBasis` (representing the principal which should have been constant). Then the winning user can fabricate a non-positive PNL to bypass the performance fee."},{"evidence_id":"e_977b3a5bfdfa_0008","text":"We can see `userBasis` is transferred with user balance. The two variables `userBasis[user]` and `balanceOf[user]` are designed to follow such an invariant:"},{"evidence_id":"e_977b3a5bfdfa_0012","text":"\\text{balanceOf}[\\text{user}] > 0 \\implies \\frac{\\text{balanceOf}[\\text{user}]}{\\text{userBasis}[\\text{user}]} = k \\text{ (constant)}"},{"evidence_id":"e_977b3a5bfdfa_0015","text":"However, the following scenario shows how the constant `k` ratio can be broken:"}]},{"statement_id":"rc_fabricated_nonpositive_pnl","role":"root_cause","evidence":[{"evidence_id":"e_977b3a5bfdfa_0025","text":"10. Alice and Bob have no loss in shares after the transfers. Alice loses money but has a 0 PNL. Bob wins money but also has a 0 PNL."},{"evidence_id":"e_977b3a5bfdfa_0026","text":"11. If Bob exits now, he will not have to pay a performance fee. If Alice exits now, she also will not pay a performance fee, and neither would she have before. So Alice never suffers a loss regarding fees, and the trade with Bob does no harm. If Alice decides to stay in the vault, when she makes a profit, she can also do the same trade with others."}]}],"relationship_trace":{"status":"explicit","links":[{"from_source_ids":["assump_transfer_allowed","i_principal_constant"],"context_statement_id":"rc_proportional_basis_transfer","evidence_ids":["e_977b3a5bfdfa_0004","e_977b3a5bfdfa_0005","e_977b3a5bfdfa_0008"],"reported_relation":"transfer()/transferFrom() move balance and userBasis proportionally, allowing userBasis to change across transfers even though it should remain constant."},{"from_source_ids":["i_principal_constant","bypass_performance_fee"],"context_statement_id":"rc_fabricated_nonpositive_pnl","evidence_ids":["e_977b3a5bfdfa_0025","e_977b3a5bfdfa_0026"],"reported_relation":"After transfers change userBasis while balance is unchanged, the winning user fabricates a non-positive PNL and avoids the performance fee."}],"gap":""}}

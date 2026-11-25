@@ -1,0 +1,37 @@
+GovernanceHYBR full-exit withdrawal reverts via zero-weight split
+
+### Summary
+GovernanceHYBR’s withdraw flow is broken under common conditions: it always performs a three‑way split of the pooled veNFT into [remainder, user, fee] via VotingEscrow.multiSplit, but multiSplit treats inputs as “weights” and forbids zeros. On a full exit, the remainder becomes 0, so multiSplit reverts with “ZW”, making full‑exit withdrawals impossible. Separately, multiSplit is gated by a team‑controlled toggle (splitAllowed); unless governance enables splitting for gHYBR, any withdrawal reverts with “!SPLIT”. The result is a functional DoS of withdrawals without proper setup, and an inherent inability to fully exit even when split is enabled.
+
+
+### Finding Description
+- GovernanceHYBR implements withdrawals by splitting the pooled `veTokenId` into three portions: remainder (contract), user, and fee. It passes absolute amounts to `VotingEscrow.multiSplit`:
+- `VotingEscrow.multiSplit` treats the input as “weights” and forbids zero values:
+- When a user withdraws all shares, `remainingAmount == 0`. The call reaches `multiSplit` and reverts with “ZW”.
+- Separately, `multiSplit` is protected by `splitAllowed(_from)`; unless the team enables it for `gHYBR`, any withdrawal via `multiSplit` reverts with “!SPLIT”. Enabling split reveals the “ZW” failure for full‑exit:
+
+### Why it’s a bug (not by design)
+- The withdrawal path is clearly intended (time window, fee handling, `Withdraw` event).
+- The guard explicitly allows zero remainder (`remainingAmount >= 0`) but later fails in `multiSplit` on zero weight; that’s an integration mismatch, not an explicit prohibition of full exits.
+
+### Impact
+- Functional DoS of full-exit withdrawals: last user and exact-proportion cases cannot exit.
+
+### Root Cause
+- GovernanceHYBR passes absolute amounts to a weight-based splitter that prohibits zero. No special case for `remainingAmount == 0`.
+- Withdrawals are hard-wired to `multiSplit`, which is gated by `splitAllowed`.
+
+### Recommendations
+
+  - Add a full‑exit branch:
+    - If `remainingAmount == 0`, avoid `multiSplit`. Create user and fee NFTs (two‑way split or direct mint), burn or reinitialize the pooled lock, and set `veTokenId` properly.
+
+### Proof of Concept
+- Test file: `ve33/test/GHYBRFullExitRevert.t.sol`
+- Flow:
+  - Deposit to initialize `veTokenId`.
+  - Warp into valid withdraw window.
+  - Enable splitting: `votingEscrow.toggleSplit(address(gHybr), true)`.
+  - Attempt `withdraw(all shares)`.
+  - Expect revert with `bytes("ZW")`.
+- The test passed, confirming deterministic failure of full-exit.

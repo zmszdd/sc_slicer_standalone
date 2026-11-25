@@ -1,0 +1,52 @@
+UniswapPriceOracle TWAP Validation Always Returns True Regardles Price Manipulation
+
+## Description:
+
+The _validatePrice()_ function in __UniswapPriceOracle__ is supposed to protect the protocol's buyback mechanism from price manipulation by comparing the current spot price against a time-weighted average price. Due to a mathematical error in how the TWAP is computed, the function always compares the spot price against itself, resulting in a derivation of zero every single time. The function therefore always returns true, no matter how severely the pool has been manipulated.
+
+This completely removes the pre-swap price validation from the V2 buyback path in __BuyBackBurner__, exposing the protocol to sandwich attacks where an attacker can manipulate the Uniswap V2 pool, trigger _buyBack()_ (which is callable by anyone), and extract value up to maxSlippage% of the swap amount.
+
+## Details:
+The implementation on lines 79–82 of __UniswapPriceOracle.sol__ computes the "TWAP" like this:
+
+
+timeWeightedAverage = (cumulativePriceLast + tradePrice × elapsedTime − cumulativePriceLast) / elapsedTime
+                    = (tradePrice × elapsedTime) / elapsedTime
+                    = tradePrice
+
+Because timeWeightedAverage == tradePrice is always true, the derivation calculation on lines 86–88 always produces zero:
+
+
+And zero is always less than or equal to any slippage parameter, so line 90 always returns true:
+
+
+The fundamental problem is that the function reads _cumulativePriceLast_ from the pool and then immediately uses it as both the starting point and the reference for subtraction in the same calculation. A correct TWAP implementation needs two snapshots taken at different points in time — you need to store a previous cumulative price reading and compare it against the current one.
+
+## Impact
+The validatePrice() function is called as the first line of defense in BuyBackBurner._buyOLAS() for V2 swaps:
+Because this check always passes, the V2 buyback path has no effective pre-swap price validation. The remaining protections are:
+
+1. _previousPrice_ --> Captured after _validatePrice_ passes, at the already-manipulated spot price.
+2. _performSwap : Executes with _amountOutMin_ = 0 in __BuyBackBurnerUniswap.sol__, accepting any output.
+3. Post-swap bounds check: Compares the post-swap price against bounds derived from _previousPrice_, which was itself captured at the manipulated state.
+
+The post-swap check does provide some protection, but it's anchored to the wrong baseline. The attacker's profit is bounded by _maxSlippage%_ of the swap value rather than being fully prevented.
+
+Critically, buyBack() has no access control — anyone can call it. This means an attacker can:
+
+1. Flash-loan tokens to manipulate the V2 pool reserves
+2. Call _buyBack()_ — _validatePrice()_ passes regardless
+3. The swap executes at the manipulated price with zero minimum output
+4. The post-swap check uses the manipulated price as its baseline
+5. The attacker restores the pool and profits up to _maxSlippage%_ of the swap
+
+__This is a critical/high impact issue!__
+
+## Recommended mitigation steps
+
+Store periodic snapshots:
+Add state to the oracle to store the cumulative price at a previous point in time. On each call, compare the current cumulative price against the stored one to derive a real TWAP:
+
+
+
+Describe the best method(s) to mitigate the finding.

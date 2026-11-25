@@ -1,32 +1,40 @@
-# 盲测阶段三结果与根因
+# 盲测阶段三结果
 
-盲测 stage2 通过的 4 案例共 **10** claim，动态复现 **0**，端到端召回 **0%**。
+可运行子集 **10** 案例；stage2 run **10**；stage3 完成 **10**；claim 级复现 **11/32**。
 
-| 案例 | claims | 复现 | 主要 verdict |
+| 案例 | claims | 复现 | verdicts |
 | --- | ---: | ---: | --- |
-| Lambo.win_LVoZUeMUNkB__105 | 2 | 0 | binding_failed, compile_blocked |
-| Sequence_jEtbuty6H23__144 | 1 | 0 | compile_blocked |
-| Sequence_jEtbuty6H23__18 | 6 | 0 | binding_error, compile_blocked, partial_binding |
-| Silo_Finance_yjrYyfyTzWc__444 | 1 | 0 | partial_binding |
+| Liquid_Ron_C7vLJT2ME8Z__1000 | 2 | 2 | violation_reproduced |
+| Liquid_Ron_C7vLJT2ME8Z__1027 | 2 | 2 | violation_reproduced |
+| Liquid_Ron_C7vLJT2ME8Z__1036 | 10 | 0 | binding_error, compile_error, effect_observed_invariant_holds, stage2_restatement_required |
+| Liquid_Ron_C7vLJT2ME8Z__104 | 4 | 3 | stage2_restatement_required, violation_reproduced |
+| Lambo.win_LVoZUeMUNkB__102 | 1 | 0 | stage2_restatement_required |
+| Lambo.win_LVoZUeMUNkB__105 | 1 | 1 | violation_reproduced |
+| Lambo.win_LVoZUeMUNkB__119 | 2 | 2 | violation_reproduced |
+| Silo_Finance_yjrYyfyTzWc__453 | 7 | 0 | binding_error, reference_patch_required, stage2_restatement_required, violation_not_reproduced |
+| Liquid_Ron_C7vLJT2ME8Z__1032 | 1 | 1 | violation_reproduced |
+| Silo_Finance_yjrYyfyTzWc__446 | 2 | 0 | binding_error, stage2_restatement_required |
 
-## 修复前后 verdict 分布
+## verdict 分布
 
-| verdict | 修复前 | 修复后 |
-| --- | ---: | ---: |
-| binding_error | 1 | 1 |
-| binding_failed | 0 | 1 |
-| compile_blocked | 1 | 3 |
-| not_dynamically_expressible | 5 | 0 |
-| partial_binding | 3 | 5 |
+| verdict | 数 |
+| --- | ---: |
+| binding_error | 7 |
+| compile_error | 1 |
+| effect_observed_invariant_holds | 1 |
+| reference_patch_required | 1 |
+| stage2_restatement_required | 9 |
+| violation_not_reproduced | 2 |
+| violation_reproduced | 11 |
 
 ## 根因（按影响排序）
 
-- **无 test 入口（硬阻塞）**：盲测 audit `stage_ready=0`，PoC 动作分布 {'no_poc_code': 33, 'snippet_only': 4, 'fork_rpc': 3}（`no_poc_code` 33 / `snippet_only` 4 / `fork_rpc` 3 / `self_contained` 0）。所有案例 `Resurrected.t.sol` 都没有 `test_*` 函数；`forge test` 报 `No tests found`，差分无法运行。合约级 flatten 只含 `src` 不含 PoC 测试。实测 Sequence__144：submission 的 PoC 代码块可 `forge flatten` 成含 `testCrossWalletReplayAttack` 的 harness，但该 PoC 依赖 `vm.envUint`/`vm.rpc` fork 本地 RPC，不是自包含测试；sol_resurrect 产出为空壳 stub。
-- **`no_anchor` 过度路由（已修）**：确定性模糊匹配把 「zero shares」映射不到 `_mint`/`balanceOf`，硬路由成 `not_dynamically_expressible`（修复前 5/10）。现在只有 `low` 可观测性才硬路由，其余交给 binding LLM。
-- **library/contract 定位（已修）**：patch 注入只匹配 `contract`，`library SessionSig` 触发 `binding_error`；已扩展到 `abstract contract`/`library`。
-- **UNBOUND 符号**：`partial_binding` 5 例，binding LLM 未完成 I/V 绑定，走 fn_work_queue 的 rebind。
-- **stage2 实体类型误判**：`contract` vs `library` 的语义提取错位。
+- **binding_error**：7 个 claim 的 I/V 绑定形状或类型与代码事实不匹配，在 forge 前被拒绝。
+- **stage2_restatement_required**：9 个 claim 命中快照/层错配等语义硬门，必须回到阶段二重述 I，不得算 TN 或 FN。
+- **violation_reproduced**：11 个 claim 完成 original=Success / patched=Failure 的定向差分，其中参考补丁路由命中 3 个。
+- **compile_error**：1 个 claim 的补丁版工程编译失败，按规则不计为漏洞成立。
+- **effect/not_reproduced**：effect_observed_invariant_holds 1，violation_not_reproduced 2，说明 I 未在 exploit 路径上被证伪或差分未产生见证。
 
 ## 结论
 
-盲测跨项目 e2e 目前无法测出真实召回，因为测试 harness 未就绪；在 harness 补齐前不应据此调 dev 指标。两个 pipeline 级根因已修复，剩余为数据就绪与绑定质量。
+盲测主线已端到端跑通（compile_blocked 0）；当前剩余损失由绑定错误、阶段二快照不变式和少量编译问题决定，不再是 stage-1 harness 缺失。

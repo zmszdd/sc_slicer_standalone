@@ -1,0 +1,33 @@
+GTL vault can be gas overwhelmed and DoSed because of lack of input amount check
+
+## Finding description and impact
+
+The issue occurs because of the ability for a user to queue as many withdraws as he wants with what amount of share he wants.
+
+Basically the user is able to withdrawal his deposited amount in the GTL vault by providing amount of shares that he wants just by calling [`queueWithdrawal`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L101C3-L112C6). This will put in the array of queued withdraws a brand new one that should be processed by the admin:
+
+
+After that for the queued withdraws there are two exits:
+
+- 1. To be processed and executed
+- 2. To be canceled
+
+The issue lies it that a malicious user can start spamming the vault, by sending a really small amount of shares(1 share) for withdrawal and all these spam requests will be stored in `_queuedWithdrawal` which makes the array really expensive for looping and maintaining. 
+
+This leads to two scenarios.
+ - 1. If the exit for these queued withdrawals is (1) and they should be processed the admin should process more way 'batches' in order to safely process the withdrawals otherwise he can run out of gas and revert the tx.
+ - 2. The attacker can cancel all his queued withdrawal, which calling the [`_dequeue()`](https://github.com/code-423n4/2025-08-gte-perps/blob/f43e1eedb65e7e0327cfaf4d7608a37d85d2fae7/contracts/perps/GTL.sol#L271C4-L283C6) function. The function itself expects the id of the withdrawal request as parameter and it looping trough all the queued withdraws, where it checks if the withdrawal id matches the input one. Looping trough all queued request will looping so much times that can run out of gas and eventually DoS the contract because of the amount of the requests.
+
+Note that whatever of the scenarios is executed there is no loss for the attacker, so he can do that again and again and again.
+
+## Impact
+
+The impact is DoS the contract which can prevent other users to withdrawal their stakes. Since the attack loss nothing to do that the likelihood can be also high.
+
+## Recommended mitigation steps
+
+There are several ways to mitigate this:
+
+ - Add check for minimum amount of shares to withdrawal, this will help for decreasing the amount of the withdrawals
+ - Add time interval for queued new queries and prevent the user to queue again if the interval is not passed.
+ - Refactor the logic and introduce mapping that holds user address -> all queued request, this way you can implement 'batch' logic.

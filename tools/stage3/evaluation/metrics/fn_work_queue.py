@@ -26,6 +26,7 @@ TRIAGE = HERE / 'repro_failure_triage.json'
 RECOVER = HERE / 'recall_recoverability.json'
 OUT_JSON = HERE / 'fn_work_queue.json'
 OUT_MD = HERE / 'fn_work_queue.md'
+TRIGGER_AUDIT = HERE / 'stage2_trigger_audit.json'
 
 # Action priority: lower runs first.
 PRIORITY = {
@@ -40,6 +41,16 @@ PRIORITY = {
 RECOVERABLE = {'rebind', 'stage2_rerun', 'witness_poc', 'retry_inconclusive',
                'effect_predicate'}
 CEILING = {'reference_patch'}
+
+
+def _trigger_flagged() -> set[str]:
+    if not TRIGGER_AUDIT.is_file():
+        return set()
+    try:
+        audit = json.loads(TRIGGER_AUDIT.read_text())
+    except json.JSONDecodeError:
+        return set()
+    return {r['case'] for r in audit.get('rows', [])}
 
 
 def _action(row: dict, triage_bucket: str | None) -> str:
@@ -60,6 +71,8 @@ def _action(row: dict, triage_bucket: str | None) -> str:
     if triage_bucket == 'inconclusive' or verdict == 'inconclusive':
         return 'retry_inconclusive'
     if shape == 'state_assert_test':
+        if verdict == 'effect_observed_invariant_holds':
+            return 'stage2_rerun'
         return 'rebind'
     if shape == 'revert_expected_test':
         if verdict in ('effect_observed_invariant_holds', 'violation_not_reproduced'):
@@ -73,11 +86,15 @@ def _action(row: dict, triage_bucket: str | None) -> str:
 
 
 def _rationale(action: str, row: dict, triage_bucket: str | None) -> str:
+    verdict = row.get('verdict') or ''
     if action == 'rebind':
         return ('binding repairable: run stage3_verdict_loop to re-propose '
                 f"({row.get('unbound_symbols') or 0} UNBOUND, "
                 f"compile={row.get('compile_error_kind') or '-'})")
     if action == 'stage2_rerun':
+        if row.get('case') in _trigger_flagged() and verdict == 'effect_observed_invariant_holds':
+            return ('stage-2 placed a trigger/liveness predicate in I or V; '
+                    're-run stage-2 with the corrected role rule')
         return ('stage-2 product missing or invariant holds vacuously on the '
                 f'exploit path ({triage_bucket or row.get("verdict")})')
     if action == 'reference_patch':
@@ -174,7 +191,7 @@ def main() -> dict:
 
 
 def action_map(action: str) -> str:
-    return {v: str(k) for k, v in PRIORITY.items()}.get(action, '9')
+    return str(PRIORITY.get(action, 9))
 
 
 if __name__ == '__main__':
