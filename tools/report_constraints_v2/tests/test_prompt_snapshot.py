@@ -104,7 +104,8 @@ def run_pipeline(root, extra_argv=(), report_text=TEXT):
     argv = ['semantic_pipeline.py', '--report', str(root / 'report.md'),
             '--extract', '--allow-report-upload', '--model', 'synthetic_control',
             '--output', str(output)] + list(extra_argv)
-    with patch('sys.argv', argv), patch.object(p.r, 'extract', side_effect=fake), \
+    with patch('sys.argv', argv), patch.object(p, 'configured_model', return_value='synthetic_control'), \
+            patch.object(p.r, 'extract', side_effect=fake), \
             patch('sys.stdout', io.StringIO()):
         p.main()  # exit code varies with the acceptance verdict; replay is the point
     return output

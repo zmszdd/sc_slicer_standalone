@@ -195,7 +195,7 @@ class SemanticTests(unittest.TestCase):
     def test_invalid_elements_stop_before_second_neural_call(self):
         with tempfile.TemporaryDirectory() as work:
             report = Path(work) / 'report.md'; report.write_text(TEXT)
-            with patch('sys.argv', ['semantic_pipeline.py', '--report', str(report), '--extract', '--allow-report-upload', '--model', 'synthetic_control', '--output', str(Path(work) / 'result')]), patch.object(p.r, 'extract', return_value={}) as call, patch('sys.stdout', io.StringIO()):
+            with patch('sys.argv', ['semantic_pipeline.py', '--report', str(report), '--extract', '--allow-report-upload', '--model', 'synthetic_control', '--output', str(Path(work) / 'result')]), patch.object(p, 'configured_model', return_value='synthetic_control'), patch.object(p.r, 'extract', return_value={}) as call, patch('sys.stdout', io.StringIO()):
                 self.assertEqual(p.main(), 2)
                 self.assertEqual(call.call_count, 1)
 

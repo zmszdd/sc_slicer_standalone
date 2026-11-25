@@ -152,7 +152,7 @@ class EvidenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as work:
             source = Path(work) / 'report.md'; source.write_text(TEXT)
             output = Path(work) / 'out'
-            with patch('sys.argv', ['semantic_pipeline.py', '--report', str(source), '--extract', '--allow-report-upload', '--model', 'synthetic_control', '--output', str(output)]), patch.object(p.r, 'extract', side_effect=fake) as call, patch('sys.stdout', io.StringIO()):
+            with patch('sys.argv', ['semantic_pipeline.py', '--report', str(source), '--extract', '--allow-report-upload', '--model', 'synthetic_control', '--output', str(output)]), patch.object(p, 'configured_model', return_value='synthetic_control'), patch.object(p.r, 'extract', side_effect=fake) as call, patch('sys.stdout', io.StringIO()):
                 self.assertEqual(p.main(), 2)
                 # The fixture has no separately marked Impact section, so the
                 # pipeline must not create V claims from prose outside it.

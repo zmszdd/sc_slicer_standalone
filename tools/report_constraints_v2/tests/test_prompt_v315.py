@@ -197,7 +197,8 @@ class PromptV315Tests(unittest.TestCase):
             argv = ['semantic_pipeline.py', '--report', str(report), '--formalize-only',
                     '--elements', str(saved), '--allow-report-upload',
                     '--prompt-version', 'semantic-v3.15', '--output', str(output)]
-            with patch('sys.argv', argv), patch.object(pipeline.r, 'extract', side_effect=fake), \
+            with patch('sys.argv', argv), patch.object(pipeline, 'configured_model', return_value='synthetic_control'), \
+                    patch.object(pipeline.r, 'extract', side_effect=fake), \
                     patch('sys.stdout', io.StringIO()):
                 pipeline.main()
             self.assertEqual(json.loads((output / 'formal-plan.json').read_text())
