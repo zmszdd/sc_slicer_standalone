@@ -32,6 +32,10 @@
 `tools/stage3/runs/` 是当前协议的 stage3 run artifact，约 21GB，也只在本地保留。
 仓库内的 goldset 与指标文件足以阅读和核对结果；要全量重跑仍需上述外部数据与 provider。
 
+当前仓库已包含 `c4_pipeline_output/_github_repos_by_project/` 下 27 个冻结案例源文件，
+以及 `c4_pipeline_output/_frozen_case_source_restore_manifest.json`。这只是源文件级
+部分恢复，不包含完整仓库 checkout、`findings.json`、flatten corpus 或 submodule 快照。
+
 ## 3. 展示与论文口径
 
 - 论文主表使用 `canonical_metrics` 的 consistency 四指标；漏洞级四指标只是伴生诊断。
