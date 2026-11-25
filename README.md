@@ -4,6 +4,21 @@ SC_Slicer 是一个面向 Solidity 合约的目标导向代码切片工具。当
 
 仓库导航、权威指标位置与可清理产物见 [docs/REPOSITORY_GUIDE.md](docs/REPOSITORY_GUIDE.md)。
 
+## GitHub 交付边界
+
+GitHub 仓库包含源码、测试、文档、协议基线、冻结样本、正负例 goldset 与权威指标文件。
+以下内容故意不上传，clone 后 `make doctor` 会因路径缺失而报错，这是预期行为，不是仓库不完整：
+
+- `config/llm.env`、`config/*.local.env`：API key 和本机路径，见 `.gitignore`。
+- `c4_pipeline_output/`、`code4rena_reports/`、外部 `verified_flatten_pass_1568_exact_cases` 与 `forge-std`：外部数据/缓存。
+- `tools/stage3/runs/`：当前协议 stage3 run artifact，约 21GB，仅在本地保留。
+- `results/`、`logs/`、`target/`：运行和编译产物。
+
+阅读指标可直接看 `tools/stage3/evaluation/metrics/mainline_metrics.md` / `.json` 与
+`paper_evidence_report.md`。若需重跑主线，按
+[docs/PORTABILITY_20261123.md](docs/PORTABILITY_20261123.md) 配置数据根和 provider。
+历史实验脚本里写死的 `/root/...` 路径不属于主入口依赖。
+
 ## 统一入口
 
 仓库根目录的 `main.py` 是**阶段二 / 阶段三 / 三阶段 pipeline** 的统一命令行入口；
