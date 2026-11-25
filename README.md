@@ -23,6 +23,7 @@ GitHub 仓库包含源码、测试、文档、协议基线、冻结样本、正�
 `make locked-eval-check` 均通过；`make doctor` 因外部数据根缺失而失败是预期行为。
 
 数据来源与第三方材料见 [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)。
+历史 run 摘要证据见 [docs/legacy_stage3_runs/README.md](docs/legacy_stage3_runs/README.md)。
 合作者的 provider 配置见 [docs/PROVIDER_SETUP.md](docs/PROVIDER_SETUP.md)，仓库不含真实 key。
 
 ## 当前指标口径

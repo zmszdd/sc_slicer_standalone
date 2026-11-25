@@ -14,6 +14,7 @@
 | 权威指标与证据 | `tools/stage3/evaluation/metrics/mainline_metrics.json` / `.md`、`paper_evidence_report.*`、`metric_alignment_report.*`、`locked_eval_contract.*` | 本项目工具生成 | 论文主表与发布门禁依据；不是外部数据 |
 | 协议与样本 | `tools/stage3/mainline-protocol.json`、`tools/stage3/evaluation/frozen/` | 本项目冻结 | 协议指纹与样本定义 |
 | `solar/` | `solar/` | 上游 `argotorg/solar` | 第三方代码，保留其自有许可 `solar/LICENSE-MIT`、`solar/LICENSE-APACHE` |
+| 历史 run 摘要 | `docs/legacy_stage3_runs/` | 本机 `tools/stage3/runs/` 中文档引用过的 run | 仅诊断；不进入权威分母，不代表当前协议结果 |
 
 ## 2. 未随仓库上传的外部数据
 
