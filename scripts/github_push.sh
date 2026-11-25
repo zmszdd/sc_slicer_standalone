@@ -25,5 +25,11 @@ fi
 
 git remote remove github 2>/dev/null || true
 git remote add github "$url"
+
+isolated_home="$(mktemp -d "${TMPDIR:-/tmp}/sc-gh-push.XXXXXX")"
+trap 'rm -rf "$isolated_home"' EXIT
+mkdir -p "$isolated_home/.ssh"
+
+HOME="$isolated_home" \
 GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
   git push -u github "HEAD:${branch}"
