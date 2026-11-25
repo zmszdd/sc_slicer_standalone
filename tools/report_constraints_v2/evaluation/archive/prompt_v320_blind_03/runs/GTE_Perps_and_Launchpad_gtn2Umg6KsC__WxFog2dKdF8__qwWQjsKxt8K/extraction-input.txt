@@ -1,0 +1,23 @@
+Token Graduation Susceptible to Permanent Denial of Service via `createPair` Front-Running Attack
+
+The token launch process is vulnerable to a front-running griefing attack that can permanently prevent any token from graduating, effectively bricking the core functionality of the Launchpad. An attacker can achieve this by observing the mempool and front-running the specific transaction that graduates a token, leading to a permanent Denial of Service (DoS) for that token's launch and a loss of trust in the platform.
+
+The vulnerability stems from two interconnected root causes:
+
+1.  **Publicly Callable `createPair` Function:** The `GTELaunchpadV2PairFactory.sol` contract allows anyone to call the `createPair` function for any two tokens ([L29-L48](https://github.com/code-423n4/2025-08-gte-perps/blob/main/contracts/launchpad/uniswap/GTELaunchpadV2PairFactory.sol#L29-L48)). Crucially, the factory's logic only enables the launchpad's fee-on-transfer mechanism if the `msg.sender` of this call is the `Launchpad` contract itself. If called by any other address, a standard, fee-less pair is created.
+
+2.  **Flawed Error Handling in `Launchpad.sol`:** When a token's bonding curve is fully sold, the final `buy` transaction triggers the `_createPairAndSwapRemaining` internal function. This function attempts to create the Uniswap V2 pair, but it wraps the `createPair` call in a `try/catch` block ([L483-L489](https://github.com/code-423n4/2025-08-gte-perps/blob/main/contracts/launchpad/Launchpad.sol#L483-L489)). The `catch` block is empty, meaning it incorrectly swallows the critical `PAIR_EXISTS` revert from the factory. Instead of handling the error gracefully, execution continues in a broken state. This ultimately causes the transaction to revert when the `uniV2Router.addLiquidity` call fails, as the `Launchpad` attempts to interact with a pair that was created prematurely and unexpectedly.
+
+An attacker can exploit this by:
+1.  Monitoring the mempool for a `launchpad.buy()` transaction that will graduate a new token.
+2.  Submitting their own `factory.createPair()` transaction for the same token pair with a higher gas fee.
+3.  The attacker's transaction is mined first, creating a standard Uniswap pair without the GTE fee mechanism.
+4.  The legitimate `launchpad.buy()` transaction is then mined, but its internal call to `createPair` fails. The flawed `try/catch` block prevents the transaction from reverting immediately, but the logic cannot proceed correctly, causing the entire graduation transaction to revert.
+
+**Impact:** The consequences are severe for a protocol whose primary function is to launch tokens.
+
+*   **Permanent Denial of Service:** The legitimate `launchpad.buy()` transaction will now *always* fail for this token, as the pair already exists and the graduation logic cannot handle this state. The token can never graduate, its liquidity pool can never be seeded by the protocol, and its transfers can never be unlocked.
+*   **Permanent Disabling of the Rewards Mechanism:** By creating the pair without the launchpad as the originator, the attacker permanently prevents the GTE fee-on-transfer mechanism from being attached to that token's pair, irreparably breaking the economic model for that specific launch.
+*   **Loss of Trust and Platform Viability:** An attacker can perform this low-cost griefing attack on every single token launched, effectively holding the entire platform hostage and destroying its reputation and business model.
+
+This constitutes a Medium severity finding as it is a critical disruption of protocol functionality and availability.

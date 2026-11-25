@@ -1,0 +1,265 @@
+{
+  "schema_version": "report-formalization/1",
+  "symbols": {
+    "lock_active": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Active lock acquired by Router.lock() for the swap, so the current locker is active while debts change",
+      "checkpoint": "active lock during settlement",
+      "entity_ids": [
+        "router",
+        "flash_accountant"
+      ],
+      "evidence": "4. Router.lock() acquires a lock and calls Router.handleLockData()"
+    },
+    "caller": {
+      "sort": "address",
+      "unit": null,
+      "meaning": "msg.sender of the debt modification call, which updateDebt adopts as the token address",
+      "checkpoint": "debt modification during transferFrom",
+      "entity_ids": [
+        "malicious_token",
+        "flash_accountant"
+      ],
+      "evidence": "FlashAccountant.updateDebt() allows any address to modify the current locker's debt during an active lock, using msg.sender as the token address with no access control. A malicious ERC20 token can reenter updateDebt() during transferFrom() to zero out its owed input debt, while Router withdraws output tokens before payment settlement. This enables complete pool reserve drainage as attackers receive output tokens without paying input tokens."
+    },
+    "authorized_settler": {
+      "sort": "address",
+      "unit": null,
+      "meaning": "Actor on the authorized settlement path (Router settlement/payFrom) that is the only intended route for modifying the locker's recorded debt",
+      "checkpoint": "pre-reentry settlement path actor",
+      "entity_ids": [
+        "router",
+        "flash_accountant"
+      ],
+      "evidence": "- **Router.sol**: Handles swap settlement by withdrawing output tokens before calling `payFrom()` for input tokens"
+    },
+    "debt_input_before": {
+      "sort": "int",
+      "unit": "token",
+      "meaning": "Recorded debt of the current locker for the input token just before the reentered updateDebt, e.g. +100 = +amountIn",
+      "checkpoint": "at reentry before updateDebt",
+      "entity_ids": [
+        "malicious_token",
+        "flash_accountant"
+      ],
+      "evidence": "When Core.swap executes at line 834, it calls `_updatePairDebtWithNative()` which sets:"
+    },
+    "debt_input_after": {
+      "sort": "int",
+      "unit": "token",
+      "meaning": "Recorded debt of the current locker for the input token at lock exit after the reentered updateDebt, e.g. 0",
+      "checkpoint": "lock exit (NONZERO_DEBT_COUNT check)",
+      "entity_ids": [
+        "malicious_token",
+        "flash_accountant"
+      ],
+      "evidence": "10. FlashAccountant.updateDebt() sets `debt[lockerId][TokenM] = +100 + (-100) = 0`"
+    }
+  },
+  "claims": [
+    {
+      "id": "core_claim",
+      "scope": "Router.swap -> Core.swap records debt -> Router withdraws outputs then payFrom pulls inputs -> malicious token reenters updateDebt -> lock exit",
+      "modality": "potential",
+      "impact_ids": [
+        "i_debt_zeroed"
+      ],
+      "properties": {
+        "preconditions": {
+          "text": "Router acquires a lock via Router.lock() before handling the swap, so an active lock exists while debts change.; updateDebt() allows any address to modify the current locker's debt during an active lock, using msg.sender as the token address with no access control.; When Core.swap executes, it records debt of +amountIn for the input token and -amountOut for the output token for the locked swap.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "var": "lock_active"
+              },
+              {
+                "op": "ne",
+                "args": [
+                  {
+                    "var": "caller"
+                  },
+                  {
+                    "var": "authorized_settler"
+                  }
+                ]
+              },
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "debt_input_before"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program conjunction of selected report preconditions.",
+          "source_ids": [
+            "p_lock_acquired",
+            "p_no_auth",
+            "p_swap_debt"
+          ],
+          "evidence": [
+            "4. Router.lock() acquires a lock and calls Router.handleLockData()",
+            "FlashAccountant.updateDebt() allows any address to modify the current locker's debt during an active lock, using msg.sender as the token address with no access control. A malicious ERC20 token can reenter updateDebt() during transferFrom() to zero out its owed input debt, while Router withdraws output tokens before payment settlement. This enables complete pool reserve drainage as attackers receive output tokens without paying input tokens.",
+            "The function uses `msg.sender` as the token address with no validation. The only check is `_getLocker()`, which verifies an active lock exists but does not verify that `msg.sender` is authorized to modify debt for that token address. This allows any contract, including malicious ERC20 tokens, to arbitrarily modify debt during a lock.",
+            "When Core.swap executes at line 834, it calls `_updatePairDebtWithNative()` which sets:",
+            "- `debt[lockerId][inputToken] = +amountIn` (positive means locker owes this amount)",
+            "- `debt[lockerId][outputToken] = -amountOut` (negative means locker receives this amount)"
+          ]
+        },
+        "safety": {
+          "text": "Debt recorded for an active lock (positive input, negative output) should only be modifiable through the authorized settlement path so the lock can only exit once recorded debts are genuinely settled. (Inferred: the claimed failure implies that arbitrary mid-transfer debt modification must not permit an unpaid lock exit.)",
+          "expression": {
+            "op": "implies",
+            "args": [
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "debt_input_before"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "op": "not",
+                "args": [
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "var": "debt_input_after"
+                      },
+                      {
+                        "const": 0
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program synthesis from the selected intent and logical pattern.",
+          "source_ids": [
+            "si_settlement_integrity"
+          ],
+          "evidence": [
+            "FlashAccountant.updateDebt() allows any address to modify the current locker's debt during an active lock, using msg.sender as the token address with no access control. A malicious ERC20 token can reenter updateDebt() during transferFrom() to zero out its owed input debt, while Router withdraws output tokens before payment settlement. This enables complete pool reserve drainage as attackers receive output tokens without paying input tokens.",
+            "The lock succeeds, and the attacker keeps the output tokens without paying input tokens."
+          ]
+        },
+        "effects": {
+          "text": "The reentered updateDebt sets debt[lockerId][TokenM] from +100 to 0, zeroing the input debt owed by the locker.",
+          "expression": {
+            "op": "and",
+            "args": [
+              {
+                "op": "gt",
+                "args": [
+                  {
+                    "var": "debt_input_before"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "args": [
+                  {
+                    "var": "debt_input_after"
+                  },
+                  {
+                    "const": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "derivation": "Program-generated direct negation witness for the selected safety pattern.",
+          "source_ids": [
+            "i_debt_zeroed"
+          ],
+          "evidence": [
+            "10. FlashAccountant.updateDebt() sets `debt[lockerId][TokenM] = +100 + (-100) = 0`",
+            "This sets `debt[lockerId][inputToken] = +amountIn + (-amountIn) = 0`, zeroing the input debt."
+          ]
+        }
+      },
+      "formula_sources": {
+        "preconditions": {
+          "": [
+            "p_lock_acquired",
+            "p_no_auth",
+            "p_swap_debt"
+          ],
+          "args.1": [
+            "p_lock_acquired",
+            "p_no_auth",
+            "p_swap_debt"
+          ],
+          "args.2": [
+            "p_lock_acquired",
+            "p_no_auth",
+            "p_swap_debt"
+          ]
+        },
+        "safety": {
+          "": [
+            "si_settlement_integrity"
+          ],
+          "args.0": [
+            "si_settlement_integrity"
+          ],
+          "args.1": [
+            "si_settlement_integrity"
+          ],
+          "args.1.args.0": [
+            "si_settlement_integrity"
+          ]
+        },
+        "effects": {
+          "": [
+            "i_debt_zeroed"
+          ],
+          "args.0": [
+            "i_debt_zeroed"
+          ],
+          "args.1": [
+            "i_debt_zeroed"
+          ]
+        }
+      },
+      "effect_coverage": [
+        {
+          "statement_id": "i_debt_zeroed",
+          "status": "formalized",
+          "reason": "Program-generated exact coverage for selected direct impact."
+        }
+      ],
+      "assumptions": [
+        "Router settlement order: output token is withdrawn to the recipient before payFrom() pulls the input token (p_settlement_order).",
+        "The attacker provisions a TokenM/TokenA pool with liquidity so the swap is routable and output is payable (p_pool_liquidity).",
+        "The malicious TokenM transferFrom is executed and is still in flight (reentrancy context active) when the hook invokes updateDebt (a_reenter).",
+        "The attack flow and token-hook wiring are a described exploit scenario; reaching the zeroed-debt state depends on the malicious hook invoking updateDebt during the transfer (asm_scenario)."
+      ],
+      "unresolved": []
+    }
+  ],
+  "limitations": [
+    "Core effect limited to zeroing the recorded input-token debt (i_debt_zeroed); the claimed exit with all debts zero, retention of output tokens without paying input, and pool reserve drainage are deferred.",
+    "The numeric reversal of the output-token debt (-amountOut back to 0) is not formally modeled; only the input-token side is formalized as the direct core impact.",
+    "The authorized_settler identity is symbolic; only its inequality with the modifying caller is exercised, not its concrete implementation path.",
+    "p_malicious_input (malicious transferFrom hook identity) is used as scenario context; the hook-level identity is not separately formalized.",
+    "Deferred report impact: i_unpaid_output"
+  ]
+}

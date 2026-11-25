@@ -1,0 +1,172 @@
+{
+  "schema_version": "report-formal-plan/2",
+  "precondition_ids": [
+    "p_lock_acquired",
+    "p_no_auth",
+    "p_swap_debt"
+  ],
+  "intent_id": "si_settlement_integrity",
+  "impact_ids": [
+    "i_debt_zeroed"
+  ],
+  "symbols": {
+    "lock_active": {
+      "sort": "bool",
+      "unit": null,
+      "meaning": "Active lock acquired by Router.lock() for the swap, so the current locker is active while debts change",
+      "checkpoint": "active lock during settlement",
+      "entity_ids": [
+        "router",
+        "flash_accountant"
+      ],
+      "source_ids": [
+        "p_lock_acquired"
+      ]
+    },
+    "caller": {
+      "sort": "address",
+      "unit": null,
+      "meaning": "msg.sender of the debt modification call, which updateDebt adopts as the token address",
+      "checkpoint": "debt modification during transferFrom",
+      "entity_ids": [
+        "malicious_token",
+        "flash_accountant"
+      ],
+      "source_ids": [
+        "p_no_auth"
+      ]
+    },
+    "authorized_settler": {
+      "sort": "address",
+      "unit": null,
+      "meaning": "Actor on the authorized settlement path (Router settlement/payFrom) that is the only intended route for modifying the locker's recorded debt",
+      "checkpoint": "pre-reentry settlement path actor",
+      "entity_ids": [
+        "router",
+        "flash_accountant"
+      ],
+      "source_ids": [
+        "p_settlement_order",
+        "p_no_auth"
+      ]
+    },
+    "debt_input_before": {
+      "sort": "int",
+      "unit": "token",
+      "meaning": "Recorded debt of the current locker for the input token just before the reentered updateDebt, e.g. +100 = +amountIn",
+      "checkpoint": "at reentry before updateDebt",
+      "entity_ids": [
+        "malicious_token",
+        "flash_accountant"
+      ],
+      "source_ids": [
+        "p_swap_debt",
+        "i_debt_zeroed"
+      ]
+    },
+    "debt_input_after": {
+      "sort": "int",
+      "unit": "token",
+      "meaning": "Recorded debt of the current locker for the input token at lock exit after the reentered updateDebt, e.g. 0",
+      "checkpoint": "lock exit (NONZERO_DEBT_COUNT check)",
+      "entity_ids": [
+        "malicious_token",
+        "flash_accountant"
+      ],
+      "source_ids": [
+        "i_debt_zeroed"
+      ]
+    }
+  },
+  "precondition_terms": [
+    {
+      "source_id": "p_lock_acquired",
+      "predicate": {
+        "kind": "truth",
+        "symbol": "lock_active",
+        "value": true
+      }
+    },
+    {
+      "source_id": "p_no_auth",
+      "predicate": {
+        "kind": "comparison",
+        "left": "caller",
+        "operator": "ne",
+        "right": {
+          "symbol": "authorized_settler"
+        }
+      }
+    },
+    {
+      "source_id": "p_swap_debt",
+      "predicate": {
+        "kind": "comparison",
+        "left": "debt_input_before",
+        "operator": "gt",
+        "right": {
+          "const": 0
+        }
+      }
+    }
+  ],
+  "pattern": {
+    "kind": "condition_forbids_effect",
+    "condition": {
+      "kind": "comparison",
+      "left": "debt_input_before",
+      "operator": "gt",
+      "right": {
+        "const": 0
+      }
+    },
+    "effect": {
+      "kind": "comparison",
+      "left": "debt_input_after",
+      "operator": "eq",
+      "right": {
+        "const": 0
+      }
+    }
+  },
+  "assumptions": [
+    "Router settlement order: output token is withdrawn to the recipient before payFrom() pulls the input token (p_settlement_order).",
+    "The attacker provisions a TokenM/TokenA pool with liquidity so the swap is routable and output is payable (p_pool_liquidity).",
+    "The malicious TokenM transferFrom is executed and is still in flight (reentrancy context active) when the hook invokes updateDebt (a_reenter).",
+    "The attack flow and token-hook wiring are a described exploit scenario; reaching the zeroed-debt state depends on the malicious hook invoking updateDebt during the transfer (asm_scenario)."
+  ],
+  "unresolved": [
+    {
+      "category": "ambiguous_actor",
+      "description": "Report alternates between Core.updateDebt and FlashAccountant.updateDebt as the reentry target without clarifying the call path between Core and FlashAccountant; the core zeroing effect is still documented.",
+      "source_ids": [
+        "p_swap_debt",
+        "i_debt_zeroed"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "ambiguous_condition",
+      "description": "transferFrom is stated to possibly transfer 0 tokens or revert and that it 'doesn't matter', leaving the actual transfer outcome unspecified; only the reentry behavior is used in the core formula.",
+      "source_ids": [
+        "p_malicious_input",
+        "a_reenter"
+      ],
+      "blocks_formalization": false
+    },
+    {
+      "category": "missing_report_definition",
+      "description": "The report states no on-chain incident is independently verified and asserts the unconditional debt-modification capability without an independent source; the precondition is treated as an asserted report fact.",
+      "source_ids": [
+        "p_no_auth"
+      ],
+      "blocks_formalization": false
+    }
+  ],
+  "limitations": [
+    "Core effect limited to zeroing the recorded input-token debt (i_debt_zeroed); the claimed exit with all debts zero, retention of output tokens without paying input, and pool reserve drainage are deferred.",
+    "The numeric reversal of the output-token debt (-amountOut back to 0) is not formally modeled; only the input-token side is formalized as the direct core impact.",
+    "The authorized_settler identity is symbolic; only its inequality with the modifying caller is exercised, not its concrete implementation path.",
+    "p_malicious_input (malicious transferFrom hook identity) is used as scenario context; the hook-level identity is not separately formalized."
+  ]
+}
