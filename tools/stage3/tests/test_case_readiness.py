@@ -49,6 +49,9 @@ class CaseReadinessTest(unittest.TestCase):
         self.assertEqual(report['blockers']['negative'], dict(reasons))
 
     def test_coverage_matches_authoritative_metric_evidence(self):
+        root = Path(__file__).resolve().parents[2]
+        if not (root / 'tools' / 'stage3' / 'runs').is_dir():
+            self.skipTest('stage3 run artifacts are not present')
         report = case_readiness.build()
         metrics = json.loads((METRICS / 'mainline_metrics.json').read_text())
         self.assertEqual(
