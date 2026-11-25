@@ -19,6 +19,9 @@ GitHub 仓库包含源码、测试、文档、协议基线、冻结样本、正�
 [docs/PORTABILITY_20261123.md](docs/PORTABILITY_20261123.md) 配置数据根和 provider。
 历史实验脚本里写死的 `/root/...` 路径不属于主入口依赖。
 
+已在干净 clone 上实测：`make test`、`make protocol-check`、`make metrics-check`、
+`make locked-eval-check` 均通过；`make doctor` 因外部数据根缺失而失败是预期行为。
+
 数据来源与第三方材料见 [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)。
 
 ## 当前指标口径
