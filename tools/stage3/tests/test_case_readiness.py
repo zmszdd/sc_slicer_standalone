@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from collections import Counter
@@ -49,7 +50,7 @@ class CaseReadinessTest(unittest.TestCase):
 
     def test_coverage_matches_authoritative_metric_evidence(self):
         report = case_readiness.build()
-        metrics = mainline_metrics.main()
+        metrics = json.loads((METRICS / 'mainline_metrics.json').read_text())
         self.assertEqual(
             report['coverage']['positive']['eligible'],
             metrics['coverage']['positives_evaluated'])

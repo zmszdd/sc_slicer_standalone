@@ -25,6 +25,7 @@ class LlmRateLimitTest(unittest.TestCase):
             {'Retry-After': '0'}, None)
         with mock.patch.object(llm.urlrequest, 'urlopen',
                                side_effect=[rate_limit, FakeResponse()]) as urlopen, \
+                mock.patch.object(llm, 'load_key', return_value='test-key'), \
                 mock.patch.object(llm.time, 'sleep') as sleep:
             claim = llm.chat_json('system', 'user')
         self.assertEqual(claim, {'ok': True})
@@ -44,6 +45,7 @@ class LlmRateLimitTest(unittest.TestCase):
             {'Retry-After': '0'}, io.BytesIO(body))
         with mock.patch.object(llm.urlrequest, 'urlopen',
                                side_effect=usage_limit) as urlopen, \
+                mock.patch.object(llm, 'load_key', return_value='test-key'), \
                 mock.patch.object(llm.time, 'sleep') as sleep:
             with self.assertRaises(llm.LLMError) as raised:
                 llm.chat_json('system', 'user')
@@ -57,6 +59,7 @@ class LlmRateLimitTest(unittest.TestCase):
             {}, io.BytesIO(b'insufficient quota'))
         with mock.patch.object(llm.urlrequest, 'urlopen',
                                side_effect=billing) as urlopen, \
+                mock.patch.object(llm, 'load_key', return_value='test-key'), \
                 mock.patch.object(llm.time, 'sleep') as sleep:
             with self.assertRaises(llm.LLMError) as raised:
                 llm.chat_json('system', 'user')
